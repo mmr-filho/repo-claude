@@ -1,0 +1,30 @@
+# Servidor + túnel da Cloudflare. Uso (a partir da pasta deploy/):
+#   cp .env.example .env     # preencha TUNNEL_TOKEN
+#   docker compose up -d --build
+#
+# O servidor NÃO publica porta alguma: só o túnel (saída para a Cloudflare) o alcança.
+# Mantenha assim; TRUST_PROXY=true só é seguro porque ninguém chega ao servidor sem passar pela Cloudflare.
+services:
+  sigilo:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      TRUST_PROXY: "true"
+      MESSAGE_TTL_HOURS: ${MESSAGE_TTL_HOURS:-168}
+      KDF_N: ${KDF_N:-16384}
+    volumes:
+      - sigilo-data:/data
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?defina TUNNEL_TOKEN no arquivo .env}
+    depends_on:
+      - sigilo
+
+volumes:
+  sigilo-data:

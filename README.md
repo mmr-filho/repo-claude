@@ -27,7 +27,8 @@ packages/core     Criptografia, protocolo e cliente da API (TypeScript puro; usa
 packages/server   Servidor: API REST + WebSocket de avisos + SQLite
 apps/mobile       App Expo / React Native (Android e iOS)
 e2e               Teste de interface de ponta a ponta no navegador
-docs              Arquitetura, protocolo e modelo de ameaças
+docs              Arquitetura, protocolo, modelo de ameaças e implantação
+deploy            Docker Compose (servidor + Cloudflare Tunnel)
 ```
 
 ## Como rodar
@@ -138,7 +139,7 @@ Os testes do servidor sobem o servidor de verdade, usam o mesmo código de cript
 
 Variáveis de ambiente (todas opcionais; veja `packages/server/.env.example`): `PORT`, `DB_PATH`, `MESSAGE_TTL_HOURS` (mensagens **não lidas** expiram), `SESSION_TTL_DAYS`, `ACTIVATION_TTL_HOURS`, `INVITE_TTL_HOURS`, `KDF_N`, `MAX_LOGIN_FAILURES`, `LOCK_MINUTES`, `TRUST_PROXY`.
 
-Para produção: `npm run build -w @sigilo/server` e `node packages/server/dist/index.js`.
+Para colocar o servidor no ar (VPS ou máquina própria, com HTTPS pela Cloudflare Tunnel e Docker), siga [`docs/IMPLANTACAO.md`](docs/IMPLANTACAO.md). Sem Docker: `npm run build -w @sigilo/server` e `node packages/server/dist/index.js`.
 
 ## O que **não** foi verificado, e limitações
 

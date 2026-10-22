@@ -1,0 +1,13 @@
+node_modules
+**/node_modules
+**/dist
+**/.expo
+apps/mobile/android
+apps/mobile/ios
+.git
+.expo-export
+data
+*.db
+*.db-wal
+*.db-shm
+.env
