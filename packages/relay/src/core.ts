@@ -1,5 +1,5 @@
 import { b64, randomBytes } from '@sigilo/core';
-import { HEADER_SIG, HEADER_TS, verifyRelayRequest } from '@sigilo/core';
+import { HEADER_SIG, HEADER_TS, verifyRelayRequest } from '@sigilo/core/v2';
 
 /*
  * Lógica do relé, independente de onde roda (Node + SQLite, ou Cloudflare Durable Object).

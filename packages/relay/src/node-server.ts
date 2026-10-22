@@ -21,7 +21,6 @@ export async function buildRelay(opts: NodeRelayOptions): Promise<{ app: Fastify
   const app = Fastify({
     // Sem logs de requisição: o relé não deve manter registro de quem acessa o quê.
     logger: opts.logger ? { level: 'warn' } : false,
-    disableRequestLogging: true,
     trustProxy: opts.trustProxy ?? false,
     bodyLimit: MAX_FRAME_BYTES + 1024,
   });

@@ -23,6 +23,17 @@ export const FRAME_VERSION = 2;
 const V = 'sigilo/v2';
 export const FRAME_OVERHEAD = 1 + 32 + 16 + 8 + 16;
 
+/**
+ * O quadro é íntegro e era para nós, mas ainda não conhecemos o remetente (o certificado dele pode estar a caminho).
+ * Diferente de DecryptError: aqui NÃO se deve apagar a mensagem.
+ */
+export class UnknownSenderError extends DecryptError {
+  constructor() {
+    super('Remetente ainda desconhecido');
+    this.name = 'UnknownSenderError';
+  }
+}
+
 export const PayloadType = {
   Chat: 1,
   Intro: 2,
@@ -137,6 +148,7 @@ export function openFrame(args: { frame: Bytes; self: BoxKeys; knownSenders: (re
     const p = decodePayload(payloadBytes);
 
     const candidates = p.senderKey ? [p.senderKey] : args.knownSenders(ref);
+    if (candidates.length === 0) throw new UnknownSenderError();
     for (const cand of candidates) {
       if (!equalBytes(refOf(cand), ref)) continue;
       const dh2 = x25519.getSharedSecret(self.secretKey, cand);
@@ -145,7 +157,8 @@ export function openFrame(args: { frame: Bytes; self: BoxKeys; knownSenders: (re
       if (equalBytes(expected, mac)) return { type: p.type, body: p.body, senderKey: p.senderKey, sender: cand };
     }
     throw new Error('remetente não autenticado');
-  } catch {
+  } catch (err) {
+    if (err instanceof UnknownSenderError) throw err;
     throw new DecryptError();
   }
 }

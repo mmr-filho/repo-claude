@@ -225,6 +225,50 @@ export function otherParty(c: LinkCert, myNet: string): LinkParty | undefined {
   return c.a.net === myNet ? c.b : c.b.net === myNet ? c.a : undefined;
 }
 
+/** Confere a única assinatura presente numa proposta ainda incompleta. */
+export function verifyPartialLink(p: PartialLink, proposerAuthority: Bytes, now = Date.now()): Verdict {
+  try {
+    const proposerNet = networkIdOf(proposerAuthority);
+    const sig = p.a.net === proposerNet ? p.sigA : p.b.net === proposerNet ? p.sigB : undefined;
+    if (!sig) return bad('o proponente não faz parte do vínculo');
+    const side = p.a.net === proposerNet ? p.a : p.b;
+    if (side.authority !== b64.encode(proposerAuthority)) return bad('autoridade não confere');
+    if (!(p.a.net < p.b.net)) return bad('formato inválido');
+    if (!verify(proposerAuthority, linkTbs(p), b64.decode(sig))) return bad('assinatura inválida');
+    return p.exp > now ? ok : bad('proposta vencida');
+  } catch {
+    return bad('proposta malformada');
+  }
+}
+
+/** Qualquer uma das duas autoridades pode encerrar um vínculo antes do vencimento. */
+export interface LinkRevocation {
+  v: 1;
+  net: string;
+  authority: string;
+  peerNet: string;
+  iat: number;
+  sig: string;
+}
+
+function linkRevocationTbs(r: Omit<LinkRevocation, 'sig'>): Bytes {
+  return tbs('unlink', [r.v, r.net, r.authority, r.peerNet, r.iat]);
+}
+
+export function issueLinkRevocation(authority: SignKeys, peerNet: string, now = Date.now()): LinkRevocation {
+  const body: Omit<LinkRevocation, 'sig'> = { v: 1, net: networkIdOf(authority.publicKey), authority: b64.encode(authority.publicKey), peerNet, iat: now };
+  return { ...body, sig: b64.encode(sign(authority.secretKey, linkRevocationTbs(body))) };
+}
+
+export function verifyLinkRevocation(r: LinkRevocation, trustedAuthority: Bytes): Verdict {
+  try {
+    if (r.authority !== b64.encode(trustedAuthority) || r.net !== networkIdOf(trustedAuthority)) return bad('autoridade não é a esperada');
+    return verify(trustedAuthority, linkRevocationTbs(r), b64.decode(r.sig)) ? ok : bad('assinatura inválida');
+  } catch {
+    return bad('revogação malformada');
+  }
+}
+
 // ───────── Revocation ─────────
 
 function revocationTbs(r: Omit<Revocation, 'sig'>): Bytes {

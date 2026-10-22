@@ -33,3 +33,10 @@ export function equalBytes(a: Bytes, b: Bytes): boolean {
   for (let i = 0; i < a.length; i++) d |= a[i]! ^ b[i]!;
   return d === 0;
 }
+
+export const hex = (b: Uint8Array): string => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+
+export function unhex(text: string): Uint8Array {
+  if (!/^([0-9a-f]{2})*$/.test(text)) throw new Error('hex inválido');
+  return Uint8Array.from((text.match(/../g) ?? []).map((h) => parseInt(h, 16)));
+}

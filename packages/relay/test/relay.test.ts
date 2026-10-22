@@ -1,6 +1,7 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { b64, generateSignKeys, randomBytes, signRelayRequest, utf8Encode, type SignKeys } from '@sigilo/core';
+import { b64, randomBytes, utf8Encode } from '@sigilo/core';
+import { generateSignKeys, signRelayRequest, type SignKeys } from '@sigilo/core/v2';
 import { MAX_FRAME_BYTES, MAX_QUEUE_MESSAGES } from '../src/core.js';
 import { buildRelay } from '../src/node-server.js';
 
