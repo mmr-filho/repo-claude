@@ -24,9 +24,28 @@ Não medi quantos usuários uma máquina pequena suporta. Comece pequeno e acomp
 
 ## Passo a passo
 
+### 0. Contrate a VPS (se ainda não tem uma máquina)
+
+Uma VPS é um computador alugado que fica sempre ligado. Em qualquer provedor (DigitalOcean, Hetzner, Vultr, Contabo...):
+
+- **Sistema:** Ubuntu 24.04 LTS.
+- **Tamanho:** o menor plano (1 vCPU, 1 GB de RAM) funciona para começar. Se a construção da imagem falhar por falta de memória, escolha 2 GB.
+- **Acesso:** o provedor mostra o **IP** da máquina e a senha do usuário `root` (ou deixa você cadastrar uma chave SSH).
+
 ### 1. Prepare a máquina
 
-Instale o Docker (no Ubuntu: <https://docs.docker.com/engine/install/ubuntu/>) e o git. Libere só a porta do SSH no firewall. **Não abra a porta 3000**: o servidor só deve ser alcançado pelo túnel.
+Conecte por SSH (no Windows 10/11 o PowerShell já tem o comando `ssh`) e instale o necessário:
+
+```bash
+ssh root@IP_DA_VPS
+
+apt update && apt install -y git ufw
+curl -fsSL https://get.docker.com | sh          # instalador oficial do Docker
+ufw allow OpenSSH && ufw --force enable          # firewall: só o SSH entra
+docker compose version                           # deve mostrar a versão
+```
+
+**Não abra a porta 3000**: o servidor só deve ser alcançado pelo túnel.
 
 ### 2. Crie o túnel na Cloudflare
 
