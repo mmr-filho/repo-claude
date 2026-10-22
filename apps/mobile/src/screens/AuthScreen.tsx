@@ -3,7 +3,7 @@ import { KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
 import { SigiloSession } from '@sigilo/core';
 import { Banner, Body, Button, Card, Field, H1, Muted, Row, Screen, errorMessage } from '../ui';
 import { normalizeHandle, normalizeServerUrl } from '../server-url';
-import { pinStoreFor, type Settings, type StoredAuth } from '../storage';
+import { localVaultStoreFor, pinStoreFor, type Settings, type StoredAuth } from '../storage';
 
 const MIN_PASSWORD = 10;
 const DEVICE = Platform.OS === 'ios' ? 'iPhone' : 'Android';
@@ -40,7 +40,7 @@ export function AuthScreen({
         throw new Error('Digite a senha');
       }
       setBusy(true);
-      const common = { baseUrl, handle: user, password, pinStore: pinStoreFor(user), deviceName: DEVICE };
+      const common = { baseUrl, handle: user, password, pinStore: pinStoreFor(user), localVault: localVaultStoreFor(user), deviceName: DEVICE };
       const session =
         mode === 'activate'
           ? await SigiloSession.activate({ ...common, activationCode: code })

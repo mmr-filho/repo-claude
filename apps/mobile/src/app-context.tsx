@@ -7,6 +7,8 @@ export interface AppContextValue {
   settings: Settings;
   updateSettings: (patch: Partial<Settings>) => void;
   lockNow: () => void;
+  /** Marca atividade do usuário (digitação conta para o bloqueio por inatividade). */
+  touch: () => void;
   logout: () => Promise<void>;
   /** Tempo real conectado (avisos de mensagem nova/lida chegam na hora). */
   online: boolean;

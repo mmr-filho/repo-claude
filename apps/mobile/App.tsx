@@ -13,6 +13,7 @@ import {
   clearAuth,
   loadAuth,
   loadSettings,
+  localVaultStoreFor,
   pinStoreFor,
   saveAuth,
   saveSettings,
@@ -64,6 +65,7 @@ function Root() {
 
   const signedOut = useCallback(
     async (message?: string) => {
+      await sessionRef.current?.forgetLocal();
       sessionRef.current?.lock();
       sessionRef.current?.stopRealtime();
       adopt(null);
@@ -81,6 +83,7 @@ function Root() {
           baseUrl: auth.baseUrl,
           token: auth.token,
           pinStore: pinStoreFor(auth.handle),
+          localVault: localVaultStoreFor(auth.handle),
           deviceName: DEVICE,
           onUnauthorized: () => void signedOut('Sua sessão terminou. Entre novamente.'),
         });
@@ -115,6 +118,10 @@ function Root() {
     settingsRef.current = next;
     setSettings(next);
     void saveSettings(next);
+  }, []);
+
+  const touch = useCallback(() => {
+    lastTouch.current = Date.now();
   }, []);
 
   const lockNow = useCallback(() => {
@@ -188,6 +195,7 @@ function Root() {
             settings,
             updateSettings,
             lockNow,
+            touch,
             logout,
             online,
             subscribe: (h) => {
@@ -196,7 +204,7 @@ function Root() {
             },
           }
         : null,
-    [session, settings, updateSettings, lockNow, logout, online],
+    [session, settings, updateSettings, lockNow, touch, logout, online],
   );
 
   let body;

@@ -11,7 +11,14 @@
     "node": ">=22.13"
   },
   "scripts": {
+    "dev:server": "npm run dev -w @sigilo/server",
+    "network:create": "npm run network:create -w @sigilo/server --",
+    "mobile": "npm run start -w @sigilo/mobile",
     "test": "npm test --workspaces --if-present",
+    "test:e2e": "node e2e/ui.e2e.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.56.1"
   }
 }

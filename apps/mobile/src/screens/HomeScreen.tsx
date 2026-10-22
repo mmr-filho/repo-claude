@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { FlatList, Pressable, RefreshControl, SectionList, Text, TextInput, View } from 'react-native';
+import { BackHandler, FlatList, Platform, Pressable, RefreshControl, SectionList, Text, TextInput, View } from 'react-native';
 import type { Contact, ConversationSummary } from '@sigilo/core';
 import { useApp, useServerEvents } from '../app-context';
 import { space, useTheme } from '../theme';
@@ -15,6 +15,17 @@ export function HomeScreen() {
   const t = useTheme();
   const [tab, setTab] = useState<Tab>('chats');
   const [chatWith, setChatWith] = useState<Contact | null>(null);
+
+  // Botão "voltar" do Android fecha a conversa em vez de sair do app.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (!chatWith) return false;
+      setChatWith(null);
+      return true;
+    });
+    return () => sub.remove();
+  }, [chatWith]);
 
   if (chatWith) return <ChatScreen peer={chatWith} onBack={() => setChatWith(null)} />;
 

@@ -45,7 +45,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     messageTtlMs: int(env.MESSAGE_TTL_HOURS, 24 * 7) * HOUR,
     activationTtlMs: int(env.ACTIVATION_TTL_HOURS, 72) * HOUR,
     inviteTtlMs: int(env.INVITE_TTL_HOURS, 24 * 7) * HOUR,
-    kdfDefaults: { alg: 'scrypt', N: int(env.KDF_N, 2 ** 15), r: 8, p: 1 },
+    kdfDefaults: { alg: 'scrypt', N: int(env.KDF_N, 2 ** 14), r: 8, p: 1 },
     minKdfN: int(env.MIN_KDF_N, 2 ** 14),
     maxLoginFailures: int(env.MAX_LOGIN_FAILURES, 8),
     lockMs: int(env.LOCK_MINUTES, 5) * 60 * 1000,

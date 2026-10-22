@@ -3,11 +3,15 @@ import { b64, randomUuid } from './bytes';
 import {
   DEFAULT_KDF_POLICY,
   DecryptError,
+  LOCAL_KDF_PARAMS,
   WrongPasswordError,
   assertKdfParams,
+  createLocalVault,
   deriveAccountKeys,
   generateIdentity,
+  jsScrypt,
   newKdfSalt,
+  openLocalVault,
   openMessage,
   safetyNumber,
   sealMessage,
@@ -17,6 +21,8 @@ import {
   type Identity,
   type KdfParams,
   type KdfPolicy,
+  type LocalVaultRecord,
+  type ScryptFn,
 } from './crypto';
 import { RealtimeClient, type WebSocketCtor } from './realtime';
 import type { AuthBundle, Contact, ConversationSummary, MeResponse, ServerEvent, UserDTO } from './types';
@@ -54,11 +60,36 @@ export class MemoryPinStore implements KeyPinStore {
   }
 }
 
+/** Onde guardar o cofre local (no app: Keychain/Keystore). Opcional: sem ele, todo desbloqueio usa o KDF forte. */
+export interface LocalVaultStore {
+  load(): Promise<LocalVaultRecord | null>;
+  save(record: LocalVaultRecord): Promise<void>;
+  clear(): Promise<void>;
+}
+
+export class MemoryLocalVaultStore implements LocalVaultStore {
+  record: LocalVaultRecord | null = null;
+  async load() {
+    return this.record;
+  }
+  async save(record: LocalVaultRecord) {
+    this.record = record;
+  }
+  async clear() {
+    this.record = null;
+  }
+}
+
 export interface SessionOptions {
   baseUrl: string;
   fetch?: ApiOptions['fetch'];
   WebSocket?: WebSocketCtor;
   pinStore?: KeyPinStore;
+  localVault?: LocalVaultStore;
+  /** Substitui o scrypt em JS puro (ex.: implementação nativa). */
+  scrypt?: ScryptFn;
+  /** Custo do KDF do cofre local; só mude em testes. */
+  localKdf?: typeof LOCAL_KDF_PARAMS;
   deviceName?: string;
   /** Substitui a política de parâmetros do KDF (usado em testes para scrypt barato). */
   kdfPolicy?: KdfPolicy;
@@ -116,7 +147,7 @@ export class SigiloSession {
     assertKdfParams(params, policy);
 
     const kdfSalt = newKdfSalt();
-    const keys = await deriveAccountKeys(opts.password, kdfSalt, params, policy);
+    const keys = await deriveAccountKeys(opts.password, kdfSalt, params, policy, opts.scrypt);
     const identity = generateIdentity();
     const bundle = await api.activate({
       handle: opts.handle,
@@ -130,6 +161,7 @@ export class SigiloSession {
     });
     const session = new SigiloSession(opts, bundle);
     session.identity = identity;
+    await session.rememberLocally(opts.password);
     return session;
   }
 
@@ -137,7 +169,7 @@ export class SigiloSession {
     const api = new ApiClient({ baseUrl: opts.baseUrl, fetch: opts.fetch });
     const policy = opts.kdfPolicy ?? DEFAULT_KDF_POLICY;
     const pre = await api.prelogin(opts.handle);
-    const keys = await deriveAccountKeys(opts.password, pre.kdfSalt, pre.kdfParams, policy);
+    const keys = await deriveAccountKeys(opts.password, pre.kdfSalt, pre.kdfParams, policy, opts.scrypt);
     const bundle = await api.login({ handle: opts.handle, authSecret: keys.authSecret, deviceName: opts.deviceName });
     const session = new SigiloSession(opts, bundle);
     try {
@@ -147,6 +179,7 @@ export class SigiloSession {
       await api.logout().catch(() => {});
       throw err;
     }
+    await session.rememberLocally(opts.password);
     return session;
   }
 
@@ -180,12 +213,44 @@ export class SigiloSession {
     return this.identity;
   }
 
+  private get scrypt(): ScryptFn {
+    return this.opts.scrypt ?? jsScrypt;
+  }
+
+  /** Grava o cofre local (cópia da chave protegida pela mesma senha com KDF barato). Falha aqui não é fatal. */
+  private async rememberLocally(password: string): Promise<void> {
+    const store = this.opts.localVault;
+    if (!store || !this.identity) return;
+    try {
+      await store.save(await createLocalVault(password, this.identity, this.opts.localKdf ?? LOCAL_KDF_PARAMS, this.scrypt));
+    } catch {
+      /* sem cofre local o próximo desbloqueio apenas será mais lento */
+    }
+  }
+
+  /** Esquece o cofre local (logout, sessão revogada). */
+  async forgetLocal(): Promise<void> {
+    await this.opts.localVault?.clear().catch(() => {});
+  }
+
+  /** Abre a chave com a senha: pelo cofre local, se houver e for desta conta; senão pelo envelope forte do servidor. */
+  private async openIdentity(password: string): Promise<{ identity: Identity; viaLocal: boolean }> {
+    const record = await this.opts.localVault?.load().catch(() => null);
+    if (record && record.pk === this.info.publicKey) {
+      // Senha errada falha aqui, rápido, sem cair no caminho lento.
+      return { identity: await openLocalVault(password, record, this.scrypt), viaLocal: true };
+    }
+    assertKdfParams(this.info.kdfParams, this.policy);
+    const keys = await deriveAccountKeys(password, this.info.kdfSalt, this.info.kdfParams, this.policy, this.opts.scrypt);
+    return { identity: unwrapSecretKey(keys.kek, this.info.publicKey, this.info.encryptedPrivateKey), viaLocal: false };
+  }
+
   /** Digite a senha para abrir o cofre. Lança WrongPasswordError se estiver errada. */
   async unlock(password: string): Promise<void> {
     if (this.identity) return;
-    assertKdfParams(this.info.kdfParams, this.policy);
-    const keys = await deriveAccountKeys(password, this.info.kdfSalt, this.info.kdfParams, this.policy);
-    this.identity = unwrapSecretKey(keys.kek, this.info.publicKey, this.info.encryptedPrivateKey);
+    const { identity, viaLocal } = await this.openIdentity(password);
+    this.identity = identity;
+    if (!viaLocal) await this.rememberLocally(password);
   }
 
   /** Apaga a chave privada da memória. As mensagens ficam ilegíveis até nova senha. */
@@ -198,18 +263,20 @@ export class SigiloSession {
   async logout(): Promise<void> {
     this.stopRealtime();
     this.lock();
+    await this.forgetLocal();
     await this.api.logout().catch(() => {});
   }
 
   async changePassword(current: string, next: string): Promise<void> {
     const identity = this.requireIdentity();
-    const currentKeys = await deriveAccountKeys(current, this.info.kdfSalt, this.info.kdfParams, this.policy);
-    // Confirma a senha atual localmente antes de mexer no servidor.
+    // Confirma a senha atual localmente antes de mexer no servidor (também fornece o segredo de login atual).
+    assertKdfParams(this.info.kdfParams, this.policy);
+    const currentKeys = await deriveAccountKeys(current, this.info.kdfSalt, this.info.kdfParams, this.policy, this.opts.scrypt);
     unwrapSecretKey(currentKeys.kek, this.info.publicKey, this.info.encryptedPrivateKey);
     const { kdfDefaults } = await this.api.serverInfo();
     assertKdfParams(kdfDefaults, this.policy);
     const salt = newKdfSalt();
-    const nextKeys = await deriveAccountKeys(next, salt, kdfDefaults, this.policy);
+    const nextKeys = await deriveAccountKeys(next, salt, kdfDefaults, this.policy, this.opts.scrypt);
     const wrapped = wrapSecretKey(nextKeys.kek, identity);
     await this.api.changePassword({
       currentAuthSecret: currentKeys.authSecret,
@@ -219,6 +286,7 @@ export class SigiloSession {
       newEncryptedPrivateKey: wrapped,
     });
     this.info = { ...this.info, kdfSalt: salt, kdfParams: kdfDefaults, encryptedPrivateKey: wrapped };
+    await this.rememberLocally(next);
   }
 
   // ───────── tempo real ─────────

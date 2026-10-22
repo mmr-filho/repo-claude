@@ -104,6 +104,7 @@ export function Field({ label, error, ...input }: { label: string; error?: strin
         placeholderTextColor={t.muted}
         autoCapitalize="none"
         autoCorrect={false}
+        accessibilityLabel={label}
         {...input}
         style={[
           {

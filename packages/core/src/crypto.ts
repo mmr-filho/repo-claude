@@ -44,8 +44,12 @@ export interface KdfParams {
   p: number;
 }
 
-/** N=2^15, r=8 => ~32 MiB de memória. Ajustável por conta: os parâmetros são gravados junto com o salt. */
-export const DEFAULT_KDF_PARAMS: KdfParams = { alg: 'scrypt', N: 2 ** 15, r: 8, p: 1 };
+/**
+ * N=2^14, r=8 => 16 MiB. Medido em JS puro no interpretador Hermes (sem JIT): ~3 s por derivação numa CPU de
+ * servidor; celulares intermediários costumam ser 2-4x mais lentos. É pago só no login/ativação/troca de senha;
+ * o dia a dia usa o cofre local (abaixo). Os parâmetros ficam gravados por conta, então podem ser elevados.
+ */
+export const DEFAULT_KDF_PARAMS: KdfParams = { alg: 'scrypt', N: 2 ** 14, r: 8, p: 1 };
 
 /** Impede que um servidor malicioso force parâmetros fracos (ou absurdos) no cliente. */
 export interface KdfPolicy {
@@ -73,21 +77,24 @@ export function newKdfSalt(): string {
   return b64.encode(randomBytes(16));
 }
 
+/** Implementação de scrypt. Em produção pode ser trocada por uma nativa (JSI) sem mudar o protocolo. */
+export type ScryptFn = (password: Bytes, salt: Bytes, opts: { N: number; r: number; p: number; dkLen: number }) => Promise<Bytes>;
+
+export const jsScrypt: ScryptFn = (password, salt, opts) => scryptAsync(password, salt, { ...opts, asyncTick: 10 });
+
+function normalizePassword(password: string): Bytes {
+  return utf8Encode(typeof password.normalize === 'function' ? password.normalize('NFKC') : password);
+}
+
 export async function deriveAccountKeys(
   password: string,
   saltB64: string,
   params: KdfParams,
   policy: KdfPolicy = DEFAULT_KDF_POLICY,
+  scrypt: ScryptFn = jsScrypt,
 ): Promise<AccountKeys> {
   assertKdfParams(params, policy);
-  const normalized = typeof password.normalize === 'function' ? password.normalize('NFKC') : password;
-  const mk = await scryptAsync(utf8Encode(normalized), b64.decode(saltB64), {
-    N: params.N,
-    r: params.r,
-    p: params.p,
-    dkLen: 32,
-    asyncTick: 10,
-  });
+  const mk = await scrypt(normalizePassword(password), b64.decode(saltB64), { N: params.N, r: params.r, p: params.p, dkLen: 32 });
   const kek = hkdf(sha256, mk, undefined, utf8Encode(`${V}/kek`), 32);
   const auth = hkdf(sha256, mk, undefined, utf8Encode(`${V}/auth`), 32);
   wipe(mk);
@@ -144,6 +151,54 @@ export function unwrapSecretKey(kek: Bytes, publicKeyB64: string, wrapped: strin
     throw new WrongPasswordError();
   }
   return { secretKey, publicKey };
+}
+
+// ───────────────────────── Cofre local (desbloqueio rápido) ─────────────────────────
+
+/**
+ * Segundo envelope da chave privada, guardado no armazenamento seguro do aparelho (Keychain/Keystore) e
+ * protegido pela MESMA senha com um KDF barato. Serve só para desbloquear rápido no dia a dia: o envelope
+ * forte continua sendo o do servidor. Quem não tem a senha não abre nenhum dos dois.
+ */
+export const LOCAL_KDF_PARAMS: KdfParams = { alg: 'scrypt', N: 2 ** 12, r: 8, p: 1 };
+
+export interface LocalVaultRecord {
+  v: 1;
+  /** Chave pública a que este cofre pertence (descarta cofres de contas refeitas). */
+  pk: string;
+  salt: string;
+  params: KdfParams;
+  wrapped: string;
+}
+
+async function localKek(password: string, saltB64: string, params: KdfParams, scrypt: ScryptFn): Promise<Bytes> {
+  const mk = await scrypt(normalizePassword(password), b64.decode(saltB64), { N: params.N, r: params.r, p: params.p, dkLen: 32 });
+  const kek = hkdf(sha256, mk, undefined, utf8Encode(`${V}/local-kek`), 32);
+  wipe(mk);
+  return kek;
+}
+
+export async function createLocalVault(
+  password: string,
+  identity: Identity,
+  params: KdfParams = LOCAL_KDF_PARAMS,
+  scrypt: ScryptFn = jsScrypt,
+): Promise<LocalVaultRecord> {
+  const salt = newKdfSalt();
+  const kek = await localKek(password, salt, params, scrypt);
+  const wrapped = wrapSecretKey(kek, identity);
+  wipe(kek);
+  return { v: 1, pk: b64.encode(identity.publicKey), salt, params, wrapped };
+}
+
+/** Lança WrongPasswordError se a senha não abre o cofre local. */
+export async function openLocalVault(password: string, record: LocalVaultRecord, scrypt: ScryptFn = jsScrypt): Promise<Identity> {
+  const kek = await localKek(password, record.salt, record.params, scrypt);
+  try {
+    return unwrapSecretKey(kek, record.pk, record.wrapped);
+  } finally {
+    wipe(kek);
+  }
 }
 
 // ───────────────────────── Mensagens ─────────────────────────

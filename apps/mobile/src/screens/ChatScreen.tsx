@@ -14,7 +14,7 @@ interface Line extends ChatMessage {
 }
 
 export function ChatScreen({ peer, onBack }: { peer: Contact; onBack: () => void }) {
-  const { session } = useApp();
+  const { session, touch } = useApp();
   const t = useTheme();
   usePreventScreenCapture(); // bloqueia captura de tela (Android) enquanto o texto está visível
 
@@ -153,7 +153,10 @@ export function ChatScreen({ peer, onBack }: { peer: Contact; onBack: () => void
         <Row style={{ padding: space.sm, borderTopWidth: 1, borderTopColor: t.border, backgroundColor: t.surface, alignItems: 'flex-end' }}>
           <TextInput
             value={draft}
-            onChangeText={setDraft}
+            onChangeText={(v) => {
+              touch();
+              setDraft(v);
+            }}
             placeholder="Mensagem"
             placeholderTextColor={t.muted}
             multiline
