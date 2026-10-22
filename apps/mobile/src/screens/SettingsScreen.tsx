@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useApp } from '../app-context';
+import { biometricAvailable, clearBiometricKey, saveBiometricKey } from '../biometric';
+import { MIN_PASSWORD } from '../config';
+import { passwordProblem, weakPasswordHint } from '../password';
 import { errorText } from '../errors';
 import { space, useTheme } from '../theme';
 import { Banner, Body, Button, Card, Field, H1, H2, Muted, Row, Sheet } from '../ui';
@@ -34,26 +37,64 @@ export function SettingsScreen() {
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState<string>();
+  const [enablingBio, setEnablingBio] = useState(false);
+  const [bioPassword, setBioPassword] = useState('');
+  const [bioError, setBioError] = useState<string>();
+  const [bioBusy, setBioBusy] = useState(false);
+  const canBiometric = biometricAvailable();
   const me = node.me;
 
   async function changePassword() {
     setError(undefined);
-    if (next.length < 10) return setError('A nova senha precisa ter pelo menos 10 caracteres');
-    if (next !== confirm) return setError('As senhas não conferem');
+    const problem = passwordProblem(next, confirm);
+    if (problem) return setError(problem);
     setBusy(true);
     try {
       await node.changePassword(current, next);
+      let msg = 'Senha alterada.';
+      if (settings.biometric) {
+        // A chave guardada na digital era da senha antiga: refaz com a nova.
+        try {
+          await saveBiometricKey(await node.exportVaultKey(next));
+        } catch {
+          await clearBiometricKey();
+          updateSettings({ biometric: false });
+          msg = 'Senha alterada. A digital foi desativada: ative de novo nos ajustes.';
+        }
+      }
       setChanging(false);
       setCurrent('');
       setNext('');
       setConfirm('');
-      setDone(true);
+      setDone(msg);
     } catch (err) {
       setError(errorText(err));
     } finally {
       setBusy(false);
     }
+  }
+
+  async function enableBiometric() {
+    setBioError(undefined);
+    setBioBusy(true);
+    try {
+      await saveBiometricKey(await node.exportVaultKey(bioPassword));
+      updateSettings({ biometric: true });
+      setEnablingBio(false);
+      setBioPassword('');
+      setDone('Digital ativada. Na próxima vez, toque no sensor para destrancar.');
+    } catch (err) {
+      setBioError(errorText(err));
+    } finally {
+      setBioBusy(false);
+    }
+  }
+
+  async function disableBiometric() {
+    await clearBiometricKey();
+    updateSettings({ biometric: false });
+    setDone('Digital desativada. Use a senha para destrancar.');
   }
 
   const Choice = ({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) => (
@@ -75,7 +116,7 @@ export function SettingsScreen() {
         {me ? <Muted>Certificado válido até {new Date(me.exp).toLocaleDateString('pt-BR')} (renova sozinho)</Muted> : null}
         <Muted>Relé: {node.profile.relay.replace(/^https?:\/\//, '')}</Muted>
       </Card>
-      {done ? <Banner>Senha alterada.</Banner> : null}
+      {done ? <Banner>{done}</Banner> : null}
 
       <Button title="🔒 Trancar agora" onPress={lockNow} />
 
@@ -105,19 +146,44 @@ export function SettingsScreen() {
         </Row>
       </Card>
 
+      {canBiometric ? (
+        <Card>
+          <H2>Destravar com a digital</H2>
+          <Muted>
+            {settings.biometric
+              ? 'Ativada. A chave do cofre fica protegida pelo hardware do aparelho e só é liberada com a sua biometria. A senha continua valendo.'
+              : 'Toque no sensor em vez de digitar a senha. A chave do cofre fica protegida pelo hardware do aparelho, e a senha continua valendo.'}
+          </Muted>
+          {settings.biometric ? (
+            <Button title="Desativar" variant="secondary" onPress={() => void disableBiometric()} />
+          ) : (
+            <Button title="Ativar" onPress={() => { setDone(undefined); setBioError(undefined); setEnablingBio(true); }} />
+          )}
+        </Card>
+      ) : null}
+
       <Card>
         <H2>Segurança</H2>
         <Muted>
           Sua senha protege as chaves guardadas neste aparelho e não existe em nenhum outro lugar. Mensagens lidas são apagadas do relé; o texto só existe na memória enquanto a conversa está aberta.
         </Muted>
-        <Button title="Alterar senha" variant="secondary" onPress={() => { setDone(false); setChanging(true); }} />
+        <Button title="Alterar senha" variant="secondary" onPress={() => { setDone(undefined); setChanging(true); }} />
         <Button title="Apagar identidade deste aparelho" variant="ghost" onPress={() => setForgetting(true)} />
       </Card>
+
+      <Sheet visible={enablingBio} onClose={() => setEnablingBio(false)} title="Ativar a digital">
+        <Body>Digite a sua senha uma vez para confirmar. Depois o sistema pedirá a sua biometria.</Body>
+        <Field label="Senha" value={bioPassword} onChangeText={setBioPassword} secureTextEntry />
+        {bioError ? <Banner kind="error">{bioError}</Banner> : null}
+        <Button title="Ativar" onPress={enableBiometric} busy={bioBusy} disabled={!bioPassword} />
+      </Sheet>
 
       <Sheet visible={changing} onClose={() => setChanging(false)} title="Alterar senha">
         <Field label="Senha atual" value={current} onChangeText={setCurrent} secureTextEntry />
         <Field label="Nova senha" value={next} onChangeText={setNext} secureTextEntry />
         <Field label="Repita a nova senha" value={confirm} onChangeText={setConfirm} secureTextEntry />
+        <Muted>Mínimo de {MIN_PASSWORD} caracteres.</Muted>
+        {weakPasswordHint(next) ? <Banner kind="warn">{weakPasswordHint(next)}</Banner> : null}
         {error ? <Banner kind="error">{error}</Banner> : null}
         <Button title="Alterar" onPress={changePassword} busy={busy} disabled={!current || !next} />
       </Sheet>

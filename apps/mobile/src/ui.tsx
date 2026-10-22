@@ -224,3 +224,16 @@ export function confirmAction(title: string, message: string, confirmLabel: stri
     { text: confirmLabel, style: destructive ? 'destructive' : 'default', onPress: onConfirm },
   ]);
 }
+
+/** Caixa de seleção simples (funciona igual no celular e no navegador dos testes). */
+export function Check({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+  const t = useTheme();
+  return (
+    <Pressable accessibilityRole="checkbox" accessibilityState={{ checked }} accessibilityLabel={label} onPress={() => onChange(!checked)} style={{ paddingVertical: 6 }}>
+      <Row>
+        <Text style={{ color: checked ? t.primary : t.muted, fontSize: 22 }}>{checked ? '☑' : '☐'}</Text>
+        <Text style={{ color: t.text, fontSize: 15, flex: 1 }}>{label}</Text>
+      </Row>
+    </Pressable>
+  );
+}

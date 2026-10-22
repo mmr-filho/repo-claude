@@ -1,37 +1,36 @@
 import { useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
+import { KeyboardAvoidingView, ScrollView, View } from 'react-native';
 import { LocalNode, decodeCode, type Invite, type NodeDeps } from '@sigilo/core/v2';
+import { biometricAvailable, saveBiometricKey } from '../biometric';
 import { ScanSheet } from '../components/ScanSheet';
+import { MIN_PASSWORD, RELAY_URL } from '../config';
 import { errorText } from '../errors';
+import { passwordProblem, weakPasswordHint } from '../password';
 import { normalizeServerUrl } from '../server-url';
-import type { Settings } from '../storage';
-import { Banner, Body, Button, Card, Field, H1, H2, Muted, Row, Screen } from '../ui';
+import { Banner, Body, Button, Card, Check, Field, H1, H2, Muted, Row, Screen } from '../ui';
 
-const MIN_PASSWORD = 10;
 type Mode = 'choose' | 'join' | 'create';
 
 /** Primeiro uso: entrar numa rede com um convite do administrador, ou criar uma rede (sendo o administrador). */
-export function WelcomeScreen({ deps, settings, onNode }: { deps: NodeDeps; settings: Settings; onNode: (node: LocalNode) => void }) {
+export function WelcomeScreen({ deps, onNode }: { deps: NodeDeps; onNode: (node: LocalNode, opts: { biometric: boolean }) => void }) {
   const [mode, setMode] = useState<Mode>('choose');
   const [invite, setInvite] = useState('');
   const [name, setName] = useState('');
   const [networkName, setNetworkName] = useState('');
-  const [relay, setRelay] = useState(settings.lastRelay);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const canBiometric = biometricAvailable();
+  const [useBiometric, setUseBiometric] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [scanning, setScanning] = useState(false);
-
-  function checkPassword() {
-    if (password.length < MIN_PASSWORD) throw new Error(`A senha precisa ter pelo menos ${MIN_PASSWORD} caracteres`);
-    if (password !== confirm) throw new Error('As senhas não conferem');
-  }
+  const hint = weakPasswordHint(password);
 
   async function submit() {
     setError(undefined);
     try {
-      checkPassword();
+      const problem = passwordProblem(password, confirm);
+      if (problem) throw new Error(problem);
       let node: LocalNode;
       if (mode === 'join') {
         const code = invite.trim();
@@ -42,11 +41,22 @@ export function WelcomeScreen({ deps, settings, onNode }: { deps: NodeDeps; sett
       } else {
         if (name.trim().length < 2) throw new Error('Informe o seu nome');
         if (networkName.trim().length < 2) throw new Error('Informe o nome da rede');
-        const relayUrl = normalizeServerUrl(relay);
+        if (!RELAY_URL) throw new Error('Este app ainda não tem um relé configurado, então não dá para criar uma rede por aqui.');
+        const relayUrl = normalizeServerUrl(RELAY_URL);
         setBusy(true);
         node = await LocalNode.createNetwork(deps, { password, adminName: name.trim(), networkName: networkName.trim(), relayUrl });
       }
-      onNode(node);
+      // Digital: guarda a chave do cofre no armazenamento protegido pelo hardware. Se a pessoa cancelar, segue só com a senha.
+      let biometric = false;
+      if (canBiometric && useBiometric) {
+        try {
+          await saveBiometricKey(await node.exportVaultKey(password));
+          biometric = true;
+        } catch {
+          biometric = false;
+        }
+      }
+      onNode(node, { biometric });
     } catch (err) {
       setError(err instanceof Error && /tipo errado|JSON|Unexpected|base64/i.test(err.message) ? 'Convite inválido. Confira se copiou o código inteiro.' : errorText(err));
       setBusy(false);
@@ -57,6 +67,9 @@ export function WelcomeScreen({ deps, settings, onNode }: { deps: NodeDeps; sett
     <>
       <Field label="Escolha uma senha" value={password} onChangeText={setPassword} secureTextEntry textContentType="newPassword" />
       <Field label="Repita a senha" value={confirm} onChangeText={setConfirm} secureTextEntry textContentType="newPassword" />
+      <Muted>Mínimo de {MIN_PASSWORD} caracteres.</Muted>
+      {hint ? <Banner kind="warn">{hint}</Banner> : null}
+      {canBiometric ? <Check label="Destravar com a digital (a senha continua valendo)" checked={useBiometric} onChange={setUseBiometric} /> : null}
       <Banner kind="warn">
         Esta senha protege as suas chaves e não existe em nenhum outro lugar. Se você a esquecer, não há como recuperar: será preciso um convite novo e as conversas pendentes se perdem.
       </Banner>
@@ -82,7 +95,8 @@ export function WelcomeScreen({ deps, settings, onNode }: { deps: NodeDeps; sett
               <Card>
                 <H2>Vou administrar uma rede</H2>
                 <Muted>Você cria a rede, convida as pessoas e decide com quais outras redes ela se conecta. A chave da rede fica só neste aparelho.</Muted>
-                <Button title="Criar uma rede" variant="secondary" onPress={() => setMode('create')} />
+                {!RELAY_URL ? <Banner kind="warn">Este app ainda não tem um relé configurado. Criar rede fica indisponível até lá; entrar com convite funciona.</Banner> : null}
+                <Button title="Criar uma rede" variant="secondary" onPress={() => setMode('create')} disabled={!RELAY_URL} />
               </Card>
             </>
           ) : null}
@@ -103,8 +117,6 @@ export function WelcomeScreen({ deps, settings, onNode }: { deps: NodeDeps; sett
               <H2>Criar uma rede</H2>
               <Field label="Seu nome" value={name} onChangeText={setName} autoCapitalize="words" />
               <Field label="Nome da rede" value={networkName} onChangeText={setNetworkName} autoCapitalize="words" />
-              <Field label="Endereço do relé" value={relay} onChangeText={setRelay} placeholder="https://relay.suaorganizacao.com" keyboardType="url" />
-              <Muted>O relé é o único servidor: só carrega mensagens já cifradas. Veja docs/IMPLANTACAO.md para colocá-lo no ar.</Muted>
               {passwordFields}
             </Card>
           ) : null}

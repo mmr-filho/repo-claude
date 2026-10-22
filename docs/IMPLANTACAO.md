@@ -7,7 +7,7 @@ Há dois servidores neste repositório:
 | **Relé v2** | **O app atual.** Sem contas, certificados do administrador | **Cloudflare Workers** (sem VPS) ou Node | Seção "Relé do v2 no Cloudflare Workers", logo abaixo |
 | **Servidor v1** | **Legado**: o app não se conecta mais a ele | VPS + Docker + Cloudflare Tunnel | A partir de "Servidor v1 (legado)" |
 
-O endereço do relé é informado ao criar a rede no app (e vai dentro de cada convite): por isso, antes de gerar convites, o relé precisa estar no ar num endereço que os celulares alcancem.
+O endereço do relé **não é digitado pelo usuário**: fica gravado dentro do app (`BUILT_IN_RELAY_URL` em `apps/mobile/src/config.ts`, ou a variável `EXPO_PUBLIC_RELAY_URL` ao gerar o app) e vai dentro de cada convite, para quem entra. Por isso, **assim que o relé estiver no ar, coloque o endereço dele numa dessas duas formas e gere o app de novo**; antes disso, o botão "Criar uma rede" fica desabilitado.
 
 ---
 

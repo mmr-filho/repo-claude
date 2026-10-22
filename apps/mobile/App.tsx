@@ -5,6 +5,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { enableAppSwitcherProtectionAsync } from 'expo-screen-capture';
 import { LocalNode, LockedError, RelayClient, type NodeDeps, type PollResult } from '@sigilo/core/v2';
 import { AppContext, type AppContextValue } from './src/app-context';
+import { biometricAvailable, clearBiometricKey } from './src/biometric';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { LockScreen } from './src/screens/LockScreen';
 import { PendingScreen } from './src/screens/PendingScreen';
@@ -99,10 +100,12 @@ function Root() {
     goto('boot');
     await n?.lock();
     await LocalNode.forget(deps);
+    await clearBiometricKey();
+    updateSettings({ biometric: false });
     setUnread({});
     adopt(null);
     goto('welcome');
-  }, [deps, adopt, goto]);
+  }, [deps, adopt, goto, updateSettings]);
 
   // ───────── consulta ao relé ─────────
   const pollNow = useCallback(async () => {
@@ -202,15 +205,26 @@ function Root() {
     body = (
       <WelcomeScreen
         deps={deps}
-        settings={settings}
-        onNode={(n) => {
+        onNode={(n, opts) => {
+          updateSettings({ biometric: opts.biometric });
           adopt(n);
           enter(n);
         }}
       />
     );
   } else if (phase === 'locked' && node) {
-    body = <LockScreen node={node} onUnlocked={() => enter(node)} onForget={forgetDevice} />;
+    body = (
+      <LockScreen
+        node={node}
+        biometric={settings.biometric && biometricAvailable()}
+        onBiometricInvalid={() => {
+          void clearBiometricKey();
+          updateSettings({ biometric: false });
+        }}
+        onUnlocked={() => enter(node)}
+        onForget={forgetDevice}
+      />
+    );
   } else if (phase === 'pending' && ctx) {
     body = (
       <AppContext.Provider value={ctx}>

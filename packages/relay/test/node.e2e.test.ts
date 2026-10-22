@@ -1,9 +1,10 @@
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { b64, utf8Encode, WrongPasswordError } from '@sigilo/core';
+import { b64, jsScrypt, utf8Encode, WrongPasswordError } from '@sigilo/core';
 import {
   LocalNode,
   LockedError,
+  StaleVaultKeyError,
   MemoryLocalStore,
   PayloadType,
   RelayClient,
@@ -14,7 +15,7 @@ import {
   sealFrame,
   type NodeDeps,
 } from '@sigilo/core/v2';
-import { enroll, makeDeps, newNetwork, recordingFetch, settle, startRelay, type Clock } from './harness.js';
+import { KDF, enroll, makeDeps, newNetwork, recordingFetch, settle, startRelay, type Clock } from './harness.js';
 
 type Relay = Awaited<ReturnType<typeof startRelay>>;
 
@@ -510,5 +511,75 @@ describe('v2: o que a interface exige', () => {
     await bruno.node.openConversation(ana.node.myBox);
     await ana.node.poll();
     assert.deepEqual(ana.node.awaitingRead(), {});
+  });
+});
+
+
+describe('v2: destravar com a digital (chave do cofre guardada no hardware)', () => {
+  let relay: Relay;
+  before(async () => {
+    relay = await startRelay();
+  });
+  after(() => relay.close());
+
+  it('com a chave do cofre destrava sem senha e sem refazer o scrypt', async () => {
+    const admin = await newNetwork(relay.url, 'Digital', 'Adm');
+    const calls: number[] = [];
+    const deps = makeDeps();
+    deps.vault = { ...KDF, scrypt: (pw, salt, o) => (calls.push(o.N), jsScrypt(pw, salt, o)) };
+    const invite = await admin.createInvite('Ana');
+    const ana = await LocalNode.join(deps, { password: 'senha-ana-123', inviteCode: invite.code });
+    await admin.poll();
+    await ana.poll();
+    assert.ok(ana.isEnrolled);
+
+    // O app pede a chave (uma vez, com a senha) e a guarda no armazenamento protegido pela digital.
+    await assert.rejects(() => ana.exportVaultKey('senha-errada-1'), WrongPasswordError);
+    const key = await ana.exportVaultKey('senha-ana-123');
+    assert.equal(key.length, 32);
+    const boxBefore = ana.myBox;
+    await ana.lock();
+
+    // Depois, o toque na digital libera a chave: nenhum scrypt, nenhuma senha.
+    const reopened = (await LocalNode.load(deps))!;
+    calls.length = 0;
+    await reopened.unlockWithKey(key);
+    assert.equal(calls.length, 0, 'destravar com a chave não deriva a senha de novo');
+    assert.equal(reopened.isUnlocked, true);
+    assert.equal(reopened.myBox, boxBefore);
+    assert.ok(reopened.isEnrolled);
+  });
+
+  it('chave errada ou desatualizada é recusada e o cofre continua trancado', async () => {
+    const admin = await newNetwork(relay.url, 'DigitalVelha', 'Adm');
+    const ana = await enroll(admin, 'Ana');
+    const oldKey = await ana.node.exportVaultKey(ana.password);
+    await ana.node.changePassword(ana.password, 'nova-senha-forte');
+    await ana.node.lock();
+    const reopened = (await LocalNode.load(ana.deps))!;
+    await assert.rejects(() => reopened.unlockWithKey(oldKey), StaleVaultKeyError);
+    await assert.rejects(() => reopened.unlockWithKey(new Uint8Array(32)), StaleVaultKeyError);
+    assert.equal(reopened.isUnlocked, false);
+    // Com a senha nova (e a chave nova) volta a funcionar.
+    const newKey = await (async () => {
+      await reopened.unlock('nova-senha-forte');
+      const k = await reopened.exportVaultKey('nova-senha-forte');
+      await reopened.lock();
+      return k;
+    })();
+    await reopened.unlockWithKey(newKey);
+    assert.equal(reopened.isUnlocked, true);
+  });
+
+  it('destravar enquanto o trancamento termina não perde nem apaga as chaves recém-carregadas', async () => {
+    const admin = await newNetwork(relay.url, 'Corrida', 'Adm');
+    const ana = await enroll(admin, 'Ana');
+    const key = await ana.node.exportVaultKey(ana.password);
+    const locking = ana.node.lock();
+    const unlocking = ana.node.unlockWithKey(key); // chamado antes de o trancamento acabar
+    await Promise.all([locking, unlocking]);
+    assert.equal(ana.node.isUnlocked, true);
+    assert.ok(ana.node.myBox); // as chaves continuam na memória
+    await ana.node.poll();
   });
 });

@@ -19,6 +19,14 @@ import {
  * sem a senha, nem o dono nem ninguém abre. Perdeu o aparelho ou a senha = o administrador emite uma identidade nova.
  */
 
+/** A chave guardada (ex.: protegida pela digital) não abre mais o cofre: a senha mudou ou o cofre foi refeito. */
+export class StaleVaultKeyError extends Error {
+  constructor() {
+    super('A chave guardada não abre mais o cofre');
+    this.name = 'StaleVaultKeyError';
+  }
+}
+
 export interface VaultSecrets {
   /** Chave secreta X25519 (base64url). */
   box: string;
@@ -63,9 +71,15 @@ export async function createVault(password: string, secrets: VaultSecrets, o: Va
   return { v: 1, salt, params, wrapped: JSON.stringify({ n: b64.encode(nonce), c: b64.encode(sealed) }) };
 }
 
-/** Lança WrongPasswordError se a senha estiver errada. */
-export async function openVault(password: string, record: VaultRecord, o: VaultOptions = {}): Promise<VaultSecrets> {
-  const key = await vaultKey(password, record.salt, record.params, o);
+/**
+ * Deriva a chave do cofre a partir da senha (o passo lento). Quem a guarda para destravar sem senha
+ * (digital) PRECISA colocá-la só em armazenamento protegido pelo hardware do aparelho.
+ */
+export async function deriveVaultKey(password: string, record: VaultRecord, o: VaultOptions = {}): Promise<Bytes> {
+  return vaultKey(password, record.salt, record.params, o);
+}
+
+function decryptVault(key: Bytes, record: VaultRecord): VaultSecrets | undefined {
   try {
     const w = JSON.parse(record.wrapped) as { n: string; c: string };
     const plain = xchacha20poly1305(key, b64.decode(w.n), AAD).decrypt(b64.decode(w.c));
@@ -73,7 +87,24 @@ export async function openVault(password: string, record: VaultRecord, o: VaultO
     wipe(plain);
     return secrets;
   } catch {
-    throw new WrongPasswordError();
+    return undefined;
+  }
+}
+
+/** Abre o cofre com a chave já derivada (sem a senha e sem o scrypt). Lança StaleVaultKeyError se não servir. */
+export function openVaultWithKey(key: Bytes, record: VaultRecord): VaultSecrets {
+  const secrets = decryptVault(key, record);
+  if (!secrets) throw new StaleVaultKeyError();
+  return secrets;
+}
+
+/** Lança WrongPasswordError se a senha estiver errada. */
+export async function openVault(password: string, record: VaultRecord, o: VaultOptions = {}): Promise<VaultSecrets> {
+  const key = await deriveVaultKey(password, record, o);
+  try {
+    const secrets = decryptVault(key, record);
+    if (!secrets) throw new WrongPasswordError();
+    return secrets;
   } finally {
     wipe(key);
   }

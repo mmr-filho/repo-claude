@@ -24,7 +24,11 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "allowBackup": false
+      "allowBackup": false,
+      "permissions": [
+        "USE_BIOMETRIC",
+        "USE_FINGERPRINT"
+      ]
     },
     "plugins": [
       [
@@ -32,6 +36,12 @@
         {
           "cameraPermission": "O Sigilo usa a câmera só para ler QR codes de convite e de conexão entre redes.",
           "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": "O Sigilo usa o Face ID para destrancar o cofre sem digitar a senha."
         }
       ]
     ]

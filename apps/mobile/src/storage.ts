@@ -37,14 +37,15 @@ export interface Settings {
   idleLockMinutes: number;
   /** De quanto em quanto tempo consulta o relé com o app aberto. Mais espaçado = menos pedidos (e menos custo no relé). */
   pollSeconds: number;
-  lastRelay: string;
+  /** Destravar com a digital está ativado (a chave fica no armazenamento protegido pelo hardware). */
+  biometric: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   autoLockSeconds: 0,
   idleLockMinutes: 5,
   pollSeconds: 10,
-  lastRelay: process.env.EXPO_PUBLIC_RELAY_URL ?? '',
+  biometric: false,
 };
 
 /** Só para os testes de interface: acelera a consulta. Em produção fica indefinido. */

@@ -28,7 +28,7 @@ step('compilando o relé e exportando o app para web');
 run('npm', ['run', 'build', '-w', '@sigilo/relay']);
 const DIST = path.join(WORK, 'web');
 // POLL_MS curto: no teste as mensagens precisam chegar em menos de um segundo.
-run('npx', ['expo', 'export', '--platform', 'web', '--output-dir', DIST], { SIGILO_E2E: '1', CI: '1', EXPO_OFFLINE: '1', EXPO_NO_TELEMETRY: '1', EXPO_PUBLIC_POLL_MS: '600' }, path.join(ROOT, 'apps/mobile'));
+run('npx', ['expo', 'export', '--platform', 'web', '--output-dir', DIST], { SIGILO_E2E: '1', CI: '1', EXPO_OFFLINE: '1', EXPO_NO_TELEMETRY: '1', EXPO_PUBLIC_POLL_MS: '600', EXPO_PUBLIC_RELAY_URL: BASE }, path.join(ROOT, 'apps/mobile'));
 
 const relay = spawn('node', [path.join(ROOT, 'packages/relay/dist/node-server.js')], {
   cwd: path.join(ROOT, 'packages/relay'),
@@ -42,9 +42,10 @@ const executablePath = process.env.CHROMIUM_PATH ?? (fs.existsSync('/opt/pw-brow
 const browser = await chromium.launch({ executablePath, args: ['--no-sandbox'] });
 const errors = [];
 
-async function newUser(name, viewport = { width: 390, height: 844 }) {
+async function newUser(name, viewport = { width: 390, height: 844 }, { biometric = false } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 2 });
   const page = await ctx.newPage();
+  if (biometric) await page.addInitScript(() => window.localStorage.setItem('e2e.bioAvailable', '1'));
   page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
   page.on('console', (m) => m.type() === 'error' && !/favicon|Failed to load resource/.test(m.text()) && errors.push(`${name} console: ${m.text()}`));
   await page.goto(BASE);
@@ -58,13 +59,12 @@ const tap = (page, t) => text(page, t).first().click();
 const PASSWORD = (n) => `senha-forte-${n}`;
 const CODE_RE = /sigilo2-(convite|rede):[A-Za-z0-9_-]+/;
 
-async function createNetwork(page, { name, network }, shotName) {
-  await tap(page, 'Criar uma rede');
+async function createNetwork(page, { name, network, password = PASSWORD(name) }, shotName) {
+  if (!(await page.getByLabel('Seu nome').count())) await tap(page, 'Criar uma rede');
   await label(page, 'Seu nome').fill(name);
   await label(page, 'Nome da rede').fill(network);
-  await label(page, 'Endereço do relé').fill(BASE);
-  await label(page, 'Escolha uma senha').fill(PASSWORD(name));
-  await label(page, 'Repita a senha').fill(PASSWORD(name));
+  await label(page, 'Escolha uma senha').fill(password);
+  await label(page, 'Repita a senha').fill(password);
   if (shotName) await shot(page, shotName);
   await tap(page, 'Criar rede');
   await text(page, 'Conversas').first().waitFor({ timeout: 30000 });
@@ -102,6 +102,18 @@ try {
   step('a administradora cria a rede e convida duas pessoas');
   const marta = await newUser('marta');
   await shot(marta, 'boas-vindas');
+  // O endereço do relé não é pedido: vem de dentro do app.
+  await tap(marta, 'Criar uma rede');
+  assert.equal(await marta.getByLabel('Endereço do relé').count(), 0, 'o cadastro não deve pedir o endereço do relé');
+  // Senha mínima de 6 caracteres: 5 é recusada.
+  await label(marta, 'Seu nome').fill('Marta');
+  await label(marta, 'Nome da rede').fill('UniRG');
+  await label(marta, 'Escolha uma senha').fill('ab12c');
+  await label(marta, 'Repita a senha').fill('ab12c');
+  await tap(marta, 'Criar rede');
+  await text(marta, 'A senha precisa ter pelo menos 6 caracteres').waitFor();
+  await shot(marta, 'senha-curta-recusada');
+  await marta.reload();
   await createNetwork(marta, { name: 'Marta', network: 'UniRG' }, 'criar-rede-formulario');
   await shot(marta, 'rede-criada-conversas-vazio');
   const anaCode = await invite(marta, 'Ana Souza');
@@ -109,7 +121,7 @@ try {
   const brunoCode = await invite(marta, 'Bruno Lima');
 
   step('Ana e Bruno entram com o convite; a aprovação vem sozinha quando a administradora está com o app aberto');
-  const ana = await newUser('ana');
+  const ana = await newUser('ana', undefined, { biometric: true });
   await join(ana, anaCode, 'Ana', 'ana-entra-com-convite');
   await shot(ana, 'aguardando-aprovacao');
   await text(ana, 'Contatos').first().waitFor({ timeout: 30000 });
@@ -141,11 +153,11 @@ try {
   assert.equal(await bruno.getByText('Reunião').count(), 0);
   await shot(bruno, 'bruno-trancado');
   await label(bruno, 'Senha').fill('senha-errada-123');
-  await tap(bruno, 'Destrancar');
+  await tap(bruno, 'Destrancar com a senha');
   await text(bruno, 'Senha incorreta').waitFor({ timeout: 30000 });
   await shot(bruno, 'bruno-senha-incorreta');
   await label(bruno, 'Senha').fill(PASSWORD('Bruno'));
-  await tap(bruno, 'Destrancar');
+  await tap(bruno, 'Destrancar com a senha');
   await text(bruno, '🔒 1 mensagem nova').waitFor({ timeout: 30000 });
 
   step('Bruno lê; a mensagem some do relé e do texto de Ana');
@@ -182,10 +194,39 @@ try {
   await shot(marta, 'ajustes');
   await tap(marta, 'Rede');
 
+  step('Ana usa a digital: cancelar mantém trancado; o toque destranca; desativar e reativar pelos Ajustes');
+  await ana.getByLabel('Voltar').click();
+  await tap(ana, 'Ajustes');
+  await text(ana, 'Destravar com a digital').waitFor();
+  await text(ana, 'Desativar').waitFor(); // ativada no cadastro (caixa marcada)
+  await shot(ana, 'ajustes-digital-ativada');
+  await ana.evaluate(() => { window.__e2eBio = 'cancel'; });
+  await tap(ana, '🔒 Trancar agora');
+  await text(ana, '🔒 Cofre trancado').waitFor();
+  await ana.getByText('Destrancar com a digital', { exact: false }).first().waitFor();
+  await ana.waitForTimeout(800);
+  assert.equal(await text(ana, '🔒 Cofre trancado').count(), 1, 'cancelar a digital não pode destrancar');
+  await shot(ana, 'cofre-com-botao-da-digital');
+  await ana.evaluate(() => { window.__e2eBio = ''; });
+  await ana.getByText('Destrancar com a digital', { exact: false }).first().click();
+  await text(ana, 'Conversas').first().waitFor({ timeout: 15000 });
+  await tap(ana, 'Ajustes');
+  await tap(ana, 'Desativar');
+  await text(ana, 'Digital desativada. Use a senha para destrancar.').waitFor();
+  await tap(ana, 'Ativar');
+  await label(ana, 'Senha').fill('senha-errada-9');
+  await ana.getByRole('button', { name: 'Ativar' }).last().click();
+  await text(ana, 'Senha incorreta').waitFor({ timeout: 15000 });
+  await label(ana, 'Senha').fill(PASSWORD('Ana'));
+  await ana.getByRole('button', { name: 'Ativar' }).last().click();
+  await text(ana, 'Digital ativada. Na próxima vez, toque no sensor para destrancar.').waitFor({ timeout: 15000 });
+  await shot(ana, 'digital-reativada');
+  await tap(ana, 'Conversas');
+
   step('segunda rede (Clínica Vida) pede conexão; a administradora da UniRG aceita');
   // Celular pequeno (360×640): a folha com o QR code precisa caber, ou rolar.
   const zeca = await newUser('zeca', { width: 360, height: 640 });
-  await createNetwork(zeca, { name: 'Zeca', network: 'Clínica Vida' });
+  await createNetwork(zeca, { name: 'Zeca', network: 'Clínica Vida', password: 'zeca12' }, 'senha-de-6-caracteres-com-aviso');
   await tap(zeca, 'Rede');
   await tap(zeca, 'Conexões');
   await tap(zeca, 'Mostrar código da rede');
@@ -199,7 +240,6 @@ try {
   await text(zeca, 'UniRG').first().waitFor({ timeout: 30000 });
 
   step('os membros das duas redes passam a se ver (e só os das redes vinculadas)');
-  await ana.getByLabel('Voltar').click();
   await tap(ana, 'Contatos');
   await text(ana, 'CLÍNICA VIDA · REDE CONECTADA').waitFor({ timeout: 30000 });
   await text(ana, 'Zeca').first().waitFor();

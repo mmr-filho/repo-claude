@@ -26,6 +26,10 @@ Cada pessoa tem um par **X25519** (cifrar) e um par **Ed25519** (assinar). O adm
 
 Tudo é guardado no aparelho, cifrado pela senha: `scrypt(senha) → HKDF → XChaCha20-Poly1305`. O custo padrão é N = 2¹⁴. **No v2 esse custo é pago a cada desbloqueio**, porque não há mais o envelope no servidor nem o cofre rápido do v1. No interpretador Hermes medi ~3 s por derivação numa CPU de servidor; num celular intermediário deve ser pior, e eu não medi em aparelho. O scrypt é plugável (`VaultOptions.scrypt`) para usar uma versão nativa. O estado do app (contatos, certificados) é cifrado com uma chave derivada da identidade, e só é legível com o cofre aberto. Só o nome da pessoa e o da rede ficam legíveis, para a tela de bloqueio.
 
+**Tamanho da senha.** O mínimo é de 6 caracteres. O app avisa, sem impedir, quando a senha é só de números ou tem menos de 10 caracteres. O scrypt (N = 2¹⁴) só encarece cada tentativa de quem conseguir **uma cópia do cofre**; ele não impede senhas curtas de caírem. Medi, em CPU de servidor com 8 núcleos, ~37 ms por tentativa com scrypt nativo. Com isso, o espaço inteiro de **6 dígitos** (10⁶) cai em cerca de **77 minutos**, e o de **6 caracteres entre letras maiúsculas, minúsculas e números** (62⁶ ≈ 5,7 × 10¹⁰) leva anos. Uma GPU ou vários servidores encurtam esses tempos. O cofre fica no Keychain/Keystore do aparelho, o que dificulta a cópia, mas não a impede num aparelho comprometido.
+
+**Digital (opcional).** Depois de criar ou entrar na rede, o usuário pode ligar o desbloqueio por digital (ou rosto). Nada muda no cofre: a mesma chave que a senha produz (a saída do scrypt, antes do HKDF) é guardada no SecureStore com `requireAuthentication`, ou seja, o sistema só a entrega depois de uma biometria válida. `exportVaultKey(senha)` confere a senha e devolve essa chave; `unlockWithKey(chave)` abre o cofre sem rodar o scrypt, então o desbloqueio por digital também é **instantâneo**. A senha continua valendo como alternativa. Se as digitais cadastradas no aparelho mudarem, o sistema invalida a chave guardada e o app volta à senha; trocar a senha renova a chave da digital (ou a desliga). Uma chave antiga não abre um cofre cuja senha mudou (`StaleVaultKeyError`; testado). **Não testei em aparelho**: no navegador o leitor é simulado.
+
 ## 3. Certificados
 
 Todos assinados com Ed25519, com campos em ordem fixa e nomes codificados (um nome com quebra de linha não consegue forjar outro campo).
@@ -131,7 +135,7 @@ O app escolhe o meio **mais privado disponível**; o quadro é o mesmo em todos 
 - **Recuperação da chave do administrador:** a chave da autoridade existe só no aparelho dele. Falta backup protegido e delegação para mais de um administrador.
 - Vários aparelhos para a mesma pessoa.
 
-**Não testei em aparelho** nada que dependa de celular: SMS, Bluetooth, Keychain/Keystore, **leitura de QR code pela câmera** (o desenho do QR e o fluxo por texto foram testados no navegador), bloqueio de captura de tela e o desempenho do scrypt no Hermes. Os testes automáticos usam transportes simulados para SMS.
+**Não testei em aparelho** nada que dependa de celular: SMS, Bluetooth, Keychain/Keystore, **leitura de QR code pela câmera** (o desenho do QR e o fluxo por texto foram testados no navegador), **a digital** (a guarda da chave pelo hardware e a janela de biometria do sistema), bloqueio de captura de tela e o desempenho do scrypt no Hermes. Os testes automáticos usam transportes simulados para SMS.
 
 ## 9. Limites honestos do desenho
 

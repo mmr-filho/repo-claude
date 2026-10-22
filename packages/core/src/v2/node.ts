@@ -1,4 +1,5 @@
 import { ed25519, x25519 } from '@noble/curves/ed25519.js';
+import { WrongPasswordError } from '../crypto';
 import { b64, randomBytes, utf8Decode, utf8Encode, wipe, type Bytes } from '../bytes';
 import {
   DAY_MS,
@@ -29,7 +30,7 @@ import { PayloadType, UnknownSenderError, openFrame, sealFrame } from './frame';
 import { generateIdentity2, generateSignKeys, refOf, sign, verify, type Identity2, type SignKeys } from './keys';
 import { RelayClient } from './relay-client';
 import { NoTransportError, RelayTransport, TransportManager, type PeerAddress, type Transport, type TransportId } from './transport';
-import { createVault, openState, openVault, sealState, type VaultOptions, type VaultSecrets } from './vault';
+import { createVault, deriveVaultKey, openState, openVault, openVaultWithKey, sealState, type VaultOptions, type VaultSecrets } from './vault';
 import { concatBytes, equalBytes, hex, unhex, varintDecode, varintEncode } from './wire';
 import type { Role } from '../types';
 
@@ -236,6 +237,7 @@ export class LocalNode {
   /** Operações que mexem no estado rodam uma de cada vez: o temporizador e o toque do usuário não se atropelam. */
   private chain: Promise<unknown> = Promise.resolve();
   private locking = false;
+  private lockPromise?: Promise<void>;
 
   private constructor(
     private deps: NodeDeps,
@@ -369,11 +371,44 @@ export class LocalNode {
 
   /** Digite a senha. Lança WrongPasswordError se estiver errada. */
   async unlock(password: string): Promise<void> {
-    await this.chain.catch(() => undefined);
-    if (this.identity && !this.locking) return;
+    await this.lockPromise;
+    if (this.identity) return;
     const raw = await this.deps.store.get('vault');
     if (!raw) throw new Error('Nenhuma identidade neste aparelho');
-    const secrets: VaultSecrets = await openVault(password, JSON.parse(raw), this.deps.vault);
+    await this.finishUnlock(await openVault(password, JSON.parse(raw), this.deps.vault));
+  }
+
+  /**
+   * Destrava com a chave do cofre, sem a senha e sem o scrypt (por exemplo, depois da digital).
+   * Lança StaleVaultKeyError se a chave não serve mais (a senha foi trocada).
+   */
+  async unlockWithKey(key: Bytes): Promise<void> {
+    await this.lockPromise;
+    if (this.identity) return;
+    const raw = await this.deps.store.get('vault');
+    if (!raw) throw new Error('Nenhuma identidade neste aparelho');
+    await this.finishUnlock(openVaultWithKey(key, JSON.parse(raw)));
+  }
+
+  /**
+   * Confere a senha e devolve a chave do cofre, para ser guardada em armazenamento protegido pelo hardware
+   * (digital). Quem a obtém abre o cofre: nunca grave em lugar comum.
+   */
+  async exportVaultKey(password: string): Promise<Bytes> {
+    const raw = await this.deps.store.get('vault');
+    if (!raw) throw new Error('Nenhuma identidade neste aparelho');
+    const record = JSON.parse(raw);
+    const key = await deriveVaultKey(password, record, this.deps.vault);
+    try {
+      openVaultWithKey(key, record);
+    } catch {
+      wipe(key);
+      throw new WrongPasswordError();
+    }
+    return key;
+  }
+
+  private async finishUnlock(secrets: VaultSecrets): Promise<void> {
     const box = b64.decode(secrets.box);
     const signSecret = b64.decode(secrets.sign);
     this.identity = { box: { secretKey: box, publicKey: x25519.getPublicKey(box) }, sign: { secretKey: signSecret, publicKey: ed25519.getPublicKey(signSecret) } };
@@ -382,7 +417,12 @@ export class LocalNode {
       this.authority = { secretKey: a, publicKey: ed25519.getPublicKey(a) };
     }
     const sealed = await this.deps.store.get('state');
-    if (!sealed) throw new Error('Estado do aplicativo ausente neste aparelho');
+    if (!sealed) {
+      wipe(box, signSecret);
+      this.identity = undefined;
+      this.authority = undefined;
+      throw new Error('Estado do aplicativo ausente neste aparelho');
+    }
     this.s = JSON.parse(openState(box, sealed)) as NodeState;
   }
 
@@ -391,19 +431,24 @@ export class LocalNode {
    * (senão, por exemplo, uma resposta de entrada já confirmada no relé poderia ser perdida).
    * Novas operações são recusadas desde o instante em que se manda trancar.
    */
-  async lock(): Promise<void> {
-    if (!this.identity) return;
+  lock(): Promise<void> {
+    if (!this.identity) return this.lockPromise ?? Promise.resolve();
+    if (this.lockPromise) return this.lockPromise;
     this.locking = true;
-    await this.chain.catch(() => undefined);
-    if (this.identity) wipe(this.identity.box.secretKey, this.identity.sign.secretKey);
-    if (this.authority) wipe(this.authority.secretKey);
-    this.identity = undefined;
-    this.authority = undefined;
-    this.incoming.clear();
-    this.sent.clear();
-    this.unresolvedSince.clear();
-    this.s = undefined as unknown as NodeState;
-    this.locking = false;
+    this.lockPromise = (async () => {
+      await this.chain.catch(() => undefined);
+      if (this.identity) wipe(this.identity.box.secretKey, this.identity.sign.secretKey);
+      if (this.authority) wipe(this.authority.secretKey);
+      this.identity = undefined;
+      this.authority = undefined;
+      this.incoming.clear();
+      this.sent.clear();
+      this.unresolvedSince.clear();
+      this.s = undefined as unknown as NodeState;
+      this.locking = false;
+      this.lockPromise = undefined;
+    })();
+    return this.lockPromise;
   }
 
   /** Troca a senha do cofre. A identidade não muda (contatos não precisam reverificar nada). */
