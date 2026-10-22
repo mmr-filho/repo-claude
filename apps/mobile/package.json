@@ -5,8 +5,8 @@
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "typecheck": "tsc --noEmit",
     "bundle:check": "expo export --platform android --output-dir ../../.expo-export"
   },
@@ -18,6 +18,7 @@
     "expo-screen-capture": "~58.0.6",
     "expo-secure-store": "~58.0.2",
     "expo-status-bar": "~58.0.4",
+    "expo-system-ui": "~58.0.6",
     "react": "19.3.0",
     "react-native": "0.88.0",
     "react-native-safe-area-context": "~5.10.1"

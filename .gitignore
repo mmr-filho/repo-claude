@@ -12,3 +12,7 @@ data/
 .DS_Store
 
 .expo-export/
+
+# Projetos nativos são gerados por "expo run:android" / "expo prebuild" (não versionados)
+apps/mobile/android/
+apps/mobile/ios/

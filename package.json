@@ -2,7 +2,7 @@
   "name": "sigilo",
   "private": true,
   "version": "0.1.0",
-  "description": "Mensageria entre celulares com criptografia ponta a ponta, mensagens que se apagam após a leitura e redes isoladas administradas por administradores.",
+  "description": "Mensageria entre celulares com criptografia ponta a ponta, mensagens que se apagam ap\u00f3s a leitura e redes isoladas administradas por administradores.",
   "workspaces": [
     "packages/*",
     "apps/*"
@@ -16,7 +16,8 @@
     "mobile": "npm run start -w @sigilo/mobile",
     "test": "npm test --workspaces --if-present",
     "test:e2e": "node e2e/ui.e2e.mjs",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "android": "npm run android -w @sigilo/mobile"
   },
   "devDependencies": {
     "playwright-core": "^1.56.1"

@@ -54,7 +54,7 @@ export function AuthScreen({
 
   return (
     <Screen>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
         <ScrollView contentContainerStyle={{ paddingVertical: 24, gap: 16 }} keyboardShouldPersistTaps="handled">
           <View style={{ gap: 4 }}>
             <H1>🔒 Sigilo</H1>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, FlatList, KeyboardAvoidingView, Platform, Pressable, Text, TextInput, View } from 'react-native';
+import { Alert, FlatList, KeyboardAvoidingView, Pressable, Text, TextInput, View } from 'react-native';
 import { usePreventScreenCapture } from 'expo-screen-capture';
 import { KeyChangedError, LockedError, type ChatMessage, type Contact } from '@sigilo/core';
 import { useApp, useServerEvents } from '../app-context';
@@ -110,7 +110,7 @@ export function ChatScreen({ peer, onBack }: { peer: Contact; onBack: () => void
 
   return (
     <Screen padded={false}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
         <Row style={{ padding: space.md, borderBottomWidth: 1, borderBottomColor: t.border, backgroundColor: t.surface }}>
           <Pressable onPress={onBack} hitSlop={12}>
             <Text style={{ color: t.primary, fontSize: 28 }}>‹</Text>

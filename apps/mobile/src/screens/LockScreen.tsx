@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, View } from 'react-native';
+import { KeyboardAvoidingView, View } from 'react-native';
 import { WrongPasswordError, type SigiloSession } from '@sigilo/core';
 import { Banner, Body, Button, Field, H1, Muted, Screen, errorMessage } from '../ui';
 
@@ -48,7 +48,7 @@ export function LockScreen({
 
   return (
     <Screen>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1, justifyContent: 'center', gap: 16 }}>
+      <KeyboardAvoidingView behavior="padding" style={{ flex: 1, justifyContent: 'center', gap: 16 }}>
         <View style={{ alignItems: 'center', gap: 8 }}>
           <H1>🔒 Cofre trancado</H1>
           <Body>{session.user.displayName}</Body>

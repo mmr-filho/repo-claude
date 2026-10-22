@@ -64,6 +64,23 @@ Abra o app no Expo Go, toque em **Ativar conta**, informe `maria@unirg`, o códi
 
 > O app exige **HTTPS**, exceto para endereços de rede local (para testes). Em produção coloque o servidor atrás de um proxy com TLS (Caddy, nginx, etc.) e defina `TRUST_PROXY=true`.
 
+### Compilar e rodar no Android (sem Expo Go)
+
+O Expo Go é o caminho mais rápido, mas você também pode compilar o app nativo e instalá-lo no celular ou no emulador.
+
+**Requisitos:** [Android Studio](https://developer.android.com/studio) (traz o SDK e o emulador), **JDK 17 ou mais novo** (o Gradle 9 exige) e a variável `ANDROID_HOME` apontando para o SDK (`~/Android/Sdk` no Linux, `~/Library/Android/sdk` no Mac, `%LOCALAPPDATA%\Android\Sdk` no Windows). No celular, ative **Opções do desenvolvedor → Depuração USB**; ou crie um emulador no Android Studio.
+
+```bash
+# com o servidor já rodando (passo 1) e o aparelho/emulador conectado (confira com: adb devices)
+EXPO_PUBLIC_SERVER_URL=http://192.168.0.10:3000 npm run android
+```
+
+A primeira compilação baixa dependências e leva vários minutos. O comando gera a pasta `apps/mobile/android` (não versionada), compila, instala e abre o app. No emulador Android o servidor do seu computador é `http://10.0.2.2:3000`.
+
+- **Build de debug** (o padrão acima) aceita HTTP na rede local. Um **release** (`npm run android -w @sigilo/mobile -- --variant release`) bloqueia HTTP puro e só conversa com servidor **HTTPS**.
+- O pacote se chama `com.example.sigilo` e o release usa a chave de **debug**. Troque os dois antes de publicar.
+- O backup automático do Android está desligado (`allowBackup=false`) para que dados do app não saiam do aparelho.
+
 ### Usuários e redes
 
 O usuário é identificado por `nome@rede` (por exemplo `maria@unirg`). O **código da rede** (`unirg`) é público: é o que outra rede usa para pedir conexão, e a conexão só vale depois que o administrador aceitar.
