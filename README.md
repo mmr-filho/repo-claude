@@ -81,6 +81,37 @@ A primeira compilação baixa dependências e leva vários minutos. O comando ge
 - O pacote se chama `com.example.sigilo` e o release usa a chave de **debug**. Troque os dois antes de publicar.
 - O backup automático do Android está desligado (`allowBackup=false`) para que dados do app não saiam do aparelho.
 
+### Gerar o APK (arquivo para instalar)
+
+O servidor precisa estar num endereço que os celulares alcancem. O endereço do servidor **é gravado dentro do app na hora da geração** (`EXPO_PUBLIC_SERVER_URL`); para trocar, gere de novo.
+
+**Opção A: na sua máquina** (mesmos requisitos da seção anterior)
+
+```bash
+cd apps/mobile
+npx expo prebuild --platform android --clean
+cd android
+EXPO_PUBLIC_SERVER_URL=https://sigilo.suaorganizacao.com ./gradlew assembleRelease     # Windows: gradlew.bat assembleRelease
+```
+
+O arquivo sai em `apps/mobile/android/app/build/outputs/apk/release/app-release.apk`. Copie para o celular e instale (é preciso permitir "instalar apps de fontes desconhecidas"). A variável `EXPO_PUBLIC_SERVER_URL` precisa estar definida no mesmo comando do Gradle.
+
+**Opção B: na nuvem do Expo (EAS Build)**, sem Android Studio. Precisa de conta gratuita em expo.dev:
+
+```bash
+npm install -g eas-cli
+eas login
+cd apps/mobile
+eas build --platform android --profile preview     # gera um APK para instalar
+eas build --platform android --profile production  # gera um .aab para a Google Play
+```
+
+Defina o endereço do servidor no perfil (`"env": { "EXPO_PUBLIC_SERVER_URL": "https://..." }` em `apps/mobile/eas.json`) ou como variável de ambiente do projeto no expo.dev. O EAS cuida da chave de assinatura, que é o caminho recomendado para a Google Play.
+
+**HTTP x HTTPS.** Um APK de release só aceita servidor **HTTPS**. Para um APK de **teste** falando com um servidor HTTP na sua rede local, gere com `SIGILO_ALLOW_CLEARTEXT=1` junto das outras variáveis, e use esse APK só para teste. Em produção, coloque o servidor atrás de um proxy com TLS e defina `TRUST_PROXY=true`.
+
+**Antes de distribuir de verdade:** troque o pacote `com.example.sigilo` (em `apps/mobile/app.json`) e assine com sua própria chave. O release da Opção A usa a chave de **debug**, boa para testes e inadequada para publicar.
+
 ### Usuários e redes
 
 O usuário é identificado por `nome@rede` (por exemplo `maria@unirg`). O **código da rede** (`unirg`) é público: é o que outra rede usa para pedir conexão, e a conexão só vale depois que o administrador aceitar.
