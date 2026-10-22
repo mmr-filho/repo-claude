@@ -1,0 +1,17 @@
+{
+  "name": "sigilo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Mensageria entre celulares com criptografia ponta a ponta, mensagens que se apagam após a leitura e redes isoladas administradas por administradores.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "test": "npm test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  }
+}

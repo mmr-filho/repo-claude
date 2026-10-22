@@ -1,0 +1,29 @@
+{
+  "name": "@sigilo/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "node --import tsx --watch src/index.ts",
+    "start": "node dist/index.js",
+    "build": "esbuild src/index.ts src/cli.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outdir=dist",
+    "network:create": "node --import tsx src/cli.ts create-network",
+    "test": "node --import tsx --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^10.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "@sigilo/core": "*",
+    "fastify": "^5.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.0",
+    "esbuild": "^0.25.0",
+    "ws": "^8.18.0"
+  }
+}
