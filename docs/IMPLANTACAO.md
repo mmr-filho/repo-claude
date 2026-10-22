@@ -1,13 +1,13 @@
 # Colocando o servidor no ar
 
-Há dois servidores neste repositório, porque o app está em transição:
+Há dois servidores neste repositório:
 
 | | Para quê | Onde roda | Guia |
 |---|---|---|---|
-| **Relé v2** | O novo protocolo (sem contas, certificados do administrador) | **Cloudflare Workers** (sem VPS) ou Node | Seção "Relé do v2 no Cloudflare Workers", logo abaixo |
-| **Servidor v1** | O app atual, com contas no servidor | VPS + Docker + Cloudflare Tunnel | A partir de "O app precisa de um servidor sempre ligado" |
+| **Relé v2** | **O app atual.** Sem contas, certificados do administrador | **Cloudflare Workers** (sem VPS) ou Node | Seção "Relé do v2 no Cloudflare Workers", logo abaixo |
+| **Servidor v1** | **Legado**: o app não se conecta mais a ele | VPS + Docker + Cloudflare Tunnel | A partir de "Servidor v1 (legado)" |
 
-> O app atual (`apps/mobile`) ainda usa o **servidor v1**. O relé v2 está pronto e testado, mas a interface do app para ele ainda não foi construída (veja `docs/ARQUITETURA-V2.md`).
+O endereço do relé é informado ao criar a rede no app (e vai dentro de cada convite): por isso, antes de gerar convites, o relé precisa estar no ar num endereço que os celulares alcancem.
 
 ---
 
@@ -61,7 +61,7 @@ O mesmo relé roda em Node com SQLite (`npm run build -w @sigilo/relay && node p
 
 ---
 
-# Servidor v1 (app atual): VPS + Docker + Cloudflare Tunnel
+# Servidor v1 (legado): VPS + Docker + Cloudflare Tunnel
 
 O app precisa de **um servidor sempre ligado, com HTTPS**, num endereço que os celulares alcancem (por exemplo `https://sigilo.suaorganizacao.com`). O código do servidor já está no repositório (`packages/server`); este guia mostra onde rodá-lo.
 

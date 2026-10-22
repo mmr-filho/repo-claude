@@ -25,6 +25,15 @@
       },
       "predictiveBackGestureEnabled": false,
       "allowBackup": false
-    }
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "O Sigilo usa a câmera só para ler QR codes de convite e de conexão entre redes.",
+          "recordAudioAndroid": false
+        }
+      ]
+    ]
   }
 }

@@ -233,6 +233,9 @@ export class LocalNode {
   private unresolvedSince = new Map<string, number>();
   private manager: TransportManager;
   private now: () => number;
+  /** Operações que mexem no estado rodam uma de cada vez: o temporizador e o toque do usuário não se atropelam. */
+  private chain: Promise<unknown> = Promise.resolve();
+  private locking = false;
 
   private constructor(
     private deps: NodeDeps,
@@ -344,7 +347,15 @@ export class LocalNode {
   // ───────── cofre ─────────
 
   get isUnlocked(): boolean {
-    return !!this.identity;
+    return !!this.identity && !this.locking;
+  }
+
+  /** Enfileira uma operação. Recusa na hora se o cofre está trancando; as já enfileiradas terminam e gravam o estado. */
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.identity || this.locking) return Promise.reject(new LockedError());
+    const run = this.chain.then(fn, fn);
+    this.chain = run.catch(() => undefined);
+    return run;
   }
 
   get profile(): Readonly<Meta> {
@@ -358,7 +369,8 @@ export class LocalNode {
 
   /** Digite a senha. Lança WrongPasswordError se estiver errada. */
   async unlock(password: string): Promise<void> {
-    if (this.identity) return;
+    await this.chain.catch(() => undefined);
+    if (this.identity && !this.locking) return;
     const raw = await this.deps.store.get('vault');
     if (!raw) throw new Error('Nenhuma identidade neste aparelho');
     const secrets: VaultSecrets = await openVault(password, JSON.parse(raw), this.deps.vault);
@@ -374,8 +386,15 @@ export class LocalNode {
     this.s = JSON.parse(openState(box, sealed)) as NodeState;
   }
 
-  /** Apaga as chaves e o texto da memória. As mensagens continuam cifradas no relé até serem lidas. */
-  lock(): void {
+  /**
+   * Apaga as chaves e o texto da memória. Espera as operações em andamento terminarem de gravar o estado
+   * (senão, por exemplo, uma resposta de entrada já confirmada no relé poderia ser perdida).
+   * Novas operações são recusadas desde o instante em que se manda trancar.
+   */
+  async lock(): Promise<void> {
+    if (!this.identity) return;
+    this.locking = true;
+    await this.chain.catch(() => undefined);
     if (this.identity) wipe(this.identity.box.secretKey, this.identity.sign.secretKey);
     if (this.authority) wipe(this.authority.secretKey);
     this.identity = undefined;
@@ -384,6 +403,44 @@ export class LocalNode {
     this.sent.clear();
     this.unresolvedSince.clear();
     this.s = undefined as unknown as NodeState;
+    this.locking = false;
+  }
+
+  /** Troca a senha do cofre. A identidade não muda (contatos não precisam reverificar nada). */
+  changePassword(current: string, next: string): Promise<void> {
+    return this.serial(async () => {
+      const id = this.need();
+      const raw = await this.deps.store.get('vault');
+      if (!raw) throw new Error('Nenhuma identidade neste aparelho');
+      await openVault(current, JSON.parse(raw), this.deps.vault); // WrongPasswordError se a atual estiver errada
+      const secrets: VaultSecrets = {
+        box: b64.encode(id.box.secretKey),
+        sign: b64.encode(id.sign.secretKey),
+        authority: this.authority ? b64.encode(this.authority.secretKey) : undefined,
+      };
+      await this.deps.store.set('vault', JSON.stringify(await createVault(next, secrets, this.deps.vault)));
+    });
+  }
+
+  /**
+   * Apaga a identidade deste aparelho (cofre, chaves, contatos) e a caixa postal no relé. Não tem volta:
+   * para voltar à rede o administrador precisa emitir um convite novo.
+   */
+  static async forget(deps: NodeDeps): Promise<void> {
+    const raw = await deps.store.get('queue');
+    if (raw) {
+      const q = JSON.parse(raw) as QueueRecord;
+      await deps.relay.deleteQueue(q.relay, q.qid, LocalNode.queueKeys(q)).catch(() => undefined);
+    }
+    for (const slot of ['vault', 'queue', 'meta', 'state'] as const) await deps.store.remove(slot);
+  }
+
+  /** Mensagens minhas que ainda não foram lidas (só nesta sessão: o texto não é guardado em disco), por contato. */
+  awaitingRead(): Record<string, number> {
+    this.need();
+    const out: Record<string, number> = {};
+    for (const m of this.sent.values()) if (m.status !== 'read') out[m.peer] = (out[m.peer] ?? 0) + 1;
+    return out;
   }
 
   /** Quantas mensagens aguardam, SEM abrir o cofre (só a chave da caixa postal, que não lê conteúdo). */
@@ -449,7 +506,11 @@ export class LocalNode {
   }
 
   /** Autoriza (ou não) o SMS para um contato, e guarda o número. O SMS deixa registro na operadora. */
-  async setSmsConsent(box: string, allow: boolean, phone?: string): Promise<void> {
+  setSmsConsent(box: string, allow: boolean, phone?: string): Promise<void> {
+    return this.serial(() => this._setSmsConsent(box, allow, phone));
+  }
+
+  private async _setSmsConsent(box: string, allow: boolean, phone?: string): Promise<void> {
     const c = this.s.contacts[box];
     if (!c) throw new Error('Contato desconhecido');
     c.allowSms = allow;
@@ -525,7 +586,11 @@ export class LocalNode {
   }
 
   /** Envia uma mensagem. Sem meio disponível, fica na fila (cifrada com o cofre) e sai quando houver. */
-  async send(peerBox: string, text: string): Promise<SendResult> {
+  send(peerBox: string, text: string): Promise<SendResult> {
+    return this.serial(() => this._send(peerBox, text));
+  }
+
+  private async _send(peerBox: string, text: string): Promise<SendResult> {
     this.need();
     const body = text.trim();
     if (!body) throw new Error('Mensagem vazia');
@@ -572,7 +637,11 @@ export class LocalNode {
   }
 
   /** Reenvia o que ficou na fila (mensagens e recibos). */
-  async flushOutbox(): Promise<number> {
+  flushOutbox(): Promise<number> {
+    return this.serial(() => this._flushOutbox());
+  }
+
+  private async _flushOutbox(): Promise<number> {
     this.need();
     let sent = 0;
     const left: OutboxEntry[] = [];
@@ -606,7 +675,11 @@ export class LocalNode {
   // ───────── recebimento ─────────
 
   /** Busca e processa a caixa postal. Mensagens de conversa FICAM no relé até serem lidas. */
-  async poll(): Promise<PollResult> {
+  poll(): Promise<PollResult> {
+    return this.serial(() => this._poll());
+  }
+
+  private async _poll(): Promise<PollResult> {
     this.need();
     const q = this.queue!;
     const result: PollResult = { unread: {}, receipts: [], events: [], dropped: 0 };
@@ -616,14 +689,18 @@ export class LocalNode {
     for (const m of msgs) {
       await this.process(m.frame, { ack: () => this.deps.relay.ack(q.relay, q.qid, key, m.id), key: m.id, ts: m.ts }, result);
     }
-    await this.flushOutbox();
+    await this._flushOutbox();
     for (const m of this.incoming.values()) result.unread[m.peer] = (result.unread[m.peer] ?? 0) + 1;
     await this.persist();
     return result;
   }
 
   /** Entrada por outros meios (SMS, proximidade). O quadro é o mesmo; não há nada a apagar no relé. */
-  async receiveFrame(frame: Bytes): Promise<PollResult> {
+  receiveFrame(frame: Bytes): Promise<PollResult> {
+    return this.serial(() => this._receiveFrame(frame));
+  }
+
+  private async _receiveFrame(frame: Bytes): Promise<PollResult> {
     this.need();
     const result: PollResult = { unread: {}, receipts: [], events: [], dropped: 0 };
     await this.process(frame, { ack: async () => {}, key: hex(frame.slice(0, 12)), ts: this.now() }, result);
@@ -746,7 +823,11 @@ export class LocalNode {
    * Entrega ao app as mensagens recebidas deste contato e as APAGA do relé (e manda o recibo de leitura).
    * Depois disto, o texto só existe na memória de quem chamou.
    */
-  async openConversation(peerBox: string): Promise<{ messages: ChatMessage[]; sent: SentMessage[] }> {
+  openConversation(peerBox: string): Promise<{ messages: ChatMessage[]; sent: SentMessage[] }> {
+    return this.serial(() => this._openConversation(peerBox));
+  }
+
+  private async _openConversation(peerBox: string): Promise<{ messages: ChatMessage[]; sent: SentMessage[] }> {
     this.need();
     const mine = [...this.incoming.values()].filter((m) => m.peer === peerBox).sort((a, b) => a.sentAt - b.sentAt);
     const messages: ChatMessage[] = [];
@@ -757,13 +838,17 @@ export class LocalNode {
       this.s.receipts.push({ peer: m.peer, id: m.id });
       messages.push({ id: m.id, peer: m.peer, direction: 'in', text: m.text, sentAt: m.sentAt });
     }
-    if (mine.length) await this.flushOutbox();
+    if (mine.length) await this._flushOutbox();
     else await this.persist();
     return { messages, sent: [...this.sent.values()].filter((m) => m.peer === peerBox) };
   }
 
   /** Apagar para todos: só adianta se o destinatário ainda não leu. */
-  async recall(id: string): Promise<void> {
+  recall(id: string): Promise<void> {
+    return this.serial(() => this._recall(id));
+  }
+
+  private async _recall(id: string): Promise<void> {
     const m = this.sent.get(id);
     if (!m || m.status === 'read') throw new Error('Mensagem já lida ou desconhecida');
     const c = this.s.contacts[m.peer];
@@ -791,7 +876,11 @@ export class LocalNode {
   }
 
   /** Reenvia o pedido de entrada (se o relé estava fora do ar). */
-  async retryEnrollment(): Promise<void> {
+  retryEnrollment(): Promise<void> {
+    return this.serial(() => this._retryEnrollment());
+  }
+
+  private async _retryEnrollment(): Promise<void> {
     this.need();
     if (this.s.enrollment) await this.sendEnrollRequest();
   }
@@ -888,7 +977,11 @@ export class LocalNode {
   }
 
   /** Convite para uma pessoa entrar na rede (QR code ou texto). O nome é decidido pelo administrador. */
-  async createInvite(name: string, role: Role = 'member'): Promise<{ code: string; expiresAt: number }> {
+  createInvite(name: string, role: Role = 'member'): Promise<{ code: string; expiresAt: number }> {
+    return this.serial(() => this._createInvite(name, role));
+  }
+
+  private async _createInvite(name: string, role: Role): Promise<{ code: string; expiresAt: number }> {
     const admin = this.needAdmin();
     const net = this.s.network!;
     const exp = this.now() + INVITE_TTL_MS;
@@ -908,7 +1001,11 @@ export class LocalNode {
   }
 
   /** Retira a confiança numa pessoa. Vale na hora para quem receber o aviso, e para todos quando o certificado vencer. */
-  async revokeMember(box: string): Promise<void> {
+  revokeMember(box: string): Promise<void> {
+    return this.serial(() => this._revokeMember(box));
+  }
+
+  private async _revokeMember(box: string): Promise<void> {
     const admin = this.needAdmin();
     if (box === this.myBox) throw new Error('O administrador não pode se revogar');
     const target = admin.members[box];
@@ -935,7 +1032,11 @@ export class LocalNode {
   }
 
   /** Pedido de conexão: o outro administrador precisa aceitar. */
-  async requestLink(peerNetworkCode: string): Promise<void> {
+  requestLink(peerNetworkCode: string): Promise<void> {
+    return this.serial(() => this._requestLink(peerNetworkCode));
+  }
+
+  private async _requestLink(peerNetworkCode: string): Promise<void> {
     const admin = this.needAdmin();
     const peer = decodeCode<NetworkDescriptor>('network', peerNetworkCode);
     if (!verifyDescriptor(peer).ok) throw new Error('Código de rede inválido');
@@ -964,7 +1065,11 @@ export class LocalNode {
     out.events.push('proposal');
   }
 
-  async acceptLink(proposalId: string): Promise<void> {
+  acceptLink(proposalId: string): Promise<void> {
+    return this.serial(() => this._acceptLink(proposalId));
+  }
+
+  private async _acceptLink(proposalId: string): Promise<void> {
     const admin = this.needAdmin();
     const p = admin.proposals.find((x) => x.id === proposalId);
     if (!p) throw new Error('Pedido não encontrado');
@@ -981,7 +1086,11 @@ export class LocalNode {
     await this.shareRosterWithPeer(p.descriptor);
   }
 
-  async rejectLink(proposalId: string): Promise<void> {
+  rejectLink(proposalId: string): Promise<void> {
+    return this.serial(() => this._rejectLink(proposalId));
+  }
+
+  private async _rejectLink(proposalId: string): Promise<void> {
     const admin = this.needAdmin();
     admin.proposals = admin.proposals.filter((x) => x.id !== proposalId);
     await this.persist();
@@ -1019,7 +1128,11 @@ export class LocalNode {
   }
 
   /** Encerra o vínculo com outra rede. */
-  async unlink(peerNet: string): Promise<void> {
+  unlink(peerNet: string): Promise<void> {
+    return this.serial(() => this._unlink(peerNet));
+  }
+
+  private async _unlink(peerNet: string): Promise<void> {
     const admin = this.needAdmin();
     const peer = admin.peers[peerNet];
     const r = issueLinkRevocation(this.authority!, peerNet, this.now());
@@ -1070,7 +1183,11 @@ export class LocalNode {
   }
 
   /** Reenvia a lista completa para todos (por exemplo, depois de o relé ter ficado fora do ar). */
-  async resyncRoster(): Promise<void> {
+  resyncRoster(): Promise<void> {
+    return this.serial(() => this._resyncRoster());
+  }
+
+  private async _resyncRoster(): Promise<void> {
     const admin = this.needAdmin();
     for (const m of Object.values(admin.members)) {
       if (m.box === this.myBox) continue;

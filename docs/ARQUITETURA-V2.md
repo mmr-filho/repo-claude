@@ -6,7 +6,7 @@ O v2 existe para atender a um objetivo: **uma conversa de celular como uma conve
 2. **Um relé anônimo** que só carrega mensagens cifradas, sem contas e sem saber quem escreve.
 3. **Vários meios de transporte**, escolhidos pela privacidade: proximidade (Bluetooth), relé pela internet e SMS.
 
-> **Status.** Estão prontos e testados: criptografia, certificados, formato de mensagem, relé (Node e Cloudflare Workers), o nó local (`LocalNode`) e a política de transportes. **Ainda não estão prontos:** a interface do app no v2 (o app atual continua usando o servidor v1), o módulo nativo de SMS e o de Bluetooth. A seção 8 lista o que falta e o que eu não consigo testar aqui.
+> **Status.** Prontos e testados: criptografia, certificados, formato de mensagem, relé (Node e Cloudflare Workers), o nó local (`LocalNode`), a política de transportes e **a interface do app** (criar rede, convidar por código/QR, entrar, cofre, conversa, administração, ajustes), com teste de ponta a ponta no navegador. **Ainda não estão prontos:** os módulos nativos de SMS e de Bluetooth. A seção 8 lista o que falta e o que eu não consigo testar aqui.
 
 ## 1. Quem confia em quem
 
@@ -125,14 +125,13 @@ O app escolhe o meio **mais privado disponível**; o quadro é o mesmo em todos 
 ## 8. O que falta e o que não consegui testar
 
 **Falta construir**
-- **Interface do app no v2** (convite por QR code, cofre, conversa, administração de convites e vínculos). Hoje o app usa o servidor v1.
 - **Módulo nativo de SMS** (Android, SMS de dados).
 - **Módulo nativo de Bluetooth.** Android↔iPhone exige protocolo próprio, e o iPhone é limitado em segundo plano.
 - **Notificações:** por decisão sua, não há push. O app consulta o relé enquanto está aberto. No Worker, o custo de consultas frequentes importa (veja `IMPLANTACAO.md`).
 - **Recuperação da chave do administrador:** a chave da autoridade existe só no aparelho dele. Falta backup protegido e delegação para mais de um administrador.
 - Vários aparelhos para a mesma pessoa.
 
-**Não testei em aparelho** nada que dependa de celular: SMS, Bluetooth, Keychain/Keystore, desempenho do scrypt no Hermes. Os testes automáticos usam transportes simulados para SMS.
+**Não testei em aparelho** nada que dependa de celular: SMS, Bluetooth, Keychain/Keystore, **leitura de QR code pela câmera** (o desenho do QR e o fluxo por texto foram testados no navegador), bloqueio de captura de tela e o desempenho do scrypt no Hermes. Os testes automáticos usam transportes simulados para SMS.
 
 ## 9. Limites honestos do desenho
 

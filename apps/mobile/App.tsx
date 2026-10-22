@@ -1,31 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Platform, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { enableAppSwitcherProtectionAsync } from 'expo-screen-capture';
-import { ApiError, SigiloSession, type ServerEvent } from '@sigilo/core';
+import { LocalNode, LockedError, RelayClient, type NodeDeps, type PollResult } from '@sigilo/core/v2';
 import { AppContext, type AppContextValue } from './src/app-context';
-import { AuthScreen } from './src/screens/AuthScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { LockScreen } from './src/screens/LockScreen';
-import {
-  DEFAULT_SETTINGS,
-  clearAuth,
-  loadAuth,
-  loadSettings,
-  localVaultStoreFor,
-  pinStoreFor,
-  saveAuth,
-  saveSettings,
-  type Settings,
-  type StoredAuth,
-} from './src/storage';
-import { Body, Button, Screen } from './src/ui';
+import { PendingScreen } from './src/screens/PendingScreen';
+import { WelcomeScreen } from './src/screens/WelcomeScreen';
+import { CHAT_POLL_MS, DEFAULT_SETTINGS, POLL_OVERRIDE_MS, loadSettings, mobileStore, saveSettings, type Settings } from './src/storage';
+import { Screen } from './src/ui';
 
-type Phase = 'boot' | 'offline' | 'out' | 'locked' | 'in';
-type Handler = (e: ServerEvent) => void;
-
-const DEVICE = Platform.OS === 'ios' ? 'iPhone' : 'Android';
+type Phase = 'boot' | 'welcome' | 'locked' | 'pending' | 'in';
+type Handler = (r: PollResult) => void;
 
 export default function App() {
   return (
@@ -36,17 +24,21 @@ export default function App() {
 }
 
 function Root() {
+  const deps = useMemo<NodeDeps>(() => ({ store: mobileStore, relay: new RelayClient() }), []);
   const [phase, setPhase] = useState<Phase>('boot');
-  const [session, setSession] = useState<SigiloSession | null>(null);
+  const [node, setNode] = useState<LocalNode | null>(null);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
-  const [pending, setPending] = useState<StoredAuth | null>(null);
-  const [notice, setNotice] = useState<string>();
-  const [online, setOnline] = useState(false);
+  const [online, setOnline] = useState(true);
+  const [unread, setUnread] = useState<Record<string, number>>({});
+  const [version, setVersion] = useState(0);
   const [covered, setCovered] = useState(false);
-  const listeners = useRef(new Set<Handler>());
+  const [appActive, setAppActive] = useState(true);
+
   const phaseRef = useRef<Phase>('boot');
-  const sessionRef = useRef<SigiloSession | null>(null);
+  const nodeRef = useRef<LocalNode | null>(null);
   const settingsRef = useRef(settings);
+  const listeners = useRef(new Set<Handler>());
+  const fast = useRef(0);
   const lastTouch = useRef(Date.now());
   const backgroundedAt = useRef<number | null>(null);
 
@@ -55,63 +47,25 @@ function Root() {
     setPhase(next);
   }, []);
 
-  const adopt = useCallback(
-    (s: SigiloSession | null) => {
-      sessionRef.current = s;
-      setSession(s);
-    },
-    [],
-  );
+  const adopt = useCallback((n: LocalNode | null) => {
+    nodeRef.current = n;
+    setNode(n);
+  }, []);
 
-  const signedOut = useCallback(
-    async (message?: string) => {
-      await sessionRef.current?.forgetLocal();
-      sessionRef.current?.lock();
-      sessionRef.current?.stopRealtime();
-      adopt(null);
-      await clearAuth();
-      setNotice(message);
-      goto('out');
-    },
-    [adopt, goto],
-  );
-
-  const resume = useCallback(
-    async (auth: StoredAuth) => {
-      try {
-        const s = await SigiloSession.resume({
-          baseUrl: auth.baseUrl,
-          token: auth.token,
-          pinStore: pinStoreFor(auth.handle),
-          localVault: localVaultStoreFor(auth.handle),
-          deviceName: DEVICE,
-          onUnauthorized: () => void signedOut('Sua sessão terminou. Entre novamente.'),
-        });
-        adopt(s);
-        goto('locked'); // sempre trancado ao abrir o app: a senha é exigida para ler
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 401) await signedOut('Sua sessão expirou. Entre novamente.');
-        else {
-          setPending(auth);
-          goto('offline');
-        }
-      }
-    },
-    [adopt, goto, signedOut],
-  );
-
-  // Inicialização
+  // Inicialização: há identidade neste aparelho? Então começa trancado.
   useEffect(() => {
     void (async () => {
       const s = await loadSettings();
       setSettings(s);
       settingsRef.current = s;
-      const auth = await loadAuth();
-      if (auth) await resume(auth);
-      else goto('out');
+      const n = await LocalNode.load(deps);
+      if (n) {
+        adopt(n);
+        goto('locked');
+      } else goto('welcome');
     })();
-    enableAppSwitcherProtectionAsync().catch(() => {});
-  }, [goto, resume]);
+    enableAppSwitcherProtectionAsync().catch(() => undefined);
+  }, [deps, adopt, goto]);
 
   const updateSettings = useCallback((patch: Partial<Settings>) => {
     const next = { ...settingsRef.current, ...patch };
@@ -124,48 +78,70 @@ function Root() {
     lastTouch.current = Date.now();
   }, []);
 
-  const lockNow = useCallback(() => {
-    if (phaseRef.current !== 'in') return;
-    sessionRef.current?.lock();
-    sessionRef.current?.stopRealtime();
-    setOnline(false);
-    goto('locked');
-  }, [goto]);
-
-  const logout = useCallback(async () => {
-    const s = sessionRef.current;
-    await s?.logout();
-    await signedOut();
-  }, [signedOut]);
-
-  const onAuthenticated = useCallback(
-    async (s: SigiloSession, auth: StoredAuth) => {
-      await saveAuth(auth);
-      updateSettings({ lastServer: auth.baseUrl, lastHandle: auth.handle });
-      setNotice(undefined);
-      adopt(s);
-      goto('in');
+  const enter = useCallback(
+    (n: LocalNode) => {
+      setUnread({});
+      setVersion((v) => v + 1);
+      goto(n.isEnrolled ? 'in' : 'pending');
     },
-    [adopt, goto, updateSettings],
+    [goto],
   );
 
-  // Tempo real só com o cofre aberto.
-  useEffect(() => {
-    if (phase !== 'in' || !session) return;
-    session.startRealtime(
-      (e) => {
-        if (e.type === 'session.revoked') void signedOut('Esta sessão foi encerrada pelo administrador ou por troca de senha.');
-        listeners.current.forEach((l) => l(e));
-      },
-      (st) => setOnline(st === 'up'),
-    );
-    return () => session.stopRealtime();
-  }, [phase, session, signedOut]);
+  const lockNow = useCallback(() => {
+    if (phaseRef.current !== 'in' && phaseRef.current !== 'pending') return;
+    goto('locked'); // a tela de senha aparece já; o nó espera as operações em andamento terminarem de gravar
+    setUnread({});
+    void nodeRef.current?.lock();
+  }, [goto]);
 
-  // Bloqueio automático ao ir para segundo plano e por inatividade.
+  const forgetDevice = useCallback(async () => {
+    const n = nodeRef.current;
+    goto('boot');
+    await n?.lock();
+    await LocalNode.forget(deps);
+    setUnread({});
+    adopt(null);
+    goto('welcome');
+  }, [deps, adopt, goto]);
+
+  // ───────── consulta ao relé ─────────
+  const pollNow = useCallback(async () => {
+    const n = nodeRef.current;
+    if (!n || !n.isUnlocked) return;
+    try {
+      const r = await n.poll();
+      setOnline(true);
+      setUnread((prev) => (JSON.stringify(prev) === JSON.stringify(r.unread) ? prev : r.unread));
+      if (r.events.length) setVersion((v) => v + 1);
+      listeners.current.forEach((l) => l(r));
+      if (phaseRef.current === 'pending' && n.isEnrolled) goto('in');
+    } catch (err) {
+      if (!(err instanceof LockedError)) setOnline(false);
+    }
+  }, [goto]);
+
+  useEffect(() => {
+    if ((phase !== 'in' && phase !== 'pending') || !appActive) return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      await pollNow();
+      if (stop) return;
+      const base = POLL_OVERRIDE_MS ?? settingsRef.current.pollSeconds * 1000;
+      timer = setTimeout(() => void tick(), fast.current > 0 ? Math.min(CHAT_POLL_MS, base) : base);
+    };
+    void tick();
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [phase, appActive, pollNow, settings.pollSeconds]);
+
+  // ───────── bloqueio automático ─────────
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       setCovered(next !== 'active');
+      setAppActive(next === 'active');
       const grace = settingsRef.current.autoLockSeconds * 1000;
       if (next === 'background') {
         backgroundedAt.current = Date.now();
@@ -189,22 +165,28 @@ function Root() {
 
   const ctx = useMemo<AppContextValue | null>(
     () =>
-      session
+      node
         ? {
-            session,
+            node,
             settings,
             updateSettings,
             lockNow,
-            touch,
-            logout,
+            forgetDevice,
             online,
+            unread,
+            version,
+            pollNow,
+            touch,
             subscribe: (h) => {
               listeners.current.add(h);
               return () => void listeners.current.delete(h);
             },
+            setFastPolling: (on) => {
+              fast.current = Math.max(0, fast.current + (on ? 1 : -1));
+            },
           }
         : null,
-    [session, settings, updateSettings, lockNow, touch, logout, online],
+    [node, settings, updateSettings, lockNow, forgetDevice, online, unread, version, pollNow, touch],
   );
 
   let body;
@@ -216,20 +198,25 @@ function Root() {
         </View>
       </Screen>
     );
-  } else if (phase === 'offline' && pending) {
+  } else if (phase === 'welcome') {
     body = (
-      <Screen>
-        <View style={[styles.center, { gap: 16 }]}>
-          <Body>Sem conexão com o servidor. Suas mensagens continuam protegidas.</Body>
-          <Button title="Tentar de novo" onPress={() => void resume(pending)} />
-          <Button title="Sair da conta" variant="ghost" onPress={() => void signedOut()} />
-        </View>
-      </Screen>
+      <WelcomeScreen
+        deps={deps}
+        settings={settings}
+        onNode={(n) => {
+          adopt(n);
+          enter(n);
+        }}
+      />
     );
-  } else if (phase === 'out') {
-    body = <AuthScreen settings={settings} notice={notice} onAuthenticated={onAuthenticated} />;
-  } else if (phase === 'locked' && session) {
-    body = <LockScreen session={session} onUnlocked={() => goto('in')} onLogout={() => void logout()} />;
+  } else if (phase === 'locked' && node) {
+    body = <LockScreen node={node} onUnlocked={() => enter(node)} onForget={forgetDevice} />;
+  } else if (phase === 'pending' && ctx) {
+    body = (
+      <AppContext.Provider value={ctx}>
+        <PendingScreen />
+      </AppContext.Provider>
+    );
   } else if (phase === 'in' && ctx) {
     body = (
       <AppContext.Provider value={ctx}>
@@ -239,7 +226,7 @@ function Root() {
   }
 
   return (
-    <View style={{ flex: 1 }} onTouchStart={() => (lastTouch.current = Date.now())}>
+    <View style={{ flex: 1 }} onTouchStart={touch}>
       <StatusBar style="auto" />
       {body}
       {covered ? (

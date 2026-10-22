@@ -1,75 +1,66 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
-import type { KeyPinStore, LocalVaultRecord, LocalVaultStore } from '@sigilo/core';
+import type { LocalStore, Slot } from '@sigilo/core/v2';
 
-// Só vai para o armazenamento seguro do sistema (Keychain/Keystore): token de sessão e configurações.
-// NUNCA texto de mensagem, senha ou chave privada em claro.
+/*
+ * Onde cada coisa fica no aparelho:
+ *   vault, queue, meta  → Keychain (iOS) / Keystore (Android): chaves cifradas pela senha, chave da caixa postal e o perfil
+ *   state               → armazenamento comum, mas JÁ CIFRADO pelo cofre (contatos e certificados): só legível com a senha
+ * Nunca texto de mensagem, nem a senha.
+ */
 
-export interface StoredAuth {
-  baseUrl: string;
-  handle: string;
-  token: string;
-}
+const SECURE: Slot[] = ['vault', 'queue', 'meta'];
+const key = (slot: Slot) => `sigilo2.${slot}`;
+
+export const mobileStore: LocalStore = {
+  async get(slot) {
+    try {
+      return SECURE.includes(slot) ? await SecureStore.getItemAsync(key(slot)) : await AsyncStorage.getItem(key(slot));
+    } catch {
+      return null;
+    }
+  },
+  async set(slot, value) {
+    if (SECURE.includes(slot)) await SecureStore.setItemAsync(key(slot), value, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY });
+    else await AsyncStorage.setItem(key(slot), value);
+  },
+  async remove(slot) {
+    if (SECURE.includes(slot)) await SecureStore.deleteItemAsync(key(slot)).catch(() => undefined);
+    else await AsyncStorage.removeItem(key(slot));
+  },
+};
 
 export interface Settings {
-  /** 0 = bloqueia assim que o app vai para segundo plano. */
+  /** 0 = tranca assim que o app vai para segundo plano. */
   autoLockSeconds: number;
   /** 0 = desligado. */
   idleLockMinutes: number;
-  lastServer: string;
-  lastHandle: string;
+  /** De quanto em quanto tempo consulta o relé com o app aberto. Mais espaçado = menos pedidos (e menos custo no relé). */
+  pollSeconds: number;
+  lastRelay: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   autoLockSeconds: 0,
   idleLockMinutes: 5,
-  lastServer: process.env.EXPO_PUBLIC_SERVER_URL ?? '',
-  lastHandle: '',
+  pollSeconds: 10,
+  lastRelay: process.env.EXPO_PUBLIC_RELAY_URL ?? '',
 };
 
-const AUTH_KEY = 'sigilo.auth';
-const SETTINGS_KEY = 'sigilo.settings';
+/** Só para os testes de interface: acelera a consulta. Em produção fica indefinido. */
+export const POLL_OVERRIDE_MS = process.env.EXPO_PUBLIC_POLL_MS ? Number(process.env.EXPO_PUBLIC_POLL_MS) : undefined;
+/** Consulta mais rápida enquanto uma conversa está aberta. */
+export const CHAT_POLL_MS = POLL_OVERRIDE_MS ?? 3000;
 
-async function readJson<T>(key: string): Promise<T | null> {
+const SETTINGS_KEY = 'sigilo2.settings';
+
+export async function loadSettings(): Promise<Settings> {
   try {
-    const raw = await SecureStore.getItemAsync(key);
-    return raw ? (JSON.parse(raw) as T) : null;
+    const raw = await SecureStore.getItemAsync(SETTINGS_KEY);
+    return { ...DEFAULT_SETTINGS, ...(raw ? (JSON.parse(raw) as Partial<Settings>) : {}) };
   } catch {
-    return null;
+    return DEFAULT_SETTINGS;
   }
 }
 
-export const loadAuth = () => readJson<StoredAuth>(AUTH_KEY);
-export const saveAuth = (auth: StoredAuth) => SecureStore.setItemAsync(AUTH_KEY, JSON.stringify(auth));
-export const clearAuth = () => SecureStore.deleteItemAsync(AUTH_KEY).catch(() => {});
-
-export async function loadSettings(): Promise<Settings> {
-  return { ...DEFAULT_SETTINGS, ...(await readJson<Partial<Settings>>(SETTINGS_KEY)) };
-}
 export const saveSettings = (s: Settings) => SecureStore.setItemAsync(SETTINGS_KEY, JSON.stringify(s));
-
-const safe = (s: string) => s.replace(/[^A-Za-z0-9._-]/g, '_');
-
-/** Chaves públicas já vistas dos contatos (confiança no primeiro uso), separadas por conta neste aparelho. */
-export function pinStoreFor(handle: string): KeyPinStore {
-  const key = (userId: string) => `sigilo.pin.${safe(handle)}.${safe(userId)}`;
-  return {
-    get: async (userId) => (await SecureStore.getItemAsync(key(userId))) ?? undefined,
-    set: (userId, publicKey) => SecureStore.setItemAsync(key(userId), publicKey),
-  };
-}
-
-/**
- * Cofre local: a chave privada embrulhada com a senha (KDF barato) para desbloquear rápido.
- * Fica no Keychain (iOS, só neste aparelho e com ele destrancado) ou no Keystore (Android).
- */
-export function localVaultStoreFor(handle: string): LocalVaultStore {
-  const key = `sigilo.vault.${safe(handle)}`;
-  return {
-    load: async () => {
-      const raw = await SecureStore.getItemAsync(key);
-      return raw ? (JSON.parse(raw) as LocalVaultRecord) : null;
-    },
-    save: (record) => SecureStore.setItemAsync(key, JSON.stringify(record), { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }),
-    clear: () => SecureStore.deleteItemAsync(key),
-  };
-}

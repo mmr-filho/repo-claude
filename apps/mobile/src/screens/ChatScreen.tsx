@@ -1,56 +1,53 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, FlatList, KeyboardAvoidingView, Pressable, Text, TextInput, View } from 'react-native';
+import { FlatList, KeyboardAvoidingView, Pressable, Text, TextInput, View } from 'react-native';
 import { usePreventScreenCapture } from 'expo-screen-capture';
-import { KeyChangedError, LockedError, type ChatMessage, type Contact } from '@sigilo/core';
-import { useApp, useServerEvents } from '../app-context';
+import { b64, safetyNumber } from '@sigilo/core';
+import { LockedError, type ContactView } from '@sigilo/core/v2';
+import { useApp, useFastPolling, usePollEvents } from '../app-context';
+import { errorText } from '../errors';
 import { space, useTheme } from '../theme';
-import { Avatar, Banner, Body, Button, H2, Muted, Row, Screen, Sheet, errorMessage } from '../ui';
+import { Avatar, Banner, Body, Button, Muted, Row, Screen, Sheet, confirmAction } from '../ui';
 
 /** Linha na tela. Existe só na memória deste componente: sair da conversa a destrói. */
-interface Line extends ChatMessage {
-  localAt: number;
-  /** Mensagem minha que o destinatário já leu: o texto é apagado da tela. */
-  burned?: boolean;
+interface Line {
+  id: string;
+  direction: 'in' | 'out';
+  text: string;
+  sentAt: number;
+  status?: 'sent' | 'queued' | 'read';
 }
 
-export function ChatScreen({ peer, onBack }: { peer: Contact; onBack: () => void }) {
-  const { session, touch } = useApp();
+export function ChatScreen({ peer, onBack }: { peer: ContactView; onBack: () => void }) {
+  const { node, touch, pollNow } = useApp();
   const t = useTheme();
   usePreventScreenCapture(); // bloqueia captura de tela (Android) enquanto o texto está visível
+  useFastPolling();
 
   const [lines, setLines] = useState<Line[]>([]);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState<string>();
-  const [unreadable, setUnreadable] = useState<string[]>([]);
-  const [keyChanged, setKeyChanged] = useState<KeyChangedError | null>(null);
-  const [showVerify, setShowVerify] = useState(false);
   const [sending, setSending] = useState(false);
+  const [showVerify, setShowVerify] = useState(false);
   const mounted = useRef(true);
   const list = useRef<FlatList<Line>>(null);
+  const available = node.contacts().some((c) => c.box === peer.box);
 
+  /** Traz as mensagens recebidas (apagando-as do relé) e o estado das enviadas. */
   const load = useCallback(async () => {
-    const startedAt = Date.now();
     try {
-      const convo = await session.openConversation(peer.id);
+      const c = await node.openConversation(peer.box);
       if (!mounted.current) return;
-      setUnreadable(convo.unreadable);
       setError(undefined);
       setLines((prev) => {
-        const known = new Set(prev.map((l) => l.id));
-        const stillPending = new Set(convo.messages.filter((m) => m.direction === 'out').map((m) => m.id));
-        const added = convo.messages.filter((m) => !known.has(m.id)).map((m) => ({ ...m, localAt: Date.now() }));
-        // Mensagem minha que já estava na tela e sumiu do servidor foi lida (ou recolhida) enquanto eu estava offline.
-        const aged = prev.map((l) =>
-          l.direction === 'out' && !l.burned && l.localAt < startedAt && !stillPending.has(l.id) ? { ...l, text: '', burned: true } : l,
-        );
-        return [...aged, ...added].sort((a, b) => a.createdAt - b.createdAt);
+        const incoming = new Map(prev.filter((l) => l.direction === 'in').map((l) => [l.id, l]));
+        for (const m of c.messages) incoming.set(m.id, { id: m.id, direction: 'in', text: m.text, sentAt: m.sentAt });
+        const outgoing = c.sent.map((s): Line => ({ id: s.id, direction: 'out', text: s.status === 'read' ? '' : s.text, sentAt: s.sentAt, status: s.status }));
+        return [...incoming.values(), ...outgoing].sort((a, b) => a.sentAt - b.sentAt);
       });
     } catch (err) {
-      if (!mounted.current) return;
-      if (err instanceof KeyChangedError) setKeyChanged(err);
-      else if (!(err instanceof LockedError)) setError(errorMessage(err));
+      if (mounted.current && !(err instanceof LockedError)) setError(errorText(err));
     }
-  }, [session, peer.id]);
+  }, [node, peer.box]);
 
   useEffect(() => {
     mounted.current = true;
@@ -60,11 +57,8 @@ export function ChatScreen({ peer, onBack }: { peer: Contact; onBack: () => void
     };
   }, [load]);
 
-  useServerEvents((e) => {
-    if (e.type === 'message.new' && e.senderId === peer.id) void load();
-    else if (e.type === 'message.read') setLines((p) => p.map((l) => (e.ids.includes(l.id) ? { ...l, text: '', burned: true } : l)));
-    else if (e.type === 'message.recalled') setLines((p) => p.filter((l) => l.id !== e.id));
-    else if (e.type === 'contacts.changed') void load();
+  usePollEvents((r) => {
+    if ((r.unread[peer.box] ?? 0) > 0 || r.receipts.length > 0) void load();
   });
 
   async function send() {
@@ -72,73 +66,51 @@ export function ChatScreen({ peer, onBack }: { peer: Contact; onBack: () => void
     if (!text || sending) return;
     setSending(true);
     try {
-      const msg = await session.send(peer.id, text);
-      setLines((p) => [...p, { ...msg, localAt: Date.now() }]);
+      const r = await node.send(peer.box, text);
       setDraft('');
-      setError(undefined);
+      setError(r.status === 'queued' ? 'Sem conexão: a mensagem está na fila e sai quando houver internet.' : undefined);
+      await load();
+      void pollNow();
     } catch (err) {
-      if (err instanceof KeyChangedError) setKeyChanged(err);
-      else setError(errorMessage(err));
+      setError(errorText(err));
     } finally {
       setSending(false);
     }
   }
 
   function recall(line: Line) {
-    if (line.direction !== 'out' || line.burned) return;
-    Alert.alert('Apagar para todos?', 'Só funciona enquanto o destinatário ainda não leu.', [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Apagar',
-        style: 'destructive',
-        onPress: () =>
-          session
-            .recall(line.id)
-            .then(() => setLines((p) => p.filter((l) => l.id !== line.id)))
-            .catch(() => Alert.alert('Não foi possível apagar', 'A mensagem já foi lida ou não existe mais.')),
-      },
-    ]);
+    if (line.direction !== 'out' || line.status === 'read') return;
+    confirmAction('Apagar para todos?', 'Só funciona enquanto o destinatário ainda não leu.', 'Apagar', () => {
+      node
+        .recall(line.id)
+        .then(load)
+        .catch(() => setError('A mensagem já foi lida ou não existe mais.'));
+    });
   }
 
-  async function trustNewKey() {
-    await session.trustKey(peer.id);
-    setKeyChanged(null);
-    void load();
-  }
-
-  const safety = session.safetyNumberWith(keyChanged?.contact ?? peer);
+  const safety = safetyNumber(b64.decode(node.myBox), b64.decode(peer.box));
 
   return (
     <Screen padded={false}>
       <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>
         <Row style={{ padding: space.md, borderBottomWidth: 1, borderBottomColor: t.border, backgroundColor: t.surface }}>
-          <Pressable onPress={onBack} hitSlop={12}>
+          <Pressable onPress={onBack} hitSlop={12} accessibilityLabel="Voltar">
             <Text style={{ color: t.primary, fontSize: 28 }}>‹</Text>
           </Pressable>
-          <Avatar name={peer.displayName} size={38} />
+          <Avatar name={peer.name} size={38} />
           <View style={{ flex: 1 }}>
-            <Text style={{ color: t.text, fontWeight: '700', fontSize: 16 }}>{peer.displayName}</Text>
-            <Muted>
-              {peer.handle}
-              {peer.sameNetwork ? '' : ` · ${peer.networkName}`}
-            </Muted>
+            <Text style={{ color: t.text, fontWeight: '700', fontSize: 16 }}>{peer.name}</Text>
+            <Muted>{peer.sameNetwork ? 'Mesma rede' : peer.networkName}</Muted>
           </View>
           <Button title="🔑 Verificar" variant="secondary" small onPress={() => setShowVerify(true)} />
         </Row>
 
         <View style={{ padding: space.md, gap: space.sm }}>
           <Muted style={{ textAlign: 'center' }}>
-            🔒 Ponta a ponta. Mensagens recebidas já foram apagadas do servidor e somem desta tela quando você sai da conversa.
+            🔒 Ponta a ponta. Mensagens recebidas já foram apagadas do relé e somem desta tela quando você sai da conversa.
           </Muted>
-          {error ? <Banner kind="error">{error}</Banner> : null}
-          {unreadable.length ? (
-            <Banner kind="warn">
-              {unreadable.length} mensagem(ns) não puderam ser abertas (adulteradas ou de origem não confiável).{' '}
-              <Text style={{ fontWeight: '700' }} onPress={() => session.discard(unreadable).then(() => setUnreadable([]))}>
-                Descartar
-              </Text>
-            </Banner>
-          ) : null}
+          {!available ? <Banner kind="warn">Este contato não está mais disponível (acesso retirado, certificado vencido ou rede desconectada).</Banner> : null}
+          {error ? <Banner kind={error.startsWith('Sem conexão: a mensagem') ? 'warn' : 'error'}>{error}</Banner> : null}
         </View>
 
         <FlatList
@@ -161,67 +133,43 @@ export function ChatScreen({ peer, onBack }: { peer: Contact; onBack: () => void
             placeholderTextColor={t.muted}
             multiline
             maxLength={4000}
+            editable={available}
             style={{ flex: 1, maxHeight: 120, color: t.text, backgroundColor: t.bg, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 10, fontSize: 16 }}
           />
-          <Button title="Enviar" onPress={send} busy={sending} disabled={!draft.trim()} small />
+          <Button title="Enviar" onPress={send} busy={sending} disabled={!draft.trim() || !available} small />
         </Row>
       </KeyboardAvoidingView>
 
       <Sheet visible={showVerify} onClose={() => setShowVerify(false)} title="Verificar segurança">
-        <Body>Compare estes números com os que aparecem no aparelho de {peer.displayName}, pessoalmente ou por telefone. Se forem iguais, ninguém (nem o servidor) está interceptando a conversa.</Body>
-        <NumberBox value={safety} />
+        <Body>
+          Compare estes números com os que aparecem no aparelho de {peer.name}, pessoalmente ou por telefone. Se forem iguais, ninguém (nem o administrador da rede) está se passando por ela.
+        </Body>
+        <View style={{ backgroundColor: t.surfaceAlt, borderRadius: 12, padding: space.md }}>
+          <Text selectable style={{ color: t.text, fontSize: 18, letterSpacing: 1, lineHeight: 30, textAlign: 'center' }}>
+            {safety}
+          </Text>
+        </View>
         <Button title="Fechar" variant="secondary" onPress={() => setShowVerify(false)} />
       </Sheet>
-
-      <Sheet visible={!!keyChanged} onClose={onBack} title="⚠️ A chave de segurança mudou">
-        <Body>
-          A chave de {peer.displayName} é diferente da que este aparelho conhecia. Isso acontece quando a pessoa refaz a conta — ou quando alguém tenta se passar por ela.
-          Confirme o novo número de segurança com ela antes de continuar.
-        </Body>
-        <NumberBox value={safety} />
-        <Button title="Confirmei, confiar na nova chave" onPress={trustNewKey} />
-        <Button title="Voltar" variant="secondary" onPress={onBack} />
-      </Sheet>
     </Screen>
-  );
-}
-
-function NumberBox({ value }: { value: string }) {
-  const t = useTheme();
-  return (
-    <View style={{ backgroundColor: t.surfaceAlt, borderRadius: 12, padding: space.md }}>
-      <Text selectable style={{ color: t.text, fontSize: 18, letterSpacing: 1, lineHeight: 30, textAlign: 'center', fontVariant: ['tabular-nums'] }}>
-        {value}
-      </Text>
-    </View>
   );
 }
 
 function Bubble({ line, onLongPress }: { line: Line; onLongPress: () => void }) {
   const t = useTheme();
   const mine = line.direction === 'out';
-  const time = new Date(line.sentAt || line.createdAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const burned = mine && line.status === 'read';
+  const time = new Date(line.sentAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   return (
     <Pressable
       onLongPress={onLongPress}
-      style={{
-        alignSelf: mine ? 'flex-end' : 'flex-start',
-        maxWidth: '82%',
-        backgroundColor: mine ? t.bubbleOut : t.bubbleIn,
-        borderRadius: 16,
-        paddingHorizontal: 12,
-        paddingVertical: 8,
-        gap: 2,
-      }}
+      style={{ alignSelf: mine ? 'flex-end' : 'flex-start', maxWidth: '82%', backgroundColor: mine ? t.bubbleOut : t.bubbleIn, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8, gap: 2 }}
     >
-      {line.burned ? (
-        <Text style={{ color: t.muted, fontStyle: 'italic' }}>🔥 Lida e apagada</Text>
-      ) : (
-        <Text style={{ color: t.text, fontSize: 16 }}>{line.text}</Text>
-      )}
+      {burned ? <Text style={{ color: t.muted, fontStyle: 'italic' }}>🔥 Lida e apagada</Text> : <Text style={{ color: t.text, fontSize: 16 }}>{line.text}</Text>}
       <Text style={{ color: t.muted, fontSize: 11, alignSelf: 'flex-end' }}>
         {time}
-        {mine && !line.burned ? ' · enviada, aguardando leitura' : ''}
+        {mine && line.status === 'sent' ? ' · enviada, aguardando leitura' : ''}
+        {mine && line.status === 'queued' ? ' · na fila (sem conexão)' : ''}
       </Text>
     </Pressable>
   );

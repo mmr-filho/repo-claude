@@ -6,7 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 
 export function serve({ dist, apiPort, port }) {
-  const API = /^\/(auth|me|contacts|messages|admin|server-info|health|ws)(\/|\?|$)/;
+  const API = /^\/(q|health)(\/|\?|$)/;
   const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.png': 'image/png', '.ico': 'image/x-icon', '.ttf': 'font/ttf' };
 
   const server = http.createServer((req, res) => {

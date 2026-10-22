@@ -1,12 +1,16 @@
 import { type ReactNode } from 'react';
 import {
   ActivityIndicator,
+  Alert,
+  Platform,
   Modal,
   Pressable,
   StyleSheet,
   Text,
+  ScrollView,
   TextInput,
   View,
+  useWindowDimensions,
   type StyleProp,
   type TextInputProps,
   type ViewStyle,
@@ -45,6 +49,10 @@ export function H2({ children }: { children: ReactNode }) {
 export function Body({ children, style }: { children: ReactNode; style?: StyleProp<ViewStyle> }) {
   const t = useTheme();
   return <Text style={[{ fontSize: 15, lineHeight: 21, color: t.text }, style as object]}>{children}</Text>;
+}
+
+export function Strong({ children }: { children: ReactNode }) {
+  return <Text style={{ fontWeight: '700' }}>{children}</Text>;
 }
 
 export function Muted({ children, style }: { children: ReactNode; style?: object }) {
@@ -172,12 +180,16 @@ export function Avatar({ name, size = 44 }: { name: string; size?: number }) {
 export function Sheet({ visible, onClose, title, children }: { visible: boolean; onClose: () => void; title: string; children: ReactNode }) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable style={{ flex: 1, backgroundColor: t.overlay }} onPress={onClose} />
-      <View style={{ backgroundColor: t.bg, padding: space.lg, paddingBottom: space.lg + insets.bottom, borderTopLeftRadius: 20, borderTopRightRadius: 20, gap: space.md }}>
-        <H2>{title}</H2>
-        {children}
+      {/* Rola quando o conteúdo não cabe (celulares pequenos, QR code + botões) */}
+      <View style={{ backgroundColor: t.bg, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: height * 0.92 }}>
+        <ScrollView contentContainerStyle={{ padding: space.lg, paddingBottom: space.lg + insets.bottom, gap: space.md }} keyboardShouldPersistTaps="handled">
+          <H2>{title}</H2>
+          {children}
+        </ScrollView>
       </View>
     </Modal>
   );
@@ -199,4 +211,16 @@ export function Row({ children, style }: { children: ReactNode; style?: StylePro
 
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : 'Algo deu errado';
+}
+
+/** Confirmação que funciona no celular (Alert) e no navegador dos testes (window.confirm). */
+export function confirmAction(title: string, message: string, confirmLabel: string, onConfirm: () => void, destructive = true): void {
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined' && window.confirm(`${title}\n\n${message}`)) onConfirm();
+    return;
+  }
+  Alert.alert(title, message, [
+    { text: 'Cancelar', style: 'cancel' },
+    { text: confirmLabel, style: destructive ? 'destructive' : 'default', onPress: onConfirm },
+  ]);
 }

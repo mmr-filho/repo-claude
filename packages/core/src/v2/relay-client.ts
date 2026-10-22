@@ -70,6 +70,11 @@ export class RelayClient {
     return (r.json as { n: number }).n;
   }
 
+  async deleteQueue(base: string, qid: string, key: SignKeys): Promise<void> {
+    const r = await this.call(base, 'DELETE', `/q/${qid}`, { key });
+    if (r.status !== 204 && r.status !== 404 && r.status !== 401) throw new RelayError(r.status, 'Não foi possível apagar a caixa postal');
+  }
+
   async ack(base: string, qid: string, key: SignKeys, id: string): Promise<void> {
     const r = await this.call(base, 'DELETE', `/q/${qid}/m/${id}`, { key });
     if (r.status !== 204 && r.status !== 404) throw new RelayError(r.status, 'Não foi possível confirmar a leitura');

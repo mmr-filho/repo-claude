@@ -1,18 +1,26 @@
 import { createContext, useContext, useEffect, useRef } from 'react';
-import type { ServerEvent, SigiloSession } from '@sigilo/core';
+import type { LocalNode, PollResult } from '@sigilo/core/v2';
 import type { Settings } from './storage';
 
 export interface AppContextValue {
-  session: SigiloSession;
+  node: LocalNode;
   settings: Settings;
   updateSettings: (patch: Partial<Settings>) => void;
   lockNow: () => void;
-  /** Marca atividade do usuário (digitação conta para o bloqueio por inatividade). */
-  touch: () => void;
-  logout: () => Promise<void>;
-  /** Tempo real conectado (avisos de mensagem nova/lida chegam na hora). */
+  /** Apaga a identidade deste aparelho. Sem volta. */
+  forgetDevice: () => Promise<void>;
+  /** A última consulta ao relé funcionou. */
   online: boolean;
-  subscribe: (handler: (e: ServerEvent) => void) => () => void;
+  /** Mensagens não lidas por contato (sem conteúdo). */
+  unread: Record<string, number>;
+  /** Aumenta quando contatos, vínculos ou membros podem ter mudado: telas releem do nó. */
+  version: number;
+  pollNow: () => Promise<void>;
+  /** Recebe o resultado de cada consulta (recibos, novas mensagens, mudanças). */
+  subscribe: (handler: (r: PollResult) => void) => () => void;
+  /** Enquanto verdadeiro, consulta com mais frequência (conversa aberta). */
+  setFastPolling: (on: boolean) => void;
+  touch: () => void;
 }
 
 export const AppContext = createContext<AppContextValue | null>(null);
@@ -23,10 +31,17 @@ export function useApp(): AppContextValue {
   return ctx;
 }
 
-/** Recebe eventos do servidor (mensagem nova, lida, recolhida, contatos mudaram). */
-export function useServerEvents(handler: (e: ServerEvent) => void): void {
+export function usePollEvents(handler: (r: PollResult) => void): void {
   const { subscribe } = useApp();
   const ref = useRef(handler);
   ref.current = handler;
-  useEffect(() => subscribe((e) => ref.current(e)), [subscribe]);
+  useEffect(() => subscribe((r) => ref.current(r)), [subscribe]);
+}
+
+export function useFastPolling(): void {
+  const { setFastPolling } = useApp();
+  useEffect(() => {
+    setFastPolling(true);
+    return () => setFastPolling(false);
+  }, [setFastPolling]);
 }

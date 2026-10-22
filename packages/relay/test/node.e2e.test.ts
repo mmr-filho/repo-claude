@@ -81,7 +81,7 @@ describe('v2: rede sem servidor de contas', () => {
     }
 
     // Bruno fecha o app e reabre: cofre trancado. Sem senha sabe só QUANTAS mensagens esperam.
-    bruno.node.lock();
+    await bruno.node.lock();
     assert.equal(bruno.node.isUnlocked, false);
     const reopened = (await LocalNode.load(bruno.deps))!;
     assert.equal(reopened.isUnlocked, false);
@@ -117,7 +117,7 @@ describe('v2: rede sem servidor de contas', () => {
     await settle([admin, ana.node, bruno.node]);
     await ana.node.send(bruno.node.myBox, 'chegou antes de trancar');
     assert.equal((await bruno.node.poll()).unread[ana.node.myBox], 1);
-    bruno.node.lock(); // texto saiu da memória
+    await bruno.node.lock(); // texto saiu da memória
     await bruno.node.unlock(bruno.password);
     assert.equal((await bruno.node.poll()).unread[ana.node.myBox], 1, 'nada foi apagado por trancar');
     assert.deepEqual((await bruno.node.openConversation(ana.node.myBox)).messages.map((m) => m.text), ['chegou antes de trancar']);
@@ -353,7 +353,7 @@ describe('v2: vários meios de envio', () => {
 
     // O aparelho da Ana perde a internet (mesmo armazenamento, outro cliente de rede).
     const anaBox = ana.node.myBox;
-    ana.node.lock();
+    await ana.node.lock();
     const down = makeDeps({ store: ana.deps.store, fetch: offline });
     const anaOffline = (await LocalNode.load(down))!;
     await anaOffline.unlock(ana.password);
@@ -361,7 +361,7 @@ describe('v2: vários meios de envio', () => {
     assert.equal(r.status, 'queued');
     assert.equal((await bruno.node.poll()).unread[anaBox], undefined);
 
-    anaOffline.lock();
+    await anaOffline.lock();
     const up = makeDeps({ store: ana.deps.store });
     const anaOnline = (await LocalNode.load(up))!;
     await anaOnline.unlock(ana.password);
@@ -380,7 +380,7 @@ describe('v2: vários meios de envio', () => {
     const ana = await LocalNode.join(online, { password: 'senha-ana-123', inviteCode: invite.code });
     const bruno = await enroll(admin, 'Bruno');
     await settle([admin, ana, bruno.node]);
-    ana.lock();
+    await ana.lock();
     const anaNode = (await LocalNode.load(anaDeps))!;
     await anaNode.unlock('senha-ana-123');
     const brunoBox = bruno.node.myBox;
@@ -393,7 +393,7 @@ describe('v2: vários meios de envio', () => {
 
     // Com permissão e número: sai por SMS, cabendo em poucas partes, e o outro aparelho lê.
     await anaNode.setSmsConsent(brunoBox, true, '+5511999990000');
-    anaNode.lock();
+    await anaNode.lock();
     await anaNode.unlock('senha-ana-123');
     const sent = await anaNode.send(brunoBox, 'Reunião 15h');
     assert.equal(sent.status, 'sent');
@@ -416,5 +416,99 @@ describe('v2: vários meios de envio', () => {
     const r = await ana.send(bruno.node.myBox, 'pela internet');
     assert.equal(r.via, 'relay');
     assert.equal(smsOut.length, 0);
+  });
+});
+
+describe('v2: o que a interface exige', () => {
+  let relay: Relay;
+  before(async () => {
+    relay = await startRelay();
+  });
+  after(() => relay.close());
+
+  it('operações simultâneas não se atropelam: várias consultas ao mesmo tempo entregam a mensagem uma vez', async () => {
+    const admin = await newNetwork(relay.url, 'Simultaneo', 'Adm');
+    const ana = await enroll(admin, 'Ana');
+    const bruno = await enroll(admin, 'Bruno');
+    await settle([admin, ana.node, bruno.node]);
+    const anaBox = ana.node.myBox;
+    await Promise.all([ana.node.send(bruno.node.myBox, 'primeira'), ana.node.send(bruno.node.myBox, 'segunda'), ana.node.poll()]);
+    const polls = await Promise.all([bruno.node.poll(), bruno.node.poll(), bruno.node.poll(), bruno.node.poll()]);
+    for (const p of polls) assert.equal(p.unread[anaBox], 2);
+    const [a, b] = await Promise.all([bruno.node.openConversation(anaBox), bruno.node.openConversation(anaBox)]);
+    assert.equal(a.messages.length + b.messages.length, 2, 'cada mensagem é entregue exatamente uma vez');
+    assert.deepEqual([...a.messages, ...b.messages].map((m) => m.text).sort(), ['primeira', 'segunda']);
+  });
+
+  it('trancar no meio de uma consulta não perde a entrada na rede (a resposta já foi apagada do relé)', async () => {
+    const admin = await newNetwork(relay.url, 'Trava2', 'Adm');
+    const invite = await admin.createInvite('Ana');
+    const deps = makeDeps();
+    const ana = await LocalNode.join(deps, { password: 'senha-ana-123', inviteCode: invite.code });
+    await admin.poll(); // a resposta de entrada está na caixa da Ana
+    const polling = ana.poll();
+    const locking = ana.lock(); // tranca enquanto a consulta ainda está em andamento
+    assert.equal(ana.isUnlocked, false, 'a partir de agora, novas operações são recusadas');
+    await assert.rejects(() => ana.poll(), LockedError);
+    await Promise.all([polling, locking]);
+
+    const reopened = (await LocalNode.load(deps))!;
+    await reopened.unlock('senha-ana-123');
+    assert.equal(reopened.isEnrolled, true, 'a resposta foi processada e gravada antes de trancar');
+    assert.equal(reopened.me?.name, 'Ana');
+  });
+
+  it('trocar a senha: a antiga deixa de abrir, a nova abre, e a identidade continua a mesma', async () => {
+    const admin = await newNetwork(relay.url, 'Senha', 'Adm');
+    const ana = await enroll(admin, 'Ana');
+    const boxBefore = ana.node.myBox;
+    await assert.rejects(() => ana.node.changePassword('errada-errada-1', 'nova-senha-forte'), WrongPasswordError);
+    await ana.node.changePassword(ana.password, 'nova-senha-forte');
+    await ana.node.lock();
+    const reopened = (await LocalNode.load(ana.deps))!;
+    await assert.rejects(() => reopened.unlock(ana.password), WrongPasswordError);
+    await reopened.unlock('nova-senha-forte');
+    assert.equal(reopened.myBox, boxBefore, 'os contatos não precisam reverificar nada');
+    assert.ok(reopened.isEnrolled);
+  });
+
+  it('o administrador mantém a chave da rede ao trocar a senha', async () => {
+    const admin = await newNetwork(relay.url, 'SenhaAdm', 'Adm');
+    const net = admin.network!.net;
+    await admin.changePassword('senha-do-admin', 'outra-senha-do-admin');
+    const deps = (admin as unknown as { deps: ReturnType<typeof makeDeps> }).deps;
+    await admin.lock();
+    const again = (await LocalNode.load(deps))!;
+    await again.unlock('outra-senha-do-admin');
+    assert.equal(again.isAdmin, true);
+    assert.equal(again.network?.net, net);
+    assert.match((await again.createInvite('Teste')).code, /^sigilo2-convite:/);
+  });
+
+  it('apagar a identidade do aparelho: some tudo local e a caixa postal no relé; não há volta sem convite novo', async () => {
+    const admin = await newNetwork(relay.url, 'Esquece', 'Adm');
+    const ana = await enroll(admin, 'Ana');
+    const qid = ana.node.profile.qid;
+    const me = ana.node.me!;
+    await ana.node.lock();
+    await LocalNode.forget(ana.deps);
+    assert.equal(await LocalNode.load(ana.deps), null);
+    assert.equal(ana.deps.store.data.size, 0);
+    // A caixa postal deixou de existir: depositar nela agora é recusado.
+    await assert.rejects(() => new RelayClient().send(me.relay, qid, new Uint8Array(64)), /não existe/);
+  });
+
+  it('resumo do que aguarda leitura do outro lado', async () => {
+    const admin = await newNetwork(relay.url, 'Aguarda', 'Adm');
+    const ana = await enroll(admin, 'Ana');
+    const bruno = await enroll(admin, 'Bruno');
+    await settle([admin, ana.node, bruno.node]);
+    await ana.node.send(bruno.node.myBox, 'um');
+    await ana.node.send(bruno.node.myBox, 'dois');
+    assert.deepEqual(ana.node.awaitingRead(), { [bruno.node.myBox]: 2 });
+    await bruno.node.poll();
+    await bruno.node.openConversation(ana.node.myBox);
+    await ana.node.poll();
+    assert.deepEqual(ana.node.awaitingRead(), {});
   });
 });

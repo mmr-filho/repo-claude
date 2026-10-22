@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "node --import tsx --watch src/node-server.ts",
     "start": "node dist/node-server.js",
-    "build": "esbuild src/node-server.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outdir=dist",
+    "build": "esbuild src/node-server.ts --bundle --platform=node --format=esm --target=node22 --external:fastify --external:@fastify/rate-limit --outdir=dist",
     "test": "node --import tsx --test --test-concurrency=1 \"test/**/*.test.ts\"",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json",
     "dev:worker": "wrangler dev --local",
