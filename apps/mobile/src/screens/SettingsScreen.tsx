@@ -2,8 +2,7 @@ import { useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { useApp } from '../app-context';
 import { biometricAvailable, clearBiometricKey, saveBiometricKey } from '../biometric';
-import { MIN_PASSWORD } from '../config';
-import { passwordProblem, weakPasswordHint } from '../password';
+import { PASSWORD_RULE, passwordProblem, weakPasswordHint } from '../password';
 import { errorText } from '../errors';
 import { space, useTheme } from '../theme';
 import { Banner, Body, Button, Card, Field, H1, H2, Muted, Row, Sheet } from '../ui';
@@ -182,7 +181,7 @@ export function SettingsScreen() {
         <Field label="Senha atual" value={current} onChangeText={setCurrent} secureTextEntry />
         <Field label="Nova senha" value={next} onChangeText={setNext} secureTextEntry />
         <Field label="Repita a nova senha" value={confirm} onChangeText={setConfirm} secureTextEntry />
-        <Muted>Mínimo de {MIN_PASSWORD} caracteres.</Muted>
+        <Muted>{PASSWORD_RULE}</Muted>
         {weakPasswordHint(next) ? <Banner kind="warn">{weakPasswordHint(next)}</Banner> : null}
         {error ? <Banner kind="error">{error}</Banner> : null}
         <Button title="Alterar" onPress={changePassword} busy={busy} disabled={!current || !next} />

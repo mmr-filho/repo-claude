@@ -3,9 +3,9 @@ import { KeyboardAvoidingView, ScrollView, View } from 'react-native';
 import { LocalNode, decodeCode, type Invite, type NodeDeps } from '@sigilo/core/v2';
 import { biometricAvailable, saveBiometricKey } from '../biometric';
 import { ScanSheet } from '../components/ScanSheet';
-import { MIN_PASSWORD, RELAY_URL } from '../config';
+import { RELAY_URL } from '../config';
 import { errorText } from '../errors';
-import { passwordProblem, weakPasswordHint } from '../password';
+import { PASSWORD_RULE, passwordProblem, weakPasswordHint } from '../password';
 import { normalizeServerUrl } from '../server-url';
 import { Banner, Body, Button, Card, Check, Field, H1, H2, Muted, Row, Screen } from '../ui';
 
@@ -67,7 +67,7 @@ export function WelcomeScreen({ deps, onNode }: { deps: NodeDeps; onNode: (node:
     <>
       <Field label="Escolha uma senha" value={password} onChangeText={setPassword} secureTextEntry textContentType="newPassword" />
       <Field label="Repita a senha" value={confirm} onChangeText={setConfirm} secureTextEntry textContentType="newPassword" />
-      <Muted>Mínimo de {MIN_PASSWORD} caracteres.</Muted>
+      <Muted>{PASSWORD_RULE}</Muted>
       {hint ? <Banner kind="warn">{hint}</Banner> : null}
       {canBiometric ? <Check label="Destravar com a digital (a senha continua valendo)" checked={useBiometric} onChange={setUseBiometric} /> : null}
       <Banner kind="warn">

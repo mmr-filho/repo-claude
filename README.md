@@ -62,7 +62,7 @@ Em outro terminal, aponte para o relé que o celular alcança. Para teste na mes
 EXPO_PUBLIC_RELAY_URL=http://192.168.0.10:3100 npm run mobile
 ```
 
-No Expo Go, toque em **Criar uma rede**, informe seu nome, o nome da rede e uma senha (mínimo de 6 caracteres; o app avisa quando ela é curta ou só de números). A caixa **"Destravar com a digital"** vem marcada nos aparelhos que têm leitor, e dá para ligar e desligar depois em **Ajustes**. Na aba **Rede → Convites**, gere um convite para outra pessoa. Para testar a conversa você precisa de **um segundo aparelho** (ou um emulador): nele, toque em **Entrar com convite**, cole o código (ou leia o QR code) e escolha a senha. A aprovação chega sozinha enquanto o app da administradora está aberto.
+No Expo Go, toque em **Criar uma rede**, informe seu nome, o nome da rede e uma senha (mínimo de 8 caracteres, com **letras e números**; símbolos e espaços são aceitos, mas não obrigatórios; o app avisa quando ela tem menos de 12 caracteres). A caixa **"Destravar com a digital"** vem marcada nos aparelhos que têm leitor, e dá para ligar e desligar depois em **Ajustes**. Na aba **Rede → Convites**, gere um convite para outra pessoa. Para testar a conversa você precisa de **um segundo aparelho** (ou um emulador): nele, toque em **Entrar com convite**, cole o código (ou leia o QR code) e escolha a senha. A aprovação chega sozinha enquanto o app da administradora está aberto.
 
 > O app exige **HTTPS** para o relé, exceto em endereços de rede local (para testes).
 
@@ -110,7 +110,7 @@ Defina `"env": { "EXPO_PUBLIC_RELAY_URL": "https://..." }` no perfil em `apps/mo
 ## Testes
 
 ```bash
-npm test                                 # núcleo (37), relé e nó de ponta a ponta (41), servidor v1 legado (41)
+npm test                                 # núcleo (37), relé e nó de ponta a ponta (41), servidor v1 legado (41), regra da senha do app (6)
 npm run typecheck                        # todos os pacotes
 npm run test:e2e                         # abre o app no Chromium contra um relé real e usa a interface
 npm run test:worker -w @sigilo/relay     # roda o relé no workerd (runtime da Cloudflare) e a suíte contra ele
@@ -133,7 +133,7 @@ Leia antes de usar com dados reais:
 - **Revogar** vale na hora para quem receber o aviso e, para todos, em até 30 dias (a validade dos certificados). Quem passa mais de 30 dias sem abrir o app precisa de um convite novo.
 - **Metadados:** o relé vê IP, horário e tamanho aproximado dos acessos; a Cloudflare, quando hospeda o relé, também.
 - **Só texto, só conversas 1 a 1.** Sem grupos, imagens ou arquivos.
-- **Senha curta é fraca.** O mínimo é 6 caracteres e o app só avisa (não impede) quando a senha é só de números ou tem menos de 10 caracteres. Quem consegue **copiar o cofre** do aparelho (celular roubado e desbloqueado à força, malware, backup) pode testar senhas offline, e o scrypt só encarece cada tentativa. Em contas medidas aqui (8 núcleos de CPU, ~37 ms por tentativa): **6 dígitos numéricos caem em cerca de 77 minutos; 6 caracteres entre letras e números, em anos**. Prefira letras e números, ou uma frase. Veja `docs/ARQUITETURA-V2.md`, seção 2.
+- **A senha é a defesa do cofre.** A regra é 8 caracteres ou mais, com letras e números (símbolos e espaços valem, mas não são obrigatórios), e o app só **avisa**, sem impedir, abaixo de 12 caracteres. Quem consegue **copiar o cofre** do aparelho (celular roubado e desbloqueado à força, malware, backup) pode testar senhas offline, e o scrypt só encarece cada tentativa. Medido aqui (8 núcleos de CPU, ~37 ms por tentativa), para uma senha **escolhida ao acaso** com 8 caracteres: só minúsculas e números levam cerca de **400 anos** num computador e uns **3 anos** com 1.000 núcleos; com maiúsculas, minúsculas e números, mais de 30 mil anos e uns 250 anos. **Senhas de gente não são ao acaso**: nomes, datas (`maria2024`) e sequências caem em minutos por dicionário. Prefira uma frase longa. Veja `docs/ARQUITETURA-V2.md`, seção 2.
 - **A digital não substitui a senha.** O cofre é aberto por uma chave guardada no Keychain/Keystore e liberada só pela biometria; se as digitais cadastradas no aparelho mudarem, essa chave se invalida e o app pede a senha de novo. Quem tem acesso à digital do dono, com o aparelho na mão, abre o app (como em qualquer app com biometria).
 
 ## Servidor v1 (legado)

@@ -9,5 +9,5 @@ const BUILT_IN_RELAY_URL = '';
 
 export const RELAY_URL: string = (process.env.EXPO_PUBLIC_RELAY_URL ?? '').trim() || BUILT_IN_RELAY_URL;
 
-/** Tamanho mínimo da senha (em caracteres). Senhas curtas são aceitas, mas o app avisa quando são fracas. */
-export const MIN_PASSWORD = 6;
+/** Tamanho mínimo da senha (em caracteres). Também exige letra e número; símbolos são aceitos, mas não obrigatórios (veja password.ts). */
+export const MIN_PASSWORD = 8;

@@ -56,15 +56,17 @@ const shot = (page, name) => page.screenshot({ path: path.join(SHOTS, `${String(
 const label = (page, text) => page.getByLabel(text, { exact: true });
 const text = (page, t, opts = {}) => page.getByText(t, { exact: true, ...opts });
 const tap = (page, t) => text(page, t).first().click();
-const PASSWORD = (n) => `senha-forte-${n}`;
+// Com hífens (símbolos são aceitos) e números (são obrigatórios, junto com letras).
+const PASSWORD = (n) => `senha-forte-${n}-2026`;
 const CODE_RE = /sigilo2-(convite|rede):[A-Za-z0-9_-]+/;
 
-async function createNetwork(page, { name, network, password = PASSWORD(name) }, shotName) {
+async function createNetwork(page, { name, network, password = PASSWORD(name), expectHint = false }, shotName) {
   if (!(await page.getByLabel('Seu nome').count())) await tap(page, 'Criar uma rede');
   await label(page, 'Seu nome').fill(name);
   await label(page, 'Nome da rede').fill(network);
   await label(page, 'Escolha uma senha').fill(password);
   await label(page, 'Repita a senha').fill(password);
+  assert.equal(await page.getByText('Quanto mais longa', { exact: false }).count(), expectHint ? 1 : 0, 'o aviso de senha curta deve aparecer só para senhas curtas');
   if (shotName) await shot(page, shotName);
   await tap(page, 'Criar rede');
   await text(page, 'Conversas').first().waitFor({ timeout: 30000 });
@@ -105,14 +107,22 @@ try {
   // O endereço do relé não é pedido: vem de dentro do app.
   await tap(marta, 'Criar uma rede');
   assert.equal(await marta.getByLabel('Endereço do relé').count(), 0, 'o cadastro não deve pedir o endereço do relé');
-  // Senha mínima de 6 caracteres: 5 é recusada.
+  // Regra da senha: 8 ou mais caracteres, com letras e números. Símbolos são aceitos, mas não obrigatórios.
   await label(marta, 'Seu nome').fill('Marta');
   await label(marta, 'Nome da rede').fill('UniRG');
-  await label(marta, 'Escolha uma senha').fill('ab12c');
-  await label(marta, 'Repita a senha').fill('ab12c');
-  await tap(marta, 'Criar rede');
-  await text(marta, 'A senha precisa ter pelo menos 6 caracteres').waitFor();
-  await shot(marta, 'senha-curta-recusada');
+  await text(marta, 'Mínimo de 8 caracteres, com letras e números', { exact: false }).waitFor();
+  const recusadas = [
+    ['ab12c', 'A senha precisa ter pelo menos 8 caracteres', 'senha-curta-recusada'],
+    ['abcdefghij', 'A senha precisa ter pelo menos um número', 'senha-sem-numero-recusada'],
+    ['1234567890', 'A senha precisa ter pelo menos uma letra', 'senha-sem-letra-recusada'],
+  ];
+  for (const [senha, mensagem, nome] of recusadas) {
+    await label(marta, 'Escolha uma senha').fill(senha);
+    await label(marta, 'Repita a senha').fill(senha);
+    await tap(marta, 'Criar rede');
+    await text(marta, mensagem).waitFor();
+    await shot(marta, nome);
+  }
   await marta.reload();
   await createNetwork(marta, { name: 'Marta', network: 'UniRG' }, 'criar-rede-formulario');
   await shot(marta, 'rede-criada-conversas-vazio');
@@ -226,7 +236,7 @@ try {
   step('segunda rede (Clínica Vida) pede conexão; a administradora da UniRG aceita');
   // Celular pequeno (360×640): a folha com o QR code precisa caber, ou rolar.
   const zeca = await newUser('zeca', { width: 360, height: 640 });
-  await createNetwork(zeca, { name: 'Zeca', network: 'Clínica Vida', password: 'zeca12' }, 'senha-de-6-caracteres-com-aviso');
+  await createNetwork(zeca, { name: 'Zeca', network: 'Clínica Vida', password: 'zeca1234', expectHint: true }, 'senha-de-8-caracteres-com-aviso');
   await tap(zeca, 'Rede');
   await tap(zeca, 'Conexões');
   await tap(zeca, 'Mostrar código da rede');
