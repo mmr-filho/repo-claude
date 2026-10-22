@@ -50,20 +50,22 @@ async function newUser(name, viewport = { width: 390, height: 844 }) {
   await page.goto(BASE);
   return page;
 }
-const shot = (page, name) => page.screenshot({ path: path.join(SHOTS, `${name}.png`) });
+let shotCount = 0;
+const shot = (page, name) => page.screenshot({ path: path.join(SHOTS, `${String(++shotCount).padStart(2, '0')}-${name}.png`) });
 const label = (page, text) => page.getByLabel(text, { exact: true });
 const text = (page, t, opts = {}) => page.getByText(t, { exact: true, ...opts });
 const tap = (page, t) => text(page, t).first().click();
 const PASSWORD = (n) => `senha-forte-${n}`;
 const CODE_RE = /sigilo2-(convite|rede):[A-Za-z0-9_-]+/;
 
-async function createNetwork(page, { name, network }) {
+async function createNetwork(page, { name, network }, shotName) {
   await tap(page, 'Criar uma rede');
   await label(page, 'Seu nome').fill(name);
   await label(page, 'Nome da rede').fill(network);
   await label(page, 'Endereço do relé').fill(BASE);
   await label(page, 'Escolha uma senha').fill(PASSWORD(name));
   await label(page, 'Repita a senha').fill(PASSWORD(name));
+  if (shotName) await shot(page, shotName);
   await tap(page, 'Criar rede');
   await text(page, 'Conversas').first().waitFor({ timeout: 30000 });
 }
@@ -86,11 +88,12 @@ async function invite(admin, person) {
   return readCodeSheet(admin, `convite-${person.split(' ')[0].toLowerCase()}`);
 }
 
-async function join(page, code, who) {
+async function join(page, code, who, shotName) {
   await tap(page, 'Entrar com convite');
   await label(page, 'Código do convite').fill(code);
   await label(page, 'Escolha uma senha').fill(PASSWORD(who));
   await label(page, 'Repita a senha').fill(PASSWORD(who));
+  if (shotName) await shot(page, shotName);
   await tap(page, 'Entrar na rede');
   await text(page, '⏳ Aguardando aprovação').waitFor({ timeout: 30000 });
 }
@@ -98,16 +101,17 @@ async function join(page, code, who) {
 try {
   step('a administradora cria a rede e convida duas pessoas');
   const marta = await newUser('marta');
-  await shot(marta, '01-boas-vindas');
-  await createNetwork(marta, { name: 'Marta', network: 'UniRG' });
+  await shot(marta, 'boas-vindas');
+  await createNetwork(marta, { name: 'Marta', network: 'UniRG' }, 'criar-rede-formulario');
+  await shot(marta, 'rede-criada-conversas-vazio');
   const anaCode = await invite(marta, 'Ana Souza');
-  await shot(marta, '02-convite-gerado');
+  await shot(marta, 'convite-gerado');
   const brunoCode = await invite(marta, 'Bruno Lima');
 
   step('Ana e Bruno entram com o convite; a aprovação vem sozinha quando a administradora está com o app aberto');
   const ana = await newUser('ana');
-  await join(ana, anaCode, 'Ana');
-  await shot(ana, '03-aguardando-aprovacao');
+  await join(ana, anaCode, 'Ana', 'ana-entra-com-convite');
+  await shot(ana, 'aguardando-aprovacao');
   await text(ana, 'Contatos').first().waitFor({ timeout: 30000 });
   const bruno = await newUser('bruno');
   await join(bruno, brunoCode, 'Bruno');
@@ -116,28 +120,30 @@ try {
   step('Ana vê os colegas (lista assinada pela administradora) e escreve para Bruno');
   await tap(ana, 'Contatos');
   await text(ana, 'Bruno Lima').waitFor({ timeout: 30000 });
-  await shot(ana, '04-contatos');
+  await shot(ana, 'contatos');
   await tap(ana, 'Bruno Lima');
   const SEGREDO = 'Reunião às 15h na sala 4 — traga o contrato';
   await ana.getByPlaceholder('Mensagem').fill(SEGREDO);
+  await shot(ana, 'ana-digitando-mensagem');
   await tap(ana, 'Enviar');
   await text(ana, SEGREDO).waitFor();
-  await shot(ana, '05-ana-enviou');
+  await shot(ana, 'ana-enviou');
 
   step('Bruno é avisado, sem ver o texto');
   await text(bruno, '🔒 1 mensagem nova').waitFor({ timeout: 30000 });
   assert.equal(await bruno.getByText('Reunião').count(), 0, 'o texto vazou na lista');
-  await shot(bruno, '06-bruno-aviso');
+  await shot(bruno, 'bruno-aviso');
 
   step('Bruno reabre o app: cofre trancado, exige a senha');
   await bruno.reload();
   await text(bruno, '🔒 Cofre trancado').waitFor({ timeout: 30000 });
   await bruno.getByText('item aguarda', { exact: false }).waitFor({ timeout: 15000 });
   assert.equal(await bruno.getByText('Reunião').count(), 0);
-  await shot(bruno, '07-bruno-trancado');
+  await shot(bruno, 'bruno-trancado');
   await label(bruno, 'Senha').fill('senha-errada-123');
   await tap(bruno, 'Destrancar');
   await text(bruno, 'Senha incorreta').waitFor({ timeout: 30000 });
+  await shot(bruno, 'bruno-senha-incorreta');
   await label(bruno, 'Senha').fill(PASSWORD('Bruno'));
   await tap(bruno, 'Destrancar');
   await text(bruno, '🔒 1 mensagem nova').waitFor({ timeout: 30000 });
@@ -145,10 +151,10 @@ try {
   step('Bruno lê; a mensagem some do relé e do texto de Ana');
   await tap(bruno, 'Ana Souza');
   await text(bruno, SEGREDO).waitFor({ timeout: 15000 });
-  await shot(bruno, '08-bruno-leu');
+  await shot(bruno, 'bruno-leu');
   await text(ana, '🔥 Lida e apagada').waitFor({ timeout: 30000 });
   assert.equal(await ana.getByText(SEGREDO).count(), 0, 'o texto continuou na tela da remetente');
-  await shot(ana, '09-ana-lida-apagada');
+  await shot(ana, 'ana-lida-apagada');
 
   step('ao sair e voltar, a mensagem não reaparece');
   await bruno.getByLabel('Voltar').click();
@@ -157,6 +163,24 @@ try {
   await bruno.getByText('Verificar', { exact: false }).first().waitFor();
   await bruno.waitForTimeout(1500);
   assert.equal(await bruno.getByText(SEGREDO).count(), 0, 'a mensagem reapareceu');
+
+  step('Bruno responde; Ana lê a resposta e a mensagem dele também some');
+  const RESPOSTA = 'Combinado, levo o contrato assinado.';
+  await bruno.getByPlaceholder('Mensagem').fill(RESPOSTA);
+  await tap(bruno, 'Enviar');
+  await text(ana, RESPOSTA).waitFor({ timeout: 30000 });
+  await shot(ana, 'ana-recebe-resposta');
+  await text(bruno, '🔥 Lida e apagada').waitFor({ timeout: 30000 });
+  await shot(bruno, 'bruno-resposta-lida-e-apagada');
+
+  step('administração e ajustes');
+  await tap(marta, 'Membros');
+  await text(marta, 'Bruno Lima').waitFor({ timeout: 15000 });
+  await shot(marta, 'admin-membros');
+  await tap(marta, 'Ajustes');
+  await text(marta, 'Trancar ao sair do app').waitFor();
+  await shot(marta, 'ajustes');
+  await tap(marta, 'Rede');
 
   step('segunda rede (Clínica Vida) pede conexão; a administradora da UniRG aceita');
   // Celular pequeno (360×640): a folha com o QR code precisa caber, ou rolar.
@@ -170,7 +194,7 @@ try {
   await label(marta, 'Código da outra rede').fill(zecaCode);
   await tap(marta, 'Enviar pedido');
   await text(zeca, 'Pedidos recebidos').waitFor({ timeout: 30000 });
-  await shot(zeca, '10-zeca-pedido');
+  await shot(zeca, 'zeca-pedido');
   await tap(zeca, 'Aceitar');
   await text(zeca, 'UniRG').first().waitFor({ timeout: 30000 });
 
@@ -179,7 +203,7 @@ try {
   await tap(ana, 'Contatos');
   await text(ana, 'CLÍNICA VIDA · REDE CONECTADA').waitFor({ timeout: 30000 });
   await text(ana, 'Zeca').first().waitFor();
-  await shot(ana, '11-contatos-rede-conectada');
+  await shot(ana, 'contatos-rede-conectada');
 
   assert.deepEqual(errors, [], `erros no navegador:\n${errors.join('\n')}`);
   console.log(`\n✔ TODOS OS PASSOS PASSARAM (capturas de tela em ${SHOTS})`);
