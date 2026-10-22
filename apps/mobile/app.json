@@ -1,0 +1,29 @@
+{
+  "expo": {
+    "name": "Sigilo",
+    "slug": "sigilo",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B6E4F"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.example.sigilo"
+    },
+    "android": {
+      "package": "com.example.sigilo",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B6E4F",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    }
+  }
+}
