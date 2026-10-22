@@ -1,5 +1,7 @@
 # Sigilo
 
+> **Em transição para o v2.** O app que você instala hoje usa o servidor v1 (contas no servidor). O v2 elimina o servidor de contas, usa certificados assinados pelo administrador e um relé anônimo, e escolhe o meio de envio mais privado disponível (proximidade, internet, SMS). **O núcleo do v2 está pronto e testado; a interface do app no v2 e os módulos nativos de SMS e Bluetooth ainda não.** Veja [`docs/ARQUITETURA-V2.md`](docs/ARQUITETURA-V2.md).
+
 Aplicativo de mensagens entre celulares, parecido com o WhatsApp, em que:
 
 - as mensagens são **criptografadas de ponta a ponta** e só abrem depois que o usuário **digita a senha**;
@@ -23,8 +25,9 @@ Aplicativo de mensagens entre celulares, parecido com o WhatsApp, em que:
 ## Estrutura
 
 ```
-packages/core     Criptografia, protocolo e cliente da API (TypeScript puro; usado pelo app e pelos testes)
-packages/server   Servidor: API REST + WebSocket de avisos + SQLite
+packages/core     Criptografia, protocolo e cliente (TypeScript puro; usado pelo app e pelos testes). v1 em `src/`, v2 em `src/v2/`
+packages/server   Servidor v1 (o app atual usa este): contas, redes, API REST + WebSocket + SQLite
+packages/relay    Relé anônimo do v2: Node + SQLite ou Cloudflare Workers (Durable Objects)
 apps/mobile       App Expo / React Native (Android e iOS)
 e2e               Teste de interface de ponta a ponta no navegador
 docs              Arquitetura, protocolo, modelo de ameaças e implantação
@@ -126,9 +129,10 @@ cd packages/server && node --import tsx src/cli.ts reset-activation maria@unirg
 ## Testes
 
 ```bash
-npm test              # 55 testes: criptografia (14) e servidor com clientes reais (41)
+npm test              # 110 testes: núcleo v1 e v2 (37), relé e nó v2 de ponta a ponta (32), servidor v1 (41)
 npm run typecheck     # todos os pacotes
-npm run test:e2e      # abre o app no Chromium contra um servidor real e usa a interface
+npm run test:e2e      # abre o app (v1) no Chromium contra um servidor real e usa a interface
+npm run test:worker -w @sigilo/relay   # roda o relé v2 no workerd (runtime da Cloudflare) e a suíte contra ele
 ```
 
 Os testes do servidor sobem o servidor de verdade, usam o mesmo código de criptografia do app e verificam, por exemplo, que o texto nunca aparece no banco, que a mensagem lida some, que redes sem conexão não se enxergam e que o administrador de uma rede não mexe em outra.

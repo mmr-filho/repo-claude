@@ -1,0 +1,18 @@
+{
+  // Relé anônimo do Sigilo no Cloudflare Workers. Deploy: npm run deploy -w @sigilo/relay
+  "name": "sigilo-relay",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-09-01",
+  "durable_objects": {
+    "bindings": [{ "name": "QUEUES", "class_name": "QueueObject" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["QueueObject"] }],
+  // Sem logs de requisição: o relé não deve guardar registro de quem acessa o quê.
+  "observability": { "enabled": false },
+  "vars": { "MESSAGE_TTL_HOURS": "168", "IDLE_QUEUE_DAYS": "60" },
+  // Limites por IP. Ajuste se muitas pessoas compartilham o mesmo IP (empresa, campus).
+  "ratelimits": [
+    { "name": "CREATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
+    { "name": "GENERAL_LIMITER", "namespace_id": "1002", "simple": { "limit": 1500, "period": 60 } }
+  ]
+}

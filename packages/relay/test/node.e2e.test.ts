@@ -14,10 +14,9 @@ import {
   sealFrame,
   type NodeDeps,
 } from '@sigilo/core/v2';
-import { KDF, enroll, makeDeps, newNetwork, settle, startRelay, type Clock } from './harness.js';
+import { enroll, makeDeps, newNetwork, recordingFetch, settle, startRelay, type Clock } from './harness.js';
 
 type Relay = Awaited<ReturnType<typeof startRelay>>;
-const count = (relay: Relay, sql = 'SELECT COUNT(*) AS n FROM msgs') => Number((relay.store.db.prepare(sql).get() as { n: number }).n);
 
 describe('v2: rede sem servidor de contas', () => {
   let relay: Relay;
@@ -75,9 +74,11 @@ describe('v2: rede sem servidor de contas', () => {
     assert.equal(r.status, 'sent');
     assert.equal(r.via, 'relay');
 
-    // O relé só tem texto cifrado, sem identidade de remetente.
-    const dump = JSON.stringify(relay.store.db.prepare('SELECT * FROM msgs').all().map((m) => ({ ...m, frame: Buffer.from((m as { frame: Uint8Array }).frame).toString('latin1') })));
-    assert.ok(!dump.includes('xyzzy'));
+    // O relé só tem texto cifrado, sem identidade de remetente (conferência direta no banco, só no relé Node).
+    if (relay.store) {
+      const dump = JSON.stringify(relay.store.db.prepare('SELECT * FROM msgs').all().map((m) => ({ ...m, frame: Buffer.from((m as { frame: Uint8Array }).frame).toString('latin1') })));
+      assert.ok(!dump.includes('xyzzy'));
+    }
 
     // Bruno fecha o app e reabre: cofre trancado. Sem senha sabe só QUANTAS mensagens esperam.
     bruno.node.lock();
@@ -154,12 +155,14 @@ describe('v2: rede sem servidor de contas', () => {
 
   it('o mesmo quadro por dois meios aparece uma vez só', async () => {
     const admin = await newNetwork(relay.url, 'Dedupe', 'Adm');
-    const ana = await enroll(admin, 'Ana');
+    const sentLog: Array<{ path: string; body: Uint8Array }> = [];
+    const ana = await enroll(admin, 'Ana', undefined, undefined, makeDeps({ fetch: recordingFetch(sentLog) }));
     const bruno = await enroll(admin, 'Bruno');
     await settle([admin, ana.node, bruno.node]);
+    sentLog.length = 0;
     await ana.node.send(bruno.node.myBox, 'uma só vez');
-    const [m] = relay.store.queue(bruno.node.profile.qid).list(10);
-    await bruno.node.receiveFrame(m!.frame); // chegou também por "outro meio"
+    const toBruno = sentLog.filter((s) => s.path.endsWith('/m')).pop()!;
+    await bruno.node.receiveFrame(toBruno.body); // chegou também por "outro meio"
     await bruno.node.poll();
     const convo = await bruno.node.openConversation(ana.node.myBox);
     assert.equal(convo.messages.length, 1);

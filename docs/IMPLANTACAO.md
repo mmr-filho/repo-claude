@@ -1,5 +1,68 @@
 # Colocando o servidor no ar
 
+Há dois servidores neste repositório, porque o app está em transição:
+
+| | Para quê | Onde roda | Guia |
+|---|---|---|---|
+| **Relé v2** | O novo protocolo (sem contas, certificados do administrador) | **Cloudflare Workers** (sem VPS) ou Node | Seção "Relé do v2 no Cloudflare Workers", logo abaixo |
+| **Servidor v1** | O app atual, com contas no servidor | VPS + Docker + Cloudflare Tunnel | A partir de "O app precisa de um servidor sempre ligado" |
+
+> O app atual (`apps/mobile`) ainda usa o **servidor v1**. O relé v2 está pronto e testado, mas a interface do app para ele ainda não foi construída (veja `docs/ARQUITETURA-V2.md`).
+
+---
+
+# Relé do v2 no Cloudflare Workers
+
+Aqui a Cloudflare **hospeda** o relé (não só faz o HTTPS na frente). Como o relé v2 não tem contas nem disco próprio, ele cabe no Workers: cada caixa postal é uma *Durable Object* com seu SQLite.
+
+## O que você precisa
+1. Sua conta Cloudflare. As Durable Objects com SQLite estão disponíveis no plano gratuito, **com limites diários de requisições**. Confira os limites atuais, porque mudam.
+2. Node 22.13 ou mais novo no seu computador (para publicar).
+3. Opcional: um domínio na Cloudflare, para o relé ter um endereço seu (`relay.seudominio.com`) em vez de `…workers.dev`.
+
+## Publicar
+
+```bash
+git clone https://github.com/mmr-filho/repo-claude && cd repo-claude
+git checkout claude/quirky-gates-6s7wtu
+npm install
+npx wrangler login                       # abre o navegador para autorizar a sua conta
+npm run deploy -w @sigilo/relay
+```
+
+O comando mostra o endereço, algo como `https://sigilo-relay.SEU-USUARIO.workers.dev`. Teste:
+
+```bash
+curl https://sigilo-relay.SEU-USUARIO.workers.dev/health        # {"ok":true}
+```
+
+**Endereço próprio:** no painel, *Workers & Pages → sigilo-relay → Settings → Domains & Routes → Add → Custom Domain* e informe `relay.seudominio.com` (o domínio precisa estar na sua conta Cloudflare). Os nomes dos menus mudam de tempos em tempos.
+
+## Ajustes (em `packages/relay/wrangler.jsonc`)
+- `MESSAGE_TTL_HOURS`: quanto tempo uma mensagem **não lida** espera (padrão 168 h = 7 dias).
+- `IDLE_QUEUE_DAYS`: caixas sem uso por tanto tempo são apagadas (padrão 60).
+- `ratelimits`: por IP, 20 criações de caixa por minuto e 1500 pedidos por minuto. **Se muita gente compartilha um IP** (empresa, campus), suba o segundo número.
+
+## Custo e limites: leia antes
+- Cada vez que o app consulta a caixa, são **um pedido ao Worker e outro à Durable Object**. Com consulta a cada 5 segundos e o app aberto, são 12 por minuto por pessoa (cerca de 17 mil por dia por pessoa, se ficasse aberto o dia todo). Num plano gratuito com cota diária, **poucas pessoas com o app aberto o dia inteiro podem esgotá-la**. O plano pago da Workers tem franquia muito maior, mas **confira os preços e limites atuais**.
+- Para reduzir: consulta mais espaçada quando a tela está parada, e, como melhoria futura, WebSocket com hibernação da Durable Object (o relé avisa, e o app não precisa ficar perguntando).
+- **Não há registro de requisições** (`observability` desligado), mas a Cloudflare, como qualquer provedor, vê o tráfego que passa por ela: IPs e horários, nunca o conteúdo (cifrado no aparelho).
+- Pedidos a ids de caixas que não existem ainda criam uma Durable Object vazia. O limite de criação por IP reduz o abuso, mas o custo disso em produção eu não consegui medir.
+
+## Testar sem publicar
+
+```bash
+npm run test:worker -w @sigilo/relay     # sobe o Worker no workerd (runtime local da Cloudflare) e roda a suíte inteira
+npm run dev:worker -w @sigilo/relay      # só sobe o Worker em http://localhost:8787
+```
+
+## Alternativa: relé em Node
+O mesmo relé roda em Node com SQLite (`npm run build -w @sigilo/relay && node packages/relay/dist/node-server.js`, porta 3100), para VPS ou máquina própria, atrás de um Tunnel como no guia abaixo.
+
+---
+
+# Servidor v1 (app atual): VPS + Docker + Cloudflare Tunnel
+
 O app precisa de **um servidor sempre ligado, com HTTPS**, num endereço que os celulares alcancem (por exemplo `https://sigilo.suaorganizacao.com`). O código do servidor já está no repositório (`packages/server`); este guia mostra onde rodá-lo.
 
 ## Resposta curta sobre a Cloudflare
