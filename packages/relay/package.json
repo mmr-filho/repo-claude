@@ -1,0 +1,22 @@
+{
+  "name": "@sigilo/relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "dev": "node --import tsx --watch src/node-server.ts",
+    "start": "node dist/node-server.js",
+    "build": "esbuild src/node-server.ts --bundle --platform=node --format=esm --target=node22 --packages=external --outdir=dist",
+    "test": "node --import tsx --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/rate-limit": "^10.0.0",
+    "@sigilo/core": "*",
+    "fastify": "^5.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
