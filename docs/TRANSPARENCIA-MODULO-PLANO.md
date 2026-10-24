@@ -2,15 +2,18 @@
 
 Atualizado em 24/10/2026, depois de liberada parte da rede. A primeira versão deste documento (só com resumos de busca) foi substituída: agora os números vêm da **base aberta do PNTP**, da **Cartilha PNTP 2026** (299 páginas) e da **matriz de critérios 2026**, todas baixadas e lidas.
 
-O protótipo do módulo, com dados reais, está em [`modules/transparencia/`](../modules/transparencia/README.md).
+**Objetivo do módulo:** olhar **uma prefeitura de cada vez**, com um panorama para o prefeito e um **plano de ação** até os critérios do selo. Os números do estado (seção 2) ficam só como contexto.
+
+O protótipo, com dados reais, está em [`modules/transparencia/`](../modules/transparencia/README.md).
 
 ## 0. Em resumo
 
-1. **O Tocantins já é líder nacional em transparência municipal.** Foi o 1º estado em 2023 e é o 2º em 2024 e 2025, atrás do Pará. Em 2025, **78 das 139 prefeituras têm Selo Diamante (56%)** e 123 têm algum selo (88%), contra 7% e 26% no Brasil.
-2. **O trabalho, portanto, não é "tirar do zero", e sim**: levar as 16 sem selo ao selo; **não perder** quem já tem (13 prefeituras caíram de nível em 2025, 7 delas de Diamante); preparar a mudança de regra de 2026; e as câmaras municipais, que ficam atrás das prefeituras.
-3. **Dá para verificar cada município**, com dado oficial: a Atricon publica a base completa em dados abertos, por ente, com índice, nível, % de essenciais, link do portal e as respostas critério a critério.
-4. **Dá para simular a nota.** Reproduzi o índice oficial de cada prefeitura a partir das respostas com erro médio de **0,01 ponto** (138 de 139 idênticas). Com isso o módulo mostra, para cada prefeitura, **o menor caminho até o Diamante**.
-5. **O visual do `mm.api.br` foi obtido** (a tela de login é pública e traz o CSS do site) e o protótipo o reutiliza. Falta ver as telas internas, que exigem login.
+1. **Para cada prefeitura dá para montar o plano de ação com dado oficial.** A Atricon publica, em dados abertos, as respostas critério a critério validadas pelo TCE-TO, com a **observação do avaliador**, o **link da página conferida** e o **print**. Juntando isso com a **matriz e a Cartilha 2026**, cada pendência vira uma ação: o que falta, por que o tribunal recusou, o que a Cartilha exige, quanto o índice sobe e qual setor cuida.
+2. **A nota é reproduzível.** A fórmula da Cartilha, aplicada às respostas de 2025, reproduz o índice oficial com erro médio de **0,01 ponto** (138 de 139 prefeituras idênticas). O plano usa a mesma fórmula com os pesos de 2026.
+3. **A numeração dos critérios muda entre ciclos** (por exemplo, a lista de estagiários era o 6.3 em 2025 e é o 6.4 em 2026). Por isso as respostas de 2025 são ligadas à matriz 2026 pelo texto do critério, não pelo número.
+4. **O que 2026 muda para as prefeituras.** O 4.3 (consulta de empenhos) vira essencial: Araguaína e Ponte Alta do Bom Jesus têm selo e não o atendem. E entram 3 critérios novos (conselhos do Fundeb, de Saúde e de Assistência Social): **23 prefeituras Diamante ficam abaixo de 95% na estimativa só por causa deles**. Para essas, publicar os dados dos conselhos é o que separa manter de perder o Diamante.
+5. **Contexto do estado.** O Tocantins é o 2º do país (78 das 139 prefeituras Diamante em 2025). Em mediana, cada prefeitura tem 10 critérios pendentes ou a conferir.
+6. **O visual do `mm.api.br`** (tela de login pública, com o CSS do site) é reutilizado pelo protótipo. Falta ver as telas internas, que exigem login.
 
 ## 1. Selo Diamante: o que a Atricon exige
 
@@ -61,10 +64,11 @@ Os **essenciais** são os da execução orçamentária e financeira, porque a Le
 
 - **O critério 4.3 passa de obrigatório a essencial** (confirmado na matriz). Duas prefeituras com selo hoje ainda não o atendem integralmente: **Araguaína** (Prata) e **Ponte Alta do Bom Jesus** (Ouro).
 - **Filtro de pesquisa por critério** (vale 10% da nota do critério). A Cartilha define como o instrumento em que o usuário escolhe parâmetros e refina a consulta, diferente da busca geral do portal; em alguns critérios há **filtros mínimos exigidos**, e ele é dispensado quando os dados cabem numa única página. O material de treinamento do TCE-PI acrescenta que o `Ctrl+F` deixa de valer como forma de busca e cita receita, despesa, diárias, convênios, licitações e contratos; **essa parte não aparece na Cartilha**.
-- **Não há atendimento parcial**: o critério só conta como atendido quando todas as informações exigidas na disponibilidade estão no portal (Cartilha). É por isso que o simulador trabalha por critério.
+- **Numeração e conteúdo mudaram** (comparação da matriz 2026 com as respostas de 2025): o 6.2 de 2025 (remuneração e tabela de cargos) virou 6.2 e 6.3; os antigos 6.3 a 6.6 passaram a 6.4 a 6.7; o 17.1 (emendas) virou 17.1 (federais) e 17.2 (estaduais e municipais), e o antigo 17.2 (emendas Pix) virou 17.3, mais amplo. **16.1 e 16.2** (renúncia de receita) passam de recomendados a obrigatórios, assim como as emendas (17.x). **Novos:** 18.6 (Conselho de Saúde), 19.3 (Conselho do Fundeb) e 19.4 (Conselho de Assistência Social).
+- **Não há atendimento parcial**: o critério só conta como atendido quando todas as informações exigidas na disponibilidade estão no portal (Cartilha). É por isso que o plano trabalha por critério.
 - A página do PNTP informa que o ciclo 2026 está na etapa de treinamento da garantia da qualidade e que **os resultados serão divulgados em novembro, no Rio de Janeiro**. O ciclo 2025 foi divulgado em dezembro de 2025.
 
-## 2. Onde o Tocantins está
+## 2. Contexto: onde o Tocantins está
 
 Prefeituras (139 em todos os ciclos). Fonte: base aberta do PNTP.
 
@@ -99,7 +103,7 @@ Três camadas, que nunca devem aparecer misturadas na tela:
 |---|---|---|
 | **A. Oficial** | Nível, índice e essenciais de cada ente, por ciclo, com link do portal | **Resolvida.** Base aberta do PNTP (2022 a 2025), um arquivo por ciclo; **já está no protótipo** |
 | **B. Sonda automática** | Verificações técnicas semanais nos portais (no ar, HTTPS, seções, arquivos legíveis por máquina) | Não feita. É a Fase 2. Os 139 endereços dos portais já vêm na base |
-| **C. Autoavaliação guiada** | Checklist por critério, com pesos e o portão dos essenciais | **Protótipo pronto**: o simulador da ficha de cada município |
+| **C. Plano de ação do município** | Cada critério pendente vira uma ação, com observação do tribunal, orientação da Cartilha, ganho e setor | **Protótipo pronto**: panorama, plano, checklist e relatório de cada prefeitura |
 
 A camada A responde à pergunta "como está cada município". A B responde "como está **hoje**", entre um ciclo e outro. Nenhuma nota automática deve ser exibida como selo.
 
@@ -118,14 +122,16 @@ A camada A responde à pergunta "como está cada município". A B responde "como
 
 ## 5. O que foi entregue: protótipo do módulo
 
-Em [`modules/transparencia/`](../modules/transparencia/README.md). Sem dependências; roda com `python3 -m http.server`.
+Em [`modules/transparencia/`](../modules/transparencia/README.md). Sem dependências; roda com `python3 -m http.server`. Tudo gira em torno de **uma prefeitura**:
 
-- **Panorama**: selos por ciclo, "mais perto do Diamante", "o que mais falha no estado" e o **aviso do ciclo 2026** (calculado a partir da matriz: critérios que viram essenciais e quem, com selo hoje, é atingido).
-- **Prefeituras**: as 139, com busca, filtro por nível, ordenação e **download em CSV**.
-- **Ficha do município**: placar com a marca de 95%, histórico, câmara e o **simulador** ("marque o que a prefeitura vai corrigir e veja índice e nível projetados", com o botão "caminho mais curto").
-- **Critérios** e **Metodologia** (regras, essenciais, pesos, fontes, limites).
+- **Escolha do município** (busca; lembra o último).
+- **Panorama para o prefeito**: resultado oficial, um parágrafo com o diagnóstico em linguagem simples, estimativa nas regras de 2026, placar com as faixas de Prata, Ouro e Diamante, **alerta dos essenciais** (com a consequência da LRF), o que muda em 2026 para essa prefeitura, **onde ela perde pontos** por dimensão, histórico, próximos passos do calendário e a câmara.
+- **Plano de ação**: meta (Diamante, Ouro ou Prata) e etapas: essenciais; o menor caminho até a meta; critérios novos a conferir; demais pendências. Cada ação traz o que falta (por item de verificação), a **observação do tribunal**, o link da página avaliada e do print, a **página da Cartilha** e o texto do que ela exige, o ganho em pontos e o setor sugerido. Dá para agrupar **por setor** (para distribuir tarefas), marcar ações como concluídas e ver a projeção, e baixar em CSV.
+- **Checklist**: os 96 critérios de 2026 com a situação de cada um (atende, pendente, a conferir).
+- **Relatório para imprimir** (ou salvar em PDF): diagnóstico e plano numa página para o gabinete.
+- **Metodologia**: regras, essenciais, cálculo, como o plano é montado e limites.
 
-**Visual do mm.api.br.** A tela de login é pública e traz o CSS completo do site (v0.25). Dele tirei: três aparências (**Terminal** em âmbar sobre preto, **Claro** e **Escuro**, estas com `data-estilo="moderno"`), os componentes (`topbar`, `nav-item`, `kpi`, `tabela`, `chip`, `filtro`, `est-placar`, `est-serie`, `est-req`…) e a **política de segurança** (`script-src 'self'`, sem CDN, sem script inline). O módulo usa as mesmas classes e foi testado no Chromium sob essa política, nas três aparências e em celular, sem erros. O site já tem um "estudo do município" (`est-*`) e módulos em construção; o módulo foi feito para conviver com eles.
+**Visual do mm.api.br.** A tela de login é pública e traz o CSS completo do site (v0.25). Dele vêm as três aparências (**Terminal** em âmbar sobre preto, **Claro** e **Escuro**, estas com `data-estilo="moderno"`), os componentes (`topbar`, `nav-item`, `kpi`, `tabela`, `chip`, `filtro`, `est-placar`, `est-serie`, `est-req`…) e a **política de segurança** (`script-src 'self'`, sem CDN, sem script inline). O módulo usa as mesmas classes e foi testado no Chromium sob essa política, nas três aparências, em celular e em modo de impressão, sem erros.
 
 ## 6. Plano de ação
 
@@ -133,9 +139,9 @@ Em [`modules/transparencia/`](../modules/transparencia/README.md). Sem dependên
 
 Feito: visual do site obtido; base oficial baixada e analisada; regras e matriz 2026 lidas; Siconfi testado. **Falta**: ver as telas internas do `mm.api.br` (exige login) e a stack (framework e rotas), para encaixar o módulo como `/transparencia`; **liberar** `servicodados.ibge.gov.br`, `api.queridodiario.ok.org.br` e testar o PNCP; **contatar o TCE-TO e a ATM** (parceria e permissão para publicar).
 
-### Fase 1: painel oficial (protótipo entregue)
+### Fase 1: panorama e plano por prefeitura (protótipo entregue)
 
-Falta integrar ao site (layout, autenticação, rota), revisar com quem opera o PNTP no TCE-TO e **ingerir o ciclo 2026 quando sair (novembro)**: é rodar `build_dados.py` com os novos arquivos.
+Falta integrar ao site (layout, autenticação, rota), revisar o texto com uma ou duas prefeituras e com quem opera o PNTP no TCE-TO, e **atualizar com o ciclo 2026 quando a Atricon publicar a base** (o resultado sai em novembro): é rodar `build_dados.py` com os novos arquivos.
 
 ### Fase 2: sonda e cruzamentos (4 a 6 semanas)
 
@@ -143,9 +149,9 @@ Falta integrar ao site (layout, autenticação, rota), revisar com quem opera o 
 - Cruzar os essenciais **11.5 e 11.6** (RGF e RREO) com a entrega no **Siconfi**, e as licitações com o PNCP e o SICAP.
 - **Agrupar por fornecedor de portal**: um ajuste do fornecedor melhora vários municípios.
 
-### Fase 3: autoavaliação guiada
+### Fase 3: acompanhamento do plano
 
-O simulador vira o plano do município: critérios com responsável, prazo e evidência (URL, data, print), ordenados por ganho. O módulo é **preparação**: o lançamento oficial no Avalia é de servidor do controle interno, não de consultor.
+Hoje as marcações de "concluída" ficam no navegador. O próximo passo é guardá-las no servidor do site, por prefeitura, com **responsável, prazo e evidência** (URL, data, print) em cada ação, para o gabinete acompanhar. O módulo é **preparação**: o lançamento oficial no Avalia é de servidor do controle interno, não de consultor.
 
 ### Fase 4: operação contínua
 
@@ -156,21 +162,26 @@ Alertas do calendário do ciclo, histórico, relatórios para TCE-TO, ATM e pref
 | Quando | O que |
 |---|---|
 | **Nov/2026** | Resultado do ciclo 2026 sai; ingerir e comparar com 2025 |
-| Nov/2026 a jan/2027 | Integração da Fase 1 ao site |
+| Nov/2026 a jan/2027 | Integração da Fase 1 ao site; atualizar com a base do ciclo 2026 quando publicada |
 | Fev a abr/2027 | Fase 2 pronta; a matriz do ciclo 2027 deve sair ~março |
 | Abr a mai/2027 | Fase 3 pronta a tempo da autoavaliação 2027 (em 2026 foi de 20/04 a 29/05) |
 
 ## 7. Sugestões
 
-1. **Comece pelo risco, não pelo ranking.** O estado já lidera; o maior valor é **não perder selo** (13 quedas em 2025) e proteger quem está com margem curta (29 Diamantes abaixo de 97%).
-2. **Priorize as cidades grandes.** Araguaína (Prata) e Gurupi (Ouro) caíram de Diamante; Porto Nacional está sem selo. As três concentram população.
-3. **Os essenciais são exigência legal, não só selo.** Para o gestor, "RGF e RREO no portal" pesa mais (transferências voluntárias e crédito) do que "Diamante". Use isso na comunicação.
-4. **Alerta do 4.3 já.** Avisar Araguaína e Ponte Alta do Bom Jesus antes do resultado de novembro.
-5. **Câmaras**: segunda frente, com tela própria (os dados já estão no módulo).
-6. **Ficha de evidência datada** (URL, data, print): em 2026 o tribunal exige filtro estruturado; quem guarda a prova economiza tempo na validação e no recurso.
-7. **Fornecedores de portal**: mapear quais concentram as falhas.
-8. **Publicar o módulo como dado aberto** (CSV já sai; falta licença explícita), coerente com o tema.
-9. **Teste real de SIC** (manual, opcional): a transparência passiva é o que robô nenhum mede.
+Para a prefeitura (o que o plano já organiza):
+
+1. **Essenciais primeiro.** Além do selo, a LRF (arts. 48, 48-A e 51) restringe transferências voluntárias e operações de crédito de quem não divulga essas informações. É o argumento que mais pesa para o prefeito.
+2. **Ler a observação do tribunal.** Muitas recusas são concretas e baratas de resolver ("os relatórios não abrem", "não informa o procedimento licitatório"). Elas valem como lista de tarefas.
+3. **Conferir os critérios novos já.** Os conselhos do Fundeb, de Saúde e de Assistência Social costumam já existir; falta publicar. Para 23 prefeituras Diamante, é o que garante a faixa de 95%.
+4. **Distribuir por setor.** O agrupamento por setor transforma o plano em pauta de reunião com cada secretaria.
+5. **Falar com o fornecedor do portal.** Parte das falhas (filtro, exportação em planilha, série histórica, relatórios que não abrem) é da plataforma, não do conteúdo.
+6. **Guardar evidência datada** (URL, data, print) de cada item corrigido: agiliza a autoavaliação e eventual recurso.
+7. **Margem de segurança.** A validação e a revisão costumam derrubar itens; mirar acima de 95%.
+
+Para o módulo:
+
+8. **Câmaras municipais**: mesma visão para o Legislativo (os dados já estão na base).
+9. **Publicar os dados do módulo** com licença explícita, coerente com o tema.
 
 ## 8. Cuidados
 
@@ -183,7 +194,9 @@ Alertas do calendário do ciclo, histórico, relatórios para TCE-TO, ATM e pref
 
 | Ponto | Situação |
 |---|---|
-| Simulador usa respostas de 2025 e fórmula 2026 | O resultado de 2026 pode diferir (matriz mudou: 96 critérios e 12 essenciais, contra 91 e 11) |
+| Plano usa respostas de 2025 com as regras de 2026 | É uma estimativa conservadora: o que não foi avaliado em 2025 conta como pendente. A matriz do ciclo 2027 pode mudar de novo |
+| Ligação entre ciclos pelo texto | Revisada critério a critério para 2025 → 2026 (o gerador imprime a tabela); refazer a revisão a cada nova matriz |
+| Setor responsável | Sugestão por dimensão; cada prefeitura tem sua estrutura |
 | Nível "Inexistente" de 2024 (20 prefeituras) | Pela Cartilha vem de portal inexistente ou fora do ar; **motivo não verificado caso a caso**. A variação para 2025 dessas fica exagerada |
 | Esquema da base muda entre ciclos | O gerador valida o formato e falha se mudar; conferir colunas ao entrar o ciclo 2026 |
 | `Ctrl+F` deixar de valer em 2026 | Só no material de treinamento do TCE-PI; a Cartilha trata do filtro de pesquisa, mas não cita o `Ctrl+F` |

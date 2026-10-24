@@ -1,20 +1,44 @@
 /*
- * Módulo Transparência (PNTP/Atricon) para os municípios do Tocantins.
+ * Módulo Transparência (PNTP/Atricon): situação de UMA prefeitura e o plano de ação até o selo.
  *
- * Lê dados/transparencia-to.json (gerado por build_dados.py) e desenha tudo no <main id="tr-app">.
- * Sem dependências e sem estilos inline além dos de largura: o site exige script-src 'self'.
- * Todo texto vindo dos dados entra por textContent; nada é interpretado como HTML.
+ * Dados (gerados por build_dados.py): dados/municipios.json (lista), dados/criterios.json (matriz-alvo
+ * com a orientação da Cartilha) e dados/m/<ibge>.json (um por município, carregado sob demanda).
+ * Sem dependências: o site exige script-src 'self'. Texto vindo dos dados entra só por textContent.
  */
 (() => {
   'use strict';
 
-  const META = 0.95; // piso do Diamante
-  const ITENS = { D: 'Disponibilidade', A: 'Atualidade', S: 'Série histórica', G: 'Gravação de relatórios', F: 'Filtro de pesquisa' };
-  const SELOS = ['Diamante', 'Ouro', 'Prata'];
-  const GRUPOS_NIVEL = ['Diamante', 'Ouro', 'Prata', 'Elevado', 'Intermediário', 'Abaixo'];
-  const ABAIXO = new Set(['Básico', 'Inicial', 'Inexistente', 'Não Avaliado']);
-  const CLASSES = ['Essencial', 'Obrigatória', 'Recomendada'];
-  const ORDEM_NIVEL = ['Diamante', 'Ouro', 'Prata', 'Elevado', 'Intermediário', 'Básico', 'Inicial', 'Inexistente', 'Não Avaliado'];
+  const SELOS = { Prata: 0.75, Ouro: 0.85, Diamante: 0.95 };
+  // Itens de verificação, resumidos da Cartilha PNTP 2026 (seção "Itens de verificação")
+  const ITEM = {
+    D: ['Disponibilidade', 'a informação precisa estar no portal, com todos os dados mínimos que o critério pede'],
+    A: ['Atualidade', 'dados recentes (em geral, de até 30 dias) e com a data de atualização à vista; a data automática da página não vale'],
+    S: ['Série histórica', 'histórico dos três anos anteriores à avaliação'],
+    G: ['Gravação de relatórios', 'permitir baixar em formato editável (planilha, CSV, TXT, DOC); PDF sozinho em geral não basta'],
+    F: ['Filtro de pesquisa', 'filtro próprio para refinar a consulta dentro do critério; dispensado se tudo cabe numa página'],
+  };
+  // Sugestão de setor responsável por dimensão (nomes como na matriz 2026)
+  const SETOR = {
+    'Informações Prioritárias': 'Comunicação e TI',
+    'Informações Institucionais': 'Gabinete e Administração',
+    'Receita': 'Finanças e Tributação',
+    'Despesa': 'Finanças e Contabilidade',
+    'Convênios e Transferências': 'Planejamento e Convênios',
+    'Recursos Humanos': 'Administração e RH',
+    'Diárias': 'Administração e Finanças',
+    'Licitações': 'Licitações e Compras',
+    'Contratos': 'Licitações e Compras',
+    'Obras': 'Obras e Infraestrutura',
+    'Planejamento e Prestação de contas': 'Planejamento, Contabilidade e Controle Interno',
+    'Serviço de Informação ao Cidadão - SIC': 'Controle Interno e Ouvidoria',
+    'Acessibilidade': 'Comunicação e TI',
+    'Ouvidorias': 'Ouvidoria',
+    'Lei Geral de Proteção de Dados (LGPD) e Governo Digital': 'TI e Jurídico',
+    'Renúncias de Receitas': 'Finanças e Tributação',
+    'Emendas Parlamentares': 'Planejamento e Finanças',
+    'Saúde': 'Secretaria de Saúde',
+    'Educação e Assistência Social': 'Educação e Assistência Social',
+  };
 
   // ---------- utilidades ----------
 
@@ -37,19 +61,27 @@
     return e;
   }
 
-  const nf = (casas) => new Intl.NumberFormat('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas });
-  const NF0 = nf(0), NF1 = nf(1);
+  const NF0 = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 0 });
+  const NF1 = new Intl.NumberFormat('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   const pct = (x) => (x == null ? '–' : NF1.format(x * 100) + '%');
-  const pontos = (x) => (x >= 0 ? '+' : '−') + NF1.format(Math.abs(x)) + ' pt';
-  const urlSegura = (u) => (/^https?:\/\//i.test(u || '') ? u : null);
+  const pts = (x) => NF1.format(x) + (Math.abs(x) < 1.95 ? ' ponto' : ' pontos'); // em português, plural a partir de 2
+  const urlSegura = (u) => (/^https?:\/\/\S+$/i.test(u || '') ? u : null);
   const semAcento = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const soma = (xs) => xs.reduce((s, a) => s + a.ganho, 0);
+  const porGanho = (a, b) => b.ganho - a.ganho || a.id.localeCompare(b.id, 'pt', { numeric: true });
+  const plural = (n, um, varios) => `${n} ${n === 1 ? um : varios}`;
 
-  function link(url, texto, extra) {
+  function link(url, texto) {
     const u = urlSegura(url);
-    return u ? h('a', { href: u, target: '_blank', rel: 'noopener noreferrer', ...extra }, texto) : h('span', {}, texto);
+    return u ? h('a', { href: u, target: '_blank', rel: 'noopener noreferrer' }, texto) : null;
   }
 
-  /** Regras da Cartilha PNTP 2026 (tabela 3): o selo exige 100% dos itens essenciais. */
+  const guarda = {
+    le(k, padrao) { try { const v = localStorage.getItem(k); return v == null ? padrao : JSON.parse(v); } catch (_) { return padrao; } },
+    grava(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) { /* sem armazenamento: só não lembra */ } },
+  };
+
+  /** Regras da Cartilha PNTP 2026 (tabela 3): selo exige 100% dos essenciais. */
   function classifica(indice, essenciaisOk) {
     if (indice == null) return 'Não Avaliado';
     if (indice >= 0.95 && essenciaisOk) return 'Diamante';
@@ -62,65 +94,114 @@
     return 'Inexistente';
   }
 
-  const grupoDoNivel = (n) => (ABAIXO.has(n) ? 'Abaixo' : n);
+  const chipNivel = (n) => h('span', { class: 'chip tr-nivel', 'data-n': n }, n);
+  const chipClasse = (c) => h('span', { class: 'chip ' + (c === 'Essencial' ? 'chip-fatal' : c === 'Obrigatória' ? 'chip-alta' : '') }, c);
 
-  function chipNivel(n) {
-    return h('span', { class: 'chip tr-nivel', 'data-n': n }, n);
+  // ---------- dados ----------
+
+  let IDX, CAT, CATMETA;
+  const cache = new Map();
+
+  async function json(url) {
+    if (!cache.has(url)) {
+      const p = fetch(url).then((r) => { if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`); return r.json(); });
+      p.catch(() => cache.delete(url)); // falhou: deixa tentar de novo na próxima navegação
+      cache.set(url, p);
+    }
+    return cache.get(url);
   }
 
-  // ---------- dados derivados ----------
-
-  let D, CRIT, ANO, ANT, ANOS;
-
-  function agrupaFalhas(m) {
-    const por = new Map();
-    for (const [id, cod, ganho, falhando, total] of m.falhas || []) {
-      if (!por.has(id)) por.set(id, { id, crit: CRIT.get(id), itens: [], ganho: 0 });
-      const g = por.get(id);
-      g.itens.push({ cod, ganho, falhando, total });
-      g.ganho += ganho;
+  async function catalogo() {
+    if (!CAT) {
+      const c = await json('dados/criterios.json');
+      CATMETA = c;
+      CAT = new Map(c.criterios.map((x) => [x.id, x]));
     }
-    return [...por.values()];
+    return CAT;
   }
 
-  /** Menor lista (gulosa) de critérios a corrigir para chegar ao Diamante: primeiro os essenciais, depois o maior ganho. */
-  function caminho(m) {
-    const grupos = m.grupos;
-    let indice = m.atual.i;
-    const passos = grupos.filter((g) => g.crit.exig === 'Essencial');
-    for (const g of passos) indice += g.ganho / 100;
-    for (const g of grupos.filter((x) => x.crit.exig !== 'Essencial').sort((a, b) => b.ganho - a.ganho)) {
-      if (indice >= META) break;
-      passos.push(g);
-      indice += g.ganho / 100;
-    }
-    return { passos, projetado: Math.min(indice, 1), alcanca: indice >= META - 1e-9 };
+  /** Ações do município: cada critério da matriz-alvo que não atende (ou que não foi avaliado no ciclo das respostas). */
+  function deriva(m) {
+    if (m._d) return m._d;
+    const acoes = (m.pendencias || []).map((p) => {
+      const c = CAT.get(p.id);
+      return {
+        ...p, c,
+        novo: p.itens.every((x) => x[1] == null),
+        essencial: c.classe === 'Essencial',
+        setor: SETOR[c.dim] || 'A definir',
+      };
+    });
+    m._d = {
+      acoes,
+      base: m.estimativa,
+      essPend: acoes.filter((a) => a.essencial),
+      incerto: soma(acoes.filter((a) => a.novo)),
+    };
+    return m._d;
   }
 
-  function prepara(dados) {
-    D = dados;
-    ANOS = D.meta.ciclos.map(String);
-    ANO = String(D.meta.ciclo_atual);
-    ANT = ANOS[ANOS.indexOf(ANO) - 1];
-    CRIT = new Map(D.criterios.map((c) => [c.id, c]));
-    for (const m of D.municipios) {
-      m.atual = m.pref[ANO];
-      m.anterior = m.pref[ANT];
-      m.grupos = agrupaFalhas(m);
-      m.essFalta = m.grupos.filter((g) => g.crit.exig === 'Essencial');
-      m.caminho = caminho(m);
-      m.busca = semAcento(m.nome);
-    }
+  /** Plano por etapas para uma meta: essenciais, o menor caminho até a meta, critérios novos a conferir, o resto. */
+  function monta(m, meta) {
+    const { acoes, base } = deriva(m);
+    const alvo = SELOS[meta];
+    const ess = acoes.filter((a) => a.essencial).sort(porGanho);
+    let x = base + soma(ess) / 100;
+    const caminho = [];
+    const tenta = (lista) => { for (const a of lista) { if (x >= alvo - 1e-9) break; caminho.push(a); x += a.ganho / 100; } };
+    tenta(acoes.filter((a) => !a.essencial && !a.novo).sort(porGanho));
+    tenta(acoes.filter((a) => !a.essencial && a.novo).sort(porGanho)); // só se ainda faltar
+    const usados = new Set([...ess, ...caminho].map((a) => a.id));
+    return {
+      alcanca: x >= alvo - 1e-9,
+      projetado: Math.min(x, 1),
+      usados,
+      caminho: ess.length + caminho.length,
+      etapas: [
+        { chave: 'ess', titulo: 'Itens essenciais', acoes: ess,
+          nota: 'Sem eles não há selo, qualquer que seja o índice. E, pela Lei de Responsabilidade Fiscal (arts. 48, 48-A e 51), sem essas informações o município fica impedido de receber transferências voluntárias e de contratar operações de crédito.' },
+        { chave: 'meta', titulo: `Para chegar ao ${meta}`, acoes: caminho,
+          nota: `Os critérios que mais sobem o índice, na ordem, até ${NF0.format(alvo * 100)}%.` },
+        { chave: 'novos', titulo: 'Conferir os critérios novos', acoes: acoes.filter((a) => a.novo && !usados.has(a.id)).sort(porGanho),
+          nota: `Entraram na matriz ${CATMETA.ano} e não foram avaliados em ${IDX.meta.ciclo_respostas}. A estimativa os conta como pendentes; se o portal já atende, marque como concluído.` },
+        { chave: 'demais', titulo: 'Demais pendências', acoes: acoes.filter((a) => !a.novo && !usados.has(a.id)).sort(porGanho),
+          nota: 'Margem de segurança: a validação do tribunal e a revisão da Atricon costumam derrubar alguns itens.' },
+      ],
+    };
   }
 
-  const contaNiveis = (ano) => {
-    const c = {};
-    for (const m of D.municipios) {
-      const f = m.pref[ano];
-      if (f) c[f.n] = (c[f.n] || 0) + 1;
+  /** Etapas com ações, numeradas na ordem em que aparecem. */
+  const etapasVisiveis = (plano) => plano.etapas.filter((e) => e.acoes.length).map((e, i) => ({ ...e, titulo: `Etapa ${i + 1} · ${e.titulo}` }));
+
+  function fraseMeta(plano, meta) {
+    if (!plano.caminho) return plano.alcanca ? `A estimativa já está no nível da meta (${meta}).` : '';
+    return plano.alcanca
+      ? `Para o ${meta}: ${plural(plano.caminho, 'ação leva', 'ações levam')} a estimativa a ${pct(plano.projetado)}.`
+      : `Mesmo com ${plural(plano.caminho, 'ação', 'ações')} de essenciais e de maior ganho, a estimativa fica em ${pct(plano.projetado)}: o ${meta} depende também das demais pendências.`;
+  }
+
+  function veredito(m) {
+    const ano = String(IDX.meta.ciclo_atual);
+    const o = m.ciclos[ano];
+    const { essPend, base, incerto } = deriva(m);
+    if (!o || o.i == null) return `Sem avaliação válida em ${ano}.`;
+    const frases = [];
+    if (o.n === 'Diamante') frases.push(`A prefeitura tem o Selo Diamante, o nível máximo do programa (índice ${pct(o.i)} em ${ano}).`);
+    else if (o.n === 'Ouro' || o.n === 'Prata') frases.push(`A prefeitura tem o Selo ${o.n} (índice ${pct(o.i)} em ${ano}). Para o Diamante faltaram ${pts((0.95 - o.i) * 100)}.`);
+    else if (o.n === 'Elevado') frases.push(`O índice é alto (${pct(o.i)} em ${ano}), mas a prefeitura ficou sem selo porque há item essencial não atendido.`);
+    else frases.push(`A prefeitura ficou no nível ${o.n} (índice ${pct(o.i)} em ${ano}), sem selo. O primeiro selo, Prata, exige 75% e todos os itens essenciais.`);
+    if (essPend.length) frases.push(`Pelas regras de ${CATMETA.ano}, ${plural(essPend.length, 'critério essencial está pendente', 'critérios essenciais estão pendentes')}: é a primeira providência.`);
+    if (base != null) {
+      frases.push(`Nas regras de ${CATMETA.ano}, a estimativa é de ${pct(base)}` + (incerto > 0.05 ? `, contando como pendentes ${pts(incerto)} de critérios novos ainda não avaliados.` : '.'));
+      const piso = SELOS[o.n];
+      if (piso && base < piso - 1e-9) {
+        frases.push(base + incerto >= piso - 1e-9
+          ? `Isso fica abaixo dos ${NF0.format(piso * 100)}% do ${o.n}: publicar o que os critérios novos pedem é o que garante o selo.`
+          : `Isso fica abaixo dos ${NF0.format(piso * 100)}% do ${o.n}: o plano de ação mostra o que corrigir para manter o selo.`);
+      }
     }
-    return c;
-  };
+    return frases.join(' ');
+  }
 
   // ---------- peças de interface ----------
 
@@ -132,9 +213,7 @@
         sub ? h('p', { class: 'aviso' }, sub) : null));
   }
 
-  function kpi(numero, rotulo, tom) {
-    return h('div', { class: 'kpi ' + (tom || '') }, h('span', { class: 'kpi-n' }, numero), h('span', { class: 'kpi-r' }, rotulo));
-  }
+  const kpi = (numero, rotulo, tom) => h('div', { class: 'kpi ' + (tom || '') }, h('span', { class: 'kpi-n' }, numero), h('span', { class: 'kpi-r' }, rotulo));
 
   function secao(titulo, nota, ...corpo) {
     return h('section', { class: 'faixa' },
@@ -144,392 +223,334 @@
       ...corpo);
   }
 
-  function setaVariacao(m) {
-    const a = m.anterior, b = m.atual;
-    if (!a || !b || a.i == null || b.i == null) return h('span', { class: 'tr-delta' }, '–');
-    const d = (b.i - a.i) * 100;
-    const r = ORDEM_NIVEL.indexOf(b.n) - ORDEM_NIVEL.indexOf(a.n);
-    const rotulo = r < 0 ? '▲' : r > 0 ? '▼' : '=';
-    const tom = r < 0 ? 'tr-sobe' : r > 0 ? 'tr-desce' : '';
-    const tit = a.n === b.n ? `Manteve ${b.n}` : `${a.n} → ${b.n}`;
-    return h('span', { class: 'tr-delta ' + tom, title: tit }, `${rotulo} ${pontos(d)}`);
-  }
+  const tomNivel = (n) => (n === 'Diamante' || n === 'Ouro' || n === 'Prata' ? 't-ok' : n === 'Elevado' || n === 'Intermediário' ? 't-alerta' : 't-perigo');
 
-  function pilhaNiveis(ano) {
-    const c = contaNiveis(ano);
-    const total = D.municipios.filter((m) => m.pref[ano]).length;
-    const bar = h('div', { class: 'tr-pilha', role: 'img', 'aria-label': `Ciclo ${ano}: ` + ORDEM_NIVEL.filter((n) => c[n]).map((n) => `${c[n]} ${n}`).join(', ') });
-    for (const n of ORDEM_NIVEL) {
-      if (!c[n]) continue;
-      const seg = h('span', { class: 'tr-seg', 'data-n': n, title: `${n}: ${c[n]}` }, c[n] >= 6 ? String(c[n]) : '');
-      seg.style.width = (c[n] / total) * 100 + '%';
-      bar.append(seg);
-    }
-    return h('div', { class: 'tr-pilha-linha' }, h('span', { class: 'tr-ano' }, ano), bar);
-  }
-
-  function legendaNiveis() {
-    return h('ul', { class: 'tr-legenda' }, ORDEM_NIVEL.map((n) => h('li', {}, h('span', { class: 'tr-seg-cor', 'data-n': n }), n)));
-  }
-
-  /** Ciclos em que houve prefeitura sem índice (nível "Inexistente", 0%, ou "Não Avaliado"). */
-  function notaSemAvaliacao() {
-    const partes = ANOS.map((a) => {
-      const c = contaNiveis(a);
-      const q = [];
-      if (c.Inexistente) q.push(`${c.Inexistente} como "Inexistente" (índice 0%)`);
-      if (c['Não Avaliado']) q.push(`${c['Não Avaliado']} como "Não Avaliado"`);
-      return q.length ? `${a}: ${q.join(' e ')}` : null;
-    }).filter(Boolean);
-    return h('p', { class: 'aviso' }, partes.length ? 'Prefeituras sem índice válido em ' + partes.join('; ') + '.' : 'Todas as prefeituras tiveram índice em todos os ciclos.');
-  }
-
-  /** Critérios que viram essenciais no próximo ciclo e quem, com selo hoje, ainda não os atende. */
-  function avisoProximoCiclo() {
-    const prox = D.meta.proximo_ciclo;
-    if (!prox) return null;
-    const novos = prox.essenciais.filter((id) => CRIT.has(id) && CRIT.get(id).exig !== 'Essencial');
-    if (!novos.length) return null;
-    const expostas = D.municipios.filter((m) => SELOS.includes(m.atual.n) && m.grupos.some((g) => novos.includes(g.id)));
-    const total = D.municipios.filter((m) => m.grupos.some((g) => novos.includes(g.id))).length;
-    const singular = novos.length === 1;
-    return h('div', { class: 'painel tr-aviso' },
-      h('p', { class: 'kicker' }, `Atenção ao ciclo ${prox.ano}`),
-      h('p', {}, `Na matriz ${prox.ano}, ${singular ? 'o critério abaixo passa' : 'os critérios abaixo passam'} a ser essencia${singular ? 'l' : 'is'} (${prox.essenciais.length} essenciais no total):`),
-      h('ul', { class: 'lista-seca' }, novos.map((id) => h('li', {}, `${id} ${CRIT.get(id).texto}`))),
-      h('p', {}, `${total} prefeitura(s) ainda não ${total === 1 ? 'atende' : 'atendem'} integralmente ${singular ? 'esse critério' : 'esses critérios'}`,
-        expostas.length
-          ? [`; ${expostas.length} ${expostas.length === 1 ? 'delas tem' : 'delas têm'} selo hoje e ${expostas.length === 1 ? 'pode' : 'podem'} perdê-lo: `, expostas.map((m, i) => [i ? ', ' : '', h('a', { href: '#/municipio/' + m.ibge }, m.nome)]), '.']
-          : '; nenhuma delas tem selo hoje.'));
-  }
-
-  // ---------- telas ----------
-
-  function telaPanorama() {
-    const ms = D.municipios;
-    const n = ms.length;
-    const cont = contaNiveis(ANO);
-    const selo = SELOS.reduce((s, x) => s + (cont[x] || 0), 0);
-    const media = ms.reduce((s, m) => s + (m.atual.i || 0), 0) / n;
-    const sobEssencial = ms.filter((m) => m.atual.i >= 0.75 && m.essFalta.length > 0);
-    const proximos = ms.filter((m) => m.atual.n !== 'Diamante' && m.caminho.alcanca)
-      .sort((a, b) => a.caminho.passos.length - b.caminho.passos.length || b.atual.i - a.atual.i).slice(0, 12);
-
-    const falham = new Map();
-    for (const m of ms) for (const g of m.grupos) falham.set(g.id, (falham.get(g.id) || 0) + 1);
-    const topFalhas = [...falham.entries()].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0])).slice(0, 10);
-    const maxFalha = topFalhas[0] ? topFalhas[0][1] : 1;
-
-    return h('div', {},
-      cabecalho('Módulo · Transparência', 'Transparência das prefeituras do Tocantins',
-        `Programa Nacional de Transparência Pública (Atricon), ciclo ${ANO}: ${n} prefeituras. Selos: Diamante, Ouro e Prata.`),
-      h('div', { class: 'kpis' },
-        kpi(`${cont.Diamante || 0}`, `Selo Diamante (de ${n})`, 't-ok'),
-        kpi(`${selo}`, 'Com selo (Diamante, Ouro ou Prata)', 't-ok'),
-        kpi(`${n - selo}`, 'Sem selo', n - selo ? 't-alerta' : 't-ok'),
-        kpi(`${sobEssencial.length}`, 'Índice alto, mas com essencial faltando', sobEssencial.length ? 't-perigo' : 't-ok'),
-        kpi(pct(media), 'Índice médio das prefeituras', 't-fraco')),
-      h('div', { class: 'tr-espaco' }),
-      avisoProximoCiclo(),
-      secao('Evolução dos níveis', 'Quantas prefeituras estão em cada nível, ciclo a ciclo.',
-        ANOS.map(pilhaNiveis), legendaNiveis(),
-        notaSemAvaliacao()),
-      secao('Mais perto do Diamante', 'Prefeituras que chegam a 95% e a 100% dos essenciais corrigindo menos critérios (estimativa a partir das respostas de ' + ANO + ').',
-        h('div', { class: 'tabela-rolagem' }, h('table', { class: 'tabela' },
-          h('thead', {}, h('tr', {}, h('th', {}, 'Município'), h('th', {}, 'Nível'), h('th', { class: 'tr-num' }, 'Índice'), h('th', { class: 'tr-num' }, 'Critérios a corrigir'), h('th', { class: 'tr-num' }, 'Essenciais faltando'))),
-          h('tbody', {}, proximos.map((m) => h('tr', {},
-            h('td', {}, h('a', { href: '#/municipio/' + m.ibge }, m.nome)),
-            h('td', {}, chipNivel(m.atual.n)),
-            h('td', { class: 'tr-num' }, pct(m.atual.i)),
-            h('td', { class: 'tr-num' }, String(m.caminho.passos.length)),
-            h('td', { class: 'tr-num' }, String(m.essFalta.length))))))),
-        h('p', { class: 'aviso' }, h('a', { href: '#/municipios' }, 'Ver as ' + n + ' prefeituras →'))),
-      secao('O que mais falha no estado', `Critérios com mais prefeituras ainda sem atender integralmente (ciclo ${ANO}).`,
-        h('ul', { class: 'rel-barras' }, topFalhas.map(([id, q]) => {
-          const c = CRIT.get(id);
-          const barra = h('span', { class: 'rb-fio' + (c.exig === 'Essencial' ? ' t-perigo' : '') });
-          barra.style.width = (q / maxFalha) * 100 + '%';
-          return h('li', {},
-            h('span', { class: 'rb-rot', title: c.texto }, `${id} ${c.texto}`),
-            h('span', { class: 'rb-trilho' }, barra),
-            h('span', { class: 'rb-val' }, `${q} de ${ms.length}`, c.exig === 'Essencial' ? h('span', { class: 'rb-nota' }, 'essencial') : null));
-        })),
-        h('p', { class: 'aviso' }, h('a', { href: '#/criterios' }, 'Ver todos os critérios →'))));
-  }
-
-  // ----- lista de municípios -----
-
-  const lista = { q: '', nivel: 'Todos', ordem: 'indice', dir: -1 };
-
-  const ORDENS = {
-    nome: (m) => m.busca,
-    pop: (m) => m.pop || 0,
-    nivel: (m) => ORDEM_NIVEL.indexOf(m.atual.n) * 10 - m.atual.i,
-    indice: (m) => m.atual.i ?? -1,
-    ess: (m) => m.atual.e ?? -1,
-    var: (m) => (m.anterior && m.anterior.i != null && m.atual.i != null ? m.atual.i - m.anterior.i : -9),
-  };
-
-  function csv(ms) {
-    const cab = ['ibge', 'municipio', 'populacao', 'nivel_' + ANO, 'indice_' + ANO, 'essenciais_' + ANO, 'nivel_' + ANT, 'indice_' + ANT, 'portal'];
-    const q = (v) => '"' + String(v ?? '').replace(/"/g, '""') + '"';
-    return [cab.join(',')].concat(ms.map((m) => [m.ibge, m.nome, m.pop, m.atual.n, m.atual.i, m.atual.e, m.anterior?.n, m.anterior?.i, m.pref.portal].map(q).join(','))).join('\n');
-  }
-
-  function telaLista() {
-    const corpo = h('tbody');
-    const contagem = h('p', { class: 'aviso', 'aria-live': 'polite' });
-    const cabecas = [];
-
-    function th(rotulo, chave, num) {
-      const b = h('button', { class: 'est-ord-btn' + (num ? ' est-ord-num' : ''), type: 'button', onclick: () => {
-        lista.dir = lista.ordem === chave ? -lista.dir : chave === 'nome' ? 1 : -1;
-        lista.ordem = chave;
-        desenha();
-      } }, rotulo, h('span', { class: 'est-ord-ind', 'aria-hidden': 'true' }));
-      const t = h('th', { scope: 'col', class: num ? 'tr-num' : '' }, b);
-      cabecas.push([chave, t, b]);
-      return t;
-    }
-
-    function desenha() {
-      const q = semAcento(lista.q.trim());
-      let ms = D.municipios.filter((m) => (!q || m.busca.includes(q)) && (lista.nivel === 'Todos' || grupoDoNivel(m.atual.n) === lista.nivel));
-      const f = ORDENS[lista.ordem];
-      ms = ms.slice().sort((a, b) => {
-        const x = f(a), y = f(b);
-        return (x < y ? -1 : x > y ? 1 : a.busca.localeCompare(b.busca)) * lista.dir;
-      });
-      corpo.replaceChildren(...ms.map((m) => h('tr', {},
-        h('td', {}, h('a', { href: '#/municipio/' + m.ibge }, m.nome)),
-        h('td', { class: 'tr-num' }, m.pop ? NF0.format(m.pop) : '–'),
-        h('td', {}, chipNivel(m.atual.n)),
-        h('td', { class: 'tr-num' }, pct(m.atual.i)),
-        h('td', { class: 'tr-num' }, pct(m.atual.e)),
-        h('td', { class: 'tr-num' }, setaVariacao(m)),
-        h('td', {}, link(m.pref.portal, 'portal ↗')))));
-      if (!ms.length) corpo.append(h('tr', {}, h('td', { colspan: '7', class: 'nada' }, 'Nenhum município com esse filtro.')));
-      contagem.textContent = `${ms.length} de ${D.municipios.length} prefeituras`;
-      for (const [chave, t, b] of cabecas) {
-        const ativo = chave === lista.ordem;
-        t.setAttribute('aria-sort', ativo ? (lista.dir > 0 ? 'ascending' : 'descending') : 'none');
-        b.classList.toggle('ativo', ativo);
-        b.lastChild.textContent = ativo ? (lista.dir > 0 ? '▲' : '▼') : '↕';
-      }
-      for (const b of filtros.querySelectorAll('.filtro')) {
-        const on = b.dataset.nivel === lista.nivel;
-        b.setAttribute('aria-pressed', on ? 'true' : 'false');
-      }
-    }
-
-    const busca = h('div', { class: 'busca' }, h('input', {
-      type: 'search', placeholder: 'Buscar município', 'aria-label': 'Buscar município', value: lista.q,
-      oninput: (e) => { lista.q = e.target.value; desenha(); },
-    }));
-    const filtros = h('div', { class: 'filtros', role: 'group', 'aria-label': 'Filtrar por nível' },
-      ['Todos', ...GRUPOS_NIVEL].map((n) => {
-        const q = n === 'Todos' ? D.municipios.length : D.municipios.filter((m) => grupoDoNivel(m.atual.n) === n).length;
-        return h('button', { class: 'filtro', type: 'button', 'data-nivel': n, onclick: () => { lista.nivel = n; desenha(); } }, n, h('span', { class: 'n' }, String(q)));
+  function barra(valor, rotulo, comMarcas) {
+    const fio = h('span', { class: 'est-placar-fio' });
+    fio.style.width = Math.max(0, Math.min(1, valor ?? 0)) * 100 + '%';
+    const trilho = h('span', { class: 'est-placar-trilho', role: 'img', 'aria-label': `${rotulo}: ${pct(valor)}. Prata a partir de 75%, Ouro de 85%, Diamante de 95%.` }, fio,
+      Object.entries(SELOS).map(([nome, v]) => {
+        const marca = h('span', { class: 'est-placar-marca tr-marca', 'data-selo': nome }, comMarcas ? h('span', {}, nome) : null);
+        marca.style.left = v * 100 + '%';
+        return marca;
       }));
-    const baixar = h('button', { class: 'btn btn-inline', type: 'button', onclick: () => {
-      const url = URL.createObjectURL(new Blob(['﻿' + csv(D.municipios)], { type: 'text/csv;charset=utf-8' }));
-      const a = h('a', { href: url, download: `pntp-tocantins-prefeituras-${ANO}.csv` });
-      document.body.append(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } }, 'Baixar CSV');
-
-    const el = h('div', {},
-      cabecalho('Módulo · Transparência', 'Prefeituras', `Nível e índice do ciclo ${ANO}; variação em relação a ${ANT}.`),
-      h('div', { class: 'barra-mesa' }, filtros, h('div', { class: 'barra-direita' }, busca, baixar)),
-      contagem,
-      h('div', { class: 'tabela-rolagem' }, h('table', { class: 'tabela est-tabela' },
-        h('thead', {}, h('tr', {},
-          th('Município', 'nome'), th('População', 'pop', true), th('Nível ' + ANO, 'nivel'), th('Índice', 'indice', true),
-          th('Essenciais', 'ess', true), th('Variação', 'var', true), h('th', { scope: 'col' }, 'Portal'))),
-        corpo)));
-    desenha();
-    return el;
+    return h('div', { class: 'est-placar-linha' }, h('span', { class: 'est-placar-rot' }, rotulo), trilho, h('span', { class: 'est-placar-n' }, pct(valor)));
   }
 
-  // ----- ficha do município -----
-
-  function serieIndice(m) {
+  function serie(m) {
+    const anos = IDX.meta.ciclos.map(String);
     const L = 560, A = 210, ex = 46, ey = 22, base = A - 30, folga = 44;
-    const xs = (i) => ex + folga + (i * (L - 2 * ex - 2 * folga)) / Math.max(ANOS.length - 1, 1);
+    const xs = (i) => ex + folga + (i * (L - 2 * ex - 2 * folga)) / Math.max(anos.length - 1, 1);
     const ys = (v) => ey + (1 - v) * (base - ey);
-    const pts = ANOS.map((a, i) => (m.pref[a] && m.pref[a].i != null ? [xs(i), ys(m.pref[a].i), m.pref[a]] : null));
-    const caminhoLinha = pts.filter(Boolean).map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(' ');
-    const desc = ANOS.map((a) => `${a}: ${m.pref[a] ? pct(m.pref[a].i) + ' (' + m.pref[a].n + ')' : 'sem avaliação'}`).join('; ');
+    const p = anos.map((a, i) => (m.ciclos[a] && m.ciclos[a].i != null ? [xs(i), ys(m.ciclos[a].i), m.ciclos[a]] : null));
+    const d = p.filter(Boolean).map((q, i) => `${i ? 'L' : 'M'}${q[0].toFixed(1)} ${q[1].toFixed(1)}`).join(' ');
+    const desc = anos.map((a) => `${a}: ${m.ciclos[a] ? pct(m.ciclos[a].i) + ' (' + m.ciclos[a].n + ')' : 'sem avaliação'}`).join('; ');
     return h('div', { class: 'est-serie' }, sv('svg', { viewBox: `0 0 ${L} ${A}`, role: 'img', 'aria-label': 'Índice por ciclo. ' + desc },
       [0, 0.25, 0.5, 0.75, 1].map((v) => sv('g', {},
         sv('line', { class: 'est-grade', x1: ex, x2: L - ex, y1: ys(v), y2: ys(v) }),
         sv('text', { class: 'est-eixo', x: ex - 8, y: ys(v) + 4, 'text-anchor': 'end' }, `${v * 100}%`))),
-      sv('line', { class: 'est-meta-linha', x1: ex, x2: L - ex, y1: ys(META), y2: ys(META) }),
-      sv('text', { class: 'est-meta-txt', x: ex + 6, y: ys(META) - 6, 'text-anchor': 'start' }, 'Diamante 95%'),
-      caminhoLinha ? sv('path', { class: 'est-linha', d: caminhoLinha }) : null,
-      pts.map((p, i) => sv('g', {},
-        p ? sv('circle', { class: 'est-ponto', cx: p[0], cy: p[1], r: 4.5 }) : null,
-        p ? sv('text', { class: 'est-valor', x: p[0], y: p[1] - 11, 'text-anchor': 'middle' }, pct(p[2].i)) : null,
-        sv('text', { class: 'est-eixo', x: xs(i), y: A - 8, 'text-anchor': 'middle' }, ANOS[i])))));
+      sv('line', { class: 'est-meta-linha', x1: ex, x2: L - ex, y1: ys(0.95), y2: ys(0.95) }),
+      sv('text', { class: 'est-meta-txt', x: ex + 6, y: ys(0.95) - 6, 'text-anchor': 'start' }, 'Diamante 95%'),
+      d ? sv('path', { class: 'est-linha', d }) : null,
+      p.map((q, i) => sv('g', {},
+        q ? sv('circle', { class: 'est-ponto', cx: q[0], cy: q[1], r: 4.5 }) : null,
+        q ? sv('text', { class: 'est-valor', x: q[0], y: q[1] - 11, 'text-anchor': 'middle' }, pct(q[2].i)) : null,
+        sv('text', { class: 'est-eixo', x: xs(i), y: A - 8, 'text-anchor': 'middle' }, anos[i])))));
   }
 
-  function placar(m) {
-    const i = m.atual.i ?? 0;
-    const fio = h('span', { class: 'est-placar-fio' });
-    fio.style.width = i * 100 + '%';
-    const marca = h('span', { class: 'est-placar-marca' }, h('span', {}, 'Diamante'));
-    marca.style.left = META * 100 + '%';
-    return h('div', { class: 'est-placar' },
-      h('div', { class: 'est-selo' }, chipNivel(m.atual.n), ' ', h('strong', {}, pct(m.atual.i)), h('span', { class: 'tr-sub' }, ` · ciclo ${ANO}`)),
-      h('div', { class: 'est-placar-linha' },
-        h('span', { class: 'est-placar-rot' }, 'Índice de transparência'),
-        h('span', { class: 'est-placar-trilho', role: 'img', 'aria-label': `Índice ${pct(i)}; Diamante a partir de 95%` }, fio, marca),
-        h('span', { class: 'est-placar-n' }, pct(m.atual.i))),
-      h('div', { class: 'est-placar-linha' },
-        h('span', { class: 'est-placar-rot' }, 'Itens essenciais atendidos'),
-        h('span', { class: 'est-placar-trilho', role: 'img', 'aria-label': `Essenciais ${pct(m.atual.e)}` }, (() => { const f = h('span', { class: 'est-placar-fio' }); f.style.width = (m.atual.e ?? 0) * 100 + '%'; return f; })()),
-        h('span', { class: 'est-placar-n' }, pct(m.atual.e))));
+  function tabelaCiclos(ciclos) {
+    const anos = IDX.meta.ciclos.map(String).filter((a) => ciclos[a]);
+    return h('div', { class: 'tabela-rolagem' }, h('table', { class: 'tabela' },
+      h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Ciclo'), h('th', { scope: 'col' }, 'Nível'), h('th', { scope: 'col', class: 'tr-num' }, 'Índice'), h('th', { scope: 'col', class: 'tr-num' }, 'Essenciais'))),
+      h('tbody', {}, anos.map((a) => h('tr', {}, h('td', {}, a), h('td', {}, chipNivel(ciclos[a].n)), h('td', { class: 'tr-num' }, pct(ciclos[a].i)), h('td', { class: 'tr-num' }, pct(ciclos[a].e)))))));
   }
 
-  const rotuloItens = (g) => g.itens.map((x) => ITENS[x.cod] + (x.total > 1 ? ` (${x.falhando}/${x.total})` : '')).join(', ');
+  const rotuloFalta = (it) => it.map(([cod, falhando, total]) => ITEM[cod][0] + (falhando == null ? ' (não avaliado antes)' : total > 1 ? ` (${falhando} de ${total} verificações)` : '')).join(', ');
 
-  function simulador(m) {
-    const sel = new Set();
-    const resumoEl = h('div', { class: 'tr-sim-linha' });
-    const avisoEl = h('p', { class: 'aviso' });
-    const btnCaminho = h('button', { class: 'btn btn-inline', type: 'button', onclick: () => {
-      sel.clear();
-      for (const g of m.caminho.passos) sel.add(g.id);
-      if ([...sel].some((id) => !visiveis(false).some((c) => c.querySelector('input').dataset.id === id))) todos = true; // não deixa marcado o que está escondido
-      mostra();
-    } }, 'Marcar o caminho mais curto');
-    const btnLimpar = h('button', { class: 'botao-texto', type: 'button', onclick: () => { sel.clear(); sincroniza(); } }, 'Limpar');
-    const caixa = h('div', { class: 'tr-sim painel' },
-      h('div', { 'aria-live': 'polite' }, resumoEl, avisoEl),
-      h('div', { class: 'form-acoes' }, btnCaminho, btnLimpar));
-    const listaEl = h('div', { class: 'est-reqs' });
-    const ids = m.grupos.map((g) => g.id);
+  const paginaCartilha = (c) => (CATMETA.cartilha_url && c.pagina ? `${CATMETA.cartilha_url}#page=${c.pagina}` : null);
 
-    function projeta() {
-      let indice = m.atual.i ?? 0;
-      let falta = 0;
-      for (const g of m.grupos) {
-        if (sel.has(g.id)) indice += g.ganho / 100;
-        else if (g.crit.exig === 'Essencial') falta += 1;
-      }
-      indice = Math.min(indice, 1);
-      return { indice, falta, nivel: classifica(indice, falta === 0) };
-    }
-
-    function desenha() {
-      const p = projeta();
-      const chega = p.nivel === 'Diamante';
-      resumoEl.replaceChildren(
-        h('span', {}, 'Hoje ', chipNivel(m.atual.n), ' ', h('strong', {}, pct(m.atual.i))),
-        h('span', { class: 'tr-seta', 'aria-hidden': 'true' }, '→'),
-        h('span', {}, 'Projeção ', chipNivel(p.nivel), ' ', h('strong', {}, pct(p.indice))));
-      avisoEl.textContent = `${sel.size} de ${ids.length} critérios marcados · essenciais faltando: ${p.falta}`
-        + (chega ? ' · alcança o Diamante' : p.falta ? ' · enquanto houver essencial faltando, o teto é "Elevado"' : ` · faltam ${NF1.format(Math.max(0, (META - p.indice) * 100))} pontos para o Diamante`);
-    }
-
-    function sincroniza() {
-      for (const cx of listaEl.querySelectorAll('input[type=checkbox]')) cx.checked = sel.has(cx.dataset.id);
-      desenha();
-    }
-
-    const LIMITE = 12; // essenciais sempre aparecem; dos demais, os de maior ganho
-    const ordenados = m.grupos.slice().sort((a, b) => (b.crit.exig === 'Essencial') - (a.crit.exig === 'Essencial') || b.ganho - a.ganho);
-    const cartoes = ordenados.map((g) => {
-      const ess = g.crit.exig === 'Essencial';
-      return h('label', { class: 'est-req ' + (ess ? 'est-nao' : 'est-andamento') },
-        h('div', { class: 'tr-crit-topo' },
-          h('input', { type: 'checkbox', 'data-id': g.id, onchange: (e) => { e.target.checked ? sel.add(g.id) : sel.delete(g.id); desenha(); } }),
-          h('span', { class: 'chip ' + (ess ? 'chip-fatal' : 'chip-alta') }, g.crit.exig),
-          h('span', { class: 'chip' }, g.crit.dim),
-          h('span', { class: 'tr-ganho' }, '+' + NF1.format(g.ganho) + ' pt')),
-        h('p', { class: 'est-req-titulo' }, `${g.id} ${g.crit.texto}`),
-        h('p', { class: 'item-meta' }, 'Falta: ' + rotuloItens(g)));
-    });
-    const visiveis = (todos) => ordenados.map((g, i) => (todos || g.crit.exig === 'Essencial' || i < LIMITE ? cartoes[i] : null)).filter(Boolean);
-    let todos = false;
-    const mais = h('button', { class: 'btn btn-inline tr-mais', type: 'button', onclick: () => { todos = !todos; mostra(); } });
-    function mostra() {
-      listaEl.replaceChildren(...visiveis(todos));
-      mais.textContent = todos ? 'Mostrar só os principais' : `Mostrar os ${ordenados.length} critérios`;
-      mais.hidden = ordenados.length <= visiveis(false).length;
-      sincroniza();
-    }
-    mostra();
-    return h('div', {}, caixa, listaEl, mais);
+  /** Cartão de uma ação do plano. `marcar` (opcional) liga a caixa "concluída". */
+  function cartaoAcao(a, marcar) {
+    const c = a.c;
+    const estado = () => (marcar && marcar.tem(a.id) ? 'est-cumprido' : a.essencial ? 'est-nao' : 'est-andamento');
+    const el = h('article', { class: 'est-req tr-acao ' + estado() });
+    const caixa = marcar ? h('label', { class: 'check tr-feito' },
+      h('input', { type: 'checkbox', checked: marcar.tem(a.id), onchange: (e) => { marcar.troca(a.id, e.target.checked); el.className = 'est-req tr-acao ' + estado(); } }),
+      'Concluída') : null;
+    el.append(...[
+      h('div', { class: 'tr-acao-topo' },
+        chipClasse(c.classe),
+        h('span', { class: 'chip' }, a.setor),
+        a.novo ? h('span', { class: 'chip tr-chip-novo' }, `Novo em ${CATMETA.ano}`) : null,
+        c.classe_antes && c.classe_antes !== c.classe ? h('span', { class: 'chip tr-chip-novo', title: `Em ${IDX.meta.ciclo_respostas} era ${c.classe_antes}` }, `Era ${c.classe_antes.toLowerCase()}`) : null,
+        h('span', { class: 'tr-ganho' }, '+' + pts(a.ganho))),
+      h('h3', { class: 'est-req-titulo' }, `${c.id} ${c.texto}`),
+      h('p', { class: 'item-meta' }, h('strong', {}, 'O que falta: '), a.novo ? `conferir se o portal já atende (${rotuloFalta(a.itens).replace(/ \(não avaliado antes\)/g, '')})` : rotuloFalta(a.itens)),
+      a.nota ? h('blockquote', { class: 'tr-nota' }, h('span', { class: 'kicker' }, `Observação do tribunal (${IDX.meta.ciclo_respostas})`), h('p', {}, a.nota)) : null,
+      h('div', { class: 'tr-links' },
+        link(a.link, 'Página avaliada ↗'),
+        link(a.print, 'Print do avaliador ↗'),
+        link(paginaCartilha(c), `Cartilha, p. ${c.pagina} ↗`),
+        caixa),
+      orientacao(c, a.itens.map((x) => x[0]))].filter(Boolean)); // append() escreveria "null"
+    return el;
   }
 
-  function blocoCamara(m) {
-    const c = m.cam;
-    const linha = ANOS.map((a) => (c[a] ? `${a}: ${c[a].n} (${pct(c[a].i)})` : null)).filter(Boolean);
-    if (!linha.length) return null;
-    return secao('Câmara municipal', 'Avaliada à parte pelo PNTP, com outra matriz de critérios.',
-      h('ul', { class: 'lista-seca' }, linha.map((t) => h('li', {}, t))),
-      h('p', { class: 'aviso' }, link(c.portal, 'Portal da câmara ↗')));
+  function orientacao(c, itensEmFalta) {
+    if (!c.orientacao.length && !c.fund) return null;
+    const falta = new Set(itensEmFalta.map((x) => ITEM[x][0].toLowerCase()));
+    return h('details', { class: 'tr-cartilha' },
+      h('summary', {}, 'O que a Cartilha exige'),
+      c.fund ? h('p', { class: 'aviso' }, h('strong', {}, 'Fundamentação: '), c.fund) : null,
+      c.orientacao.map(([rot, txt]) => h('p', { class: rot && falta.has(rot.toLowerCase()) ? 'tr-em-falta' : '' }, rot ? h('strong', {}, rot + ': ') : null, txt)),
+      h('ul', { class: 'tr-itens-def' }, c.itens.map((i) => h('li', {}, h('strong', {}, ITEM[i][0]), ': ', ITEM[i][1], '.'))));
   }
 
-  function telaFicha(ibge) {
-    const m = D.municipios.find((x) => String(x.ibge) === String(ibge));
-    if (!m) return h('div', { class: 'plain' }, h('h1', { id: 'tr-titulo', tabindex: '-1' }, 'Município não encontrado'), h('a', { class: 'back', href: '#/municipios' }, '← Prefeituras'));
-    const cam = m.caminho;
-    const ja = m.atual.n === 'Diamante';
-    const resumoCaminho = ja
-      ? h('p', { class: 'aviso' }, `Já é Diamante. Ainda há ${m.grupos.length} critério(s) com algum item faltando; corrigi-los dá margem contra a revisão do tribunal.`)
-      : h('p', { class: 'aviso' },
-        cam.alcanca
-          ? `Corrigindo ${cam.passos.length} critério(s) (${m.essFalta.length} essencial(is) e ${cam.passos.length - m.essFalta.length} de maior ganho), a projeção chega a ${pct(cam.projetado)} com todos os essenciais.`
-          : 'Mesmo corrigindo todos os critérios com falha, a projeção não chega a 95%. Confira a matriz: pode haver itens da matriz 2026 que não existiam em ' + ANO + '.');
+  // ---------- telas ----------
+
+  function telaEscolha() {
+    const ultimo = guarda.le('tr-municipio', null);
+    const lista = h('ul', { class: 'lista tr-escolha' });
+    const desenha = (q) => {
+      const k = semAcento(q.trim());
+      const ms = IDX.municipios.filter((m) => !k || semAcento(m.nome).includes(k));
+      lista.replaceChildren(...ms.map((m) => h('li', { class: 'item' },
+        h('a', { href: `#/m/${m.ibge}`, class: 'tr-escolha-link' }, h('span', { class: 'tr-escolha-nome' }, m.nome), m.n ? chipNivel(m.n) : null))));
+      if (!ms.length) lista.append(h('li', { class: 'item nada' }, 'Nenhum município com esse nome.'));
+    };
+    const busca = h('input', { type: 'search', placeholder: 'Digite o nome do município', 'aria-label': 'Buscar município', oninput: (e) => desenha(e.target.value) });
+    desenha('');
+    const anterior = ultimo && IDX.municipios.find((m) => m.ibge === ultimo);
     return h('div', {},
-      h('p', { class: 'kicker' }, h('a', { class: 'back', href: '#/municipios' }, '← Prefeituras')),
-      cabecalho('Município · ' + (m.pop ? NF0.format(m.pop) + ' habitantes' : 'Tocantins'), m.nome,
+      cabecalho('Transparência municipal · Tocantins', 'Escolha o município',
+        `Situação da prefeitura no Programa Nacional de Transparência Pública (Atricon) e o plano de ação para chegar ao selo.`),
+      anterior ? h('p', {}, h('a', { class: 'btn btn-inline', href: `#/m/${anterior.ibge}` }, `Continuar com ${anterior.nome} →`)) : null,
+      h('div', { class: 'busca tr-busca' }, busca),
+      lista);
+  }
+
+  function telaPanorama(m) {
+    const ano = String(IDX.meta.ciclo_atual);
+    const o = m.ciclos[ano] || {};
+    const d = deriva(m);
+    const alteradas = d.acoes.filter((a) => !a.novo && a.c.classe_antes && a.c.classe_antes !== a.c.classe);
+    const novos = d.acoes.filter((a) => a.novo);
+    const perdas = m.dimensoes.map(([dim, ob, mx]) => ({ dim, ob, mx, perda: mx - ob })).filter((x) => x.perda > 0.05).sort((a, b) => b.perda - a.perda);
+    const completas = m.dimensoes.length - perdas.length;
+
+    return h('div', {},
+      cabecalho('Prefeitura · ' + [m.pop ? NF0.format(m.pop) + ' habitantes' : null, 'TO'].filter(Boolean).join(' · '), m.nome,
         ['Código IBGE ' + m.ibge, m.cnpj ? 'CNPJ ' + m.cnpj : null].filter(Boolean).join(' · ')),
-      h('p', { class: 'aviso' }, link(m.pref.portal, 'Portal oficial ↗')),
-      placar(m),
-      secao('Histórico', 'Índice por ciclo do PNTP.', serieIndice(m)),
-      secao('Caminho até o Diamante', 'O Diamante exige 95% ou mais e 100% dos itens essenciais. Marque o que a prefeitura pretende corrigir e veja a projeção.',
-        resumoCaminho, m.grupos.length ? simulador(m) : h('p', { class: 'nada' }, 'Nenhum item com falha nas respostas de ' + ANO + '.'),
-        h('p', { class: 'aviso' }, 'Projeção aproximada: usa a fórmula da Cartilha PNTP 2026 sobre as respostas de ' + ANO + '. O resultado oficial depende da validação do tribunal de contas e da revisão da Atricon.')),
+      h('div', { class: 'painel tr-veredito' },
+        h('div', { class: 'est-selo' }, chipNivel(o.n || 'Não Avaliado'), h('strong', {}, pct(o.i)), h('span', { class: 'tr-sub' }, `resultado oficial ${ano}`), link(m.portal, 'Portal da prefeitura ↗')),
+        h('p', {}, veredito(m))),
+      h('div', { class: 'kpis' },
+        kpi(pct(o.i), `Índice oficial ${ano}`, tomNivel(o.n)),
+        kpi(pct(o.e), `Itens essenciais atendidos (${ano})`, o.e === 1 ? 't-ok' : 't-perigo'),
+        kpi(pct(d.base), `Estimativa nas regras de ${CATMETA.ano}`, 't-fraco'),
+        kpi(String(d.acoes.length), 'Critérios a corrigir ou conferir', d.acoes.length ? 't-alerta' : 't-ok')),
+      h('div', { class: 'tr-espaco' }),
+      h('div', { class: 'est-placar' },
+        barra(o.i, `Índice oficial ${ano}`, true),
+        barra(d.base, `Estimativa ${CATMETA.ano}`)),
+      d.essPend.length ? h('div', { class: 'alerta-fatal tr-alerta' },
+        h('p', { class: 'kicker' }, plural(d.essPend.length, 'item essencial pendente', 'itens essenciais pendentes')),
+        h('ul', { class: 'lista-seca' }, d.essPend.map((a) => h('li', {}, `${a.id} ${a.c.texto}`))),
+        h('p', { class: 'aviso' }, 'Sem eles não há selo. A Lei de Responsabilidade Fiscal (arts. 48, 48-A e 51) também impede o município de receber transferências voluntárias e contratar operações de crédito enquanto não divulgar essas informações.')) : null,
+      alteradas.length || novos.length ? h('div', { class: 'painel tr-aviso' },
+        h('p', { class: 'kicker' }, `O que muda em ${CATMETA.ano} para esta prefeitura`),
+        h('ul', { class: 'lista-seca' },
+          alteradas.map((a) => h('li', {}, `${a.id} ${a.c.texto} — era ${a.c.classe_antes.toLowerCase()}, passa a ${a.c.classe.toLowerCase()}, e ainda está pendente.`)),
+          novos.length ? h('li', {}, `${plural(novos.length, 'critério novo', 'critérios novos')} a conferir: ${novos.map((a) => a.id).join(', ')}.`) : null)) : null,
+      h('p', { class: 'form-acoes' },
+        h('a', { class: 'btn btn-inline', href: `#/m/${m.ibge}/plano` }, 'Ver o plano de ação →'),
+        h('a', { class: 'botao-texto', href: `#/m/${m.ibge}/relatorio` }, 'Relatório para imprimir')),
+      secao('Onde a prefeitura perde pontos', `Por dimensão, nas regras de ${CATMETA.ano}: quanto do peso de cada uma está garantido. ${plural(completas, 'dimensão está completa', 'dimensões estão completas')}.`,
+        perdas.length ? h('ul', { class: 'rel-barras tr-barras' }, perdas.map((x) => {
+          const fio = h('span', { class: 'rb-fio ' + (x.ob / x.mx >= 0.95 ? 't-ok' : x.ob / x.mx >= 0.75 ? 't-alerta' : 't-perigo') });
+          fio.style.width = (x.ob / x.mx) * 100 + '%';
+          return h('li', {}, h('span', { class: 'rb-rot', title: x.dim }, x.dim), h('span', { class: 'rb-trilho' }, fio),
+            h('span', { class: 'rb-val' }, pct(x.ob / x.mx), h('span', { class: 'rb-nota' }, `−${NF1.format(x.perda)}`)));
+        })) : h('p', { class: 'nada' }, 'Nenhuma perda de pontos nas respostas avaliadas.')),
+      secao('Histórico', null, serie(m), tabelaCiclos(m.ciclos)),
+      secao('Próximos passos', 'Calendário provável, com base no ciclo 2026. As correções feitas agora contam para o próximo ciclo.',
+        h('ol', { class: 'tr-passos' },
+          h('li', {}, h('strong', {}, 'Novembro de 2026: '), 'a Atricon divulga o resultado do ciclo 2026, cuja autoavaliação já foi feita (abril e maio).'),
+          h('li', {}, h('strong', {}, 'Agora até março de 2027: '), 'corrigir o portal seguindo o plano de ação, começando pelos essenciais.'),
+          h('li', {}, h('strong', {}, 'Por volta de março de 2027: '), 'sai a matriz do novo ciclo; conferir se algum critério mudou.'),
+          h('li', {}, h('strong', {}, 'Abril e maio de 2027: '), 'o controle interno faz a autoavaliação no sistema Avalia, com link de evidência para cada item.'),
+          h('li', {}, h('strong', {}, 'Junho a outubro de 2027: '), 'validação pelo TCE-TO e revisão amostral da Atricon; resultado no fim do ano.'))),
       blocoCamara(m));
   }
 
-  // ----- critérios -----
+  function blocoCamara(m) {
+    const c = m.camara;
+    if (!c || !Object.keys(c.ciclos).length) return null;
+    return secao('Câmara Municipal', 'Avaliada à parte pelo PNTP, com matriz própria. O selo da prefeitura não depende dela.',
+      tabelaCiclos(c.ciclos), c.portal ? h('p', { class: 'aviso' }, link(c.portal, 'Portal da Câmara ↗')) : null);
+  }
 
-  const filtroCrit = { classe: 'Todas', ordem: 'q', dir: -1 };
+  function telaPlano(m) {
+    const chave = `tr-plano-${m.ibge}`;
+    const feitos = new Set(guarda.le(chave, []));
+    let meta = guarda.le('tr-meta', 'Diamante');
+    if (!SELOS[meta]) meta = 'Diamante';
+    let agrupar = guarda.le('tr-agrupar', 'etapa');
+    const d = deriva(m);
+    const resumo = h('div', { 'aria-live': 'polite' });
+    const corpo = h('div');
 
-  function telaCriterios() {
-    const n = D.municipios.length;
-    const stat = new Map(D.criterios.map((c) => [c.id, { c, q: 0, ganho: 0 }]));
-    for (const m of D.municipios) for (const g of m.grupos) { const s = stat.get(g.id); s.q += 1; s.ganho += g.ganho; }
-    const corpo = h('tbody');
-    const botoes = h('div', { class: 'filtros', role: 'group', 'aria-label': 'Filtrar por classificação' },
-      ['Todas', ...CLASSES].map((c) => h('button', { class: 'filtro', type: 'button', 'data-c': c, onclick: () => { filtroCrit.classe = c; desenha(); } }, c)));
+    const marcar = {
+      tem: (id) => feitos.has(id),
+      troca: (id, on) => { on ? feitos.add(id) : feitos.delete(id); guarda.grava(chave, [...feitos]); desenhaResumo(); },
+    };
 
-    function desenha() {
-      const linhas = [...stat.values()].filter((s) => filtroCrit.classe === 'Todas' || s.c.exig === filtroCrit.classe)
-        .sort((a, b) => b.q - a.q || a.c.id.localeCompare(b.c.id, 'pt', { numeric: true }));
-      corpo.replaceChildren(...linhas.map((s) => h('tr', {},
-        h('td', { class: 'nw' }, s.c.id),
-        h('td', {}, s.c.texto),
-        h('td', {}, s.c.dim),
-        h('td', {}, h('span', { class: 'chip ' + (s.c.exig === 'Essencial' ? 'chip-fatal' : 'chip-alta') }, s.c.exig)),
-        h('td', { class: 'tr-num' }, `${s.q} (${NF0.format((s.q / n) * 100)}%)`),
-        h('td', { class: 'tr-num' }, s.q ? '+' + NF1.format(s.ganho / s.q) + ' pt' : '–'))));
-      for (const b of botoes.querySelectorAll('.filtro')) b.setAttribute('aria-pressed', b.dataset.c === filtroCrit.classe ? 'true' : 'false');
+    function projecao() {
+      let x = d.base;
+      for (const a of d.acoes) if (feitos.has(a.id)) x += a.ganho / 100;
+      const falta = d.essPend.filter((a) => !feitos.has(a.id)).length;
+      x = Math.min(x, 1);
+      return { x, falta, nivel: classifica(x, falta === 0) };
     }
+
+    function desenhaResumo() {
+      const p = projecao();
+      const alvo = SELOS[meta];
+      resumo.replaceChildren(
+        h('div', { class: 'tr-sim-linha' },
+          h('span', {}, `Estimativa ${CATMETA.ano} `, h('strong', {}, pct(d.base))),
+          h('span', { class: 'tr-seta', 'aria-hidden': 'true' }, '→'),
+          h('span', {}, 'com o que já foi concluído ', chipNivel(p.nivel), ' ', h('strong', {}, pct(p.x)))),
+        h('p', { class: 'aviso' },
+          `${feitos.size} de ${d.acoes.length} ações concluídas · essenciais pendentes: ${p.falta}`,
+          p.falta ? ' · enquanto houver essencial pendente, não há selo'
+            : p.x >= alvo - 1e-9 ? ` · meta (${meta}) alcançada na estimativa`
+              : ` · faltam ${pts((alvo - p.x) * 100)} para o ${meta}`));
+    }
+
+    function desenhaCorpo() {
+      const plano = monta(m, meta);
+      const blocos = [];
+      if (agrupar === 'setor') {
+        const porSetor = new Map();
+        for (const e of plano.etapas) for (const a of e.acoes) {
+          if (!porSetor.has(a.setor)) porSetor.set(a.setor, []);
+          porSetor.get(a.setor).push(a);
+        }
+        for (const [setor, acoes] of [...porSetor.entries()].sort((a, b) => soma(b[1]) - soma(a[1]))) {
+          blocos.push(secao(setor, `${plural(acoes.length, 'ação', 'ações')} · até +${pts(soma(acoes))}`, h('div', { class: 'est-reqs' }, acoes.map((a) => cartaoAcao(a, marcar)))));
+        }
+      } else {
+        for (const e of etapasVisiveis(plano)) {
+          blocos.push(secao(e.titulo, `${e.nota} ${plural(e.acoes.length, 'ação', 'ações')} · +${pts(soma(e.acoes))}.`,
+            h('div', { class: 'est-reqs' }, e.acoes.map((a) => cartaoAcao(a, marcar)))));
+        }
+      }
+      corpo.replaceChildren(
+        h('p', { class: 'tr-meta-txt' }, fraseMeta(plano, meta)),
+        ...(blocos.length ? blocos : [h('p', { class: 'nada' }, 'Nenhuma pendência nas respostas avaliadas.')]));
+    }
+
+    const botao = (rotulo, ativo, onclick) => h('button', { class: 'filtro', type: 'button', 'aria-pressed': ativo ? 'true' : 'false', onclick }, rotulo);
+    const metas = h('div', { class: 'filtros', role: 'group', 'aria-label': 'Meta' });
+    const grupos = h('div', { class: 'filtros', role: 'group', 'aria-label': 'Agrupar' });
+    const desenhaBotoes = () => {
+      metas.replaceChildren(...Object.keys(SELOS).reverse().map((s) => botao(s, s === meta, () => { meta = s; guarda.grava('tr-meta', s); desenhaBotoes(); desenhaResumo(); desenhaCorpo(); })));
+      grupos.replaceChildren(botao('Por etapa', agrupar === 'etapa', () => { agrupar = 'etapa'; guarda.grava('tr-agrupar', agrupar); desenhaBotoes(); desenhaCorpo(); }),
+        botao('Por setor', agrupar === 'setor', () => { agrupar = 'setor'; guarda.grava('tr-agrupar', agrupar); desenhaBotoes(); desenhaCorpo(); }));
+    };
+    const marcaCaminho = h('button', { class: 'btn btn-inline', type: 'button', onclick: () => { for (const id of monta(m, meta).usados) feitos.add(id); guarda.grava(chave, [...feitos]); desenhaResumo(); desenhaCorpo(); } }, 'Simular o caminho até a meta');
+    const limpa = h('button', { class: 'botao-texto', type: 'button', onclick: () => { feitos.clear(); guarda.grava(chave, []); desenhaResumo(); desenhaCorpo(); } }, 'Limpar marcações');
+    const csv = h('button', { class: 'botao-texto', type: 'button', onclick: () => baixaCsv(m, monta(m, meta)) }, 'Baixar CSV');
+
+    desenhaBotoes(); desenhaResumo(); desenhaCorpo();
+    return h('div', {},
+      cabecalho('Plano de ação · ' + m.nome, 'Plano de ação até o selo',
+        `Montado a partir da avaliação validada de ${IDX.meta.ciclo_respostas} e das regras da matriz ${CATMETA.ano}. Cada ação mostra o que falta, a observação do tribunal e o que a Cartilha exige.`),
+      h('div', { class: 'barra-mesa' }, h('div', { class: 'tr-rotulado' }, h('span', { class: 'kicker' }, 'Meta'), metas), h('div', { class: 'tr-rotulado' }, h('span', { class: 'kicker' }, 'Agrupar'), grupos)),
+      h('div', { class: 'tr-sim painel' }, resumo, h('div', { class: 'form-acoes' }, marcaCaminho, limpa, csv)),
+      h('p', { class: 'aviso' }, 'As marcações ficam salvas neste navegador.'),
+      corpo);
+  }
+
+  function baixaCsv(m, plano) {
+    // aspas e prefixo ' para que planilhas não executem texto como fórmula (as observações vêm de fora)
+    const q = (v) => '"' + String(v ?? '').replace(/^([=+\-@\t\r])/, "'$1").replace(/"/g, '""') + '"';
+    const linhas = [['etapa', 'criterio', 'descricao', 'classe', 'setor_sugerido', 'o_que_falta', 'ganho_pontos', 'observacao_tribunal', 'pagina_avaliada'].join(',')];
+    for (const e of etapasVisiveis(plano)) for (const a of e.acoes) {
+      linhas.push([e.titulo, a.id, a.c.texto, a.c.classe, a.setor, rotuloFalta(a.itens), NF1.format(a.ganho), a.nota, a.link].map(q).join(','));
+    }
+    const url = URL.createObjectURL(new Blob(['﻿' + linhas.join('\n')], { type: 'text/csv;charset=utf-8' }));
+    const el = h('a', { href: url, download: `plano-transparencia-${semAcento(m.nome).replace(/[^a-z0-9]+/g, '-')}.csv` });
+    document.body.append(el); el.click(); el.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function telaChecklist(m) {
+    const d = deriva(m);
+    const pend = new Map(d.acoes.map((a) => [a.id, a]));
+    const situacao = (c) => (pend.has(c.id) ? (pend.get(c.id).novo ? 'A conferir' : 'Pendente') : 'Atende');
+    const filtro = { s: 'Todas' };
+    const corpo = h('tbody');
+    const conta = (s) => CATMETA.criterios.filter((c) => s === 'Todas' || situacao(c) === s).length;
+    const botoes = h('div', { class: 'filtros', role: 'group', 'aria-label': 'Situação' });
+    const desenha = () => {
+      botoes.replaceChildren(...['Todas', 'Pendente', 'A conferir', 'Atende'].map((s) => h('button', { class: 'filtro', type: 'button', 'aria-pressed': filtro.s === s ? 'true' : 'false', onclick: () => { filtro.s = s; desenha(); } }, s, h('span', { class: 'n' }, String(conta(s))))));
+      let dimAnterior = null;
+      const linhas = [];
+      for (const c of CATMETA.criterios) {
+        const s = situacao(c);
+        if (filtro.s !== 'Todas' && s !== filtro.s) continue;
+        if (c.dim !== dimAnterior) { linhas.push(h('tr', { class: 'tr-grupo' }, h('th', { colspan: '4', scope: 'colgroup' }, c.dim))); dimAnterior = c.dim; }
+        const a = pend.get(c.id);
+        linhas.push(h('tr', {},
+          h('td', { class: 'nw' }, c.id),
+          h('td', {}, c.texto, a && !a.novo ? h('span', { class: 'item-meta tr-bloco' }, 'Falta: ' + rotuloFalta(a.itens)) : null),
+          h('td', {}, chipClasse(c.classe)),
+          h('td', { class: 'nw' }, h('span', { class: 'chip tr-sit', 'data-s': s }, s), a ? h('span', { class: 'tr-sub' }, ' +' + NF1.format(a.ganho)) : null)));
+      }
+      corpo.replaceChildren(...linhas);
+    };
     desenha();
     return h('div', {},
-      cabecalho('Módulo · Transparência', 'Critérios', `Quantas das ${n} prefeituras ainda não atendem cada critério (ciclo ${ANO}) e quanto o índice sobe, em média, ao corrigi-lo.`),
+      cabecalho('Checklist · ' + m.nome, `Os ${CATMETA.criterios.length} critérios da matriz ${CATMETA.ano}`,
+        `Situação de cada critério que vale para a prefeitura, segundo a avaliação validada de ${IDX.meta.ciclo_respostas}. "A conferir": critério novo, sem avaliação anterior.`),
       h('div', { class: 'barra-mesa' }, botoes),
       h('div', { class: 'tabela-rolagem' }, h('table', { class: 'tabela' },
-        h('thead', {}, h('tr', {}, h('th', {}, 'Critério'), h('th', {}, 'Descrição'), h('th', {}, 'Dimensão'), h('th', {}, 'Classe'), h('th', { class: 'tr-num' }, 'Prefeituras com falha'), h('th', { class: 'tr-num' }, 'Ganho médio'))),
+        h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Critério'), h('th', { scope: 'col' }, 'Descrição'), h('th', { scope: 'col' }, 'Classe'), h('th', { scope: 'col' }, 'Situação'))),
         corpo)));
   }
 
-  // ----- metodologia -----
+  function telaRelatorio(m) {
+    const ano = String(IDX.meta.ciclo_atual);
+    const o = m.ciclos[ano] || {};
+    const meta = SELOS[guarda.le('tr-meta', 'Diamante')] ? guarda.le('tr-meta', 'Diamante') : 'Diamante';
+    const plano = monta(m, meta);
+    const d = deriva(m);
+    const hoje = new Date().toLocaleDateString('pt-BR');
+    return h('div', { class: 'tr-relatorio' },
+      h('p', { class: 'form-acoes tr-nao-imprime' },
+        h('button', { class: 'btn btn-inline', type: 'button', onclick: () => window.print() }, 'Imprimir ou salvar em PDF'),
+        h('a', { class: 'botao-texto', href: `#/m/${m.ibge}/plano` }, 'Mudar a meta no plano')),
+      cabecalho(`Transparência pública · relatório para o prefeito · ${hoje}`, `Prefeitura de ${m.nome} (TO)`,
+        `Programa Nacional de Transparência Pública (Atricon). Resultado oficial do ciclo ${ano} e plano para o ${meta} nas regras de ${CATMETA.ano}.`),
+      secao('Situação', null,
+        h('p', {}, veredito(m)),
+        tabelaCiclos(m.ciclos)),
+      d.essPend.length ? secao('Itens essenciais pendentes', 'Impedem o selo e, pela LRF (arts. 48, 48-A e 51), transferências voluntárias e operações de crédito.',
+        h('ul', { class: 'lista-seca' }, d.essPend.map((a) => h('li', {}, `${a.id} ${a.c.texto} (falta: ${rotuloFalta(a.itens)})`)))) : null,
+      secao(`Plano para o ${meta}`, fraseMeta(plano, meta),
+        etapasVisiveis(plano).map((e) => h('div', { class: 'tr-rel-etapa' },
+          h('h3', { class: 'grupo-nome' }, e.titulo, h('span', { class: 'grupo-n' }, `${e.acoes.length} · +${pts(soma(e.acoes))}`)),
+          h('div', { class: 'tabela-rolagem' }, h('table', { class: 'tabela' },
+            h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Critério'), h('th', { scope: 'col' }, 'O que fazer'), h('th', { scope: 'col' }, 'Setor sugerido'), h('th', { scope: 'col', class: 'tr-num' }, 'Ganho'))),
+            h('tbody', {}, e.acoes.map((a) => h('tr', {},
+              h('td', { class: 'nw' }, a.id),
+              h('td', {}, a.c.texto, h('span', { class: 'item-meta tr-bloco' }, (a.novo ? 'Conferir: ' : 'Falta: ') + rotuloFalta(a.itens).replace(/ \(não avaliado antes\)/g, ''))),
+              h('td', {}, a.setor),
+              h('td', { class: 'tr-num' }, '+' + NF1.format(a.ganho)))))))))),
+      h('p', { class: 'aviso' }, `Fontes: base aberta do PNTP (Atricon), avaliação validada de ${IDX.meta.ciclo_respostas}; Cartilha e matriz PNTP ${CATMETA.ano}. A estimativa reproduz a fórmula oficial, mas o resultado depende da validação do TCE-TO e da revisão da Atricon.`));
+  }
 
   function telaMetodologia() {
     const regras = [
@@ -537,62 +558,87 @@
       ['Elevado', 'acima de 75%', 'menos de 100% dos essenciais'], ['Intermediário', '50% a 74%', '–'], ['Básico', '30% a 49%', '–'],
       ['Inicial', '1% a 29%', '–'], ['Inexistente', '0%', 'sem sítio oficial próprio ou fora do ar (critério 1.1)'],
     ];
-    const ess = D.criterios.filter((c) => c.exig === 'Essencial');
-    const dims = Object.entries(D.pesos.dimensao);
+    const ess = CATMETA.criterios.filter((c) => c.classe === 'Essencial');
+    const r = IDX.meta.ciclo_respostas, a = CATMETA.ano;
     return h('div', {},
-      cabecalho('Módulo · Transparência', 'Como ler este painel'),
-      secao('De onde vêm os números', null,
-        h('ul', { class: 'lista-seca' }, D.meta.fontes.map((f) => h('li', {}, link(f.url, f.nome + ' ↗')))),
-        h('p', { class: 'aviso' }, `Dados do ciclo ${ANO}, gerados em ${D.meta.gerado_em}. Os resultados do ciclo 2026 estão previstos para novembro e serão incorporados quando a Atricon os publicar.`)),
-      secao('Níveis de transparência', 'Cartilha PNTP 2026, tabela 3.',
+      cabecalho('Transparência municipal', 'Como o plano é montado'),
+      secao('Níveis e selos', `Cartilha PNTP ${a}, tabela 3. O selo (Prata, Ouro ou Diamante) exige todos os itens essenciais.`,
         h('div', { class: 'tabela-rolagem' }, h('table', { class: 'tabela' },
-          h('thead', {}, h('tr', {}, h('th', {}, 'Nível'), h('th', {}, 'Índice'), h('th', {}, 'Requisito adicional'))),
-          h('tbody', {}, regras.map(([n, i, r]) => h('tr', {}, h('td', {}, chipNivel(n)), h('td', {}, i), h('td', {}, r))))))),
-      secao('Itens essenciais', `São os da execução orçamentária e financeira. Sem eles não há selo e, pela Lei de Responsabilidade Fiscal (arts. 48, 48-A e 51), o ente fica impedido de receber transferências voluntárias e de contratar operações de crédito. Lista do ciclo ${ANO}${D.meta.proximo_ciclo ? `; em ${D.meta.proximo_ciclo.ano} são ${D.meta.proximo_ciclo.essenciais.length}: ${D.meta.proximo_ciclo.essenciais.join(', ')}` : ''}.`,
+          h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Nível'), h('th', { scope: 'col' }, 'Índice'), h('th', { scope: 'col' }, 'Requisito adicional'))),
+          h('tbody', {}, regras.map(([n, i, x]) => h('tr', {}, h('td', {}, chipNivel(n)), h('td', {}, i), h('td', {}, x))))))),
+      secao(`Os ${ess.length} itens essenciais (${a})`, 'São os da execução orçamentária e financeira: sem eles, além de não haver selo, a LRF (arts. 48, 48-A e 51) impede transferências voluntárias e operações de crédito.',
         h('ul', { class: 'lista-seca' }, ess.map((c) => h('li', {}, `${c.id} ${c.texto}`)))),
-      secao('Como o índice é calculado', 'Peso da dimensão × peso do critério (essencial 2, obrigatório 1,5, recomendado 1) × peso do item de verificação (disponibilidade 30%, atualidade 30%, série histórica 20%, gravação de relatórios 10%, filtro de pesquisa 10%).',
-        h('div', { class: 'tabela-rolagem' }, h('table', { class: 'tabela' },
-          h('thead', {}, h('tr', {}, h('th', {}, 'Dimensão'), h('th', { class: 'tr-num' }, 'Peso'))),
-          h('tbody', {}, dims.map(([d, p]) => h('tr', {}, h('td', {}, d), h('td', { class: 'tr-num' }, String(p)))))))),
+      secao('Cálculo do índice', 'Peso da dimensão × peso do critério (essencial 2, obrigatório 1,5, recomendado 1) × peso do item de verificação (disponibilidade 30%, atualidade 30%, série histórica 20%, gravação de relatórios 10%, filtro de pesquisa 10%; os que não se aplicam são rateados). Não há atendimento parcial de um item.',
+        h('ul', { class: 'tr-itens-def' }, Object.values(ITEM).map(([n, t]) => h('li', {}, h('strong', {}, n), ': ', t, '.')))),
+      secao('De onde vem cada ação', null,
+        h('ul', { class: 'lista-seca' },
+          h('li', {}, `A situação de cada critério vem das respostas validadas pelo TCE-TO em ${r} (base aberta da Atricon), incluindo a observação do avaliador e o link da página conferida.`),
+          h('li', {}, `Os critérios de ${r} foram ligados aos de ${a} pelo texto, porque a numeração mudou (por exemplo, a lista de estagiários era o 6.3 e passou a 6.4). Critérios sem correspondente aparecem como novos, "a conferir".`),
+          h('li', {}, `A estimativa usa os pesos de ${a} e conta como pendente o que não foi avaliado antes: é conservadora. Aplicada às respostas de ${r} com os pesos de ${r}, a mesma fórmula reproduz o índice oficial com erro médio de 0,01 ponto.`),
+          h('li', {}, 'O plano põe primeiro os essenciais, depois os critérios de maior ganho até a meta, depois os novos a conferir e, por fim, o restante.'),
+          h('li', {}, 'O setor responsável é uma sugestão por dimensão; ajuste à estrutura da prefeitura.'))),
       secao('Limites', null,
         h('ul', { class: 'lista-seca' },
-          h('li', {}, 'O resultado oficial é o do Radar da Transparência Pública (Atricon). Este painel o reorganiza e simula; não o substitui.'),
-          h('li', {}, 'As projeções reproduzem o índice oficial de ' + ANO + ' com erro médio de 0,01 ponto; ainda assim, são estimativas.'),
-          h('li', {}, 'Os critérios são os de ' + ANO + (D.meta.proximo_ciclo ? `. A matriz ${D.meta.proximo_ciclo.ano} tem ${D.meta.proximo_ciclo.criterios} critérios para prefeituras (${D.meta.proximo_ciclo.essenciais.length} essenciais) e pode mudar o resultado.` : '.')),
-          h('li', {}, 'Não mede se a informação é verdadeira, completa ou atual hoje; mede o que o tribunal validou na avaliação.'))));
+          h('li', {}, 'O resultado oficial é o do Radar da Transparência Pública (Atricon). Este painel ajuda a preparar a autoavaliação; não a substitui.'),
+          h('li', {}, `Mostra o que o tribunal validou em ${r}. Não confere se o portal mudou depois disso.`),
+          h('li', {}, 'A matriz do próximo ciclo pode trazer novos critérios ou mudar pesos.'))),
+      secao('Fontes', null, h('ul', { class: 'lista-seca' }, IDX.meta.fontes.map((f) => h('li', {}, link(f.url, f.nome + ' ↗'))))));
   }
 
   // ---------- navegação ----------
 
-  const ROTAS = {
-    '': telaPanorama,
-    municipios: telaLista,
-    municipio: telaFicha,
-    criterios: telaCriterios,
-    metodologia: telaMetodologia,
-  };
+  function nav(m, aba) {
+    const el = document.getElementById('tr-nav');
+    const itens = m
+      ? [['', 'Panorama'], ['plano', 'Plano de ação'], ['checklist', 'Checklist'], ['relatorio', 'Relatório']].map(([k, t]) => [`#/m/${m.ibge}${k ? '/' + k : ''}`, t, aba === (k || 'panorama')])
+      : [];
+    itens.push(['#/metodologia', 'Metodologia', aba === 'metodologia']);
+    el.replaceChildren(...itens.map(([href, t, atual]) => h('a', { class: 'nav-item', href, 'aria-current': atual ? 'page' : null }, t)));
+    const ctx = document.getElementById('tr-contexto');
+    ctx.replaceChildren(m ? h('span', {}, m.nome, ' · ', h('a', { href: '#/' }, 'trocar')) : h('a', { href: '#/' }, 'Escolher município'));
+  }
 
-  function rota() {
-    const [nome = '', arg] = location.hash.replace(/^#\/?/, '').split('/');
-    const tela = ROTAS[nome] || telaPanorama;
+  let geracao = 0;
+  async function rota() {
+    const minha = ++geracao;
+    const [nome = '', arg, aba = 'panorama'] = location.hash.replace(/^#\/?/, '').split('/');
     const app = document.getElementById('tr-app');
-    app.replaceChildren(tela(arg));
-    for (const a of document.querySelectorAll('.nav-item')) {
-      const alvo = a.getAttribute('href').replace(/^#\/?/, '');
-      if ((alvo === nome) || (nome === 'municipio' && alvo === 'municipios')) a.setAttribute('aria-current', 'page');
-      else a.removeAttribute('aria-current');
+    let tela;
+    try {
+      if (nome === 'm' && /^\d{7}$/.test(arg || '')) {
+        app.setAttribute('aria-busy', 'true');
+        const [m] = await Promise.all([json(`dados/m/${arg}.json`), catalogo()]);
+        if (minha !== geracao) return;
+        guarda.grava('tr-municipio', m.ibge);
+        nav(m, aba);
+        const telaAba = { plano: telaPlano, checklist: telaChecklist, relatorio: telaRelatorio }[aba];
+        tela = telaAba && !m.pendencias
+          ? h('div', { class: 'plain' }, h('h1', { id: 'tr-titulo', tabindex: '-1' }, 'Sem respostas detalhadas'), h('p', {}, `A base de ${IDX.meta.ciclo_respostas} não traz as respostas critério a critério desta prefeitura.`))
+          : (telaAba || telaPanorama)(m);
+      } else if (nome === 'metodologia') {
+        await catalogo();
+        if (minha !== geracao) return;
+        nav(null, 'metodologia');
+        tela = telaMetodologia();
+      } else {
+        nav(null, '');
+        tela = telaEscolha();
+      }
+    } catch (e) {
+      tela = h('div', { class: 'plain' }, h('h1', { id: 'tr-titulo', tabindex: '-1' }, 'Não foi possível abrir'), h('p', {}, e.message), h('a', { class: 'back', href: '#/' }, '← Escolher município'));
     }
+    app.removeAttribute('aria-busy');
+    app.replaceChildren(tela);
     const t = document.getElementById('tr-titulo');
     if (t) t.focus({ preventScroll: true });
     window.scrollTo(0, 0);
   }
 
-  // ---------- aparência (Terminal, Claro, Escuro) ----------
+  // ---------- aparência (Terminal, Claro, Escuro, como no site) ----------
 
   function aparencia() {
-    let salva = null;
-    try { salva = localStorage.getItem('mm-aparencia'); } catch (_) { /* sem armazenamento: segue o sistema */ }
     const sel = document.getElementById('tr-aparencia');
+    const salva = guarda.le('mm-aparencia', null);
     const padrao = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'escuro' : 'claro';
     const aplica = (v) => {
       const html = document.documentElement;
@@ -604,21 +650,15 @@
     const inicial = ['terminal', 'claro', 'escuro'].includes(salva) ? salva : padrao;
     sel.value = inicial;
     aplica(inicial);
-    sel.addEventListener('change', () => {
-      aplica(sel.value);
-      try { localStorage.setItem('mm-aparencia', sel.value); } catch (_) { /* ignora */ }
-    });
+    sel.addEventListener('change', () => { aplica(sel.value); guarda.grava('mm-aparencia', sel.value); });
   }
 
   async function inicia() {
     aparencia();
-    const app = document.getElementById('tr-app');
     try {
-      const r = await fetch('dados/transparencia-to.json');
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      prepara(await r.json());
+      IDX = await json('dados/municipios.json');
     } catch (e) {
-      app.replaceChildren(h('div', { class: 'plain' }, h('h1', {}, 'Não foi possível carregar os dados'), h('p', {}, 'Gere dados/transparencia-to.json com build_dados.py. ' + e.message)));
+      document.getElementById('tr-app').replaceChildren(h('div', { class: 'plain' }, h('h1', {}, 'Não foi possível carregar os dados'), h('p', {}, 'Gere a pasta dados/ com build_dados.py. ' + e.message)));
       return;
     }
     window.addEventListener('hashchange', rota);
