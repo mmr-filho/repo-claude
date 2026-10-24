@@ -215,6 +215,11 @@ def le_cartilha(caminho, ids):
                 if not s:
                     fase = 'texto'
                 continue
+            if s.startswith('➢'):  # campo depois de linha em branco: volta a ler campos
+                campo, _, v = s.lstrip('➢ ').partition(':')
+                campos[campo.strip()] = v.strip()
+                fase, atual_p = 'campos', None
+                continue
             if not s:
                 atual_p = None
                 continue
