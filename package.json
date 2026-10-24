@@ -17,7 +17,8 @@
     "test": "npm test --workspaces --if-present",
     "test:e2e": "node e2e/ui.e2e.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "android": "npm run android -w @sigilo/mobile"
+    "android": "npm run android -w @sigilo/mobile",
+    "test:transparencia": "node modules/transparencia/test/fluxo.e2e.mjs"
   },
   "devDependencies": {
     "playwright-core": "^1.56.1"

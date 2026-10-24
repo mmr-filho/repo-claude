@@ -135,36 +135,41 @@ Em [`modules/transparencia/`](../modules/transparencia/README.md). Sem dependên
 
 ## 6. Plano de ação
 
-### Fase 0: destravar (quase concluída)
+Situação em 24/10/2026, depois da execução do que dependia só deste trabalho.
 
-Feito: visual do site obtido; base oficial baixada e analisada; regras e matriz 2026 lidas; Siconfi testado. **Falta**: ver as telas internas do `mm.api.br` (exige login) e a stack (framework e rotas), para encaixar o módulo como `/transparencia`; **liberar** `servicodados.ibge.gov.br`, `api.queridodiario.ok.org.br` e testar o PNCP; **contatar o TCE-TO e a ATM** (parceria e permissão para publicar).
+| Fase | Situação |
+|---|---|
+| 0. Destravar | **Parcial.** Feito: visual do site, base oficial, Cartilha e matriz 2026, Siconfi. Pendente (depende de você ou de terceiros): telas internas e stack do `mm.api.br`; contato com o TCE-TO e a ATM |
+| 1. Panorama e plano por prefeitura | **Protótipo pronto.** Pendente: integrar ao site; revisar o texto com uma ou duas prefeituras; atualizar com a base do ciclo 2026 (ainda não publicada em 24/10) |
+| 2. Verificações | **Executada**, com dois ajustes de escopo (abaixo) |
+| 3. Acompanhamento do plano | **Executada no protótipo.** Pendente: o endpoint no servidor do site (contrato pronto) |
+| 4. Operação contínua | Agenda das verificações definida (README); alertas e API aberta própria ficam para depois da integração |
 
-### Fase 1: panorama e plano por prefeitura (protótipo entregue)
+### Fase 2: verificações (executada)
 
-Falta integrar ao site (layout, autenticação, rota), revisar o texto com uma ou duas prefeituras e com quem opera o PNTP no TCE-TO, e **atualizar com o ciclo 2026 quando a Atricon publicar a base** (o resultado sai em novembro): é rodar `build_dados.py` com os novos arquivos.
+- **Siconfi (Tesouro): entregas de RREO e RGF** de cada prefeitura em 2025 e 2026, ligadas aos essenciais 11.5 e 11.6 (`tools/coleta_siconfi.py`). Aparece no panorama e no cartão da ação: "o último RGF entregue ao Tesouro é o do 1º quadrimestre de 2026; o mesmo relatório precisa estar no portal". Em 24/10/2026, 135 das 139 prefeituras tinham os 6 bimestres de RREO de 2025, e 103 já tinham o 4º bimestre de 2026. **Araguanã e Muricilândia** não têm RREO nem RGF registrados em 2025 e 2026 (conferido nos dados brutos); o painel sugere conferir com a contabilidade. *Cuidado tomado:* os municípios menores entregam versões "simplificadas" (RGF semestral); a primeira coleta as ignorava e teria acusado 69 prefeituras sem RREO.
+- **Sonda das capas dos 139 portais** (`tools/sonda.py`): uma visita por portal, identificada, respeitando o `robots.txt`. Em 24/10/2026: 135 responderam, todas com HTTPS; **Combinado** respondeu "página não encontrada" (404) no endereço registrado na avaliação; um servidor recusou a verificação (403); dois não responderam daqui (não é prova de site fora do ar). Comparada com a avaliação validada de 2025, a sonda acerta quando **encontra**: 98% para o link da transparência (1.3) e 97% para o botão do Radar (2.9). Quando não encontra, o tribunal aceitou mesmo assim em 100% e 92% dos casos; por isso "não encontrado" não é tratado como falha.
+- **Ajustes de escopo:** o **agrupamento por fornecedor** não é viável com o que é público: 133 das 139 prefeituras publicam a transparência no próprio domínio `.to.gov.br`, e as capas não trazem assinatura do fornecedor. O **PNCP** não respondeu no endereço de consulta testado; fica para quando houver necessidade (licitações não são essenciais).
 
-### Fase 2: sonda e cruzamentos (4 a 6 semanas)
+### Fase 3: acompanhamento do plano (executada no protótipo)
 
-- Sonda semanal nos 139 portais (no ar, HTTPS, seções, links para arquivos legíveis por máquina, impressão digital do fornecedor), com limite de taxa, `User-Agent` identificado e respeito a `robots.txt`.
-- Cruzar os essenciais **11.5 e 11.6** (RGF e RREO) com a entrega no **Siconfi**, e as licitações com o PNCP e o SICAP.
-- **Agrupar por fornecedor de portal**: um ajuste do fornecedor melhora vários municípios.
+Cada ação tem situação (pendente, em andamento, concluída), responsável, prazo (vencido aparece como "Atrasada") e link de evidência; a projeção do índice conta só o concluído. Sem servidor, fica no navegador e é **exportado e importado** em arquivo (a equipe compartilha por e-mail ou pasta); com `data-api`, grava na API do site. O contrato (GET e PUT por prefeitura) está no README do módulo. O teste de ponta a ponta (`npm run test:transparencia`) cobre as duas formas. O módulo continua sendo **preparação**: o lançamento oficial no Avalia é de servidor do controle interno.
 
-### Fase 3: acompanhamento do plano
+### O que falta e depende de você
 
-Hoje as marcações de "concluída" ficam no navegador. O próximo passo é guardá-las no servidor do site, por prefeitura, com **responsável, prazo e evidência** (URL, data, print) em cada ação, para o gabinete acompanhar. O módulo é **preparação**: o lançamento oficial no Avalia é de servidor do controle interno, não de consultor.
-
-### Fase 4: operação contínua
-
-Alertas do calendário do ciclo, histórico, relatórios para TCE-TO, ATM e prefeituras, API aberta própria.
+1. **Integração ao `mm.api.br`**: acesso ao código ou à stack, para criar a rota `/transparencia` e o endpoint do acompanhamento (com o controle de quem edita cada prefeitura).
+2. **Agendar as verificações** no servidor do site (linhas de cron no README).
+3. **Base do ciclo 2026**: quando a Atricon publicar (o resultado sai em novembro), rodar `build_dados.py` com os novos arquivos e revisar a tabela de ligação entre ciclos que ele imprime.
+4. **Conversas**: TCE-TO e ATM (parceria e permissão para publicar) e uma ou duas prefeituras-piloto para revisar o texto.
 
 ### Calendário
 
 | Quando | O que |
 |---|---|
 | **Nov/2026** | Resultado do ciclo 2026 sai; ingerir e comparar com 2025 |
-| Nov/2026 a jan/2027 | Integração da Fase 1 ao site; atualizar com a base do ciclo 2026 quando publicada |
-| Fev a abr/2027 | Fase 2 pronta; a matriz do ciclo 2027 deve sair ~março |
-| Abr a mai/2027 | Fase 3 pronta a tempo da autoavaliação 2027 (em 2026 foi de 20/04 a 29/05) |
+| Nov/2026 a jan/2027 | Integração ao site (rota e endpoint do acompanhamento); atualizar com a base do ciclo 2026 quando publicada |
+| Fev a abr/2027 | Prefeituras executam o plano; verificações semanais (sonda) e mensais (Siconfi); a matriz do ciclo 2027 deve sair ~março |
+| Abr a mai/2027 | Autoavaliação 2027 (em 2026 foi de 20/04 a 29/05): o acompanhamento serve de lista de evidências |
 
 ## 7. Sugestões
 
@@ -197,6 +202,7 @@ Para o módulo:
 | Plano usa respostas de 2025 com as regras de 2026 | É uma estimativa conservadora: o que não foi avaliado em 2025 conta como pendente. A matriz do ciclo 2027 pode mudar de novo |
 | Ligação entre ciclos pelo texto | Revisada critério a critério para 2025 → 2026 (o gerador imprime a tabela); refazer a revisão a cada nova matriz |
 | Setor responsável | Sugestão por dimensão; cada prefeitura tem sua estrutura |
+| Verificações automáticas | São pistas, não avaliação. A sonda lê só a capa, e uma falha de conexão pode ser da rede de quem verifica (por isso deve rodar do servidor do site). O Siconfi mostra a entrega ao Tesouro, não o que está publicado no portal |
 | Nível "Inexistente" de 2024 (20 prefeituras) | Pela Cartilha vem de portal inexistente ou fora do ar; **motivo não verificado caso a caso**. A variação para 2025 dessas fica exagerada |
 | Esquema da base muda entre ciclos | O gerador valida o formato e falha se mudar; conferir colunas ao entrar o ciclo 2026 |
 | `Ctrl+F` deixar de valer em 2026 | Só no material de treinamento do TCE-PI; a Cartilha trata do filtro de pesquisa, mas não cita o `Ctrl+F` |
