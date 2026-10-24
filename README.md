@@ -30,6 +30,7 @@ packages/core     Criptografia, certificados, mensagens, nó local. `src/v2/` é
 packages/relay    Relé anônimo: Cloudflare Workers (Durable Objects) ou Node + SQLite
 packages/server   LEGADO: servidor v1 com contas (o app não usa mais; mantido com seus testes)
 e2e               Teste de interface de ponta a ponta no navegador
+modules/transparencia   Módulo independente do Sigilo: painel do PNTP/Atricon (Selo Diamante) das prefeituras do Tocantins, para o mm.api.br
 docs              Arquitetura, implantação
 deploy            Docker Compose do servidor v1 (legado)
 ```

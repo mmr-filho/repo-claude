@@ -1,207 +1,204 @@
-# Módulo Transparência Municipal (Tocantins): plano de ação
+# Módulo Transparência Municipal (Tocantins): pesquisa e plano de ação
 
-Data da pesquisa: 24/10/2026. Escopo: critérios da Atricon (PNTP) para o Selo Diamante, como verificar os 139 municípios do Tocantins, o que existe de dados abertos e um plano em fases.
+Atualizado em 24/10/2026, depois de liberada parte da rede. A primeira versão deste documento (só com resumos de busca) foi substituída: agora os números vêm da **base aberta do PNTP**, da **Cartilha PNTP 2026** (299 páginas) e da **matriz de critérios 2026**, todas baixadas e lidas.
 
-## 0. Leia primeiro: limites desta pesquisa
+O protótipo do módulo, com dados reais, está em [`modules/transparencia/`](../modules/transparencia/README.md).
 
-Este documento foi feito num ambiente **sem acesso direto à internet**: só a busca web funcionou. Não consegui abrir `atricon.org.br`, o Radar da Transparência, o TCE-TO, o IBGE, o Tesouro, o PNCP **nem o `mm.api.br`**. Consequências:
+## 0. Em resumo
 
-- Tudo abaixo vem de **resumos de busca** (notícias, ofícios e treinamentos de tribunais de contas), não da matriz oficial. Cada afirmação traz a **confiança**: **alta** (mais de uma fonte concordando), **média** (uma fonte plausível) ou **baixa/não verificado**.
-- **Nenhum número do Tocantins por município foi obtido.** Não há aqui ranking nem lista de selos de prefeituras do TO. Isso é a primeira coisa a coletar (Fase 0).
-- **O padrão visual do `mm.api.br` não foi visto.** Este repositório é o app de mensagens Sigilo (paleta verde de `apps/mobile/src/theme.ts`), que não tem relação com o site. Não inventei um visual. Veja a seção 8.
-- Nenhum código foi escrito: não teria como testá-lo contra portais reais daqui.
+1. **O Tocantins já é líder nacional em transparência municipal.** Foi o 1º estado em 2023 e é o 2º em 2024 e 2025, atrás do Pará. Em 2025, **78 das 139 prefeituras têm Selo Diamante (56%)** e 123 têm algum selo (88%), contra 7% e 26% no Brasil.
+2. **O trabalho, portanto, não é "tirar do zero", e sim**: levar as 16 sem selo ao selo; **não perder** quem já tem (13 prefeituras caíram de nível em 2025, 7 delas de Diamante); preparar a mudança de regra de 2026; e as câmaras municipais, que ficam atrás das prefeituras.
+3. **Dá para verificar cada município**, com dado oficial: a Atricon publica a base completa em dados abertos, por ente, com índice, nível, % de essenciais, link do portal e as respostas critério a critério.
+4. **Dá para simular a nota.** Reproduzi o índice oficial de cada prefeitura a partir das respostas com erro médio de **0,01 ponto** (138 de 139 idênticas). Com isso o módulo mostra, para cada prefeitura, **o menor caminho até o Diamante**.
+5. **O visual do `mm.api.br` foi obtido** (a tela de login é pública e traz o CSS do site) e o protótipo o reutiliza. Falta ver as telas internas, que exigem login.
 
-## 1. O Selo Diamante e como a Atricon classifica
+## 1. Selo Diamante: o que a Atricon exige
 
-O PNTP (Programa Nacional de Transparência Pública) é coordenado pela Atricon com os tribunais de contas. Cada ente (prefeitura, câmara, poder) faz uma **autoavaliação** num questionário (sistema *Avalia*), o **tribunal de contas valida**, e a Atricon faz um **exame amostral**. O resultado vai para o **Radar da Transparência Pública** (endereço oficial: `radardatransparencia.atricon.org.br`; os domínios `.com` e `.inf.br` que aparecem na busca **não** são oficiais).
+Fonte: Cartilha PNTP 2026 e matriz de critérios 2026 (arquivos oficiais). O PNTP une a **autoavaliação** da prefeitura com a **validação** por auditores do tribunal de contas, no sistema Avalia, e uma revisão amostral da Atricon. O resultado vai para o Radar da Transparência Pública.
 
-### Níveis (ciclo 2026)
+### Níveis
 
-| Nível | Índice | Itens essenciais |
+| Nível | Índice | Requisito adicional |
 |---|---|---|
-| **Diamante** | 95% a 100% | 100% atendidos |
-| Ouro | 85% a 94,9% | 100% |
-| Prata | 75% a 84,9% | 100% |
-| Elevado | 75% ou mais | menos de 100% |
-| Intermediário | 50% a 74,9% | n/a |
-| Básico | 30% a 49,9% | n/a |
-| Inicial | 0,1% a 29,9% | n/a |
-| Inexistente | 0% (inclui quem **não responde** o questionário) | n/a |
+| **Diamante** | 95% a 100% | 100% dos critérios essenciais |
+| Ouro | 85% a 94% | 100% dos essenciais |
+| Prata | 75% a 84% | 100% dos essenciais |
+| Elevado | acima de 75% | menos de 100% dos essenciais |
+| Intermediário | 50% a 74% | n/a |
+| Básico | 30% a 49% | n/a |
+| Inicial | 1% a 29% | n/a |
+| Inexistente | 0% | n/a |
 
-Confiança: **alta** para Diamante/Ouro/Prata; **média** para os demais (as fronteiras variam entre documentos: a Resolução Atricon 01/2022 e uma norma do TCE-SE diferem em 1 ponto nos níveis baixos). Tabela citada do ofício do TCE-PB para 2026. **Confirmar no regulamento oficial.**
+Conferi essa regra contra os níveis oficiais dos três ciclos: **830 de 834** avaliações (prefeituras e câmaras do TO) coincidem. As 4 diferentes: 3 "Não Avaliado" e 1 câmara com 100% rebaixada pela revisão.
 
-**A regra que decide o Diamante:** não basta nota alta. Um único item **essencial** faltando derruba o selo (o ente cai para "Elevado", mesmo com 98%). Por isso o plano trata os essenciais como um *portão* separado da nota.
+**Portão dos essenciais.** Quem falha em **um** item essencial perde o selo, mesmo com 98%: cai para "Elevado". **Tabocão (TO)**, por exemplo, tem 97,2% e é só "Elevado" porque faltam 2 critérios essenciais; corrigidos, a projeção é 99,7%.
 
-### Como a nota é composta
+**"Inexistente" (0%)** é o resultado de quem não tem sítio oficial próprio ou o tem fora do ar nas tentativas de avaliação (critério 1.1, que prejudica todos os demais, segundo a Cartilha).
 
-- Critérios classificados em **essenciais, obrigatórios e recomendados**, com **pesos 2, 1,5 e 1**. Confiança: **média** (uma fonte, baseada na Resolução 01/2023).
-- Quantidade de critérios varia por fonte e tipo de ente: 124 (relato de 2024), 176 com 11 essenciais (6 na matriz comum + 4 do Executivo, segundo o Diagnóstico da Transparência), 181 em Santa Catarina em 2026 (72 comuns a todos). **Não usar nenhum desses números sem conferir a matriz 2026 do Executivo municipal.**
-- A participação é obrigatória; quem não responde fica com 0%. Confiança: média.
+### Como o índice é calculado
 
-### Novidades do ciclo 2026 (relevantes para o módulo)
+Peso da **dimensão** × peso do **critério** × peso do **item de verificação**:
 
-Fonte: material de treinamento do TCE-PI. Confiança: **média**.
+- Critério: essencial **2**, obrigatório **1,5**, recomendado **1**, dentro da dimensão, de modo que a soma dos critérios feche o peso da dimensão.
+- Item de verificação: disponibilidade **30%**, atualidade **30%**, série histórica **20%**, gravação de relatórios **10%**, filtro de pesquisa **10%**; os que não se aplicam são rateados entre os demais.
+- Dimensões (peso): Receita 4, Despesa 4, Planejamento e prestação de contas 4, Recursos humanos 3, Licitações 3, Contratos 3, Informações prioritárias 2, Informações institucionais 2, Obras 2, SIC 2, e peso 1 para convênios, diárias, acessibilidade, ouvidoria, LGPD, renúncia de receita, emendas, saúde e educação.
 
-- O `Ctrl+F` deixa de valer como forma de busca: exige-se **filtro estruturado** nas dimensões de receita, despesa, diárias, convênios, licitações e contratos. Listas brutas em PDF/tabela corrida tendem a ser penalizadas.
-- A **declaração de inexistência de informação** passa a atender alguns itens.
-- O critério **4.3 (Despesa)** passou de obrigatório para **essencial**.
-- A autoavaliação é **exclusiva de servidores** (vedado consultor/prestador no sistema) e exige cadastro na conta única da Atricon.
+### Critérios para a prefeitura (matriz 2026)
 
-### Calendário
+**181** critérios no total, mas a prefeitura responde a **96** (72 da matriz comum, 23 do Executivo e 1 do Executivo e consórcios): **12 essenciais, 65 obrigatórios, 19 recomendados**. (Em 2025 eram 91 critérios e 11 essenciais.)
 
-| Etapa | Ciclo 2026 | Observação |
+Os **essenciais** são os da execução orçamentária e financeira, porque a Lei de Responsabilidade Fiscal (arts. 48, 48-A e 51) impede de receber **transferências voluntárias** e contratar **operações de crédito** quem não os divulga. Ou seja, vale mais que o selo:
+
+| ID | Essencial |
+|---|---|
+| 1.1, 1.2 | Sítio oficial próprio; portal da transparência |
+| 3.1, 3.2 | Receitas (previsão e realização); classificação orçamentária da receita |
+| 4.1, 4.2, **4.3** | Despesas (empenhadas, liquidadas, pagas); por classificação; **consulta de empenhos com credor, bem ou serviço e procedimento licitatório** |
+| 11.5, 11.6 | RGF; RREO |
+| 11.8, 11.9, 11.10 | PPA; LDO; LOA, com anexos |
+
+### O que muda em 2026
+
+- **O critério 4.3 passa de obrigatório a essencial** (confirmado na matriz). Duas prefeituras com selo hoje ainda não o atendem integralmente: **Araguaína** (Prata) e **Ponte Alta do Bom Jesus** (Ouro).
+- **Filtro de pesquisa por critério** (vale 10% da nota do critério). A Cartilha define como o instrumento em que o usuário escolhe parâmetros e refina a consulta, diferente da busca geral do portal; em alguns critérios há **filtros mínimos exigidos**, e ele é dispensado quando os dados cabem numa única página. O material de treinamento do TCE-PI acrescenta que o `Ctrl+F` deixa de valer como forma de busca e cita receita, despesa, diárias, convênios, licitações e contratos; **essa parte não aparece na Cartilha**.
+- **Não há atendimento parcial**: o critério só conta como atendido quando todas as informações exigidas na disponibilidade estão no portal (Cartilha). É por isso que o simulador trabalha por critério.
+- A página do PNTP informa que o ciclo 2026 está na etapa de treinamento da garantia da qualidade e que **os resultados serão divulgados em novembro, no Rio de Janeiro**. O ciclo 2025 foi divulgado em dezembro de 2025.
+
+## 2. Onde o Tocantins está
+
+Prefeituras (139 em todos os ciclos). Fonte: base aberta do PNTP.
+
+| Nível | 2023 | 2024 | 2025 |
+|---|---:|---:|---:|
+| Diamante | 30 | 47 | **78** |
+| Ouro | 7 | 14 | 36 |
+| Prata | 2 | 6 | 9 |
+| Elevado | 4 | 10 | 3 |
+| Intermediário | 71 | 37 | 9 |
+| Básico | 22 | 3 | 1 |
+| Inicial | 3 | 0 | 3 |
+| Inexistente / Não avaliado | 0 | 20 / 2 | 0 |
+| **Índice médio** | 68,4% | 71,1% | **90,1%** |
+
+**Ranking entre os estados** (prefeituras): 1º em 2023, 2º em 2024, **2º em 2025** (56,1% Diamante, atrás do Pará com 66%). Brasil em 2025: 5.569 prefeituras, 7,1% Diamante, 25,8% com selo, índice médio 67,5%.
+
+### Onde está o risco e a oportunidade
+
+- **16 prefeituras sem selo**: Tabocão (Elevado, 97,2%), Aguiarnópolis (Elevado, 93,7%), Esperantina (Elevado), 9 em Intermediário, Porto Nacional (Básico, 45,4%), Riachinho, Xambioá e Praia Norte (Inicial).
+- **13 prefeituras caíram de nível** em 2025; 7 eram Diamante. Entre elas, duas das maiores cidades: **Araguaína** (183 mil hab.; de 97,6% para 78,2%, agora Prata) e **Gurupi** (90 mil; de Diamante para Ouro, 93,9%). **Porto Nacional** (70 mil, a 4ª maior) está em Básico (45,4%). **Só 24 prefeituras foram Diamante nos três ciclos.**
+- **29 prefeituras Diamante estão com menos de 97%**: margem curta contra uma revisão ou uma mudança de regra.
+- **"Quase lá"**: Almas, Maurilândia do Tocantins, Araguatins, Juarina e Gurupi são Ouro e chegam ao Diamante corrigindo **1 critério** cada.
+- **Câmaras municipais**: 73 Diamante em 139 (índice médio 87,2%), contra 56% das prefeituras; 66 não são Diamante. O PNTP as avalia à parte, com outra matriz. Já estão nos dados do módulo, ainda sem tela própria.
+- **O que mais falha no estado** (prefeituras com algum item faltando em 2025): plano estratégico institucional (72, recomendado), plano de contratações anual (69, recomendado), relatório de gestão ou atividades (53, obrigatório) e, entre os **essenciais**, **RGF (11 prefeituras), RREO (9) e receitas (6)**.
+
+## 3. Como verificar cada município
+
+Três camadas, que nunca devem aparecer misturadas na tela:
+
+| Camada | O que é | Situação |
 |---|---|---|
-| Matriz e cartilha | 20/03/2026 | |
-| Autoavaliação | 20/04 a 29/05 | |
-| Validação pelos tribunais | 01/06 a 10/08 | provisório (Atricon); TCE-SC usou 1 a 19/06 |
-| Garantia da qualidade (Atricon) | 31/08 a 09/10 | amostral |
-| Radar sendo preparado | 10/10 a 10/11 | |
-| **Resultados** | **novembro/2026 (a confirmar)** | **estamos nessa janela** |
+| **A. Oficial** | Nível, índice e essenciais de cada ente, por ciclo, com link do portal | **Resolvida.** Base aberta do PNTP (2022 a 2025), um arquivo por ciclo; **já está no protótipo** |
+| **B. Sonda automática** | Verificações técnicas semanais nos portais (no ar, HTTPS, seções, arquivos legíveis por máquina) | Não feita. É a Fase 2. Os 139 endereços dos portais já vêm na base |
+| **C. Autoavaliação guiada** | Checklist por critério, com pesos e o portão dos essenciais | **Protótipo pronto**: o simulador da ficha de cada município |
 
-Consequência prática: o **ciclo 2025 (divulgado em dez/2025)** é o último resultado oficial; o **2026 sai em semanas**. O próximo ciclo (2027) deve abrir em torno de **março/abril de 2027**, o que dá ~4 a 5 meses para uma preparação com valor real.
+A camada A responde à pergunta "como está cada município". A B responde "como está **hoje**", entre um ciclo e outro. Nenhuma nota automática deve ser exibida como selo.
 
-### Panorama (ciclo 2025)
+## 4. Dados abertos: o que existe (verificado)
 
-- 10.072 portais avaliados e 7.108 avaliações validadas; **2.912 certificados** (998 Diamante, 1.082 Ouro, 832 Prata). Outra fonte diz 2.911/997: diferença de 1, irrelevante. Segundo a Atricon, cerca de 50% das avaliações validadas tiveram **redução de nível**. Confiança: alta.
-- **Tocantins:** TCE-TO conquistou o Diamante pelo 4º ano seguido e reportou 284 avaliações no ciclo 2025. Isso bate com 139 prefeituras + 139 câmaras + ~6 órgãos estaduais, o que sugere o universo avaliado (inferência minha). O portal do Governo do TO aparece com Diamante e 99,18% (subindo de 69,45% em 2024; confiança média). **Dianópolis** (prefeitura) recebeu Diamante (notícia de 25/02/2026, que a chama "4º ciclo": nomenclatura inconsistente entre fontes); a **Câmara de Sucupira** informa Ouro. **Não achei lista municipal completa.**
-
-## 2. Como verificar a situação de cada município do TO
-
-A resposta honesta é: **três camadas, que nunca devem ser misturadas na tela**.
-
-| Camada | O que é | Valor | Limite |
+| Fonte | O que dá | Acesso | Situação |
 |---|---|---|---|
-| **A. Oficial** | Nível e índice do ente no Radar (ciclos 2023, 2024, 2025, 2026) | É a "verdade" que vale para o selo | Não confirmei se há exportação/API. Se não houver, a carga é manual/curada (139 entes por ciclo, viável) ou pedida ao TCE-TO |
-| **B. Sonda automática** | Verificações técnicas que um robô consegue repetir toda semana | Cobertura total e atual, entre um ciclo e outro | **Não é a nota oficial.** Cobre só parte dos critérios |
-| **C. Autoavaliação guiada** | Checklist por critério, com peso, evidência (URL e data) e status | Dá ao município o caminho até o Diamante | Depende de o município usar |
+| **PNTP, dados abertos** | Por ente e ciclo: índice, nível, % essenciais, variação, link do portal. Respostas critério a critério, por UF | `pntp.atricon.org.br/dados-abertos/`; arquivos `.zip` com `.xlsx` (323 MB o de 2025) | **Verificado e usado.** Aviso da própria Atricon: o esquema muda entre ciclos (2022 tem 15 colunas, 2023 em diante 21) e a média só vale excluindo "Não Avaliado" |
+| **Matriz 2026 e Cartilha 2026** | Critérios, classe, pesos, regras | `cdn.atricon.org.br` | **Verificado e usado** |
+| **Siconfi (Tesouro)** | Cadastro de entes (população, CNPJ); relatórios fiscais (RREO, RGF, DCA) | API REST `apidatalake.tesouro.gov.br` | **Verificado** o cadastro (139 municípios do TO, com população e CNPJ). Os relatórios fiscais ficam para a Fase 2 e cruzam com os essenciais 11.5 e 11.6 |
+| **TCE-TO** | "Portal do Cidadão (Transparência do Estado e Município)", módulo público do SICAP (licitações e obras), IEGM | `portaldocidadao.tceto.tc.br`, `app.tceto.tc.br/lo_publico` | Links vistos no site; conteúdo e formato **não avaliados**. Candidato a fonte da Fase 2 e a parceiro |
+| PNCP | Contratações e contratos | API de consultas | Teste de conexão instável (a primeira tentativa falhou, a segunda respondeu); **não avaliado** |
+| Querido Diário | Diários oficiais municipais | `queridodiario.org.br` responde; a API (`api.queridodiario.ok.org.br`) está **bloqueada** aqui | Cobertura do TO desconhecida |
+| IBGE (API de localidades) | Municípios, microrregiões | `servicodados.ibge.gov.br` **bloqueado** aqui | Não necessário: a base do PNTP e o Siconfi já trazem o código IBGE |
+| CGU, Escala Brasil Transparente | Nota de acesso à informação | Painel | Só municípios com mais de 50 mil habitantes (pouca cobertura no TO); não avaliado |
 
-### O que a sonda (camada B) consegue e não consegue
+## 5. O que foi entregue: protótipo do módulo
 
-Confiável, só HTTP: portal responde, HTTPS válido, tempo de resposta, presença de seções por palavra-chave (e-SIC, Ouvidoria, Licitações, Contratos, Diárias, Receitas, Despesas, Remuneração/Folha, LGPD/encarregado, Carta de Serviços, Dados Abertos), links para arquivos legíveis por máquina (`.csv`, `.xml`, `.json`, `.ods`), e "impressão digital" do fornecedor do portal.
+Em [`modules/transparencia/`](../modules/transparencia/README.md). Sem dependências; roda com `python3 -m http.server`.
 
-Cruzamento com bases externas: entrega de RREO/RGF/DCA no Siconfi, contratações do município no PNCP, existência do diário oficial no Querido Diário.
+- **Panorama**: selos por ciclo, "mais perto do Diamante", "o que mais falha no estado" e o **aviso do ciclo 2026** (calculado a partir da matriz: critérios que viram essenciais e quem, com selo hoje, é atingido).
+- **Prefeituras**: as 139, com busca, filtro por nível, ordenação e **download em CSV**.
+- **Ficha do município**: placar com a marca de 95%, histórico, câmara e o **simulador** ("marque o que a prefeitura vai corrigir e veja índice e nível projetados", com o botão "caminho mais curto").
+- **Critérios** e **Metodologia** (regras, essenciais, pesos, fontes, limites).
 
-**Só com pessoa (não automatizar e não prometer):** conteúdo atualizado e completo, funcionamento dos filtros estruturados (o ponto novo de 2026), **teste real de pedido de informação (SIC)**, acessibilidade completa (ferramentas automáticas pegam só uma parte), correção do conteúdo.
+**Visual do mm.api.br.** A tela de login é pública e traz o CSS completo do site (v0.25). Dele tirei: três aparências (**Terminal** em âmbar sobre preto, **Claro** e **Escuro**, estas com `data-estilo="moderno"`), os componentes (`topbar`, `nav-item`, `kpi`, `tabela`, `chip`, `filtro`, `est-placar`, `est-serie`, `est-req`…) e a **política de segurança** (`script-src 'self'`, sem CDN, sem script inline). O módulo usa as mesmas classes e foi testado no Chromium sob essa política, nas três aparências e em celular, sem erros. O site já tem um "estudo do município" (`est-*`) e módulos em construção; o módulo foi feito para conviver com eles.
 
-> Regra de produto: rotular sempre **"Oficial (Atricon, ciclo X)"**, **"Indicador de apoio (automático)"** e **"Autoavaliação do município"**. A sonda nunca exibe "Diamante/Ouro" por conta própria.
+## 6. Plano de ação
 
-## 3. Dados abertos: o que existe
+### Fase 0: destravar (quase concluída)
 
-"Tem dados abertos?" tem três leituras; a resposta é diferente em cada uma.
+Feito: visual do site obtido; base oficial baixada e analisada; regras e matriz 2026 lidas; Siconfi testado. **Falta**: ver as telas internas do `mm.api.br` (exige login) e a stack (framework e rotas), para encaixar o módulo como `/transparencia`; **liberar** `servicodados.ibge.gov.br`, `api.queridodiario.ok.org.br` e testar o PNCP; **contatar o TCE-TO e a ATM** (parceria e permissão para publicar).
 
-1. **Os resultados do PNTP são dados abertos?** *Não confirmado.* O site do PNTP tem uma página "Dados abertos" (`pntp.atricon.org.br/dados-abertos/`), mas não vi o conteúdo; o Radar é um painel. **Primeira ação da Fase 0.**
-2. **Há dados abertos para alimentar o módulo?** *Sim, vários* (tabela abaixo).
-3. **Cada município publica dados abertos?** *A medir* na sonda (é também tema da LAI, art. 8º, §3º, que exige formatos abertos e acesso automatizado; citado de memória, validar com jurídico).
+### Fase 1: painel oficial (protótipo entregue)
 
-| Fonte | O que dá | Acesso | Confiança / ressalva |
-|---|---|---|---|
-| Radar / PNTP (Atricon) | Nível e índice por ente | Painel; exportação a confirmar | Média. Pedir a base ao TCE-TO se não houver |
-| IBGE (localidades) | 139 municípios, códigos (UF 17), microrregião, população | API pública | Não testada aqui; endpoint de memória, validar |
-| Siconfi (Tesouro) | RREO, RGF, DCA, MSC por ente | API REST (`apidatalake.tesouro.gov.br`) | Alta quanto à existência; endpoints a testar |
-| PNCP | Contratações, contratos e atas por órgão | API de consultas (manual oficial) | Há problemas de qualidade (Transparência Brasil, dez/2024) e relato de terceiro (04/10/2026) de filtros ignorados sem aviso. **Validar cada filtro** antes de confiar |
-| Querido Diário (OKBR) | Diários oficiais municipais, busca e API | API aberta | Cobertura do TO atual **desconhecida** (só Palmas em matéria de 2021) |
-| CGU, Escala Brasil Transparente 360 | Nota de acesso à informação | Painel | Só municípios com mais de 50 mil hab.: pouca cobertura no TO |
-| Transparência Internacional (ITGP) | Índice estadual (TO em 21º, 57,5/100 em 2025) | Publicação | Estadual, não municipal. Útil só como contexto |
-| TCE-TO | Possíveis dados de fiscalização/portais | Desconhecido | **Perguntar diretamente.** Parceiro natural |
+Falta integrar ao site (layout, autenticação, rota), revisar com quem opera o PNTP no TCE-TO e **ingerir o ciclo 2026 quando sair (novembro)**: é rodar `build_dados.py` com os novos arquivos.
 
-## 4. Plano de ação em fases
+### Fase 2: sonda e cruzamentos (4 a 6 semanas)
 
-Estimativas assumem 1 a 2 pessoas de desenvolvimento e acesso à internet aberta. Nenhuma dura mais que o necessário para validar a anterior.
+- Sonda semanal nos 139 portais (no ar, HTTPS, seções, links para arquivos legíveis por máquina, impressão digital do fornecedor), com limite de taxa, `User-Agent` identificado e respeito a `robots.txt`.
+- Cruzar os essenciais **11.5 e 11.6** (RGF e RREO) com a entrega no **Siconfi**, e as licitações com o PNCP e o SICAP.
+- **Agrupar por fornecedor de portal**: um ajuste do fornecedor melhora vários municípios.
 
-### Fase 0: destravar (1 a 2 semanas, **antes de qualquer tela**)
+### Fase 3: autoavaliação guiada
 
-1. Obter acesso ao padrão visual do `mm.api.br` (seção 8) e definir **em qual repositório** o módulo nasce.
-2. Baixar a **matriz oficial 2026 do Executivo municipal** e a cartilha; transformar em tabela (código do critério, dimensão, classe essencial/obrigatório/recomendado, peso, item de verificação, "automatizável?").
-3. Abrir o Radar e a página "Dados abertos" do PNTP; verificar se há exportação. Registrar o resultado.
-4. Contato com o **TCE-TO** (base do ciclo, ofícios) e a **ATM** (associação dos municípios): parceria e permissão para publicar.
-5. Rodar uma chamada de teste em cada API (IBGE, Siconfi, PNCP, Querido Diário) e anotar o que falha.
-
-**Entrega:** matriz em planilha, inventário de fontes verificado, decisão de arquitetura.
-
-### Fase 1: painel oficial, MVP (3 a 4 semanas)
-
-- Cadastro dos 139 municípios (IBGE) e série **2023–2026** de nível/índice (carga curada ou pela base do TCE-TO).
-- Telas: **ranking do TO**, **ficha do município** (histórico, se perdeu/ganhou nível), **mapa** por nível, filtro por microrregião/porte.
-- Indicador **"distância até o Diamante"** (quantos pontos faltam) e lista de "quase lá" (Ouro alto).
-- Exportação CSV/JSON dos próprios dados.
-
-**Valor imediato** e baixo risco: só reorganiza dados oficiais.
-
-### Fase 2: sonda e dados abertos (4 a 6 semanas)
-
-- Descobrir o portal de cada município (cadastro + validação manual das 139 URLs).
-- Sonda semanal (seção 2), com *rate limit*, `User-Agent` identificado e respeito a `robots.txt`.
-- Cruzamentos Siconfi/PNCP/Querido Diário por código IBGE e CNPJ.
-- **Agrupar por fornecedor de portal**: se um fornecedor atende vários municípios, um ajuste dele melhora vários de uma vez. É a alavanca mais barata do estado.
-- Tela "indicadores de apoio", sempre separada do oficial.
-
-### Fase 3: autoavaliação guiada (4 a 6 semanas)
-
-- Checklist da matriz com **pesos**, evidência (URL + data + print) e responsável.
-- **Simulador**: marca os itens, mostra a nota projetada **e o portão dos essenciais** ("faltam 2 essenciais; sem eles o máximo é Elevado").
-- **Plano de ação do município** gerado do que falta, ordenado por (peso × facilidade), com prazo ancorado no calendário do ciclo 2027.
-- Perfis: servidor do controle interno (único que pode lançar no Avalia oficial, então o módulo é **preparação**, não substitui o Avalia).
+O simulador vira o plano do município: critérios com responsável, prazo e evidência (URL, data, print), ordenados por ganho. O módulo é **preparação**: o lançamento oficial no Avalia é de servidor do controle interno, não de consultor.
 
 ### Fase 4: operação contínua
 
-- Alertas de calendário (abertura do ciclo, prazo de autoavaliação, recursos).
-- Histórico, relatórios para TCE-TO/ATM/prefeituras, comparativo regional.
-- API aberta própria, com licença explícita (ex.: CC-BY).
+Alertas do calendário do ciclo, histórico, relatórios para TCE-TO, ATM e prefeituras, API aberta própria.
 
-### Linha do tempo sugerida
+### Calendário
 
 | Quando | O que |
 |---|---|
-| Nov/2026 | Fase 0; **ingerir o resultado 2026 assim que sair** |
-| Dez/2026 a jan/2027 | Fase 1 no ar |
-| Fev a abr/2027 | Fase 2; matriz 2027 sai (~mar) e a sonda já está calibrada |
-| Abr a mai/2027 | Fase 3 pronta a tempo da autoavaliação 2027, o momento de maior uso |
+| **Nov/2026** | Resultado do ciclo 2026 sai; ingerir e comparar com 2025 |
+| Nov/2026 a jan/2027 | Integração da Fase 1 ao site |
+| Fev a abr/2027 | Fase 2 pronta; a matriz do ciclo 2027 deve sair ~março |
+| Abr a mai/2027 | Fase 3 pronta a tempo da autoavaliação 2027 (em 2026 foi de 20/04 a 29/05) |
 
-## 5. Sugestões
+## 7. Sugestões
 
-1. **Priorize os essenciais.** Um município com 94% e todos os essenciais está mais perto do Diamante do que um com 97% e um essencial faltando. A interface deve mostrar o portão primeiro.
-2. **Foco nos "quase lá"**: municípios em Ouro/Prata alto rendem mais selos por hora de trabalho do que os de nível Básico.
-3. **Alavanca por fornecedor** (Fase 2): mapa de quais fornecedores concentram as falhas.
-4. **Ficha de evidência datada** (URL, data, print): em 2026 o tribunal pede filtro estruturado, e quem guarda a prova economiza tempo na validação e no recurso.
-5. **Kit "portal mínimo"** para municípios pequenos: modelo de estrutura e textos (SIC, LGPD, ouvidoria, carta de serviços).
-6. **Publicar o próprio módulo como dado aberto**: coerente com o tema e facilita parcerias (imprensa, universidades, MP).
-7. **Parceiros**: TCE-TO, ATM, CGE-TO, MPTO, universidades.
-8. **Teste de SIC cidadão** (opcional e manual): pedidos reais padronizados, com consentimento e protocolo, para medir a transparência passiva, que robô nenhum mede.
+1. **Comece pelo risco, não pelo ranking.** O estado já lidera; o maior valor é **não perder selo** (13 quedas em 2025) e proteger quem está com margem curta (29 Diamantes abaixo de 97%).
+2. **Priorize as cidades grandes.** Araguaína (Prata) e Gurupi (Ouro) caíram de Diamante; Porto Nacional está sem selo. As três concentram população.
+3. **Os essenciais são exigência legal, não só selo.** Para o gestor, "RGF e RREO no portal" pesa mais (transferências voluntárias e crédito) do que "Diamante". Use isso na comunicação.
+4. **Alerta do 4.3 já.** Avisar Araguaína e Ponte Alta do Bom Jesus antes do resultado de novembro.
+5. **Câmaras**: segunda frente, com tela própria (os dados já estão no módulo).
+6. **Ficha de evidência datada** (URL, data, print): em 2026 o tribunal exige filtro estruturado; quem guarda a prova economiza tempo na validação e no recurso.
+7. **Fornecedores de portal**: mapear quais concentram as falhas.
+8. **Publicar o módulo como dado aberto** (CSV já sai; falta licença explícita), coerente com o tema.
+9. **Teste real de SIC** (manual, opcional): a transparência passiva é o que robô nenhum mede.
 
-## 6. Cuidados éticos e legais
+## 8. Cuidados
 
-- Uma nota automática pode ser lida como acusação. Rotular como "indicador de apoio", com data, metodologia e **canal de contestação** para o município.
+- Uma nota automática pode ser lida como acusação: rotular como "indicador de apoio", com data, metodologia e canal de contestação.
 - Nunca divulgar "perdeu/ganhou selo" a partir da sonda; só a partir do Radar.
-- Coletar só o que é público, sem burlar bloqueios; sem dados pessoais de servidores além do que o portal já publica (LGPD).
-- Citar a fonte oficial e o ciclo em toda tela. Não usar os domínios não oficiais do Radar como fonte.
+- Coletar só o que é público, sem burlar bloqueios; sem dados pessoais além do que o portal já publica (LGPD).
+- Citar a fonte e o ciclo em toda tela.
 
-## 7. Riscos e pontos a confirmar
+## 9. Limites, riscos e pendências
 
-| Risco / dúvida | Como tratar |
+| Ponto | Situação |
 |---|---|
-| Radar sem exportação e com termos que vedam coleta | Pedir a base ao TCE-TO / Atricon; fallback: carga manual curada |
-| Matriz muda a cada ciclo | Guardar a matriz como dado versionado, não como código |
-| Números de critérios divergem entre fontes | Usar só a matriz oficial do ciclo e do tipo de ente |
-| APIs com qualidade irregular (PNCP) | Tratar como indício, não prova; sempre validar |
-| Portais fora do ar, bloqueio por WAF | Sonda com *retry*, janela larga e registro de falha (falha ≠ "sem transparência") |
-| Datas do ciclo 2026 eram provisórias | Reconfirmar no calendário do TCE-TO |
-| Citações legais de memória (LAI art. 8º, §3º; LRF arts. 48 e 48-A; Lei 14.133 art. 174) | Revisar com jurídico antes de publicar |
+| Simulador usa respostas de 2025 e fórmula 2026 | O resultado de 2026 pode diferir (matriz mudou: 96 critérios e 12 essenciais, contra 91 e 11) |
+| Nível "Inexistente" de 2024 (20 prefeituras) | Pela Cartilha vem de portal inexistente ou fora do ar; **motivo não verificado caso a caso**. A variação para 2025 dessas fica exagerada |
+| Esquema da base muda entre ciclos | O gerador valida o formato e falha se mudar; conferir colunas ao entrar o ciclo 2026 |
+| `Ctrl+F` deixar de valer em 2026 | Só no material de treinamento do TCE-PI; a Cartilha trata do filtro de pesquisa, mas não cita o `Ctrl+F` |
+| Telas internas do `mm.api.br` | **Não vistas** (login). O cartão sugerido para a home foi derivado das classes do CSS |
+| Citações legais (LAI art. 8º §3º, LRF 48, 48-A e 51, Lei 14.133 art. 174) | LRF conferida na Cartilha; as demais, de memória: revisar com jurídico |
+| Hosts ainda bloqueados | `servicodados.ibge.gov.br`, `api.queridodiario.ok.org.br`; PNCP instável; a ferramenta `WebFetch` não resolve DNS (usei `curl`) |
 
-## 8. Padrão visual do `mm.api.br`: o que preciso
+## 10. Fontes
 
-Não consegui acessar o site e o único repositório visível aqui não é o dele. Para o módulo ficar com a mesma cara, qualquer um destes serve (do melhor para o mais simples):
+Oficiais, lidas diretamente:
 
-1. O **repositório** do `mm.api.br` (se estiver no GitHub, dá para anexá-lo à sessão).
-2. O arquivo de **tokens/CSS** (cores, fontes, espaçamentos, raios, sombras) e a lista de componentes.
-3. **Capturas de tela** das páginas principais, em modo claro e escuro, se o site tiver os dois.
+- PNTP: [pntp.atricon.org.br](https://pntp.atricon.org.br/) · [Dados abertos](https://pntp.atricon.org.br/dados-abertos/) · [Radar](https://radardatransparencia.atricon.org.br/)
+- [Cartilha PNTP 2026](https://cdn.atricon.org.br/2026/08/Cartilha-PNTP-2026.pdf) · [Matriz de critérios 2026](https://cdn.atricon.org.br/2026/08/criterios_pntp_2026.zip)
+- Bases: [ciclo 2025](https://cdn.atricon.org.br/2026/08/dados_pntp_2025.zip) · [2024](https://cdn.atricon.org.br/2026/08/dados_pntp_2024.zip) · [2023](https://cdn.atricon.org.br/2026/08/dados_pntp_2023.zip)
+- Siconfi: [entes](https://apidatalake.tesouro.gov.br/ords/siconfi/tt/entes) · [APIs do Tesouro](https://www.gov.br/tesouronacional/pt-br/central-de-conteudo/apis)
+- [TCE-TO](https://www.tceto.tc.br/) · tela de login do [mm.api.br](https://mm.api.br/login) (CSS)
 
-Também preciso saber a **stack** do site (framework, e como as rotas/API são organizadas) para o módulo entrar como `/transparencia` sem retrabalho.
-
-## 9. Fontes consultadas (todas via busca; nenhuma aberta diretamente)
-
-- PNTP: [pntp.atricon.org.br](https://pntp.atricon.org.br/) · [Dados abertos](https://pntp.atricon.org.br/dados-abertos/) · [Atricon: validação 2025](https://atricon.org.br/pntp-2025-conclui-etapa-de-validacao-pelos-tcs/)
-- Ciclo 2026: [Cronograma Atricon](https://atricon.org.br/wp-content/uploads/2026/02/Cronograma-PNTP-2026.pdf) · [Metodologia (TCE-PI)](https://www.tcepi.tc.br/wp-content/uploads/2026/04/Metodologia-PNTP-2026.pdf) · [Treinamento (TCE-PI)](https://www.tcepi.tc.br/wp-content/uploads/2026/04/PNTP-2026-TREINAMENTO.pdf) · [Cronograma TCE-SC](https://www.tcesc.tc.br/sites/default/files/2026-03/PNTP_Ciclo_2026_Cronograma.pdf) · [Ofício TCE-PB (níveis)](https://tce.pb.gov.br/wp-content/uploads/2026/04/1-Oficio-PNTP-CICLO-2026.pdf)
-- Matriz e pesos: [Diagnóstico da Transparência](https://diagnostico.transparencia.com.br/entenda-a-matriz-de-avaliacao-da-transparencia-desenvolvida-pela-atricon/) · [Resolução Atricon 01/2022](https://atricon.org.br/wp-content/uploads/2022/07/Resolucao-01_2022-Altera-Resolucao-Atricon-09-2018-2.pdf) · [FAQ TCE-MG](https://www.tce.mg.gov.br/fale_tce/docs/PNTP-PerguntasFrequentesTCEMG_2025.pdf)
-- Resultados 2025: [TCE-RN](https://www.tce.rn.gov.br/Noticias/NoticiaDetalhada/7748) · [TCE-SP](https://tce.sp.gov.br/6524-tcesp-entrega-selos-programa-nacional-transparencia-publica)
-- Tocantins: [TCE-TO Diamante](https://www.tceto.tc.br/tceto-conquista-selo-diamante-de-transparencia-publica-pelo-quarto-ano-consecutivo/) · [Portal do Governo do TO](https://www.agenciatocantins.com.br/noticia/103276/portal-da-transparencia-do-tocantins-e-reconhecido-como-um-dos-cinco-melhores-do-brasil) · [Dianópolis](https://www.conexaoto.com.br/2026/02/25/prefeitura-de-dianopolis-conquista-selo-diamante-de-transparencia-publica) · [Câmara de Sucupira](https://sucupira.to.leg.br/gestao-transparente/) · [ITGP Tocantins](https://transparenciainternacional.org.br/itgp/governo-estadual/tocantins)
-- Dados abertos: [APIs do Tesouro](https://www.gov.br/tesouronacional/pt-br/central-de-conteudo/apis) · [Manual PNCP (consultas)](https://www.gov.br/pncp/pt-br/acesso-a-informacao/manuais/ManualPNCPAPIConsultasVerso1.0.pdf) · [Qualidade dos dados do PNCP](https://transparencia.org.br/downloads/publicacoes/qualidade_dados_portal_nacional_de_contratacoes_publicas.pdf) · [Filtros do PNCP (relato de terceiro)](https://www.tabnews.com.br/dmanoel/a-api-do-pncp-ignora-filtros-em-silencio-o-que-aprendi-montando-um-servidor-mcp-de-licitacoes) · [Querido Diário](https://docs.queridodiario.ok.org.br/en/latest/what-is-it.html) · [Escala Brasil Transparente](https://brasil61.com/noticias/escala-brasil-transparente-avalia-cumprimento-da-lei-de-acesso-a-informacao-entre-estados-e-municipios-bras214401)
+Secundárias (só de apoio; o que importa foi confirmado acima): [Material de treinamento PNTP 2026 (TCE-PI)](https://www.tcepi.tc.br/wp-content/uploads/2026/04/PNTP-2026-TREINAMENTO.pdf) · [Cronograma Atricon 2026](https://atricon.org.br/wp-content/uploads/2026/02/Cronograma-PNTP-2026.pdf) · [PNCP: manual de consultas](https://www.gov.br/pncp/pt-br/acesso-a-informacao/manuais/ManualPNCPAPIConsultasVerso1.0.pdf) · [Qualidade dos dados do PNCP (Transparência Brasil)](https://transparencia.org.br/downloads/publicacoes/qualidade_dados_portal_nacional_de_contratacoes_publicas.pdf)
