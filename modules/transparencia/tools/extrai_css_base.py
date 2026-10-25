@@ -6,9 +6,10 @@ O site entrega o CSS inline na própria página (a política de segurança só a
 então o módulo leva um recorte dele. Rode de novo quando o visual do site mudar:
 
   curl -sL https://mm.api.br/login -o login.html
-  python3 tools/extrai_css_base.py login.html
+  python3 tools/extrai_css_base.py login.html                                   # este módulo
+  python3 tools/extrai_css_base.py login.html ../transferencias                 # outro módulo (pasta)
 
-Mantém uma regra se algum de seus seletores só usa classes que aparecem em index.html ou transparencia.js.
+Mantém uma regra se algum de seus seletores só usa classes que aparecem no index.html ou nos .js da pasta.
 """
 import os
 import re
@@ -81,12 +82,15 @@ def filtra(css, usadas):
 usadas_keyframes = {'blink'}
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
+    if len(sys.argv) not in (2, 3):
         sys.exit(__doc__)
+    if len(sys.argv) == 3:
+        AQUI = os.path.abspath(sys.argv[2])
     html = open(sys.argv[1], encoding='utf-8').read()
     css = re.search(r'<style>(.*?)</style>', html, re.S).group(1)
     todas = set(re.findall(r'\.(-?[_a-zA-Z][\w-]*)', re.sub(r'/\*.*?\*/', '', css, flags=re.S)))
-    texto = ''.join(open(os.path.join(AQUI, f), encoding='utf-8').read() for f in ('index.html', 'transparencia.js'))
+    arquivos = ['index.html'] + sorted(f for f in os.listdir(AQUI) if f.endswith('.js'))
+    texto = ''.join(open(os.path.join(AQUI, f), encoding='utf-8').read() for f in arquivos)
     texto = re.sub(re.escape(INICIO) + '.*?' + re.escape(FIM), '', texto, flags=re.S)  # não contar o recorte anterior
     usadas = (set(re.findall(r'[A-Za-z][\w-]*', texto)) & todas)
     recorte = filtra(css, usadas)

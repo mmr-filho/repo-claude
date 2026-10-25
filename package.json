@@ -5,7 +5,8 @@
   "description": "Mensageria entre celulares com criptografia ponta a ponta, mensagens que se apagam ap\u00f3s a leitura e redes isoladas administradas por administradores.",
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/*",
+    "modules/transferencias"
   ],
   "engines": {
     "node": ">=22.13"
@@ -18,7 +19,8 @@
     "test:e2e": "node e2e/ui.e2e.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "android": "npm run android -w @sigilo/mobile",
-    "test:transparencia": "node modules/transparencia/test/fluxo.e2e.mjs"
+    "test:transparencia": "node modules/transparencia/test/fluxo.e2e.mjs",
+    "test:transferencias": "npm test -w @mm/transferencias && npm run test:e2e -w @mm/transferencias"
   },
   "devDependencies": {
     "playwright-core": "^1.56.1"

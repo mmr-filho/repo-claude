@@ -1,0 +1,28 @@
+{
+  "name": "@mm/transferencias",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Módulo do mm.api.br: inteligência e otimização de transferências federais para as prefeituras do Tocantins.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "coletar": "python3 -I etl/coleta_siconfi.py",
+    "corpus": "python3 -I etl/corpus.py",
+    "analisar": "node --import tsx src/cli.ts",
+    "dev": "node --import tsx src/node-server.ts",
+    "test": "node --import tsx --test \"test/**/*.test.ts\"",
+    "test:e2e": "node test/fluxo.e2e.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
