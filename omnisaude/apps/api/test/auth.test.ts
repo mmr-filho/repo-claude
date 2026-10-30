@@ -58,3 +58,27 @@ describe.runIf(enabled)('autenticação e contexto', () => {
     await t.http().post('/api/auth/login').send({ tenant: t.slug, cpf: social.cpf, password: demoFixtures.DEMO_PASSWORD }).expect(429);
   });
 });
+
+describe.runIf(enabled)('diretório e auditoria', () => {
+  let t: TestApp;
+  beforeAll(async () => {
+    t = await startTestApp('directory');
+  });
+  afterAll(async () => {
+    await t?.close();
+  });
+
+  it('lista unidades e profissionais e verifica a trilha encadeada', async () => {
+    const token = await t.login('gestora', 'UBS Centro', 'GESTOR');
+    const dir = await t.http().get('/api/directory').set('authorization', `Bearer ${token}`).expect(200);
+    expect(dir.body.units.length).toBe(8);
+    expect(dir.body.professionals.find((p: { name: string }) => p.name.startsWith('Carla')).roles.length).toBe(3);
+    const verify = await t.http().get('/api/audit/verify').set('authorization', `Bearer ${token}`).expect(200);
+    expect(verify.body.ok).toBe(true);
+    expect(verify.body.checked).toBeGreaterThan(5);
+    const entries = await t.http().get('/api/audit/entries').set('authorization', `Bearer ${token}`).expect(200);
+    expect(entries.body[0].hash).toMatch(/^[0-9a-f]{64}$/);
+    const medica = await t.login('medica', 'UBS Centro', 'MEDICO');
+    await t.http().get('/api/audit/verify').set('authorization', `Bearer ${medica}`).expect(403);
+  });
+});
