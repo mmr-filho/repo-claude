@@ -22,13 +22,19 @@ FROM deps AS build
 COPY . .
 RUN npm run build:libs && npx tsc -b apps/api infra/mocks
 
+# Dependências de produção só dos pacotes do back-end (sem Next, React, Capacitor, ferramentas de build).
+FROM deps AS prod-deps
+RUN npm ci --omit=dev --no-audit --no-fund \
+  -w @omnisaude/api -w @omnisaude/database -w @omnisaude/shared -w @omnisaude/ai-engine \
+  -w @omnisaude/messaging -w @omnisaude/fhir -w @omnisaude/accessibility -w @omnisaude/mocks
+
 # ── API e worker (mesma imagem; o worker muda só o comando) ──
 FROM node:22-bookworm-slim AS api
 ENV NODE_ENV=production
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/package.json ./
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
 COPY --from=build /app/apps/api/dist ./apps/api/dist
@@ -39,7 +45,7 @@ CMD ["node", "apps/api/dist/main.js"]
 # ── Servidores simulados (RNDS/CADSUS, SEFAZ, WhatsApp) para desenvolvimento ──
 FROM node:22-bookworm-slim AS mocks
 WORKDIR /app
-COPY --from=build /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/infra/mocks ./infra/mocks
 USER node
