@@ -14,9 +14,10 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | NestJS + DDD + Prisma com conexões dinâmicas | ✅ | um `PrismaClient` por banco, LRU |
 | Next.js 14+, Tailwind, componentes acessíveis | ✅ | Next 16, Tailwind 4, componentes próprios sobre Radix (padrão shadcn) |
 | App Android (Capacitor) com câmera, leitor Datamatrix, microfone | 🟡 | projeto Capacitor e ponte nativa prontos; o APK precisa do Android SDK para compilar |
-| Redis + BullMQ, WebSockets/SSE | ✅ | jobs de WhatsApp, RNDS e SIGTAP; Socket.IO para painel e censo |
+| Redis + BullMQ, WebSockets/SSE | ✅ | jobs de WhatsApp, RNDS e SIGTAP; Socket.IO para painel e censo; na Cloudflare, Cron Triggers |
 | Cloudflare R2 | ✅ | API S3 com SHA-256 conferido na leitura |
 | Docker multi-stage Debian-slim, Compose e Kubernetes | ✅ | manifestos k8s de referência (bancos e Redis como serviços gerenciados) |
+| Publicação 100% Cloudflare (Workers, Containers, PlanetScale, R2) | 🟡 | `apps/cloudflare`; Worker e container testados localmente com `wrangler dev`; falta o primeiro deploy na conta |
 
 ## 3. IA multimodal e acessibilidade
 
@@ -108,11 +109,17 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 
 ## Verificação feita
 
-- 257 testes automatizados passando: 183 nas bibliotecas e 74 de integração da API contra PostgreSQL real.
+- 271 testes automatizados passando: 196 nas bibliotecas e no Worker da Cloudflare e 75 de integração da API
+  contra PostgreSQL real.
 - Teste de fumaça com Playwright (`e2e/smoke.e2e.mjs`) percorrendo 12 telas com 8 papéis no build de produção.
 - Imagem Docker da API construída e executada: migrações, login com contexto e consulta de BI na conexão
   somente leitura.
 - Exportação estática do front-end e `cap sync android` concluídos.
+- Publicação na Cloudflare com `wrangler dev` e a imagem real da API: primeira partida num PostgreSQL vazio
+  com papel administrador sem superusuário (como o do PlanetScale), login e contexto no navegador, WebSocket
+  por `/omnisaude/socket.io`, CADSUS simulado, Cron Trigger chamando os jobs, `/api/jobs/tick` bloqueado ao
+  público e reinício da API quando a configuração do Worker muda. `wrangler deploy --dry-run` aceita a
+  configuração. O build da imagem pela Cloudflare e o PlanetScale real não foram exercitados aqui.
 
 ## Próximos passos sugeridos
 

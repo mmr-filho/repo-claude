@@ -29,7 +29,20 @@ export function envCredentials(env: NodeJS.ProcessEnv = process.env): Credential
   };
 }
 
-export function connectionUrl(host: string, port: number, database: string, cred: DbCredentials, ssl = false): string {
+/**
+ * Nome do papel no PostgreSQL a partir do usuário de conexão. No PlanetScale o login é
+ * `{papel}.{id do branch}` e o sufixo `|replica` leva a conexão à réplica; nos comandos SQL vale só o papel.
+ */
+export function roleName(user: string): string {
+  return user.split('|')[0]!.split('.')[0]!;
+}
+
+/** TLS nas conexões com o banco (obrigatório em bancos gerenciados como o PlanetScale): DB_SSL=true. */
+export function dbSslEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.DB_SSL === 'true' || env.DB_SSL === '1';
+}
+
+export function connectionUrl(host: string, port: number, database: string, cred: DbCredentials, ssl = dbSslEnabled()): string {
   const u = new URL(`postgresql://${host}:${port}/${encodeURIComponent(database)}`);
   u.username = cred.user;
   u.password = cred.password;

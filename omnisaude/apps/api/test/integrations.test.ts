@@ -8,6 +8,7 @@ import { pgAvailable, startTestApp, type TestApp } from './harness';
 import { startMocks } from './mocks';
 
 const enabled = await pgAvailable();
+const JOBS_SECRET = 'segredo-dos-jobs-com-32-caracteres';
 
 describe.runIf(enabled)('integrações: CADSUS, OCR e RNDS', () => {
   let t: TestApp;
@@ -17,7 +18,7 @@ describe.runIf(enabled)('integrações: CADSUS, OCR e RNDS', () => {
 
   beforeAll(async () => {
     mocks = await startMocks();
-    t = await startTestApp('integrations', { MOCKS_URL: mocks.url, RNDS_REQUESTER_CPF: '52998224725' });
+    t = await startTestApp('integrations', { MOCKS_URL: mocks.url, RNDS_REQUESTER_CPF: '52998224725', JOBS_SECRET });
     recepcao = await t.login('recepcao', 'UBS Centro', 'RECEPCAO');
   });
   afterAll(async () => {
@@ -75,5 +76,15 @@ describe.runIf(enabled)('integrações: CADSUS, OCR e RNDS', () => {
     expect(sent.status).toBe('ENVIADO');
     expect(sent.externalId).toBeTruthy();
     expect(mocks.state.bundles.length).toBe(1);
+  });
+
+  it('dispara os jobs pelo endpoint externo só com o segredo (Cron Triggers da Cloudflare)', async () => {
+    await t.http().post('/api/jobs/tick').expect(401);
+    await t.http().post('/api/jobs/tick').set('x-omni-jobs', 'errado').expect(401);
+    // Mesmo número de caracteres, mas não ASCII: bytes diferentes, recusa sem erro interno.
+    await t.http().post('/api/jobs/tick').set('x-omni-jobs', 'é'.repeat(JOBS_SECRET.length)).expect(401);
+    const res = await t.http().post('/api/jobs/tick?tasks=whatsapp,rnds,desconhecido').set('x-omni-jobs', JOBS_SECRET).expect(200);
+    expect(Object.keys(res.body).sort()).toEqual(['rnds', 'whatsapp']);
+    expect(res.body.rnds[t.slug]).toMatchObject({ failed: 0 });
   });
 });

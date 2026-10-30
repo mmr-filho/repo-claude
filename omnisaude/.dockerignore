@@ -9,3 +9,5 @@ apps/mobile/android
 .git
 *.log
 .env
+**/.wrangler
+apps/cloudflare/public

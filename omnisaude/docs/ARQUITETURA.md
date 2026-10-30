@@ -121,7 +121,8 @@ O servidor `infra/mocks` simula RNDS/CADSUS, SEFAZ e WhatsApp para desenvolvimen
 - Socket.IO `/libras`: sinalização WebRTC do teleatendimento em Libras.
 - Jobs (BullMQ): disparo de WhatsApp (30 s), outbox RNDS (60 s), SIGTAP (diário nos primeiros dias do mês;
   só sincroniza no primeiro dia útil). O banco é a fonte da verdade, então repetir um job não duplica envio.
-  Sem Redis, um temporizador local faz o mesmo (desenvolvimento).
+  Sem Redis, um temporizador local faz o mesmo (desenvolvimento). Na Cloudflare, os Cron Triggers do Worker
+  chamam `POST /api/jobs/tick` (protegido por `JOBS_SECRET` e fechado ao público pelo Worker).
 
 ## Front-end e app Android
 
@@ -130,6 +131,19 @@ O servidor `infra/mocks` simula RNDS/CADSUS, SEFAZ e WhatsApp para desenvolvimen
   empacotado pelo Capacitor no Android.
 - `src/lib/native.ts` escolhe entre plugin nativo (ML Kit para Datamatrix/QR, câmera, reconhecimento de fala
   do Android, TTS) e a API do navegador (BarcodeDetector, `getUserMedia`, Web Speech, `speechSynthesis`).
+
+## Publicação
+
+- **Cloudflare** (`apps/cloudflare`, guia em `docs/PUBLICACAO.md`): um Worker atende `mm.api.br/omnisaude*`.
+  As telas são a exportação estática do Next.js servida pelo Workers Static Assets; `/omnisaude/api` e
+  `/omnisaude/socket.io` vão para a API no Cloudflare Containers (classe `OmniApi`, instância única), com o
+  prefixo retirado e o IP real do cliente em `X-Forwarded-For`. Na partida o container roda
+  `cli.js boot`: cria papéis e o `master_auth_db` no PostgreSQL do PlanetScale com o papel administrador do
+  provedor, aplica migrações e, na demonstração, cria o tenant `demo`. O usuário de conexão do PlanetScale
+  (`papel.branch`, com `|replica` para o BI) é traduzido para o nome do papel nos comandos SQL
+  (`roleName`). Quando variáveis ou segredos do Worker mudam, o Worker reinicia a API com os valores novos.
+- **Servidor próprio** (`deploy/producao`, guia em `docs/PUBLICACAO-SERVIDOR.md`): Docker Compose com Caddy
+  (HTTPS automático), PostgreSQL com réplica por streaming, Redis e worker separado.
 
 ## Escalabilidade e limites conhecidos
 

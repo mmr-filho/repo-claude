@@ -1,10 +1,9 @@
-# Publicação do OmniSaúde em https://mm.api.br/omnisaude
-#   cp .env.example .env    # gere as senhas (veja o arquivo)
+# Publicação do OmniSaúde em https://mm.api.br/omnisaude (passo a passo em docs/PUBLICACAO-SERVIDOR.md)
+#   cp .env.example .env    # gere as senhas
 #   docker compose up -d --build
-#   docker compose --profile tunel up -d --build   # com o Cloudflare Tunnel neste mesmo servidor
 #
-# Nenhum banco expõe porta. Só o roteador (Caddy) escuta, e apenas em 127.0.0.1:8080:
-# a internet chega a ele pelo Cloudflare Tunnel ou pelo proxy que já atende mm.api.br.
+# Nenhum banco expõe porta. Só o roteador (Caddy) escuta: por padrão em 80/443, atendendo mm.api.br
+# com HTTPS automático; ou em 127.0.0.1:8080, atrás de um nginx que já atende o domínio no servidor.
 
 x-tenant-db: &tenant-db-env
   MASTER_DATABASE_URL: postgresql://omni_app:${MASTER_DB_PASSWORD:?defina no .env}@master-db:5432/master_auth_db
@@ -25,8 +24,8 @@ x-api: &api-env
   JWT_SECRET: ${JWT_SECRET:?defina no .env}
   DATA_KEY: ${DATA_KEY:?defina no .env}
   REDIS_URL: redis://redis:6379
-  # Cloudflare (ou proxy do servidor) + Caddy à frente da API.
-  TRUST_PROXY: '2'
+  # Proxies à frente da API: 1 = só o Caddy; 2 = nginx do servidor + Caddy.
+  TRUST_PROXY: ${TRUST_PROXY:-1}
   CORS_ORIGINS: ${PUBLIC_ORIGIN:-https://mm.api.br},capacitor://localhost,https://localhost
   PUBLIC_API_URL: ${PUBLIC_ORIGIN:-https://mm.api.br}/omnisaude
   # Demonstração: RNDS, CADSUS, SEFAZ e WhatsApp simulados (nenhuma mensagem real é enviada).
@@ -82,7 +81,8 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
       PRIMARY_HOST: tenant-db
       REPLICATION_PASSWORD: ${REPLICATION_PASSWORD}
-    entrypoint: ['/replica-entrypoint.sh']
+    # Via sh: funciona mesmo quando o arquivo perde a permissão de execução (pasta vinda do Windows).
+    entrypoint: ['sh', '/replica-entrypoint.sh']
     volumes:
       - replica-data:/var/lib/postgresql/data
       - ../../docker/postgres/replica-entrypoint.sh:/replica-entrypoint.sh:ro
@@ -102,10 +102,13 @@ services:
   # Aplica as migrações a cada subida. Com SEED_DEMO=true, cria (uma única vez) o tenant "demo".
   migrate:
     build: { context: ../.., target: api }
-    command: ['sh', '-c', 'if [ "$$SEED_DEMO" = "true" ]; then node packages/database/dist/cli.js seed; fi && node packages/database/dist/cli.js migrate']
+    command: ['sh', '-c', 'node packages/database/dist/cli.js boot']
     environment:
       <<: *tenant-db-env
       SEED_DEMO: ${SEED_DEMO:-true}
+      # Conta de operação da plataforma (cria e suspende tenants) com senha própria, no lugar da senha pública.
+      PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-}
+      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:?defina no .env}
     depends_on:
       master-db: { condition: service_healthy }
       tenant-db: { condition: service_healthy }
@@ -143,20 +146,17 @@ services:
   gateway:
     image: caddy:2
     restart: unless-stopped
-    ports: ['127.0.0.1:8080:8080']
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-mm.api.br}
+    ports:
+      - '${HTTP_PORT:-80}:80'
+      - '${HTTPS_PORT:-443}:443'
+      - '${HTTPS_PORT:-443}:443/udp'
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
     depends_on: [api, web]
-
-  # Opcional: túnel da Cloudflare rodando neste servidor (docker compose --profile tunel up -d).
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    profiles: [tunel]
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
-    depends_on: [gateway]
 
 volumes:
   master-data:
@@ -164,3 +164,6 @@ volumes:
   replica-data:
   redis-data:
   arquivos:
+  # Certificados HTTPS emitidos pelo Caddy (não apague: o Let's Encrypt limita reemissões).
+  caddy-data:
+  caddy-config:

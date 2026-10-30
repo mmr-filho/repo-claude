@@ -12,7 +12,7 @@ export class TenantsService implements OnModuleDestroy {
     @Inject(MASTER_DB) readonly master: MasterClient,
     @Inject(APP_CONFIG) config: AppConfig,
   ) {
-    this.connections = new TenantConnectionManager(master, { credentials: envCredentials(), ssl: config.DB_SSL ?? false });
+    this.connections = new TenantConnectionManager(master, { credentials: envCredentials(), ssl: config.DB_SSL ?? false, poolSize: config.DB_POOL_SIZE });
   }
 
   resolve(slugOrId: string) {

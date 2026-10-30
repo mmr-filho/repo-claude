@@ -13,6 +13,7 @@
     "apps/api",
     "apps/web",
     "apps/mobile",
+    "apps/cloudflare",
     "infra/mocks"
   ],
   "engines": {
@@ -28,7 +29,8 @@
     "db:seed": "npm run seed -w @omnisaude/database",
     "dev:api": "npm run dev -w @omnisaude/api",
     "dev:web": "npm run dev -w @omnisaude/web",
-    "dev:mocks": "npm run dev -w @omnisaude/mocks"
+    "dev:mocks": "npm run dev -w @omnisaude/mocks",
+    "cloudflare:deploy": "npm run deploy -w @omnisaude/cloudflare"
   },
   "devDependencies": {
     "@swc/core": "^1.16.20",

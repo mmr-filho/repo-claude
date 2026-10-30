@@ -1,6 +1,8 @@
-import { Body, Controller, Get, Headers, HttpCode, Param, Post, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Inject, Param, Post, Query, Req, UnauthorizedException } from '@nestjs/common';
+import { timingSafeEqual } from 'node:crypto';
 import type { Request } from 'express';
 import { z } from 'zod';
+import { APP_CONFIG, type AppConfig } from '../../core/config';
 import { Ctx, Public, RequirePermission, type RequestContext } from '../../core/context';
 import { zv } from '../../core/zod';
 import { DocumentsService } from './documents.service';
@@ -48,6 +50,34 @@ export class IntegrationsController {
   async dispatch(@Ctx() ctx: RequestContext) {
     const sys = { tenant: ctx.tenant, db: ctx.db };
     return { whatsapp: await this.jobs.run('whatsapp', sys), rnds: await this.jobs.run('rnds', sys) };
+  }
+}
+
+/**
+ * Disparo externo dos jobs, para ambientes sem Redis (Cloudflare: Cron Triggers do Worker).
+ * Protegido por segredo compartilhado; desligado quando JOBS_SECRET não está configurado.
+ */
+@Controller('jobs')
+export class JobsController {
+  constructor(
+    private readonly jobs: JobsService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+  ) {}
+
+  @Public()
+  @Post('tick')
+  @HttpCode(200)
+  async tick(@Headers('x-omni-jobs') secret: string | undefined, @Query('tasks') tasks = 'whatsapp,rnds') {
+    const expected = this.config.JOBS_SECRET ? Buffer.from(this.config.JOBS_SECRET) : undefined;
+    const given = Buffer.from(secret ?? '');
+    if (!expected || given.length !== expected.length || !timingSafeEqual(given, expected)) {
+      throw new UnauthorizedException('Disparo de jobs não autorizado');
+    }
+    const out: Record<string, unknown> = {};
+    for (const name of tasks.split(',').map((t) => t.trim())) {
+      if (name === 'whatsapp' || name === 'rnds' || name === 'sigtap') out[name] = await this.jobs.runForAllTenants(name);
+    }
+    return out;
   }
 }
 

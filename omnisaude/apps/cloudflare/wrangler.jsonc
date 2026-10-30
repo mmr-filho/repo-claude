@@ -1,0 +1,64 @@
+// OmniSaúde 100% na Cloudflare (passo a passo em docs/PUBLICACAO.md):
+//   https://mm.api.br/omnisaude        telas (arquivos estáticos do Next.js, servidos pelo Workers Static Assets)
+//   https://mm.api.br/omnisaude/api    API NestJS no Cloudflare Containers (também /omnisaude/socket.io)
+//   PostgreSQL                         PlanetScale (contratado pelo painel da Cloudflare)
+//   Documentos                         R2
+// Segredos ficam no painel do Worker (Settings > Variables and Secrets, tipo Secret) ou em `wrangler secret put`,
+// nunca neste arquivo: PG_HOST, PG_ADMIN_USER, PG_ADMIN_PASSWORD, APP_DB_PASSWORD, BI_DB_PASSWORD, JWT_SECRET,
+// DATA_KEY, JOBS_SECRET, R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET e, se usar IA,
+// ANTHROPIC_API_KEY. Segredos sobrevivem aos deploys; as "vars" abaixo são regravadas a cada deploy.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "omnisaude",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // Só este caminho do domínio: o restante de mm.api.br continua como está.
+  "routes": [{ "pattern": "mm.api.br/omnisaude*", "zone_name": "mm.api.br" }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    // Gerado por `npm run build:web` (scripts/build-web.mjs): o site fica em public/omnisaude/.
+    "directory": "./public",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page",
+    // Só a API passa pelo Worker; as telas saem direto do cache de arquivos estáticos.
+    "run_worker_first": ["/omnisaude/api", "/omnisaude/api/*", "/omnisaude/socket.io/*"]
+  },
+  "containers": [
+    {
+      "class_name": "OmniApi",
+      // Último estágio do Dockerfile (api). A Cloudflare constrói a imagem (linux/amd64) a cada deploy.
+      "image": "../../Dockerfile",
+      "image_build_context": "../..",
+      // 1/4 de vCPU e 1 GiB. Para mais folga: "standard-1".
+      "instance_type": "basic",
+      // A API usa uma instância só (estado do Socket.IO em memória); 2 dá margem durante a troca de versão.
+      "max_instances": 2
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "API", "class_name": "OmniApi" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OmniApi"] }],
+  "triggers": {
+    // Horários em UTC. A cada 5 min: confirmações do WhatsApp e envio à RNDS. 09:00 UTC (06:00 em
+    // Brasília): conferência da SIGTAP, que só sincroniza no primeiro dia útil do mês.
+    "crons": ["*/5 * * * *", "0 9 * * *"]
+  },
+  "vars": {
+    "PUBLIC_ORIGIN": "https://mm.api.br",
+    "BASE_PATH": "/omnisaude",
+    // Porta direta do PlanetScale (as migrações usam advisory locks, que não passam pelo PgBouncer da 6432).
+    "PG_PORT": "5432",
+    // "false" se o plano do banco não tiver réplica.
+    "PG_USE_REPLICA": "true",
+    "DB_POOL_SIZE": "5",
+    // Demonstração: cria a instituição "demo" e simula RNDS/CADSUS, SEFAZ e WhatsApp dentro do container.
+    // Para uso real, "false" nos dois e configure as integrações (WHATSAPP_*, RNDS_*, SEFAZ_URL).
+    "SEED_DEMO": "true",
+    "DEMO_MOCKS": "true"
+  },
+  "observability": { "enabled": true }
+}

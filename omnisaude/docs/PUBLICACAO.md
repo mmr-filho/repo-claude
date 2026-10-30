@@ -1,193 +1,188 @@
-# Publicação em https://mm.api.br/omnisaude
+# Publicação 100% na Cloudflare: https://mm.api.br/omnisaude
 
-O OmniSaúde roda num servidor seu (VPS) com Docker. Na frente dele fica um roteador interno (Caddy) que
-atende tudo em `/omnisaude`, só em `127.0.0.1:8080`. A internet chega a esse roteador de um destes jeitos:
-
-- **Cloudflare Tunnel**, como no Sigilo, se o domínio `mm.api.br` estiver na sua conta Cloudflare.
-- **O servidor web que já responde por `mm.api.br`** (nginx, Caddy, Apache...), com um encaminhamento de
-  `/omnisaude`.
+Tudo roda na sua conta da Cloudflare, sem servidor, sem túnel e sem Docker no seu computador:
 
 ```
-navegador ──HTTPS──► mm.api.br/omnisaude ──► (Cloudflare Tunnel ou nginx) ──► 127.0.0.1:8080 (Caddy)
-                                                                               ├─ /omnisaude/api, /omnisaude/socket.io → API
-                                                                               └─ /omnisaude/*                        → web
+navegador ──HTTPS──► Cloudflare: Worker "omnisaude" (rota mm.api.br/omnisaude*)
+                      ├─ /omnisaude/*                          → telas (arquivos estáticos do Next.js)
+                      └─ /omnisaude/api, /omnisaude/socket.io  → API NestJS no Cloudflare Containers
+                                                                   ├──TLS──► PostgreSQL (PlanetScale)
+                                                                   └───────► R2 (documentos)
+Cron Triggers do Worker (a cada 5 min e 1x por dia) → jobs de WhatsApp, RNDS e SIGTAP
 ```
 
-Arquivos usados: `deploy/producao/docker-compose.yml`, `deploy/producao/Caddyfile` e `deploy/producao/.env`.
+O código da publicação está em `apps/cloudflare` (`wrangler.jsonc`, `src/index.ts`). O restante de
+`mm.api.br` não é afetado: o Worker só recebe o que começa com `/omnisaude`.
 
-> **Atenção:** com `SEED_DEMO=true` (padrão) sobe o tenant de demonstração `demo`, com dados fictícios e a
-> senha pública `OmniSaude2026` (que está no README). Qualquer pessoa com o endereço consegue entrar. Não
-> cadastre pacientes reais nele. Para uso real ainda falta, entre outros pontos de `docs/STATUS.md`, a tela de
+> **Atenção:** com `SEED_DEMO=true` (padrão) sobe a instituição de demonstração `demo`, com dados fictícios e
+> a senha pública `OmniSaude2026` (que está no README). Qualquer pessoa com o endereço consegue entrar. Não
+> cadastre pacientes reais nela. Para uso real ainda falta, entre outros pontos de `docs/STATUS.md`, a tela de
 > cadastro de profissionais.
 
-## 1. Servidor
+## O que é preciso
 
-- Ubuntu 24.04 LTS, **2 vCPU e 4 GB de RAM** (três PostgreSQL, Redis, API, worker e web; o build do Next.js
-  sozinho usa perto de 2 GB) e 40 GB de disco.
-- Se o servidor que já atende `mm.api.br` tiver folga, pode ser o mesmo.
+- Conta da Cloudflare com o plano **Workers Paid** (o Cloudflare Containers exige) e o domínio `mm.api.br`
+  nela.
+- Acesso ao repositório `mmr-filho/repo-claude` no GitHub (a Cloudflare constrói tudo a partir dele).
+- Só o navegador e o PowerShell do Windows. Docker é opcional (veja "Alternativa: publicar do seu computador").
 
-Conecte por SSH e instale o necessário:
+## Passo 1: banco PostgreSQL no PlanetScale (cobrado pela Cloudflare)
 
-```bash
-ssh root@IP_DO_SERVIDOR
-```
-```bash
-apt update && apt install -y git ufw openssl
-```
-```bash
-curl -fsSL https://get.docker.com | sh
-```
-```bash
-ufw allow OpenSSH && ufw --force enable
-```
+1. No painel da Cloudflare: **Storage & databases → Postgres & MySQL (Hyperdrive)** e escolha criar um banco
+   do **PlanetScale**. Autorize a organização; você é levado ao PlanetScale.
+2. No PlanetScale: nome `omnisaude`, motor **Postgres**, a região mais próxima dos usuários (São Paulo, se
+   houver) e o tamanho do cluster. Clusters com réplica permitem que o BI leia da réplica; num cluster sem
+   réplica, ajuste `PG_USE_REPLICA` (passo 4).
+3. Quando o PlanetScale oferecer configurar o Hyperdrive, pode pular: o Hyperdrive serve a código que roda no
+   próprio Worker; a API do OmniSaúde roda num container e conecta direto no banco.
+4. No banco, abra **Connect** e gere a senha do papel padrão (`postgres`). Anote:
+   - **host** (algo como `aws-sa-east-1-1.pg.psdb.cloud`);
+   - **usuário**, no formato `postgres.<id do branch>`;
+   - **senha** (aparece uma vez só).
 
-Não abra as portas 8080, 3000, 3001 nem 5432: só o túnel ou o proxy local alcançam o sistema.
+Esse papel padrão só é usado para criar o que o OmniSaúde precisa: na primeira partida a API cria os papéis
+`omni_app` (aplicação) e `omni_bi_reader` (BI somente leitura), o banco `master_auth_db` e um banco por
+instituição (`tenant_db_<sigla>`). Use sempre a porta **5432** (as migrações usam travas que não passam pelo
+PgBouncer da porta 6432).
 
-## 2. Código
+## Passo 2: R2 para os documentos
 
-```bash
-git clone https://github.com/mmr-filho/repo-claude.git /opt/omnisaude
-```
-```bash
-cd /opt/omnisaude && git checkout claude/busy-cray-f9aqxw
-```
-```bash
-cd /opt/omnisaude/omnisaude/deploy/producao
-```
+O disco do container é apagado a cada reinício. Sem o R2, documentos enviados (fotos de documentos, anexos)
+se perdem.
 
-## 3. Senhas e segredos
+1. No painel: **R2 Object Storage → Create bucket**, nome `omnisaude-documentos`.
+2. Na página do R2, copie o **Account ID**.
+3. **Manage API tokens → Create API token**, permissão **Object Read & Write** só nesse bucket. Anote o
+   **Access Key ID** e o **Secret Access Key** (aparece uma vez só).
 
-Crie o `.env` e gere todas as senhas de uma vez:
+## Passo 3: gerar os segredos (PowerShell)
 
-```bash
-cp .env.example .env
-```
-```bash
-for v in MASTER_DB_PASSWORD POSTGRES_SUPERUSER_PASSWORD APP_DB_PASSWORD ADMIN_DB_PASSWORD BI_DB_PASSWORD REPLICATION_PASSWORD JWT_SECRET; do sed -i "s|^$v=\$|$v=$(openssl rand -hex 24)|" .env; done
-```
-```bash
-sed -i "s|^DATA_KEY=\$|DATA_KEY=$(openssl rand -base64 32)|" .env
-```
-```bash
-chmod 600 .env
+Cole no PowerShell. Ele só mostra valores aleatórios na tela; nada é enviado a lugar nenhum.
+
+```powershell
+function Segredo($bytes) { $b = New-Object byte[] $bytes; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b) }
+"JWT_SECRET              = $(Segredo 48)"
+"DATA_KEY                = $(Segredo 32)"
+"JOBS_SECRET             = $((Segredo 32) -replace '[+/=]', '')"
+"APP_DB_PASSWORD         = $((Segredo 24) -replace '[+/=]', '')"
+"BI_DB_PASSWORD          = $((Segredo 24) -replace '[+/=]', '')"
+"PLATFORM_ADMIN_PASSWORD = Op$((Segredo 18) -replace '[+/=]', '')7"
 ```
 
-Guarde uma cópia do `.env` num cofre de senhas: sem o `DATA_KEY`, os segredos de 2FA gravados no banco não
-podem ser lidos. Opcional: `ANTHROPIC_API_KEY` liga a leitura de documentos por foto e o BI por pergunta livre.
+Guarde esses valores num cofre de senhas. A `DATA_KEY` cifra segredos guardados no banco (como o 2FA dos
+usuários): se ela mudar, quem ativou o 2FA precisa configurá-lo de novo. As senhas `APP_DB_PASSWORD` e
+`BI_DB_PASSWORD` são aplicadas aos papéis do banco a cada partida da API; trocá-las depois é seguro. A
+`PLATFORM_ADMIN_PASSWORD` é a senha da conta de operação da plataforma, que cria e suspende instituições: ela
+substitui a senha pública da demonstração nessa conta.
 
-## 4. Subir
+## Passo 4: criar o Worker a partir do GitHub
 
-**Com Cloudflare Tunnel neste servidor** (crie o túnel no passo 5A antes e cole o token em `TUNNEL_TOKEN`
-no `.env`):
+1. No painel: **Workers & Pages → Create → Import a repository**, conecte o GitHub e escolha
+   `mmr-filho/repo-claude`.
+2. Configure o build:
 
-```bash
-docker compose --profile tunel up -d --build
+   | Campo | Valor |
+   |---|---|
+   | Project name | `omnisaude` (igual ao `name` de `apps/cloudflare/wrangler.jsonc`) |
+   | Production branch | `claude/busy-cray-f9aqxw` (ou `main`, depois do merge) |
+   | Root directory | `omnisaude` |
+   | Build command | `npm ci && npm run build:web -w @omnisaude/cloudflare` |
+   | Deploy command | `npx wrangler deploy -c apps/cloudflare/wrangler.jsonc` |
+   | Variável de build | `NODE_VERSION` = `22` |
+
+3. Salve. O primeiro build leva alguns minutos: gera as telas, constrói a imagem da API a partir do
+   `Dockerfile` e publica o Worker com a rota `mm.api.br/omnisaude*`.
+4. Em **omnisaude → Settings → Variables and Secrets**, adicione como **Secret** (não como texto):
+
+   | Nome | Valor |
+   |---|---|
+   | `PG_HOST` | host do passo 1 |
+   | `PG_ADMIN_USER` | usuário do passo 1 (`postgres.<id>`) |
+   | `PG_ADMIN_PASSWORD` | senha do passo 1 |
+   | `APP_DB_PASSWORD`, `BI_DB_PASSWORD` | passo 3 |
+   | `JWT_SECRET`, `DATA_KEY`, `JOBS_SECRET`, `PLATFORM_ADMIN_PASSWORD` | passo 3 |
+   | `PLATFORM_ADMIN_EMAIL` | opcional: seu e-mail como login da plataforma (padrão `plataforma@omnisaude.dev`) |
+   | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | passo 2 |
+   | `R2_BUCKET` | `omnisaude-documentos` |
+   | `ANTHROPIC_API_KEY` | opcional: OCR de documentos, ditado estruturado e BI conversacional |
+
+   Use **Secret** para tudo isso: segredos sobrevivem aos deploys. As variáveis de texto do `wrangler.jsonc`
+   (`vars`) são regravadas a cada deploy, e uma variável criada no painel com o mesmo nome seria apagada.
+
+O banco não tem réplica? Em `apps/cloudflare/wrangler.jsonc`, troque `"PG_USE_REPLICA": "true"` por `"false"`
+e faça commit (o build roda de novo sozinho).
+
+## Passo 5: domínio
+
+A rota só funciona se `mm.api.br` passar pelo proxy da Cloudflare:
+
+- Em **DNS → Records**, o registro de `mm.api.br` precisa estar **Proxied** (nuvem laranja). Se o endereço já
+  atende outro sistema pela Cloudflare, nada muda para ele: o Worker só recebe `/omnisaude*`.
+- Se ainda não existe registro para `mm.api.br`, crie um `AAAA` com nome `mm.api.br`, conteúdo `100::` e
+  **Proxied** (endereço reservado para "só Workers").
+- Se o domínio aparece na Cloudflare com outro nome de zona (por exemplo `api.br`), ajuste `zone_name` em
+  `apps/cloudflare/wrangler.jsonc`.
+
+## Passo 6: primeiro acesso
+
+1. Abra https://mm.api.br/omnisaude. A tela de login aparece na hora (são arquivos estáticos).
+2. No primeiro login a API sobe e prepara o banco: papéis, `master_auth_db`, a instituição `demo` e as
+   migrações. Isso pode levar alguns minutos; enquanto isso a tela mostra "O OmniSaúde está iniciando". Tente
+   de novo em instantes.
+3. Entre com a instituição `demo`, um CPF da tabela do README e a senha `OmniSaude2026`.
+
+Para conferir: **Workers & Pages → omnisaude → Logs** mostra o Worker e os jobs; em **Containers** ficam a
+instância e o log da API (a partida escreve "Papéis e banco master conferidos" e o estado das migrações de
+cada instituição).
+
+## Atualizações e operação
+
+- **Nova versão:** commit no branch de produção. A Cloudflare refaz as telas e a imagem, troca o container e
+  a API aplica as migrações pendentes ao subir. Se a migração de uma instituição falhar, as demais continuam
+  no ar e o erro fica no log do container.
+- **Troca de segredo:** salve no painel. Na próxima requisição o Worker percebe a mudança e reinicia a API com
+  os valores novos.
+- **Jobs:** os Cron Triggers chamam a API a cada 5 minutos (confirmações do WhatsApp e envio à RNDS) e às
+  09:00 UTC (SIGTAP, que só sincroniza no primeiro dia útil do mês). Isso mantém a instância sempre ligada;
+  conte com o custo de uma instância `basic` em tempo integral, além do PlanetScale e do R2 (preços atuais
+  nas páginas de preço de cada produto).
+- **Mais fôlego:** em `wrangler.jsonc`, `instance_type` `"standard-1"` dobra a CPU e quadruplica a memória.
+- **Backup:** o PlanetScale faz backups automáticos do cluster; cada instituição tem um banco próprio, o que
+  permite restaurar ou exportar uma sem tocar nas outras.
+- **Nova instituição:** `POST /omnisaude/api/platform/tenants` com o login da plataforma
+  (`POST /omnisaude/api/platform/login`, com `PLATFORM_ADMIN_EMAIL` e `PLATFORM_ADMIN_PASSWORD`).
+
+## Sair do modo demonstração
+
+Em `apps/cloudflare/wrangler.jsonc`, troque `SEED_DEMO` e `DEMO_MOCKS` para `"false"` e configure as
+integrações reais como segredos: `WHATSAPP_*`, `RNDS_*`, `SEFAZ_URL`, `SIGTAP_ZIP_URL`. O certificado
+ICP-Brasil da RNDS (arquivo `.pfx`) vai para o bucket do R2 (botão **Upload**, por exemplo em
+`certificados/rnds.pfx`), com o segredo `RNDS_CERT_PFX` = `r2:certificados/rnds.pfx` e a senha em
+`RNDS_CERT_PASSPHRASE`. A instituição `demo` continua no banco: suspenda-a com
+`PATCH /omnisaude/api/platform/tenants/<id>` (corpo `{"status": "SUSPENSO"}`).
+
+## Alternativa: publicar do seu computador
+
+Precisa do Node 22 e do **Docker Desktop aberto** (a imagem da API é construída na sua máquina e enviada
+para a Cloudflare). Na pasta `omnisaude` do repositório, no PowerShell:
+
+```powershell
+npm ci
+npx wrangler login
+npm run cloudflare:deploy
 ```
 
-**Sem túnel** (o nginx/Caddy do servidor encaminha, passo 5B):
+Depois cadastre os segredos do passo 4, um de cada vez:
 
-```bash
-docker compose up -d --build
+```powershell
+npx wrangler secret put PG_HOST -c apps/cloudflare/wrangler.jsonc
 ```
 
-A primeira subida leva de 10 a 20 minutos (build das imagens). Acompanhe:
+## Limites desta publicação
 
-```bash
-docker compose ps
-```
-```bash
-docker compose logs -f api
-```
-
-Confira localmente no servidor:
-
-```bash
-curl http://127.0.0.1:8080/omnisaude/api/health
-```
-
-## 5. Ligar mm.api.br/omnisaude ao sistema
-
-### 5A. Cloudflare Tunnel
-
-No painel da Cloudflare: **Zero Trust → Networks → Tunnels** (os nomes dos menus mudam de tempos em tempos).
-
-1. **Create a tunnel** → tipo **Cloudflared** → nome `omnisaude` → escolha **Docker** e copie o token (a
-   sequência depois de `--token`) para `TUNNEL_TOKEN` no `.env`.
-2. Em **Public Hostname** adicione:
-   - Subdomain `mm`, Domain `api.br` (ou como o domínio aparecer na sua conta);
-   - Path: `omnisaude.*`
-   - Service: tipo `HTTP`, URL `gateway:8080`.
-3. Rode `docker compose --profile tunel up -d`.
-
-Se `mm.api.br` **já é atendido por outro túnel** (de outro serviço), não crie um segundo para o mesmo nome:
-acrescente a regra acima no túnel existente, **antes** da regra que atende o resto de `mm.api.br`. Se esse
-túnel roda em outra máquina, o `cloudflared` dele não alcança `gateway:8080`: nesse caso rode o OmniSaúde na
-mesma máquina do túnel e use a URL `http://127.0.0.1:8080`.
-
-### 5B. nginx que já atende mm.api.br
-
-Dentro do bloco `server` de `mm.api.br`, acrescente (sem barra no fim de `location /omnisaude`):
-
-```nginx
-location /omnisaude {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_read_timeout 3600s;
-    client_max_body_size 20m;
-}
-```
-
-Depois:
-
-```bash
-nginx -t && systemctl reload nginx
-```
-
-Com Caddy no servidor, o equivalente é `handle /omnisaude* { reverse_proxy 127.0.0.1:8080 }` no site
-`mm.api.br`.
-
-## 6. Conferir
-
-```bash
-curl https://mm.api.br/omnisaude/api/health
-```
-
-Abra **https://mm.api.br/omnisaude** e entre com a instituição `demo`, a senha `OmniSaude2026` e, por
-exemplo, o CPF `100.000.001-08` (recepção). Os demais perfis estão no `README.md`.
-
-## Operação
-
-Atualizar para a versão mais nova (as migrações rodam sozinhas na subida):
-
-```bash
-cd /opt/omnisaude && git pull && cd omnisaude/deploy/producao && docker compose up -d --build
-```
-
-Backup dos bancos (agende diariamente e copie para fora do servidor):
-
-```bash
-docker compose exec -T master-db pg_dump -U omni_app master_auth_db > master_$(date +%F).sql
-```
-```bash
-docker compose exec -T tenant-db pg_dump -U postgres tenant_db_demo > tenant_demo_$(date +%F).sql
-```
-
-Parar tudo (os dados ficam nos volumes do Docker):
-
-```bash
-docker compose down
-```
-
-## O que fica de fora nesta publicação
-
-- RNDS, CADSUS, SEFAZ e WhatsApp apontam para o serviço simulado (`mocks`): nada sai do servidor. Para as
-  integrações reais, remova `MOCKS_URL` e configure as variáveis `RNDS_*`, `WHATSAPP_*` e `SEFAZ_URL`
-  (credenciamento e certificados são pré-requisitos; veja `docs/STATUS.md`).
-- Os documentos anexados ficam no volume `arquivos`; para o Cloudflare R2, preencha `R2_*` no `.env`.
-- O app Android deve ser gerado com `NEXT_PUBLIC_API_URL=https://mm.api.br/omnisaude/api`
-  (veja `apps/mobile/README.md`).
+- A API roda numa instância só: o Socket.IO (painel de chamada, censo de leitos) e a central de intérpretes
+  de Libras guardam estado em memória.
+- Sem Redis: os jobs rodam pelos Cron Triggers em vez da fila BullMQ.
+- Chamadas de vídeo em Libras entre redes diferentes precisam de um servidor TURN (`TURN_URL`,
+  `TURN_USERNAME`, `TURN_CREDENTIAL`).
+- Para rodar num servidor próprio com Docker Compose, veja [`PUBLICACAO-SERVIDOR.md`](PUBLICACAO-SERVIDOR.md).

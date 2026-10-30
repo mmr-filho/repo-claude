@@ -3,6 +3,7 @@ import type { MasterClient } from '@omnisaude/database';
 import { readFileSync } from 'node:fs';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import { MASTER_DB } from '../../core/database';
+import { StorageService } from '../../core/storage.service';
 
 export interface WhatsAppConfig {
   baseUrl: string;
@@ -36,6 +37,7 @@ export class IntegrationConfigService {
   constructor(
     @Inject(MASTER_DB) private readonly master: MasterClient,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    private readonly storage: StorageService,
   ) {}
 
   private async row(tenantId: string, kind: Kind) {
@@ -80,14 +82,23 @@ export class IntegrationConfigService {
     const requesterCpf = (c.requesterCpf as string) ?? this.config.RNDS_REQUESTER_CPF;
     if (!authUrl || !ehrUrl || !requesterCpf) return null;
     const pfxPath = (c.certPfxPath as string) ?? this.config.RNDS_CERT_PFX;
+    const pfx = pfxPath ? await this.certificate(pfxPath) : undefined;
     const passphrase = this.secret(c.certPassphraseRef as string) ?? this.config.RNDS_CERT_PASSPHRASE;
     return {
       authUrl,
       ehrUrl,
       requesterCpf,
       requesterId: (c.requesterId as string) ?? tenantId,
-      tls: pfxPath ? { pfx: readFileSync(pfxPath), passphrase } : undefined,
+      tls: pfx ? { pfx, passphrase } : undefined,
     };
+  }
+
+  /**
+   * Certificado ICP-Brasil: caminho de arquivo, ou "r2:<chave>" para lê-lo do armazenamento de objetos
+   * (no Cloudflare Containers não há disco persistente e cada segredo é limitado a poucos KB).
+   */
+  private async certificate(path: string): Promise<Buffer> {
+    return path.startsWith('r2:') ? this.storage.get(path.slice(3)) : readFileSync(path);
   }
 
   async sefazUrl(tenantId: string): Promise<string | null> {

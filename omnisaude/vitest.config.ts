@@ -21,7 +21,7 @@ export default defineConfig({
         resolve: { alias },
         test: {
           name: 'packages',
-          include: ['packages/*/test/**/*.test.ts', 'infra/mocks/test/**/*.test.ts'],
+          include: ['packages/*/test/**/*.test.ts', 'infra/mocks/test/**/*.test.ts', 'apps/cloudflare/test/**/*.test.ts'],
           environment: 'node',
         },
       },

@@ -21,9 +21,12 @@ export interface SeedOptions {
   now?: Date;
   /** Slug do tenant (padrão "demo"); os testes usam outro para não tocar no banco de desenvolvimento. */
   slug?: string;
+  /** false quando a conta da plataforma tem senha própria (PLATFORM_ADMIN_PASSWORD) em vez da senha pública. */
+  platformUser?: boolean;
 }
 
 const DAY = 86_400_000;
+export const DEMO_PLATFORM_EMAIL = 'plataforma@omnisaude.dev';
 
 /**
  * Popula o master com um operador da plataforma e cria o tenant "demo" com uma rede completa:
@@ -39,11 +42,13 @@ export async function seedDemo(opts: SeedOptions) {
   };
   const daysAhead = (n: number, hour = 9) => daysAgo(-n, hour);
 
-  await opts.master.platformUser.upsert({
-    where: { email: 'plataforma@omnisaude.dev' },
-    update: {},
-    create: { email: 'plataforma@omnisaude.dev', name: 'Operação da Plataforma', passwordHash: await hashPassword(DEMO_PASSWORD) },
-  });
+  if (opts.platformUser !== false) {
+    await opts.master.platformUser.upsert({
+      where: { email: DEMO_PLATFORM_EMAIL },
+      update: {},
+      create: { email: DEMO_PLATFORM_EMAIL, name: 'Operação da Plataforma', passwordHash: await hashPassword(DEMO_PASSWORD) },
+    });
+  }
 
   const { tenantId, dbName } = await provisionTenant(opts.master, opts.credentials, {
     ...DEMO_TENANT,

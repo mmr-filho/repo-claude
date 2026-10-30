@@ -20,3 +20,8 @@ apps/mobile/android/app/src/main/assets/public/
 apps/mobile/android/.gradle/
 apps/mobile/android/build/
 apps/mobile/android/app/build/
+
+# Cloudflare: build estático das telas e estado local do wrangler
+apps/cloudflare/public/
+.wrangler/
+.dev.vars

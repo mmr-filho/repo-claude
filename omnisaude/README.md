@@ -28,8 +28,9 @@ e BI conversacional).
 - **Acessibilidade**: VLibras e chamada de intérprete de Libras por vídeo (WebRTC).
 
 O que está parcial ou pendente está listado em [`docs/STATUS.md`](docs/STATUS.md). A arquitetura está em
-[`docs/ARQUITETURA.md`](docs/ARQUITETURA.md). A publicação em `https://mm.api.br/omnisaude` está em
-[`docs/PUBLICACAO.md`](docs/PUBLICACAO.md).
+[`docs/ARQUITETURA.md`](docs/ARQUITETURA.md). A publicação em `https://mm.api.br/omnisaude`, 100% na Cloudflare
+(Workers, Containers, PlanetScale e R2), está em [`docs/PUBLICACAO.md`](docs/PUBLICACAO.md); num servidor
+próprio com Docker Compose, em [`docs/PUBLICACAO-SERVIDOR.md`](docs/PUBLICACAO-SERVIDOR.md).
 
 ## Estrutura
 
@@ -37,6 +38,7 @@ O que está parcial ou pendente está listado em [`docs/STATUS.md`](docs/STATUS.
 apps/api               NestJS: REST, WebSockets (Socket.IO), filas BullMQ e worker
 apps/web               Next.js 16: desktop, tablet e mobile web (também exportado para o app)
 apps/mobile            Capacitor 8: app Android (smartphones e tablets)
+apps/cloudflare        publicação na Cloudflare: Worker (telas estáticas, rota da API, jobs) e container da API
 packages/shared        papéis/permissões, CPF/CNS, ACCR, GS1, datas
 packages/database      esquemas Prisma (master e tenant), migrações, roteamento, auditoria, carga demo
 packages/ai-engine     OCR, Speech-to-SOAP, copiloto clínico, protocolos, Text-to-SQL com validação AST
@@ -44,7 +46,7 @@ packages/messaging     WhatsApp Business (Cloud API) com regras de horário
 packages/fhir          FHIR R4 para a RNDS, cliente mTLS e CADSUS
 packages/accessibility VLibras e WebRTC para intérpretes de Libras
 infra/mocks            RNDS/CADSUS, SEFAZ e WhatsApp simulados
-docker/, deploy/k8s    Postgres com réplica, Docker Compose e manifestos Kubernetes
+docker/, deploy/       Postgres com réplica, Docker Compose (desenvolvimento e produção) e manifestos Kubernetes
 ```
 
 ## Como rodar
@@ -116,11 +118,14 @@ Os testes da API criam bancos próprios por arquivo e exigem os papéis de `dock
 | `MASTER_DATABASE_URL` | master_auth_db |
 | `TENANT_DB_HOST/PORT`, `TENANT_REPLICA_HOST/PORT` | primário e réplica dos bancos de tenant |
 | `TENANT_DB_*`, `TENANT_ADMIN_*`, `TENANT_BI_*` | credenciais da aplicação, do provisionamento e do BI |
+| `DB_SSL`, `DB_POOL_SIZE` | TLS com o banco (bancos gerenciados) e conexões por banco de tenant |
+| `PLATFORM_ADMIN_EMAIL/PASSWORD` | conta de operação da plataforma criada na partida (`cli.js boot`/`seed`) |
 | `JWT_SECRET`, `DATA_KEY` | assinatura das sessões e chave AES-256 de segredos guardados |
 | `REDIS_URL`, `RUN_JOBS` | filas BullMQ e jobs em segundo plano |
+| `JOBS_SECRET` | disparo externo dos jobs (`POST /api/jobs/tick`), usado pelos Cron Triggers da Cloudflare |
 | `ANTHROPIC_API_KEY`, `OMNI_AI_MODEL` | IA (OCR, ditado estruturado, BI); padrão `claude-opus-5-5` |
 | `R2_*` | Cloudflare R2 (documentos); sem isso, pasta local |
-| `RNDS_*` | URLs, certificado ICP-Brasil (PFX) e CPF do solicitante |
+| `RNDS_*` | URLs, certificado ICP-Brasil (PFX: caminho ou `r2:<chave>`) e CPF do solicitante |
 | `WHATSAPP_*` | Cloud API (número, token, segredo do app, token de verificação) |
 | `SIGTAP_ZIP_URL` | origem do pacote mensal da SIGTAP (`{competencia}` é substituído) |
 | `MOCKS_URL` | aponta RNDS, SEFAZ e WhatsApp para os mocks em desenvolvimento |

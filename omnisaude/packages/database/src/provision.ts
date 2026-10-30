@@ -2,7 +2,7 @@ import { Client } from 'pg';
 import type { PrismaClient as MasterClient } from './generated/master/client';
 import { applyMigrations, latestMigration } from './migrate';
 import type { TenantSettings } from './settings';
-import { connectionUrl, type CredentialsResolver } from './tenancy';
+import { connectionUrl, dbSslEnabled, roleName, type CredentialsResolver } from './tenancy';
 
 export interface NewTenant {
   slug: string;
@@ -62,13 +62,20 @@ export async function provisionTenant(master: MasterClient, credentials: Credent
 
   const admin = credentials(credentialsRef, 'admin');
   const owner = credentials(credentialsRef, 'oltp');
-  const adminClient = new Client({ host: input.primaryHost, port, database: 'postgres', user: admin.user, password: admin.password });
+  const adminClient = new Client({
+    host: input.primaryHost,
+    port,
+    database: process.env.PG_ADMIN_DATABASE ?? 'postgres',
+    user: admin.user,
+    password: admin.password,
+    ssl: dbSslEnabled() ? { rejectUnauthorized: true } : undefined,
+  });
   await adminClient.connect();
   try {
     const exists = await adminClient.query('SELECT 1 FROM pg_database WHERE datname = $1', [dbName]);
     if (exists.rowCount === 0) {
       // Identificadores não aceitam parâmetros; o nome já foi validado pelo padrão do slug.
-      await adminClient.query(`CREATE DATABASE "${dbName}" OWNER "${owner.user.replace(/"/g, '')}"`);
+      await adminClient.query(`CREATE DATABASE "${dbName}" OWNER "${roleName(owner.user).replace(/"/g, '')}"`);
     }
   } finally {
     await adminClient.end();

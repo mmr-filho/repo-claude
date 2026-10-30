@@ -17,6 +17,13 @@ const schema = z.object({
   MASTER_DATABASE_URL: z.string().url(),
   DB_SSL: bool,
   REDIS_URL: z.string().optional(),
+  /** Conexões por banco de tenant (planos menores de banco gerenciado limitam o total). */
+  DB_POOL_SIZE: z.coerce.number().int().min(1).max(50).default(10),
+  /**
+   * Segredo do disparo externo de jobs (POST /api/jobs/tick), usado quando não há Redis: na Cloudflare,
+   * os Cron Triggers do Worker chamam esse endpoint.
+   */
+  JOBS_SECRET: z.string().min(24).optional(),
   /** Liga os jobs em segundo plano neste processo (o worker separado usa a mesma configuração). */
   RUN_JOBS: bool,
   PUBLIC_API_URL: z.string().default('http://localhost:3001'),
@@ -45,6 +52,7 @@ const schema = z.object({
   WHATSAPP_VERIFY_TOKEN: z.string().optional(),
   RNDS_AUTH_URL: z.string().optional(),
   RNDS_EHR_URL: z.string().optional(),
+  /** Certificado ICP-Brasil (PFX): caminho de arquivo ou "r2:<chave>" no armazenamento de objetos. */
   RNDS_CERT_PFX: z.string().optional(),
   RNDS_CERT_PASSPHRASE: z.string().optional(),
   RNDS_REQUESTER_CPF: z.string().optional(),
