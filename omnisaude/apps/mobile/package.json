@@ -2,12 +2,13 @@
   "name": "@omnisaude/mobile",
   "version": "0.1.0",
   "private": true,
-  "description": "App Android (smartphones e tablets) do OmniSaúde, empacotado com Capacitor a partir do front-end web.",
+  "description": "App Android (smartphones e tablets) do OmniSa\u00fade, empacotado com Capacitor a partir do front-end web.",
   "scripts": {
-    "build:web": "npm run build:mobile -w @omnisaude/web",
+    "build:web": "cd ../web && OMNI_STATIC_EXPORT=1 NEXT_DIST_DIR=out npx next build",
     "sync": "npm run build:web && cap sync android",
     "open": "cap open android",
-    "apk": "npm run sync && cd android && ./gradlew assembleDebug"
+    "apk": "npm run sync && cd android && ./gradlew assembleDebug",
+    "apk:release": "npm run sync && cd android && ./gradlew bundleRelease"
   },
   "dependencies": {
     "@capacitor-community/speech-recognition": "^7.0.1",

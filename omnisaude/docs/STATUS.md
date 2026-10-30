@@ -87,3 +87,37 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | RNDS: RAC, imunização, dispensação, sumário de alta (FHIR + mTLS) | 🟡 | implementado e testado contra o mock; perfis e códigos precisam ser conferidos com o guia vigente da RNDS e com o credenciamento |
 | Consulta CADSUS | ✅ | |
 | Integração com a central de vagas (SISREG) | ⏳ | só o código de regulação na internação; o SISREG não tem API pública |
+
+## Front-end (web e Android)
+
+| Tela | Status | Observação |
+|---|---|---|
+| Login em etapas, troca de unidade/papel, menu por permissão | ✅ | |
+| Recepção (OCR, CADSUS, duplicidade, senhas, acolhimento, pulseira) | ✅ | |
+| Painel de chamada (TV) com voz | ✅ | exige um clique para liberar o som (regra dos navegadores) |
+| Classificação de risco com mapa corporal 2D e escala 0–10 | ✅ | |
+| Atendimento: SOAP com ditado, comandos de voz, prescrição com copiloto, exames, protocolos, atestado | ✅ | ditado por microfone verificado só fora do navegador automatizado |
+| Agenda, lista de espera, absenteísmo, nova agenda | ✅ | |
+| Prontuário do paciente com linha do tempo da rede | ✅ | |
+| Farmácia (estoque, NF-e/De-Para, transferências, etiquetas Datamatrix, dispensação, controlados) | ✅ | |
+| Beira-leito (leitura de pulseira e dose, POP com dupla checagem, 5 certos com som) | ✅ | |
+| Leitos (censo em tempo real, internação, transferência, alta) | ✅ | |
+| Faturamento, gestão, BI conversacional, busca ativa, POPs, auditoria | ✅ | BI sem chave de IA oferece consultas prontas |
+| Chamada de intérprete de Libras | 🟡 | fila e sinalização verificadas; vídeo não testado sem intérprete conectado |
+| App Android (Capacitor) | 🟡 | projeto nativo gerado e sincronizado (câmera, microfone, ML Kit); APK não compilado aqui por falta do Android SDK |
+
+## Verificação feita
+
+- 257 testes automatizados passando: 183 nas bibliotecas e 74 de integração da API contra PostgreSQL real.
+- Teste de fumaça com Playwright (`e2e/smoke.e2e.mjs`) percorrendo 12 telas com 8 papéis no build de produção.
+- Imagem Docker da API construída e executada: migrações, login com contexto e consulta de BI na conexão
+  somente leitura.
+- Exportação estática do front-end e `cap sync android` concluídos.
+
+## Próximos passos sugeridos
+
+1. Conector ICP-Brasil (assinatura dos registros clínicos e documentos).
+2. Validar perfis RNDS, layout BPA e base do copiloto com as fontes oficiais; credenciamento na RNDS.
+3. APAC e lote AIH; cliente SOAP real da SEFAZ (NFeDistribuicaoDFe).
+4. Adaptador Redis do Socket.IO e central de intérpretes compartilhada para várias instâncias da API.
+5. Compilar e assinar o APK/AAB num ambiente com Android SDK; pipeline de CI.
