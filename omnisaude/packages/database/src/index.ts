@@ -8,3 +8,5 @@ export * from './provision';
 export * from './settings';
 export * from './tenancy';
 export * from './passwords';
+export { seedDemo } from './seed/demo';
+export * as demoFixtures from './seed/fixtures';

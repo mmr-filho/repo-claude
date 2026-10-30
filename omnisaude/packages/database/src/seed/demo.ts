@@ -19,6 +19,8 @@ export interface SeedOptions {
   /** Habilita as integrações de demonstração (apontando para os mocks). */
   settings?: Record<string, unknown>;
   now?: Date;
+  /** Slug do tenant (padrão "demo"); os testes usam outro para não tocar no banco de desenvolvimento. */
+  slug?: string;
 }
 
 const DAY = 86_400_000;
@@ -45,6 +47,8 @@ export async function seedDemo(opts: SeedOptions) {
 
   const { tenantId, dbName } = await provisionTenant(opts.master, opts.credentials, {
     ...DEMO_TENANT,
+    slug: opts.slug ?? DEMO_TENANT.slug,
+    cnpj: opts.slug && opts.slug !== DEMO_TENANT.slug ? `${DEMO_TENANT.cnpj.slice(0, 8)}${String(opts.slug.length).padStart(4, '0')}91` : DEMO_TENANT.cnpj,
     primaryHost: opts.primaryHost,
     primaryPort: opts.primaryPort,
     replicaHost: opts.replicaHost,

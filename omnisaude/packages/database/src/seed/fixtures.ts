@@ -11,7 +11,7 @@ export const DEMO_TENANT = {
   slug: 'demo',
   name: 'Consórcio Intermunicipal de Saúde Vale Verde (demonstração)',
   kind: 'CONSORCIO' as const,
-  cnpj: '00000000000191',
+  cnpj: '04512345000185',
   ibgeCode: '3550308',
   uf: 'SP',
   timeZone: 'America/Sao_Paulo',
