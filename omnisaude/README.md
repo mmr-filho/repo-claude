@@ -28,7 +28,8 @@ e BI conversacional).
 - **Acessibilidade**: VLibras e chamada de intérprete de Libras por vídeo (WebRTC).
 
 O que está parcial ou pendente está listado em [`docs/STATUS.md`](docs/STATUS.md). A arquitetura está em
-[`docs/ARQUITETURA.md`](docs/ARQUITETURA.md).
+[`docs/ARQUITETURA.md`](docs/ARQUITETURA.md). A publicação em `https://mm.api.br/omnisaude` está em
+[`docs/PUBLICACAO.md`](docs/PUBLICACAO.md).
 
 ## Estrutura
 
