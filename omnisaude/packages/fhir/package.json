@@ -1,0 +1,21 @@
+{
+  "name": "@omnisaude/fhir",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mapeadores e validadores HL7 FHIR R4 para a RNDS e consulta ao CADSUS.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --root ../.. --project packages packages/fhir/test"
+  },
+  "dependencies": { "@omnisaude/shared": "0.1.0", "zod": "^4.6.0" },
+  "devDependencies": { "@types/fhir": "^0.0.44" }
+}

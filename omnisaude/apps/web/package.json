@@ -1,0 +1,40 @@
+{
+  "name": "@omnisaude/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Front-end Next.js do OmniSaúde (desktop, tablet e mobile web; também empacotado no app Android).",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "build:mobile": "OMNI_STATIC_EXPORT=1 next build",
+    "start": "next start -p 3000",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@capacitor-community/speech-recognition": "^7.0.1",
+    "@capacitor-community/text-to-speech": "^8.0.2",
+    "@capacitor-mlkit/barcode-scanning": "^8.2.1",
+    "@capacitor/camera": "^8.2.6",
+    "@capacitor/core": "^8.6.0",
+    "@omnisaude/accessibility": "0.1.0",
+    "@omnisaude/shared": "0.1.0",
+    "bwip-js": "^4.11.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.64.0",
+    "next": "^16.4.3",
+    "radix-ui": "^1.8.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "recharts": "^3.10.0",
+    "socket.io-client": "^4.8.1",
+    "tailwind-merge": "^3.7.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.3.3"
+  }
+}

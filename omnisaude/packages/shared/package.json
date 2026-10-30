@@ -1,0 +1,21 @@
+{
+  "name": "@omnisaude/shared",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tipos de domínio, validadores (CPF, CNS), matriz de papéis e contratos compartilhados entre API e web.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --root ../.. --project packages packages/shared/test"
+  },
+  "dependencies": { "zod": "^4.6.0" },
+  "devDependencies": {}
+}

@@ -1,0 +1,21 @@
+{
+  "name": "@omnisaude/database",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Esquemas do master_auth_db e do tenant_db (Prisma), migrações e roteamento de conexões por tenant.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --root ../.. --project packages packages/database/test"
+  },
+  "dependencies": { "@omnisaude/shared": "0.1.0", "@prisma/adapter-pg": "7.10.1", "@prisma/client": "7.10.1", "pg": "^8.23.0" },
+  "devDependencies": { "@types/pg": "^8.15.0", "prisma": "7.10.1" }
+}

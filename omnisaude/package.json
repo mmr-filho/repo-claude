@@ -1,0 +1,41 @@
+{
+  "name": "omnisaude",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OmniSaúde: gestão integrada de redes públicas de saúde (APS, urgência e hospital) com IA, interoperabilidade RNDS e faturamento SUS.",
+  "workspaces": [
+    "packages/shared",
+    "packages/database",
+    "packages/ai-engine",
+    "packages/messaging",
+    "packages/fhir",
+    "packages/accessibility",
+    "apps/api",
+    "apps/web",
+    "apps/mobile",
+    "infra/mocks"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build:libs": "tsc -b packages/shared packages/database packages/ai-engine packages/messaging packages/fhir packages/accessibility",
+    "build": "npm run build:libs && npm run build -w @omnisaude/api && npm run build -w @omnisaude/mocks && npm run build -w @omnisaude/web",
+    "typecheck": "tsc -b packages/shared packages/database packages/ai-engine packages/messaging packages/fhir packages/accessibility apps/api infra/mocks && npm run typecheck -w @omnisaude/web",
+    "test": "vitest run",
+    "db:generate": "npm run generate -w @omnisaude/database",
+    "db:migrate": "npm run migrate -w @omnisaude/database",
+    "db:seed": "npm run seed -w @omnisaude/database",
+    "dev:api": "npm run dev -w @omnisaude/api",
+    "dev:web": "npm run dev -w @omnisaude/web",
+    "dev:mocks": "npm run dev -w @omnisaude/mocks"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.16.20",
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3",
+    "unplugin-swc": "^1.6.0",
+    "vitest": "^3.2.7"
+  }
+}
