@@ -3,7 +3,7 @@
 Tudo roda na sua conta da Cloudflare, sem servidor, sem túnel e sem Docker no seu computador:
 
 ```
-navegador ──HTTPS──► Cloudflare: Worker "omnisaude" (rota mm.api.br/omnisaude*)
+navegador ──HTTPS──► Cloudflare: Worker "repo-claude" (rota mm.api.br/omnisaude*)
                       ├─ /omnisaude/*                          → telas (arquivos estáticos do Next.js)
                       └─ /omnisaude/api, /omnisaude/socket.io  → API NestJS no Cloudflare Containers
                                                                    ├──TLS──► PostgreSQL (PlanetScale)
@@ -83,7 +83,7 @@ substitui a senha pública da demonstração nessa conta.
 
    | Campo | Valor |
    |---|---|
-   | Project name | `omnisaude` (igual ao `name` de `wrangler.jsonc`) |
+   | Project name | `repo-claude` (igual ao `name` de `wrangler.jsonc`; se usar outro nome, mude lá também) |
    | Production branch | `claude/busy-cray-f9aqxw` (não deixe o padrão: o branch padrão do repositório é o do Sigilo, sem a pasta `omnisaude`) |
    | Root directory | `omnisaude` (sem barra) |
    | Build command | `npm ci && npm run build:web -w @omnisaude/cloudflare` |
@@ -92,7 +92,7 @@ substitui a senha pública da demonstração nessa conta.
 
 3. Salve. O primeiro build leva alguns minutos: gera as telas, constrói a imagem da API a partir do
    `Dockerfile` e publica o Worker com a rota `mm.api.br/omnisaude*`.
-4. Em **omnisaude → Settings → Variables and Secrets**, adicione como **Secret** (não como texto):
+4. Em **repo-claude → Settings → Variables and Secrets**, adicione como **Secret** (não como texto):
 
    | Nome | Valor |
    |---|---|
@@ -131,27 +131,28 @@ A rota só funciona se `mm.api.br` passar pelo proxy da Cloudflare:
    de novo em instantes.
 3. Entre com a instituição `demo`, um CPF da tabela do README e a senha `OmniSaude2026`.
 
-Para conferir: **Workers & Pages → omnisaude → Logs** mostra o Worker e os jobs; em **Containers** ficam a
+Para conferir: **Workers & Pages → repo-claude → Logs** mostra o Worker e os jobs; em **Containers** ficam a
 instância e o log da API (a partida escreve "Papéis e banco master conferidos" e o estado das migrações de
 cada instituição).
 
 ## Se aparecer "Não encontrado — mm.api.br" (404)
 
 Essa página é do outro sistema que atende `mm.api.br`, não do OmniSaúde: a Cloudflare só manda `/omnisaude`
-para o OmniSaúde quando o Worker `omnisaude` está publicado com a rota. Confira, nesta ordem:
+para o OmniSaúde quando o Worker `repo-claude` está publicado com a rota. Confira, nesta ordem:
 
-1. **Workers & Pages** lista um Worker chamado `omnisaude`? Se não, faça o passo 4.
+1. **Workers & Pages** lista o Worker `repo-claude`? Se não, faça o passo 4.
    O build parou em `Failed: root directory not found`? A Cloudflare clonou um branch sem a pasta
-   `omnisaude`: em **omnisaude → Settings → Build → Branch control**, troque o branch de produção para
+   `omnisaude`: em **repo-claude → Settings → Build → Branch control**, troque o branch de produção para
    `claude/busy-cray-f9aqxw` e confira se o **Root directory** é `omnisaude`. Depois disso, **Retry build** não
    resolve: ele refaz o mesmo commit do branch antigo. O build novo começa com o próximo commit no branch
    `claude/busy-cray-f9aqxw`.
-2. Em **omnisaude → Deployments** (ou **Builds**), o último build terminou com sucesso? Se falhou, abra o log:
+2. Em **repo-claude → Deployments** (ou **Builds**), o último build terminou com sucesso? Se falhou, abra o log:
    a mensagem de erro aparece no fim. Erros comuns:
    - `Containers` não disponível: a conta precisa do plano **Workers Paid**;
-   - nome diferente: o projeto precisa se chamar `omnisaude`, como em `wrangler.jsonc`;
+   - nome diferente ("Atualize omnisaude/wrangler.jsonc..."): o `name` de `wrangler.jsonc` precisa ser igual ao
+     nome do Worker no painel;
    - zona não encontrada: ajuste `zone_name` (passo 5).
-3. Em **omnisaude → Settings → Domains & Routes** aparece a rota `mm.api.br/omnisaude*`? Se não, o deploy não
+3. Em **repo-claude → Settings → Domains & Routes** aparece a rota `mm.api.br/omnisaude*`? Se não, o deploy não
    chegou ao fim.
 
 Quando o Worker está no ar, https://mm.api.br/omnisaude mostra a tela de login do OmniSaúde, mesmo antes de

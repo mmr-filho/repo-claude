@@ -10,7 +10,8 @@
 // ANTHROPIC_API_KEY. Segredos sobrevivem aos deploys; as "vars" abaixo são regravadas a cada deploy.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "omnisaude",
+  // Igual ao nome do Worker no painel da Cloudflare (criado ao importar o repositório repo-claude).
+  "name": "repo-claude",
   "main": "apps/cloudflare/src/index.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
