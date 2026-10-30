@@ -92,7 +92,7 @@ describe.runIf(enabled)('BI conversacional e Text-to-SQL blindado', () => {
     const llm = new FakeLlmClient([answer('SELECT * FROM users'), answer('SELECT count(*) AS total FROM bi.leitos WHERE situacao = \'OCUPADO\'')]);
     bi.setLlmClient(llm);
     const res = await t.http().post('/api/bi/ask').set(auth(gestora)).send({ question: 'Quantos leitos estão ocupados?' }).expect(200);
-    expect(res.body.rows).toEqual([{ total: 6 }]);
+    expect(res.body.rows).toEqual([{ total: 1 }]); // só o leito do Francisco (CM-03)
     expect(llm.calls).toHaveLength(2);
 
     bi.setLlmClient(new FakeLlmClient([answer('SELECT * FROM users'), answer('SELECT * FROM pg_catalog.pg_authid')]));

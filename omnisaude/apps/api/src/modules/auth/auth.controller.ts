@@ -9,6 +9,7 @@ import { AuthService } from './auth.service';
 
 const loginSchema = z.object({ tenant: z.string().min(2), cpf: z.string().min(11), password: z.string().min(1) });
 const mfaSchema = z.object({ code: z.string().min(6).max(8) });
+const mfaEnableSchema = z.object({ code: z.string().min(6).max(8), setupToken: z.string().min(20) });
 const contextSchema = z.object({ unitId: z.string().uuid(), role: z.enum(ROLES) });
 const passwordSchema = z.object({ current: z.string(), next: z.string() });
 
@@ -56,8 +57,8 @@ export class AuthController {
   @Authenticated()
   @Post('mfa/enable')
   @HttpCode(200)
-  mfaEnable(@Ctx() ctx: RequestContext, @Body(zv(mfaSchema)) body: z.infer<typeof mfaSchema>) {
-    return this.auth.confirmMfaSetup(ctx, body.code);
+  mfaEnable(@Ctx() ctx: RequestContext, @Body(zv(mfaEnableSchema)) body: z.infer<typeof mfaEnableSchema>) {
+    return this.auth.confirmMfaSetup(ctx, body.code, body.setupToken);
   }
 
   @Authenticated()

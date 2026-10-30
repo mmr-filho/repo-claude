@@ -12,5 +12,8 @@
   "dependencies": {
     "@omnisaude/fhir": "0.1.0",
     "@omnisaude/shared": "0.1.0"
+  },
+  "devDependencies": {
+    "@omnisaude/messaging": "0.1.0"
   }
 }

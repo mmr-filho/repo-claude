@@ -252,8 +252,15 @@ export class SchedulingService implements OnModuleInit {
     }
   }
 
-  waitlist(ctx: RequestContext, status = 'AGUARDANDO') {
-    return ctx.db.waitlistEntry.findMany({ where: { unitId: ctx.session.unitId, status: status as never }, orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }] });
+  async waitlist(ctx: RequestContext, status = 'AGUARDANDO') {
+    const rows = await ctx.db.waitlistEntry.findMany({ where: { unitId: ctx.session.unitId, status: status as never }, orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }] });
+    const patients = new Map(
+      (await ctx.db.patient.findMany({ where: { id: { in: rows.map((r) => r.patientId) } }, select: { id: true, name: true, socialName: true, phone: true } })).map((p) => [p.id, p]),
+    );
+    return rows.map((r) => {
+      const p = patients.get(r.patientId);
+      return { ...r, patient: p ? { id: p.id, name: p.socialName ?? p.name, phone: p.phone } : null };
+    });
   }
 
   addToWaitlist(ctx: RequestContext, input: { patientId: string; cbo: string; priority?: number; reason?: string }) {

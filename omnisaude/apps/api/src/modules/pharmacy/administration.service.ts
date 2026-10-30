@@ -30,6 +30,11 @@ type Input = z.infer<typeof administrationSchema>;
 
 @Injectable()
 export class AdministrationService {
+  /** Data e hora no fuso do tenant, como a enfermagem lê na tela ("30/10 14:00"). */
+  private when(ctx: RequestContext, d: Date): string {
+    return d.toLocaleString('pt-BR', { timeZone: ctx.tenant.timeZone, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  }
+
   constructor(
     private readonly audit: AuditService,
     private readonly clock: PharmacyClock,
@@ -108,9 +113,9 @@ export class AdministrationService {
     const station = dose ? await ctx.db.stockLocation.findUnique({ where: { id: dose.locationId } }) : null;
     if (!dose) add('DOSE', false, 'Sem dose unitária válida');
     else if (dose.status !== 'DISPONIVEL') add('DOSE', false, `Dose ${dose.status.toLowerCase()}`);
-    else if (dose.expiry < today) add('DOSE', false, `Dose vencida em ${dateOnly(dose.expiry)}`);
+    else if (dose.expiry < today) add('DOSE', false, `Dose vencida em ${dateOnly(dose.expiry).split('-').reverse().join('/')}`);
     else if (!station || station.kind !== 'POSTO_ENFERMAGEM' || station.unitId !== encounter.unitId) add('DOSE', false, 'A dose não está no posto de enfermagem desta unidade');
-    else add('DOSE', true, `Lote válido até ${dateOnly(dose.expiry)}`);
+    else add('DOSE', true, `Lote válido até ${dateOnly(dose.expiry).split('-').reverse().join('/')}`);
 
     // 5. Horário certo: dentro da tolerância de um horário aprazado ainda não administrado.
     let slot: Date | null = null;
@@ -123,11 +128,11 @@ export class AdministrationService {
       slot = candidates[0] ?? null;
       if (!slot) {
         const next = AdministrationService.slots(prescription.signedAt, item.frequencyHours, item.durationDays, now, new Date(now.getTime() + 7 * 86_400_000))[0];
-        add('HORARIO', false, next ? `Fora do horário: próxima dose às ${next.toISOString()}` : 'Tratamento encerrado');
+        add('HORARIO', false, next ? `Fora do horário: próxima dose às ${this.when(ctx, next)}` : 'Tratamento encerrado');
       } else {
         const done = await ctx.db.administration.findFirst({ where: { prescriptionItemId: item.id, status: 'ADMINISTRADO', scheduledFor: slot } });
-        if (done) add('HORARIO', false, `Dose das ${slot.toISOString()} já administrada`);
-        else add('HORARIO', true, `Horário aprazado ${slot.toISOString()}`);
+        if (done) add('HORARIO', false, `Dose das ${this.when(ctx, slot)} já administrada`);
+        else add('HORARIO', true, `Horário aprazado ${this.when(ctx, slot)}`);
       }
     }
 

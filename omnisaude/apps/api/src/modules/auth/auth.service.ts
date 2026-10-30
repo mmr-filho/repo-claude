@@ -122,19 +122,35 @@ export class AuthService {
     };
   }
 
+  /**
+   * Gera um novo segredo TOTP sem alterar o atual: ele só passa a valer quando o usuário confirma um código
+   * do novo autenticador. Quem já usa 2FA precisa estar numa sessão aberta com o segundo fator para trocá-lo.
+   */
   async startMfaSetup(ctx: RequestContext) {
     const user = await ctx.db.user.findUniqueOrThrow({ where: { id: ctx.session.userId } });
+    if (user.mfaEnabled && !ctx.session.mfa) {
+      throw new DomainError('MFA_SESSAO', 'Entre com o código do autenticador atual para trocá-lo', HttpStatus.FORBIDDEN);
+    }
     const secret = generateTotpSecret();
-    await ctx.db.user.update({ where: { id: user.id }, data: { totpSecret: encryptSecret(secret, this.config.DATA_KEY), mfaEnabled: false } });
-    return { secret, otpauthUrl: otpauthUrl(secret, `${ctx.tenant.slug}:${user.cpf}`) };
+    const setupToken = encryptSecret(JSON.stringify({ uid: user.id, secret, exp: Date.now() + 10 * 60_000 }), this.config.DATA_KEY);
+    return { secret, otpauthUrl: otpauthUrl(secret, `${ctx.tenant.slug}:${user.cpf}`), setupToken };
   }
 
-  async confirmMfaSetup(ctx: RequestContext, code: string) {
-    const user = await ctx.db.user.findUniqueOrThrow({ where: { id: ctx.session.userId } });
-    if (!user.totpSecret || !verifyTotp(decryptSecret(user.totpSecret, this.config.DATA_KEY), code)) {
-      throw new DomainError('MFA_INVALIDO', 'Código de verificação inválido', HttpStatus.UNPROCESSABLE_ENTITY);
+  async confirmMfaSetup(ctx: RequestContext, code: string, setupToken: string) {
+    let pending: { uid: string; secret: string; exp: number };
+    try {
+      pending = JSON.parse(decryptSecret(setupToken, this.config.DATA_KEY));
+    } catch {
+      throw new DomainError('MFA_CONFIGURACAO', 'Configuração de 2FA inválida: comece de novo', HttpStatus.UNPROCESSABLE_ENTITY);
     }
-    await ctx.db.user.update({ where: { id: user.id }, data: { mfaEnabled: true } });
+    if (pending.uid !== ctx.session.userId || pending.exp < Date.now()) {
+      throw new DomainError('MFA_CONFIGURACAO', 'Configuração de 2FA expirada: comece de novo', HttpStatus.UNPROCESSABLE_ENTITY);
+    }
+    if (!verifyTotp(pending.secret, code)) throw new DomainError('MFA_INVALIDO', 'Código de verificação inválido', HttpStatus.UNPROCESSABLE_ENTITY);
+    await ctx.db.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: ctx.session.userId }, data: { totpSecret: encryptSecret(pending.secret, this.config.DATA_KEY), mfaEnabled: true } });
+      await appendAudit(tx, { userId: ctx.session.userId, unitId: ctx.session.unitId, role: ctx.session.role, ip: ctx.ip, mfa: ctx.session.mfa, action: 'auth.mfa_ativar', entityType: 'User', entityId: ctx.session.userId, payload: {} });
+    });
     return { mfaEnabled: true };
   }
 

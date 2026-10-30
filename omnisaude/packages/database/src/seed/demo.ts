@@ -458,7 +458,6 @@ export async function seedDemo(opts: SeedOptions) {
     });
     await db.admission.create({ data: { encounterId: admEnc.id, patientId: patient.francisco!, bedId: bedIds['CM-03']!, mainCid: 'J18', admittedAt: daysAgo(2) } });
     await db.bed.update({ where: { id: bedIds['CM-03']! }, data: { status: 'OCUPADO' } });
-    for (const code of ['CM-01', 'CM-02', 'UTI-01', 'UTI-03', 'OBS-01']) await db.bed.update({ where: { id: bedIds[code]! }, data: { status: 'OCUPADO' } });
 
     const hospRx = await db.prescription.create({
       data: {

@@ -26,6 +26,23 @@ export function patientSummary(p: { id: string; name: string; socialName: string
   };
 }
 
+const ENCOUNTER_STATUS: Record<string, string> = {
+  ABERTO: 'aguardando',
+  TRIADO: 'classificado',
+  EM_ATENDIMENTO: 'em atendimento',
+  ENCERRADO: 'encerrado',
+  CANCELADO: 'cancelado',
+  EVADIU: 'evasão',
+};
+const APPOINTMENT_STATUS: Record<string, string> = {
+  AGENDADO: 'agendado',
+  CONFIRMADO: 'confirmado',
+  CANCELADO: 'cancelado',
+  FALTOU: 'faltou',
+  ATENDIDO: 'atendido',
+  REMARCADO: 'remarcado',
+};
+
 @Injectable()
 export class PatientsService {
   constructor(private readonly audit: AuditService) {}
@@ -200,7 +217,7 @@ export class PatientsService {
         type: 'ATENDIMENTO',
         id: e.id,
         unit: e.unit.name,
-        title: `${e.kind === 'URGENCIA' ? 'Atendimento de urgência' : e.kind === 'INTERNACAO' ? 'Internação' : 'Atendimento'} – ${e.status}`,
+        title: `${e.kind === 'URGENCIA' ? 'Atendimento de urgência' : e.kind === 'INTERNACAO' ? 'Internação' : e.kind === 'ODONTOLOGICO' ? 'Atendimento odontológico' : 'Atendimento'} – ${ENCOUNTER_STATUS[e.status] ?? e.status}`,
         detail: {
           kind: e.kind,
           status: e.status,
@@ -248,7 +265,7 @@ export class PatientsService {
       events.push({ at: v.appliedAt, type: 'VACINA', id: v.id, unit: units.get(v.unitId), title: `${v.vaccineName} (${v.dose})`, detail: { lot: v.lot } });
     }
     for (const a of appointments) {
-      events.push({ at: a.startsAt, type: 'AGENDAMENTO', id: a.id, unit: units.get(a.unitId), title: `${a.schedule.name} – ${a.status}`, detail: { kind: a.kind, status: a.status } });
+      events.push({ at: a.startsAt, type: 'AGENDAMENTO', id: a.id, unit: units.get(a.unitId), title: `${a.schedule.name} – ${APPOINTMENT_STATUS[a.status] ?? a.status}`, detail: { kind: a.kind, status: a.status } });
     }
     events.sort((a, b) => b.at.getTime() - a.at.getTime());
     await this.audit.recordStandalone(ctx, { action: 'paciente.prontuario.visualizar', entityType: 'Patient', entityId: patientId, payload: { events: events.length } });

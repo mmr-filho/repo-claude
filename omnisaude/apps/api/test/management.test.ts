@@ -44,7 +44,7 @@ describe.runIf(enabled)('gestão executiva', () => {
   it('gera e guarda a pauta da reunião de gestão', async () => {
     const res = await t.http().post('/api/management/agendas').set(auth(gestora)).send({ from: '2026-01-01', to: today }).expect(201);
     const hosp = res.body.content.leitos.find((l: { unit: string }) => l.unit === 'Hospital Municipal São Lucas');
-    expect(hosp).toMatchObject({ ocupados: 5, higienizacao: 2, bloqueados: 1 });
+    expect(hosp).toMatchObject({ ocupados: 1, higienizacao: 2, bloqueados: 1 });
     expect(res.body.content.absenteismo[0]).toMatchObject({ schedule: 'Clínica médica - Dra. Carla', faltas: 1 });
     expect(res.body.markdown).toContain('# Pauta da reunião de gestão');
     expect(res.body.markdown).toContain('Clínica médica - Dra. Carla');

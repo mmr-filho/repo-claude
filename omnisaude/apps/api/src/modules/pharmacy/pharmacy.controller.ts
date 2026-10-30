@@ -37,7 +37,7 @@ export class PharmacyController {
   // ── Catálogo e estoque ──
 
   @Get('products')
-  @RequirePermission('estoque.ler', 'dispensacao.registrar', 'administracao.registrar')
+  @RequirePermission('estoque.ler', 'dispensacao.registrar', 'administracao.registrar', 'prescricao.emitir')
   products(@Ctx() ctx: RequestContext, @Query('q') q?: string) {
     return this.inventory.products(ctx, q);
   }

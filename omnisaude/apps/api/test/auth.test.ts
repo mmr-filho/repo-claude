@@ -40,7 +40,7 @@ describe.runIf(enabled)('autenticação e contexto', () => {
   it('ativa 2FA e exige o código no login seguinte', async () => {
     const token = await t.login('gestora');
     const setup = await t.http().post('/api/auth/mfa/setup').set('authorization', `Bearer ${token}`).expect(201);
-    await t.http().post('/api/auth/mfa/enable').set('authorization', `Bearer ${token}`).send({ code: totpCode(setup.body.secret) }).expect(200);
+    await t.http().post('/api/auth/mfa/enable').set('authorization', `Bearer ${token}`).send({ code: totpCode(setup.body.secret), setupToken: setup.body.setupToken }).expect(200);
     const gestora = demoFixtures.STAFF.find((s) => s.key === 'gestora')!;
     const step1 = await t.http().post('/api/auth/login').send({ tenant: t.slug, cpf: gestora.cpf, password: demoFixtures.DEMO_PASSWORD }).expect(200);
     expect(step1.body.stage).toBe('mfa');
@@ -50,6 +50,8 @@ describe.runIf(enabled)('autenticação e contexto', () => {
     const ctx = await t.http().post('/api/auth/context').set('authorization', `Bearer ${step2.body.token}`).send({ unitId: step2.body.assignments[0].unitId, role: 'GESTOR' }).expect(200);
     const me = await t.http().get('/api/auth/me').set('authorization', `Bearer ${ctx.body.token}`).expect(200);
     expect(me.body.context.mfa).toBe(true);
+    // Uma sessão antiga, sem o segundo fator, não consegue trocar o autenticador.
+    await t.http().post('/api/auth/mfa/setup').set('authorization', `Bearer ${token}`).expect(403);
   });
 
   it('bloqueia a conta após 5 senhas erradas', async () => {

@@ -13,7 +13,7 @@ export async function createApp() {
   app.disable('x-powered-by');
   app.useBodyParser('json', { limit: '15mb' });
   app.useBodyParser('text', { type: ['application/xml', 'text/xml', 'text/plain'], limit: '10mb' });
-  app.enableCors({ origin: config.CORS_ORIGINS.split(',').map((o) => o.trim()), credentials: false });
+  app.enableCors({ origin: config.CORS_ORIGINS.split(',').map((o) => o.trim()), credentials: false, exposedHeaders: ['Content-Disposition', 'X-Total-Rows'] });
   app.enableShutdownHooks();
   return app;
 }
