@@ -10,6 +10,8 @@ const config: NextConfig = {
   // também reescreve .next: depois de exportar para o app, rode `next build` de novo antes de `next start`.
   distDir: process.env.NEXT_DIST_DIR ?? (staticExport ? 'out' : '.next'),
   ...(staticExport ? { output: 'export' as const, trailingSlash: true } : {}),
+  // Publicação sob um caminho do domínio (ex.: mm.api.br/omnisaude). Vazio para o app Android, servido na raiz.
+  basePath: staticExport ? undefined : process.env.NEXT_PUBLIC_BASE_PATH || undefined,
   images: { unoptimized: true },
   poweredByHeader: false,
   reactStrictMode: true,

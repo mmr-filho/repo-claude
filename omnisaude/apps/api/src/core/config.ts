@@ -20,6 +20,11 @@ const schema = z.object({
   /** Liga os jobs em segundo plano neste processo (o worker separado usa a mesma configuração). */
   RUN_JOBS: bool,
   PUBLIC_API_URL: z.string().default('http://localhost:3001'),
+  /**
+   * Quantos proxies à frente da API são confiáveis para ler o IP do cliente (registrado na trilha de
+   * auditoria). Ex.: Cloudflare Tunnel + roteador do servidor = 2.
+   */
+  TRUST_PROXY: z.coerce.number().int().min(0).max(5).default(1),
   // Storage de objetos (Cloudflare R2 via API S3); sem R2 os arquivos vão para uma pasta local.
   R2_ACCOUNT_ID: z.string().optional(),
   R2_ACCESS_KEY_ID: z.string().optional(),

@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Field, Input, Select } from '@/components/ui/input';
 import { Alert } from '@/components/ui/misc';
-import { api, errorMessage, SOCKET_URL } from '@/lib/api';
+import { api, errorMessage, SOCKET } from '@/lib/api';
 import { useSession } from '@/lib/session';
 import { tokenStore } from '@/lib/storage';
 
@@ -106,7 +106,7 @@ export function LibrasCallButton() {
     try {
       const cfg = await api.get<{ iceServers: IceServerConfig[]; unitId: string }>('/accessibility/config');
       ice.current = cfg.iceServers;
-      const s = io(`${SOCKET_URL}/libras`, { auth: { token: tokenStore.get() }, transports: ['websocket', 'polling'] });
+      const s = io(`${SOCKET.origin}/libras`, { path: SOCKET.path, auth: { token: tokenStore.get() }, transports: ['websocket', 'polling'] });
       socket.current = s;
       s.on('erro', (e: { message: string }) => setMessage(e.message));
       s.on('connect_error', () => {

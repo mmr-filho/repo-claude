@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { io, type Socket } from 'socket.io-client';
-import { SOCKET_URL } from './api';
+import { SOCKET } from './api';
 import { tokenStore } from './storage';
 
 let socket: Socket | null = null;
@@ -14,7 +14,7 @@ export function realtimeSocket(token?: string | null): Socket | null {
   if (!t) return null;
   if (socket && socketToken === t) return socket;
   socket?.disconnect();
-  socket = io(`${SOCKET_URL}/rt`, { auth: { token: t }, transports: ['websocket', 'polling'] });
+  socket = io(`${SOCKET.origin}/rt`, { path: SOCKET.path, auth: { token: t }, transports: ['websocket', 'polling'] });
   socketToken = t;
   return socket;
 }

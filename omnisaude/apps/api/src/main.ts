@@ -9,7 +9,7 @@ export async function createApp() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true, rawBody: true });
   const config = app.get<AppConfig>(APP_CONFIG);
   app.setGlobalPrefix('api');
-  app.set('trust proxy', 1);
+  app.set('trust proxy', config.TRUST_PROXY);
   app.disable('x-powered-by');
   app.useBodyParser('json', { limit: '15mb' });
   app.useBodyParser('text', { type: ['application/xml', 'text/xml', 'text/plain'], limit: '10mb' });

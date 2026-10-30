@@ -55,11 +55,15 @@ CMD ["node", "infra/mocks/dist/index.js"]
 # ── Front-end web (Next.js) ──
 FROM build AS web-build
 ARG NEXT_PUBLIC_API_URL=http://localhost:3001/api
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+# Prefixo de publicação (ex.: /omnisaude); vazio para servir na raiz do domínio.
+ARG NEXT_PUBLIC_BASE_PATH=
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
 RUN npm run build -w @omnisaude/web
 
 FROM node:22-bookworm-slim AS web
-ENV NODE_ENV=production
+ARG NEXT_PUBLIC_BASE_PATH=
+# O next start relê o next.config: o prefixo precisa existir também em tempo de execução.
+ENV NODE_ENV=production NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
 WORKDIR /app
 COPY --from=web-build /app/package.json ./
 COPY --from=web-build /app/node_modules ./node_modules

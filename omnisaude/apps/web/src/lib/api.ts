@@ -1,8 +1,20 @@
 import { tokenStore } from './storage';
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api').replace(/\/$/, '');
-/** Origem do Socket.IO (mesmo servidor da API, sem o prefixo /api). */
-export const SOCKET_URL = API_URL.replace(/\/api$/, '');
+/** Prefixo em que a web é publicada (ex.: "/omnisaude"); vazio quando está na raiz do domínio. */
+export const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/$/, '');
+
+/**
+ * Socket.IO roda no mesmo servidor da API. Com a API sob um prefixo (ex.: /omnisaude/api), o caminho do
+ * Socket.IO acompanha (/omnisaude/socket.io) e os namespaces continuam /rt e /libras. API_URL relativa
+ * (mesma origem da página) conecta no próprio host.
+ */
+function socketTarget() {
+  const absolute = /^https?:\/\//.test(API_URL);
+  const url = new URL(API_URL, 'http://mesma-origem');
+  return { origin: absolute ? url.origin : '', path: `${url.pathname.replace(/\/api$/, '')}/socket.io` };
+}
+export const SOCKET = socketTarget();
 
 export class ApiError extends Error {
   constructor(

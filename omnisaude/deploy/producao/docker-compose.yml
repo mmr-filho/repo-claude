@@ -1,0 +1,166 @@
+# Publicação do OmniSaúde em https://mm.api.br/omnisaude
+#   cp .env.example .env    # gere as senhas (veja o arquivo)
+#   docker compose up -d --build
+#   docker compose --profile tunel up -d --build   # com o Cloudflare Tunnel neste mesmo servidor
+#
+# Nenhum banco expõe porta. Só o roteador (Caddy) escuta, e apenas em 127.0.0.1:8080:
+# a internet chega a ele pelo Cloudflare Tunnel ou pelo proxy que já atende mm.api.br.
+
+x-tenant-db: &tenant-db-env
+  MASTER_DATABASE_URL: postgresql://omni_app:${MASTER_DB_PASSWORD:?defina no .env}@master-db:5432/master_auth_db
+  TENANT_DB_HOST: tenant-db
+  TENANT_DB_PORT: '5432'
+  TENANT_REPLICA_HOST: tenant-db-replica
+  TENANT_REPLICA_PORT: '5432'
+  TENANT_DB_USER: omni_app
+  TENANT_DB_PASSWORD: ${APP_DB_PASSWORD:?defina no .env}
+  TENANT_ADMIN_USER: omni_admin
+  TENANT_ADMIN_PASSWORD: ${ADMIN_DB_PASSWORD:?defina no .env}
+  TENANT_BI_USER: omni_bi_reader
+  TENANT_BI_PASSWORD: ${BI_DB_PASSWORD:?defina no .env}
+
+x-api: &api-env
+  <<: *tenant-db-env
+  NODE_ENV: production
+  JWT_SECRET: ${JWT_SECRET:?defina no .env}
+  DATA_KEY: ${DATA_KEY:?defina no .env}
+  REDIS_URL: redis://redis:6379
+  # Cloudflare (ou proxy do servidor) + Caddy à frente da API.
+  TRUST_PROXY: '2'
+  CORS_ORIGINS: ${PUBLIC_ORIGIN:-https://mm.api.br},capacitor://localhost,https://localhost
+  PUBLIC_API_URL: ${PUBLIC_ORIGIN:-https://mm.api.br}/omnisaude
+  # Demonstração: RNDS, CADSUS, SEFAZ e WhatsApp simulados (nenhuma mensagem real é enviada).
+  # Para integrações reais, remova MOCKS_URL e configure as variáveis RNDS_*, WHATSAPP_*, SEFAZ_URL.
+  MOCKS_URL: ${MOCKS_URL-http://mocks:4010}
+  RNDS_REQUESTER_CPF: ${RNDS_REQUESTER_CPF:-52998224725}
+  LIBRAS_INTERPRETER_KEY: ${LIBRAS_INTERPRETER_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  LOCAL_STORAGE_DIR: /data/arquivos
+  R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+  R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+  R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+  R2_BUCKET: ${R2_BUCKET:-}
+
+services:
+  master-db:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: omni_app
+      POSTGRES_PASSWORD: ${MASTER_DB_PASSWORD}
+      POSTGRES_DB: master_auth_db
+    volumes: [master-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U omni_app -d master_auth_db']
+      interval: 5s
+      retries: 30
+
+  tenant-db:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?defina no .env}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      ADMIN_DB_PASSWORD: ${ADMIN_DB_PASSWORD}
+      BI_DB_PASSWORD: ${BI_DB_PASSWORD}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?defina no .env}
+    command: ['postgres', '-c', 'wal_level=replica', '-c', 'max_wal_senders=10', '-c', 'hot_standby=on']
+    volumes:
+      - tenant-data:/var/lib/postgresql/data
+      - ./postgres/01-roles.sh:/docker-entrypoint-initdb.d/01-roles.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      retries: 30
+
+  tenant-db-replica:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    user: postgres
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      PRIMARY_HOST: tenant-db
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD}
+    entrypoint: ['/replica-entrypoint.sh']
+    volumes:
+      - replica-data:/var/lib/postgresql/data
+      - ../../docker/postgres/replica-entrypoint.sh:/replica-entrypoint.sh:ro
+    depends_on:
+      tenant-db: { condition: service_healthy }
+
+  redis:
+    image: redis:7-bookworm
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes: [redis-data:/data]
+
+  mocks:
+    build: { context: ../.., target: mocks }
+    restart: unless-stopped
+
+  # Aplica as migrações a cada subida. Com SEED_DEMO=true, cria (uma única vez) o tenant "demo".
+  migrate:
+    build: { context: ../.., target: api }
+    command: ['sh', '-c', 'if [ "$$SEED_DEMO" = "true" ]; then node packages/database/dist/cli.js seed; fi && node packages/database/dist/cli.js migrate']
+    environment:
+      <<: *tenant-db-env
+      SEED_DEMO: ${SEED_DEMO:-true}
+    depends_on:
+      master-db: { condition: service_healthy }
+      tenant-db: { condition: service_healthy }
+
+  api:
+    build: { context: ../.., target: api }
+    restart: unless-stopped
+    environment: *api-env
+    volumes: [arquivos:/data]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+      tenant-db-replica: { condition: service_started }
+
+  worker:
+    build: { context: ../.., target: api }
+    restart: unless-stopped
+    command: ['node', 'apps/api/dist/worker.js']
+    environment: *api-env
+    volumes: [arquivos:/data]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+
+  web:
+    build:
+      context: ../..
+      target: web
+      args:
+        NEXT_PUBLIC_BASE_PATH: /omnisaude
+        NEXT_PUBLIC_API_URL: /omnisaude/api
+    restart: unless-stopped
+    depends_on: [api]
+
+  gateway:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ['127.0.0.1:8080:8080']
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on: [api, web]
+
+  # Opcional: túnel da Cloudflare rodando neste servidor (docker compose --profile tunel up -d).
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: [tunel]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    depends_on: [gateway]
+
+volumes:
+  master-data:
+  tenant-data:
+  replica-data:
+  redis-data:
+  arquivos:

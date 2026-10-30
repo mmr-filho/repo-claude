@@ -1,0 +1,37 @@
+# Roteador interno: tudo chega em /omnisaude (vindo do Cloudflare Tunnel ou do proxy do servidor).
+#   /omnisaude/api/*        → API (o prefixo /omnisaude é removido)
+#   /omnisaude/socket.io/*  → API (tempo real: painel, filas, leitos, Libras)
+#   /omnisaude/*            → web (Next.js publicado com basePath /omnisaude)
+{
+	admin off
+	servers {
+		# Mantém o X-Forwarded-For de quem está à frente (túnel/proxy na rede privada) para a auditoria.
+		trusted_proxies static private_ranges
+	}
+}
+
+:8080 {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(self), microphone=(self), geolocation=()"
+		-Server
+	}
+
+	@backend path /omnisaude/api /omnisaude/api/* /omnisaude/socket.io /omnisaude/socket.io/*
+	handle @backend {
+		uri strip_prefix /omnisaude
+		reverse_proxy api:3001
+	}
+
+	handle /omnisaude* {
+		reverse_proxy web:3000
+	}
+
+	handle {
+		respond "Não encontrado" 404
+	}
+}

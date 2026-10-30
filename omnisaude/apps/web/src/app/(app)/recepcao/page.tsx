@@ -18,7 +18,7 @@ import { Field, Input, Select } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { TabPanel, Tabs } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
-import { api, ApiError, errorMessage } from '@/lib/api';
+import { api, ApiError, BASE_PATH, errorMessage } from '@/lib/api';
 import { fmtDate, formatCns, todayIso } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useSession } from '@/lib/session';
@@ -66,7 +66,7 @@ export default function ReceptionPage() {
   async function openPanel() {
     try {
       const r = await api.post<{ token: string }>('/reception/panel-token');
-      setPanelUrl(`${window.location.origin}/painel?token=${encodeURIComponent(r.token)}`);
+      setPanelUrl(`${window.location.origin}${BASE_PATH}/painel?token=${encodeURIComponent(r.token)}`);
     } catch (err) {
       toast.error(errorMessage(err));
     }
