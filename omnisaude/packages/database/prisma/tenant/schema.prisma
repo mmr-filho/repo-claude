@@ -38,10 +38,22 @@ model Unit {
   email     String?
   /// Texto livre, ex.: "Segunda a sexta, 7h às 19h".
   openingHours String? @map("opening_hours")
+  latitude  Float?
+  longitude Float?
+  /// Dados do CNES: tipo de unidade (código), natureza jurídica, esfera de gestão (M/E/D) e atendimento ambulatorial SUS.
+  cnesTypeCode  String?   @map("cnes_type_code") @db.Char(2)
+  legalNature   String?   @map("legal_nature") @db.Char(4)
+  management    String?   @db.Char(1)
+  susAmbulatory Boolean?  @map("sus_ambulatory")
+  cnesUpdatedAt DateTime? @map("cnes_updated_at")
+  /// MANUAL (cadastrada pela gestão) ou CNES (importada).
+  source    String   @default("MANUAL")
   active    Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
 
   assignments    UserAssignment[]
+  teams          Team[]
+  cnesStaged     CnesProfessional[]
   schedules      Schedule[]
   tickets        Ticket[]
   encounters     Encounter[]
@@ -86,11 +98,118 @@ model User {
   createdAt      DateTime  @default(now()) @map("created_at")
 
   assignments UserAssignment[]
+  teamMembers TeamMember[]
+  cnesStaged  CnesProfessional[]
 
   @@map("users")
 }
 
 /// Papel de um profissional em uma unidade (contexto Tenant + Unidade + Papel).
+/// Equipe do CNES (INE): eSF, eSB, eMulti, eAP... As fichas do e-SUS e os indicadores do cofinanciamento são por equipe.
+model Team {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  /// Identificador Nacional de Equipe, 10 dígitos.
+  ine       String   @unique @db.Char(10)
+  name      String
+  /// Tipo de equipe do CNES: 70 eSF, 71 eSB, 72 eMulti, 73 eCR, 74 eAPP, 75 eMAESM, 76 eAP.
+  typeCode  String   @map("type_code") @db.Char(2)
+  unitId    String   @map("unit_id") @db.Uuid
+  /// Segmento territorial / área da equipe.
+  area      String?
+  active    Boolean  @default(true)
+  source    String   @default("MANUAL")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  unit    Unit         @relation(fields: [unitId], references: [id])
+  members TeamMember[]
+
+  @@map("teams")
+}
+
+/// Membro da equipe: um profissional com acesso (user) ou um pré-cadastro vindo do CNES ainda sem CPF.
+model TeamMember {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  teamId    String  @map("team_id") @db.Uuid
+  userId    String? @map("user_id") @db.Uuid
+  stagedId  String? @map("staged_id") @db.Uuid
+  cbo       String  @db.Char(6)
+  microArea String? @map("micro_area")
+  active    Boolean @default(true)
+
+  team   Team              @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user   User?             @relation(fields: [userId], references: [id])
+  staged CnesProfessional? @relation(fields: [stagedId], references: [id])
+
+  @@unique([teamId, userId])
+  @@unique([teamId, stagedId])
+  @@map("team_members")
+}
+
+enum StagedStatus {
+  PENDENTE
+  VINCULADO
+  IGNORADO
+}
+
+/// Profissional vindo do CNES (planilha ou arquivo) que ainda não tem acesso: a gestão completa o CPF ao criar o usuário.
+model CnesProfessional {
+  id          String       @id @default(uuid(7)) @db.Uuid
+  name        String
+  cpf         String?      @db.Char(11)
+  cns         String?      @db.Char(15)
+  cbo         String       @db.Char(6)
+  council     String?
+  unitId      String?      @map("unit_id") @db.Uuid
+  cnes        String?      @db.Char(7)
+  ine         String?      @db.Char(10)
+  /// Tipo de vínculo no CNES (texto).
+  bond        String?
+  weeklyHours Int?         @map("weekly_hours")
+  source      String
+  status      StagedStatus @default(PENDENTE)
+  userId      String?      @map("user_id") @db.Uuid
+  importId    String?      @map("import_id") @db.Uuid
+  importedAt  DateTime     @default(now()) @map("imported_at")
+
+  unit        Unit?        @relation(fields: [unitId], references: [id])
+  user        User?        @relation(fields: [userId], references: [id])
+  import      CnesImport?  @relation(fields: [importId], references: [id])
+  teamMembers TeamMember[]
+
+  @@map("cnes_professionals")
+}
+
+enum ImportKind {
+  ESTABELECIMENTOS
+  PROFISSIONAIS
+  EQUIPES
+}
+
+enum ImportStatus {
+  PREVIA
+  APLICADA
+  CANCELADA
+}
+
+/// Prévia e aplicação de uma importação do CNES (API do DATASUS ou planilha), com o que foi lido e o resultado.
+model CnesImport {
+  id        String       @id @default(uuid(7)) @db.Uuid
+  kind      ImportKind
+  ibgeCode  String?      @map("ibge_code")
+  source    String
+  status    ImportStatus @default(PREVIA)
+  summary   Json
+  payload   Json
+  actorId   String       @map("actor_id") @db.Uuid
+  createdAt DateTime     @default(now()) @map("created_at")
+  appliedAt DateTime?    @map("applied_at")
+
+  professionals CnesProfessional[]
+
+  @@map("cnes_imports")
+}
+
 model UserAssignment {
   id       String  @id @default(uuid(7)) @db.Uuid
   userId   String  @map("user_id") @db.Uuid

@@ -17,6 +17,19 @@ import { useApi } from '@/lib/hooks';
 import { useSession } from '@/lib/session';
 import type { AdminUnit, AdminUser, AssignmentDraft } from './types';
 
+interface Staged {
+  id: string;
+  name: string;
+  cpf: string | null;
+  cns: string | null;
+  cbo: string;
+  cboLabel: string | null;
+  council: string | null;
+  unitId: string | null;
+  unitName: string | null;
+  suggestedRole: Role;
+}
+
 const emptyPerson = { cpf: '', name: '', socialName: '', cns: '', email: '', phone: '' };
 type Person = typeof emptyPerson;
 const newRow = (unitId = ''): AssignmentDraft => ({ unitId, role: '', cbo: '', council: '' });
@@ -35,7 +48,8 @@ export function UsersAdmin() {
   const query = new URLSearchParams({ ...(q ? { q } : {}), ...(unitId ? { unitId } : {}), ...(role ? { role } : {}), ...(showInactive ? { includeInactive: 'true' } : {}) }).toString();
   const { data, loading, error, reload } = useApi<AdminUser[]>(`/admin/users?${query}`, [query]);
   const units = useApi<AdminUnit[]>('/admin/units');
-  const [editing, setEditing] = useState<{ id: string | null; person: Person; rows: AssignmentDraft[] } | null>(null);
+  const [editing, setEditing] = useState<{ id: string | null; person: Person; rows: AssignmentDraft[]; stagedId?: string | null } | null>(null);
+  const staged = useApi<Staged[]>('/admin/cnes/pre-cadastro');
   const [password, setPassword] = useState<{ name: string; value: string; reset: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<{ user: AdminUser; kind: 'password' | 'mfa' | 'deactivate' } | null>(null);
@@ -65,8 +79,9 @@ export function UsersAdmin() {
         await api.put(`/admin/users/${editing.id}/assignments`, assignments);
         toast.success('Profissional atualizado');
       } else {
-        const res = await api.post<{ user: AdminUser; provisionalPassword: string }>('/admin/users', { ...person, assignments });
+        const res = await api.post<{ user: AdminUser; provisionalPassword: string }>('/admin/users', { ...person, assignments, stagedId: editing.stagedId ?? null });
         setPassword({ name: res.user.name, value: res.provisionalPassword, reset: false });
+        if (editing.stagedId) await staged.reload();
       }
       setEditing(null);
       await reload();
@@ -258,6 +273,39 @@ export function UsersAdmin() {
       >
         {p && editing && (
           <div className="flex flex-col gap-5">
+            {!editing.id && !!staged.data?.length && (
+              <Field label="Preencher a partir do pré-cadastro do CNES" htmlFor="p-staged" hint={`${staged.data.length} profissional(is) importado(s) ainda sem acesso`}>
+                <Select
+                  id="p-staged"
+                  value={editing.stagedId ?? ''}
+                  onChange={(e) => {
+                    const st = staged.data?.find((x) => x.id === e.target.value);
+                    if (!st) {
+                      setEditing((ed) => (ed ? { ...ed, stagedId: null } : ed));
+                      return;
+                    }
+                    setEditing((ed) =>
+                      ed
+                        ? {
+                            ...ed,
+                            stagedId: st.id,
+                            person: { ...ed.person, name: st.name, cpf: st.cpf ? formatCpf(st.cpf) : ed.person.cpf, cns: st.cns ?? '' },
+                            rows: [{ unitId: st.unitId ?? '', role: st.suggestedRole, cbo: st.cbo, council: st.council ?? '' }],
+                          }
+                        : ed,
+                    );
+                  }}
+                >
+                  <option value="">Não usar</option>
+                  {staged.data.map((st) => (
+                    <option key={st.id} value={st.id}>
+                      {st.name} · {st.cboLabel ?? `CBO ${st.cbo}`}
+                      {st.unitName ? ` · ${st.unitName}` : ''}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field label="CPF" htmlFor="p-cpf">
                 <Input id="p-cpf" inputMode="numeric" value={p.cpf} onChange={(e) => setP({ cpf: formatCpf(e.target.value.replace(/\D/g, '').slice(0, 11)) })} disabled={!!editing.id} autoFocus={!editing.id} />

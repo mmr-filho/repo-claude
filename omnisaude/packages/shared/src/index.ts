@@ -1,6 +1,7 @@
 export * from './accr';
 export * from './cbo';
 export * from './clinical';
+export * from './cnes';
 export * from './dates';
 export * from './documents';
 export * from './gs1';

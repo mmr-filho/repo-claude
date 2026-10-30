@@ -58,6 +58,8 @@ const schema = z.object({
   RNDS_REQUESTER_CPF: z.string().optional(),
   SEFAZ_URL: z.string().optional(),
   SIGTAP_ZIP_URL: z.string().optional(),
+  /** API de dados abertos do Ministério da Saúde (estabelecimentos do CNES); os testes apontam para o simulador. */
+  CNES_API_URL: z.string().url().default('https://apidadosabertos.saude.gov.br'),
   /** Chave da central de intérpretes de Libras (login dos intérpretes no canal de vídeo). */
   LIBRAS_INTERPRETER_KEY: z.string().optional(),
   STUN_URL: z.string().default('stun:stun.l.google.com:19302'),

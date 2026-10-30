@@ -145,7 +145,7 @@ Sem isso, nenhuma secretaria consegue operar o OmniSaúde fora da demonstração
 | Código | Entrega | Tamanho | Depende de |
 |---|---|---|---|
 | NUC-6 | Telas de administração: unidades, profissionais, lotações (unidade + papel + CBO), usuários, redefinição de senha, 2FA obrigatório por papel | M | |
-| NUC-2/3 | Importação do CNES (estabelecimentos, profissionais, equipes INE, vínculos) por arquivo ou API do DATASUS, com conciliação | M | NUC-6 |
+| NUC-2/3 | Importação do CNES: estabelecimentos pela API do DATASUS com conciliação (feito); profissionais e equipes INE por planilha (feito) e pelo arquivo "XML e-SUS AB" do CNES (pendente: depende de um exemplo do arquivo, cujo layout não é público) | M | NUC-6 |
 | NUC-1 | Cadastro completo do cidadão (documentos, endereço com CEP, domicílio, família, responsável), unificação de cadastros duplicados, CPF como identificador | M | |
 | ATD-4 | Assinatura ICP-Brasil (A1 no servidor; A3/nuvem pelo navegador) de prontuário, receita, atestado e documentos; validação | G | |
 | FAT-1 | Validar o layout do BPA com o documento oficial do DATASUS e com uma competência real | P | |

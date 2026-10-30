@@ -43,6 +43,44 @@ export interface MockState {
 
 const MAX_BODY = 5 * 1024 * 1024;
 
+/**
+ * Recorte do CNES de Gurupi/TO (código IBGE 170950) no formato da API de dados abertos do Ministério da
+ * Saúde (/cnes/estabelecimentos). O CNES 9000011 coincide com a "UBS Centro" da demonstração, para testar
+ * a conciliação; os demais são novos. Um está desativado.
+ */
+const CNES_ESTABELECIMENTOS = [
+  { codigo_cnes: 9000011, nome_fantasia: 'UBS CENTRO', codigo_tipo_unidade: 2, nat: '1244', esfera: 'MUNICIPAL', tel: '63-3315-0100', email: 'ubs.centro@gurupi.to.gov.br', end: ['RUA 7', '120', 'CENTRO', '77405070'], turno: 'ATENDIMENTO NOS TURNOS DA MANHA, TARDE E NOITE', sus: 'SIM', lat: -11.7292, lon: -49.0686, motivo: null },
+  { codigo_cnes: 2546434, nome_fantasia: 'UNIDADE BASICA DE SAUDE ULISSES MOREIRA MILHOMEM', codigo_tipo_unidade: 2, nat: '1244', esfera: 'MUNICIPAL', tel: '(63) 3315-0114', email: null, end: ['RUA 12', 'S/N', 'VILA NOVA', '77410000'], turno: 'ATENDIMENTO NOS TURNOS DA MANHA, TARDE E NOITE', sus: 'SIM', lat: -11.73, lon: -49.07, motivo: null },
+  { codigo_cnes: 3331326, nome_fantasia: 'UPA DRA MARCIA MUCKY', codigo_tipo_unidade: 73, nat: '1244', esfera: 'MUNICIPAL', tel: '(63)3315-0027', email: null, end: ['AV GOIAS', '1500', 'CENTRO', '77403000'], turno: 'ATENDIMENTO CONTINUO DE 24 HORAS/DIA (PLANTAO:INCLUI SABADOS, DOMINGOS E FERIADOS)', sus: 'SIM', lat: -11.74, lon: -49.06, motivo: null },
+  { codigo_cnes: 2786109, nome_fantasia: 'HOSPITAL REGIONAL DE GURUPI', codigo_tipo_unidade: 5, nat: '1023', esfera: 'ESTADUAL', tel: '3027 5147', email: null, end: ['AV PARA', '1800', 'CENTRO', '77403010'], turno: 'ATENDIMENTO CONTINUO DE 24 HORAS/DIA (PLANTAO:INCLUI SABADOS, DOMINGOS E FERIADOS)', sus: 'SIM', lat: -11.735, lon: -49.065, motivo: null },
+  { codigo_cnes: 8395594, nome_fantasia: 'FARMACIA CENTRAL', codigo_tipo_unidade: 43, nat: '1244', esfera: 'MUNICIPAL', tel: null, email: null, end: ['RUA 3', '45', 'CENTRO', '77403050'], turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE', sus: 'NAO', lat: null, lon: null, motivo: null },
+  { codigo_cnes: 549126, nome_fantasia: 'COORDENADORIA DE VIGILANCIA EPIDEMIOLOGICA', codigo_tipo_unidade: 50, nat: '1244', esfera: 'MUNICIPAL', tel: '6333150088', email: null, end: ['PERNAMBUCO', '1345', 'CENTRO', '77403020'], turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE', sus: 'NAO', lat: null, lon: null, motivo: null },
+  { codigo_cnes: 9695214, nome_fantasia: 'REAVITTA CENTRO DE SAUDE E ESTETICA AVANCADA', codigo_tipo_unidade: 36, nat: '2135', esfera: 'MUNICIPAL', tel: null, email: null, end: ['RUA 20', '300', 'CENTRO', '77403100'], turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE', sus: 'NAO', lat: null, lon: null, motivo: null },
+  { codigo_cnes: 2546523, nome_fantasia: 'POSTO ANTIGO DESATIVADO', codigo_tipo_unidade: 1, nat: '1244', esfera: 'MUNICIPAL', tel: null, email: null, end: ['RUA 1', '1', 'CENTRO', '77403000'], turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE', sus: 'NAO', lat: null, lon: null, motivo: '08' },
+].map((e) => ({
+  codigo_cnes: e.codigo_cnes,
+  nome_razao_social: e.esfera === 'ESTADUAL' ? 'TOCANTINS SECRETARIA DE ESTADO DA SAUDE' : 'PREFEITURA MUNICIPAL DE GURUPI',
+  nome_fantasia: e.nome_fantasia,
+  tipo_gestao: e.esfera === 'ESTADUAL' ? 'E' : 'M',
+  descricao_esfera_administrativa: e.esfera,
+  codigo_tipo_unidade: e.codigo_tipo_unidade,
+  codigo_cep_estabelecimento: e.end[3],
+  endereco_estabelecimento: e.end[0],
+  numero_estabelecimento: e.end[1],
+  bairro_estabelecimento: e.end[2],
+  numero_telefone_estabelecimento: e.tel,
+  latitude_estabelecimento_decimo_grau: e.lat,
+  longitude_estabelecimento_decimo_grau: e.lon,
+  endereco_email_estabelecimento: e.email,
+  descricao_turno_atendimento: e.turno,
+  estabelecimento_faz_atendimento_ambulatorial_sus: e.sus,
+  codigo_uf: 17,
+  codigo_municipio: 170950,
+  descricao_natureza_juridica_estabelecimento: e.nat,
+  codigo_motivo_desabilitacao_estabelecimento: e.motivo,
+  data_atualizacao: '2026-09-15',
+}));
+
 class HttpError extends Error {
   constructor(
     readonly status: number,
@@ -118,7 +156,16 @@ export function createMockServer(opts: MockServerOptions = {}): http.Server & { 
     };
 
     if (path === '/health' && method === 'GET') {
-      return json(200, { status: 'ok', services: ['rnds', 'cadsus', 'sefaz', 'whatsapp'] });
+      return json(200, { status: 'ok', services: ['rnds', 'cadsus', 'sefaz', 'whatsapp', 'cnes'] });
+    }
+
+    // API de dados abertos do Ministério da Saúde: estabelecimentos do CNES por município (páginas de 20).
+    if (path === '/cnes/estabelecimentos' && method === 'GET') {
+      const municipio = url.searchParams.get('codigo_municipio');
+      const limit = Math.min(Number(url.searchParams.get('limit') ?? 20) || 20, 20);
+      const offset = Number(url.searchParams.get('offset') ?? 0) || 0;
+      const all = municipio === '170950' ? CNES_ESTABELECIMENTOS : [];
+      return json(200, { estabelecimentos: all.slice(offset, offset + limit) });
     }
 
     // RNDS: autenticação (o mTLS real é dispensado no simulador)

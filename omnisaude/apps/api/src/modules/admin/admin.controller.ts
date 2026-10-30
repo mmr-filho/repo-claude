@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
 import { zv } from '../../core/zod';
 import { AdminService } from './admin.service';
+import { CnesService } from './cnes.service';
 
 const optionalText = (max: number) => z.string().trim().max(max).nullable().optional();
 const flag = z
@@ -36,14 +37,26 @@ const userSchema = z.object({
   email: z.string().trim().email().nullable().optional().or(z.literal('')),
   phone: optionalText(20),
   assignments: z.array(assignmentSchema).min(1).max(20),
+  /** Pré-cadastro do CNES que este acesso completa. */
+  stagedId: z.string().uuid().nullable().optional(),
 });
-const userPatchSchema = userSchema.omit({ assignments: true }).partial().extend({ active: z.boolean().optional() });
+const userPatchSchema = userSchema.omit({ assignments: true, stagedId: true }).partial().extend({ active: z.boolean().optional() });
 const usersQuerySchema = z.object({ q: z.string().max(80).optional(), unitId: z.string().uuid().optional(), role: z.enum(ROLES).optional(), includeInactive: flag });
 const securitySchema = z.object({ mfaRequiredRoles: z.array(z.enum(ROLES)).max(ROLES.length) });
 
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    private readonly cnes: CnesService,
+  ) {}
+
+  /** Equipes (INE) com unidade e número de membros. */
+  @Get('teams')
+  @RequirePermission('cadastros.profissionais')
+  teams(@Ctx() ctx: RequestContext) {
+    return this.cnes.listTeams(ctx);
+  }
 
   @Get('units')
   @RequirePermission('cadastros.unidades')

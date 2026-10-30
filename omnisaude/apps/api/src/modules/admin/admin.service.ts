@@ -5,6 +5,7 @@ import type { RequestContext } from '../../core/context';
 import { MASTER_DB, TenantsService } from '../../core/database';
 import { DomainError, notFound } from '../../core/errors';
 import { generateProvisionalPassword } from './passwords';
+import { linkStaged } from './staged';
 
 export interface UnitInput {
   name: string;
@@ -138,7 +139,8 @@ export class AdminService {
     return this.userView(user);
   }
 
-  async createUser(ctx: RequestContext, input: UserInput) {
+  /** Cria o acesso com senha provisória; `stagedId` vincula um pré-cadastro vindo do CNES (e suas equipes). */
+  async createUser(ctx: RequestContext, input: UserInput & { stagedId?: string | null }) {
     const person = this.personData(input);
     const assignments = await this.validateAssignments(ctx.db, input.assignments);
     const provisionalPassword = generateProvisionalPassword();
@@ -148,10 +150,24 @@ export class AdminService {
         data: { ...person, cpf: person.cpf!, name: person.name!, passwordHash, mustChangePassword: true, assignments: { create: assignments } },
         include: userInclude,
       });
-      await this.audit(tx, ctx, 'profissional.criar', 'User', created.id, { cpf: created.cpf, name: created.name, assignments });
+      if (input.stagedId) await linkStaged(tx, input.stagedId, created.id);
+      await this.audit(tx, ctx, 'profissional.criar', 'User', created.id, { cpf: created.cpf, name: created.name, assignments, stagedId: input.stagedId ?? null });
       return created;
     });
     return { user: this.userView(user), provisionalPassword };
+  }
+
+  /** Inclui (ou reativa) uma lotação sem mexer nas demais; usado pela importação de planilhas. */
+  async addAssignment(ctx: RequestContext, userId: string, input: AssignmentInput) {
+    const [a] = await this.validateAssignments(ctx.db, [input]);
+    await ctx.db.$transaction(async (tx) => {
+      await tx.userAssignment.upsert({
+        where: { userId_unitId_role: { userId, unitId: a!.unitId, role: a!.role } },
+        create: { userId, ...a!, active: true },
+        update: { cbo: a!.cbo, council: a!.council ?? undefined, active: true },
+      });
+      await this.audit(tx, ctx, 'profissional.lotacao_incluir', 'User', userId, a);
+    });
   }
 
   async updateUser(ctx: RequestContext, id: string, input: Partial<Omit<UserInput, 'assignments'>> & { active?: boolean }) {
