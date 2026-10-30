@@ -3,6 +3,7 @@
 import { AlertTriangle, Pencil, Plus, Printer } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useState } from 'react';
+import { FamilyCard } from '@/components/patients/family-card';
 import { PrintPortal, printSoon } from '@/components/patients/print-portal';
 import { Timeline } from '@/components/patients/timeline';
 import type { PatientDetail, TimelineEvent, Wristband } from '@/components/patients/types';
@@ -51,7 +52,18 @@ function toForm(p: PatientDetail): PatientFormValues {
     number: p.address.number ?? '',
     complement: p.address.complement ?? '',
     district: p.address.district ?? '',
+    city: p.address.city ?? '',
+    uf: p.address.uf ?? '',
     ibgeCode: p.address.ibgeCode ?? '',
+    rg: p.rg ?? '',
+    rgIssuer: p.rgIssuer ?? '',
+    rgUf: p.rgUf ?? '',
+    nis: p.nis ?? '',
+    birthIbgeCode: p.birthIbgeCode ?? '',
+    education: p.education ?? '',
+    workSituation: p.workSituation ?? '',
+    occupationCbo: p.occupationCbo ?? '',
+    homeless: p.homeless,
   };
 }
 
@@ -85,6 +97,7 @@ function PatientRecord() {
 
   return (
     <div className="flex flex-col gap-4">
+      {p.redirectedFromId && <Alert tone="info">O cadastro consultado foi unificado neste. Atualize seus atalhos para este registro.</Alert>}
       <Card className="p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -175,12 +188,15 @@ function PatientRecord() {
               )}
             </CardBody>
           </Card>
+          <FamilyCard patient={p} onChanged={() => void patient.reload()} />
           <Card>
             <CardHeader title="Contato" />
             <CardBody className="text-sm text-slate-700">
               <p>{p.phone ?? 'Sem telefone'}</p>
               <p>{p.email ?? ''}</p>
               <p>{[p.address.street, p.address.number, p.address.complement, p.address.district].filter(Boolean).join(', ') || 'Sem endereço'}</p>
+              {(p.address.city || p.address.cep) && <p className="text-slate-500">{[p.address.city && p.address.uf ? `${p.address.city}/${p.address.uf}` : p.address.city, p.address.cep ? `CEP ${p.address.cep.replace(/(\d{5})(\d{3})/, '$1-$2')}` : null].filter(Boolean).join(' · ')}</p>}
+              {p.homeless && <p className="mt-1"><Badge tone="amber">Situação de rua</Badge></p>}
             </CardBody>
           </Card>
         </div>

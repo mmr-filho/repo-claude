@@ -156,7 +156,17 @@ export function createMockServer(opts: MockServerOptions = {}): http.Server & { 
     };
 
     if (path === '/health' && method === 'GET') {
-      return json(200, { status: 'ok', services: ['rnds', 'cadsus', 'sefaz', 'whatsapp', 'cnes'] });
+      return json(200, { status: 'ok', services: ['rnds', 'cadsus', 'sefaz', 'whatsapp', 'cnes', 'viacep'] });
+    }
+
+    // ViaCEP: consulta de endereço por CEP (dois CEPs conhecidos; os demais devolvem {"erro": true}).
+    const cepMatch = path.match(/^\/ws\/(\d{8})\/json$/);
+    if (cepMatch && method === 'GET') {
+      const known: Record<string, object> = {
+        '77405070': { cep: '77405-070', logradouro: 'Rua de 14 Novembro', complemento: 'de 1500/1501 ao fim', bairro: 'Setor Central', localidade: 'Gurupi', uf: 'TO', ibge: '1709500', ddd: '63' },
+        '01001000': { cep: '01001-000', logradouro: 'Praça da Sé', complemento: 'lado ímpar', bairro: 'Sé', localidade: 'São Paulo', uf: 'SP', ibge: '3550308', ddd: '11' },
+      };
+      return json(200, known[cepMatch[1]!] ?? { erro: true });
     }
 
     // API de dados abertos do Ministério da Saúde: estabelecimentos do CNES por município (páginas de 20).

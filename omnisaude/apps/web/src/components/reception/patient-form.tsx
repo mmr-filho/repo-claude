@@ -1,8 +1,8 @@
 'use client';
 
-import { RACA_COR, isValidCns, isValidCpf, onlyDigits } from '@omnisaude/shared';
+import { ESCOLARIDADE, RACA_COR, SITUACAO_TRABALHO, UFS, codeIn, isValidCns, isValidCpf, onlyDigits } from '@omnisaude/shared';
 import { Camera, FileText, IdCard, ScanSearch, Upload } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
@@ -34,7 +34,18 @@ export interface PatientFormValues {
   number: string;
   complement: string;
   district: string;
+  city: string;
+  uf: string;
   ibgeCode: string;
+  rg: string;
+  rgIssuer: string;
+  rgUf: string;
+  nis: string;
+  birthIbgeCode: string;
+  education: string;
+  workSituation: string;
+  occupationCbo: string;
+  homeless: boolean;
 }
 
 export const EMPTY_PATIENT: PatientFormValues = {
@@ -55,7 +66,18 @@ export const EMPTY_PATIENT: PatientFormValues = {
   number: '',
   complement: '',
   district: '',
+  city: '',
+  uf: '',
   ibgeCode: '',
+  rg: '',
+  rgIssuer: '',
+  rgUf: '',
+  nis: '',
+  birthIbgeCode: '',
+  education: '',
+  workSituation: '',
+  occupationCbo: '',
+  homeless: false,
 };
 
 interface Citizen {
@@ -101,8 +123,26 @@ export function toPatientPayload(v: PatientFormValues) {
     phone: opt(onlyDigits(v.phone)),
     whatsappOptIn: v.whatsappOptIn,
     email: opt(v.email),
-    address: { cep: opt(onlyDigits(v.cep)), street: opt(v.street), number: opt(v.number), complement: opt(v.complement), district: opt(v.district), ibgeCode: opt(v.ibgeCode) },
+    rg: opt(v.rg),
+    rgIssuer: opt(v.rgIssuer),
+    rgUf: opt(v.rgUf),
+    nis: opt(onlyDigits(v.nis)),
+    birthIbgeCode: opt(onlyDigits(v.birthIbgeCode)),
+    education: opt(v.education),
+    workSituation: opt(v.workSituation),
+    occupationCbo: opt(onlyDigits(v.occupationCbo)),
+    homeless: v.homeless,
+    address: { cep: opt(onlyDigits(v.cep)), street: opt(v.street), number: opt(v.number), complement: opt(v.complement), district: opt(v.district), city: opt(v.city), uf: opt(v.uf), ibgeCode: opt(onlyDigits(v.ibgeCode)) },
   };
+}
+
+interface CepResult {
+  cep: string;
+  street: string | null;
+  district: string | null;
+  city: string | null;
+  uf: string | null;
+  ibgeCode: string | null;
 }
 
 /** Campos do cadastro (reaproveitados na edição). */
@@ -110,6 +150,33 @@ export function PatientFields({ values, onChange }: { values: PatientFormValues;
   const set = <K extends keyof PatientFormValues>(k: K, val: PatientFormValues[K]) => onChange({ ...values, [k]: val });
   const cpfErr = values.cpf && !isValidCpf(values.cpf) ? 'CPF inválido' : null;
   const cnsErr = values.cns && !isValidCns(values.cns) ? 'CNS inválido' : null;
+  const [cepStatus, setCepStatus] = useState<string | null>(null);
+  const lastCep = useRef('');
+  const latest = useRef(values);
+  latest.current = values;
+  // Busca o endereço quando o CEP fica completo (ViaCEP via API); número e complemento continuam com o usuário.
+  const cepDigits = onlyDigits(values.cep);
+  useEffect(() => {
+    if (cepDigits.length !== 8 || cepDigits === lastCep.current) return;
+    lastCep.current = cepDigits;
+    let cancelled = false;
+    setCepStatus('Buscando endereço…');
+    api
+      .get<CepResult>(`/patients/cep/${cepDigits}`)
+      .then((r) => {
+        if (cancelled) return;
+        const v = latest.current;
+        onChange({ ...v, street: r.street ?? v.street, district: r.district ?? v.district, city: r.city ?? v.city, uf: r.uf ?? v.uf, ibgeCode: r.ibgeCode ?? v.ibgeCode });
+        setCepStatus(`${r.city ?? ''}${r.uf ? `/${r.uf}` : ''}`.trim() || null);
+      })
+      .catch((err) => {
+        if (!cancelled) setCepStatus(err instanceof ApiError && err.status === 404 ? 'CEP não encontrado' : 'Sem consulta de CEP; preencha manualmente');
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cepDigits]);
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       <Field label="Nome completo (civil)" htmlFor="pf-name" className="sm:col-span-2">
@@ -159,7 +226,59 @@ export function PatientFields({ values, onChange }: { values: PatientFormValues;
         <input type="checkbox" className="h-5 w-5" checked={values.whatsappOptIn} onChange={(e) => set('whatsappOptIn', e.target.checked)} />
         Aceita receber confirmações de consulta e lembretes de medicação pelo WhatsApp
       </label>
-      <Field label="CEP" htmlFor="pf-cep">
+      <h3 className="mt-2 text-sm font-semibold text-slate-700 sm:col-span-2 lg:col-span-3">Documentos</h3>
+      <Field label="RG" htmlFor="pf-rg">
+        <Input id="pf-rg" value={values.rg} onChange={(e) => set('rg', e.target.value)} />
+      </Field>
+      <Field label="Órgão emissor" htmlFor="pf-rg-issuer">
+        <Input id="pf-rg-issuer" value={values.rgIssuer} onChange={(e) => set('rgIssuer', e.target.value)} placeholder="SSP" />
+      </Field>
+      <Field label="UF do RG" htmlFor="pf-rg-uf">
+        <Select id="pf-rg-uf" value={values.rgUf} onChange={(e) => set('rgUf', e.target.value)}>
+          <option value="">—</option>
+          {UFS.map((u) => (
+            <option key={u} value={u}>
+              {u}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="NIS / PIS" htmlFor="pf-nis" hint="Bolsa Família e benefícios">
+        <Input id="pf-nis" value={values.nis} onChange={(e) => set('nis', e.target.value)} inputMode="numeric" />
+      </Field>
+      <Field label="Município de nascimento (IBGE)" htmlFor="pf-birth-ibge" hint="7 dígitos">
+        <Input id="pf-birth-ibge" value={values.birthIbgeCode} onChange={(e) => set('birthIbgeCode', e.target.value.replace(/\D/g, '').slice(0, 7))} inputMode="numeric" />
+      </Field>
+      <h3 className="mt-2 text-sm font-semibold text-slate-700 sm:col-span-2 lg:col-span-3">Dados sociais</h3>
+      <Field label="Escolaridade" htmlFor="pf-edu">
+        <Select id="pf-edu" value={values.education} onChange={(e) => set('education', e.target.value)}>
+          <option value="">Não informada</option>
+          {codeIn(ESCOLARIDADE).map((k) => (
+            <option key={k} value={k}>
+              {ESCOLARIDADE[k]}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="Situação no mercado de trabalho" htmlFor="pf-work">
+        <Select id="pf-work" value={values.workSituation} onChange={(e) => set('workSituation', e.target.value)}>
+          <option value="">Não informada</option>
+          {codeIn(SITUACAO_TRABALHO).map((k) => (
+            <option key={k} value={k}>
+              {SITUACAO_TRABALHO[k]}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="Ocupação (CBO)" htmlFor="pf-cbo" hint="6 dígitos">
+        <Input id="pf-cbo" value={values.occupationCbo} onChange={(e) => set('occupationCbo', e.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" />
+      </Field>
+      <label className="flex min-h-11 items-center gap-2 text-sm sm:col-span-2 lg:col-span-3">
+        <input type="checkbox" className="h-5 w-5" checked={values.homeless} onChange={(e) => set('homeless', e.target.checked)} />
+        Pessoa em situação de rua
+      </label>
+      <h3 className="mt-2 text-sm font-semibold text-slate-700 sm:col-span-2 lg:col-span-3">Endereço</h3>
+      <Field label="CEP" htmlFor="pf-cep" hint={cepStatus ?? 'Preenche o endereço automaticamente'}>
         <Input id="pf-cep" value={values.cep} onChange={(e) => set('cep', e.target.value)} inputMode="numeric" />
       </Field>
       <Field label="Logradouro" htmlFor="pf-street" className="lg:col-span-2">
@@ -173,6 +292,22 @@ export function PatientFields({ values, onChange }: { values: PatientFormValues;
       </Field>
       <Field label="Bairro" htmlFor="pf-district">
         <Input id="pf-district" value={values.district} onChange={(e) => set('district', e.target.value)} />
+      </Field>
+      <Field label="Município" htmlFor="pf-city">
+        <Input id="pf-city" value={values.city} onChange={(e) => set('city', e.target.value)} />
+      </Field>
+      <Field label="UF" htmlFor="pf-uf">
+        <Select id="pf-uf" value={values.uf} onChange={(e) => set('uf', e.target.value)}>
+          <option value="">—</option>
+          {UFS.map((u) => (
+            <option key={u} value={u}>
+              {u}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="Código IBGE do município" htmlFor="pf-ibge">
+        <Input id="pf-ibge" value={values.ibgeCode} onChange={(e) => set('ibgeCode', e.target.value.replace(/\D/g, '').slice(0, 7))} inputMode="numeric" />
       </Field>
     </div>
   );

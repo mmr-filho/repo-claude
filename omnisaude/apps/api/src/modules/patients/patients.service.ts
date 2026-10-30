@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import {
   ageInYears,
   isValidCns,
@@ -8,6 +8,7 @@ import {
   personNameKey,
 } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
+import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
 import { conflict, DomainError, notFound } from '../../core/errors';
 import type { PatientInput } from './patients.schemas';
@@ -45,7 +46,10 @@ const APPOINTMENT_STATUS: Record<string, string> = {
 
 @Injectable()
 export class PatientsService {
-  constructor(private readonly audit: AuditService) {}
+  constructor(
+    private readonly audit: AuditService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
+  ) {}
 
   async search(ctx: RequestContext, q: string, limit = 20) {
     const digits = onlyDigits(q);
@@ -55,16 +59,41 @@ export class PatientsService {
         : digits.length === 15
           ? { cns: digits }
           : { nameKey: { contains: personNameKey(q) } };
-    const rows = await ctx.db.patient.findMany({ where, take: limit, orderBy: { name: 'asc' } });
+    const rows = await ctx.db.patient.findMany({ where: { ...where, mergedIntoId: null }, take: limit, orderBy: { name: 'asc' } });
     return rows.map(patientSummary);
   }
 
+  /** Endereço a partir do CEP (ViaCEP). */
+  async lookupCep(cep: string) {
+    const digits = onlyDigits(cep);
+    if (digits.length !== 8) throw new DomainError('CEP_INVALIDO', 'CEP deve ter 8 dígitos');
+    let res: Response;
+    try {
+      res = await fetch(`${this.config.CEP_API_URL.replace(/\/$/, '')}/${digits}/json/`, { signal: AbortSignal.timeout(8_000), headers: { accept: 'application/json' } });
+    } catch {
+      throw new DomainError('CEP_INDISPONIVEL', 'Consulta de CEP indisponível no momento; preencha o endereço manualmente', HttpStatus.BAD_GATEWAY);
+    }
+    if (!res.ok) throw new DomainError('CEP_INDISPONIVEL', `Consulta de CEP respondeu HTTP ${res.status}`, HttpStatus.BAD_GATEWAY);
+    const data = (await res.json()) as { erro?: boolean; logradouro?: string; bairro?: string; localidade?: string; uf?: string; ibge?: string };
+    if (data.erro) throw notFound('CEP');
+    return { cep: digits, street: data.logradouro || null, district: data.bairro || null, city: data.localidade || null, uf: data.uf || null, ibgeCode: data.ibge || null };
+  }
+
   async get(ctx: RequestContext, id: string) {
-    const p = await ctx.db.patient.findUnique({
-      where: { id },
-      include: { allergies: true, conditions: { where: { active: true } } },
-    });
+    const include = {
+      allergies: true,
+      conditions: { where: { active: true } },
+      family: { include: { household: true, responsible: true, members: { where: { mergedIntoId: null }, orderBy: { birthDate: 'asc' as const } } } },
+    };
+    let p = await ctx.db.patient.findUnique({ where: { id }, include });
     if (!p) throw notFound('Paciente');
+    // Cadastro unificado: devolve o que ficou, avisando de onde veio.
+    const redirectedFromId = p.mergedIntoId ? id : null;
+    if (p.mergedIntoId) {
+      p = await ctx.db.patient.findUnique({ where: { id: p.mergedIntoId }, include });
+      if (!p) throw notFound('Paciente');
+    }
+    const h = p.family?.household;
     return {
       ...patientSummary(p),
       fatherName: p.fatherName,
@@ -72,8 +101,49 @@ export class PatientsService {
       phone: p.phone,
       whatsappOptIn: p.whatsappOptIn,
       email: p.email,
-      address: { cep: p.cep, street: p.street, number: p.number, complement: p.complement, district: p.district, ibgeCode: p.ibgeCode },
+      rg: p.rg,
+      rgIssuer: p.rgIssuer,
+      rgUf: p.rgUf,
+      nis: p.nis,
+      birthIbgeCode: p.birthIbgeCode,
+      education: p.education,
+      workSituation: p.workSituation,
+      occupationCbo: p.occupationCbo,
+      homeless: p.homeless,
+      kinship: p.kinship,
+      address: { cep: p.cep, street: p.street, number: p.number, complement: p.complement, district: p.district, city: p.city, uf: p.uf, ibgeCode: p.ibgeCode },
       cadsusSyncedAt: p.cadsusSyncedAt,
+      redirectedFromId,
+      family: p.family
+        ? {
+            id: p.family.id,
+            householdId: p.family.householdId,
+            recordNumber: p.family.recordNumber,
+            incomeBracket: p.family.incomeBracket,
+            responsible: p.family.responsible ? patientSummary(p.family.responsible) : null,
+            members: p.family.members.map((m) => ({ ...patientSummary(m), kinship: m.kinship })),
+            household: h
+              ? {
+                  id: h.id,
+                  addressLine: [h.street, h.number, h.complement, h.district].filter(Boolean).join(', ') || null,
+                  cep: h.cep,
+                  city: h.city,
+                  uf: h.uf,
+                  dwellingType: h.dwellingType,
+                  tenure: h.tenure,
+                  waterSupply: h.waterSupply,
+                  waterTreatment: h.waterTreatment,
+                  sewage: h.sewage,
+                  garbage: h.garbage,
+                  electricity: h.electricity,
+                  rooms: h.rooms,
+                  microArea: h.microArea,
+                  teamId: h.teamId,
+                  unitId: h.unitId,
+                }
+              : null,
+          }
+        : null,
       allergies: p.allergies.map((a) => ({ id: a.id, substance: a.substance, reaction: a.reaction, severity: a.severity })),
       conditions: p.conditions.map((c) => ({ id: c.id, system: c.system, code: c.code, description: c.description, lineOfCare: c.lineOfCare })),
     };
@@ -84,7 +154,7 @@ export class PatientsService {
     const or: object[] = [{ nameKey: personNameKey(input.name), birthDate: new Date(input.birthDate) }];
     if (input.cpf) or.push({ cpf: onlyDigits(input.cpf) });
     if (input.cns) or.push({ cns: onlyDigits(input.cns) });
-    const rows = await ctx.db.patient.findMany({ where: { OR: or, ...(excludeId ? { id: { not: excludeId } } : {}) }, take: 10 });
+    const rows = await ctx.db.patient.findMany({ where: { OR: or, mergedIntoId: null, ...(excludeId ? { id: { not: excludeId } } : {}) }, take: 10 });
     return rows.map((r) => ({
       ...patientSummary(r),
       reason:
@@ -123,7 +193,18 @@ export class PatientsService {
       number: input.address?.number ?? null,
       complement: input.address?.complement ?? null,
       district: input.address?.district ?? null,
-      ibgeCode: input.address?.ibgeCode ?? null,
+      city: input.address?.city ?? null,
+      uf: input.address?.uf ?? null,
+      ibgeCode: input.address?.ibgeCode ? onlyDigits(input.address.ibgeCode) : null,
+      rg: input.rg?.trim() || null,
+      rgIssuer: input.rgIssuer?.trim().toUpperCase() || null,
+      rgUf: input.rgUf ?? null,
+      nis: input.nis ? onlyDigits(input.nis) || null : null,
+      birthIbgeCode: input.birthIbgeCode ?? null,
+      education: input.education ?? null,
+      workSituation: input.workSituation ?? null,
+      occupationCbo: input.occupationCbo ?? null,
+      homeless: input.homeless ?? false,
     };
   }
 
@@ -159,9 +240,19 @@ export class PatientsService {
         phone: current.phone,
         whatsappOptIn: current.whatsappOptIn,
         email: current.email,
-        address: { cep: current.cep, street: current.street, number: current.number, complement: current.complement, district: current.district, ibgeCode: current.ibgeCode },
+        rg: current.rg,
+        rgIssuer: current.rgIssuer,
+        rgUf: current.rgUf,
+        nis: current.nis,
+        birthIbgeCode: current.birthIbgeCode,
+        education: current.education,
+        workSituation: current.workSituation,
+        occupationCbo: current.occupationCbo,
+        homeless: current.homeless,
+        address: { cep: current.cep, street: current.street, number: current.number, complement: current.complement, district: current.district, city: current.city, uf: current.uf, ibgeCode: current.ibgeCode },
       },
       ...input,
+      ...(input.address ? { address: { cep: current.cep, street: current.street, number: current.number, complement: current.complement, district: current.district, city: current.city, uf: current.uf, ibgeCode: current.ibgeCode, ...input.address } } : {}),
     } as PatientInput);
     const dupes = (await this.findDuplicates(ctx, { ...merged, birthDate: merged.birthDate.toISOString().slice(0, 10) }, id)).filter((d) => d.reason !== 'NOME_NASCIMENTO');
     if (dupes.length) throw conflict('CPF/CNS já pertence a outro paciente', { duplicates: dupes });
@@ -286,7 +377,94 @@ export class PatientsService {
   }
 
   async ensure(ctx: RequestContext, id: string) {
-    const p = await ctx.db.patient.findUnique({ where: { id }, select: { id: true } });
+    const p = await ctx.db.patient.findUnique({ where: { id }, select: { id: true, mergedIntoId: true } });
     if (!p) throw notFound('Paciente');
+    if (p.mergedIntoId) throw new DomainError('PACIENTE_UNIFICADO', 'Este cadastro foi unificado em outro; use o cadastro que ficou', HttpStatus.CONFLICT, { mergedIntoId: p.mergedIntoId });
+  }
+
+  /** Grupos de cadastros com o mesmo nome e data de nascimento (candidatos a unificação). */
+  async duplicateCandidates(ctx: RequestContext, limit = 50) {
+    const groups = await ctx.db.$queryRaw<{ name_key: string; birth_date: Date; n: bigint }[]>`
+      SELECT name_key, birth_date, count(*) AS n FROM patients
+      WHERE merged_into_id IS NULL
+      GROUP BY name_key, birth_date HAVING count(*) > 1
+      ORDER BY n DESC, name_key LIMIT ${limit}`;
+    const out = [];
+    for (const g of groups) {
+      const rows = await ctx.db.patient.findMany({
+        where: { nameKey: g.name_key, birthDate: g.birth_date, mergedIntoId: null },
+        include: { _count: { select: { encounters: true, appointments: true, prescriptions: true, vaccinations: true, dispensations: true, documents: true } } },
+        orderBy: { createdAt: 'asc' },
+      });
+      out.push({
+        key: `${g.name_key}|${g.birth_date.toISOString().slice(0, 10)}`,
+        name: rows[0]?.name ?? g.name_key,
+        birthDate: g.birth_date.toISOString().slice(0, 10),
+        patients: rows.map((r) => ({
+          ...patientSummary(r),
+          phone: r.phone,
+          email: r.email,
+          address: [r.street, r.number, r.district].filter(Boolean).join(', ') || null,
+          cadsusSyncedAt: r.cadsusSyncedAt,
+          createdAt: r.createdAt,
+          counts: r._count,
+          records: Object.values(r._count).reduce((a, b) => a + b, 0),
+        })),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Unifica dois cadastros da mesma pessoa: tudo o que estava ligado ao duplicado (atendimentos, prescrições,
+   * vacinas, dispensações, documentos...) passa ao que fica; campos vazios do que fica são completados; o
+   * duplicado deixa de aparecer nas buscas e passa a redirecionar.
+   */
+  async merge(ctx: RequestContext, survivorId: string, duplicateId: string) {
+    if (survivorId === duplicateId) throw new DomainError('MESMO_CADASTRO', 'Escolha dois cadastros diferentes');
+    const [s, d] = await Promise.all([ctx.db.patient.findUnique({ where: { id: survivorId } }), ctx.db.patient.findUnique({ where: { id: duplicateId } })]);
+    if (!s || s.mergedIntoId) throw notFound('Cadastro que fica');
+    if (!d || d.mergedIntoId) throw notFound('Cadastro duplicado');
+    const fillable = ['cpf', 'cns', 'socialName', 'motherName', 'fatherName', 'phone', 'email', 'cep', 'street', 'number', 'complement', 'district', 'city', 'uf', 'ibgeCode', 'rg', 'rgIssuer', 'rgUf', 'nis', 'birthIbgeCode', 'education', 'workSituation', 'occupationCbo', 'etnia'] as const;
+    const fill: Record<string, unknown> = {};
+    for (const f of fillable) if (s[f] == null && d[f] != null) fill[f] = d[f];
+    if (s.racaCor === '99' && d.racaCor !== '99') fill.racaCor = d.racaCor;
+    return ctx.db.$transaction(async (tx) => {
+      // CPF e CNS são únicos: saem do duplicado antes de irem para o que fica.
+      await tx.patient.update({ where: { id: d.id }, data: { cpf: null, cns: null, familyId: null, kinship: null, mergedIntoId: s.id, mergedAt: new Date() } });
+      const moved: Record<string, number> = {};
+      const where = { where: { patientId: d.id }, data: { patientId: s.id } };
+      moved.allergies = (await tx.patientAllergy.updateMany(where)).count;
+      moved.conditions = (await tx.patientCondition.updateMany(where)).count;
+      moved.documents = (await tx.patientDocument.updateMany(where)).count;
+      moved.appointments = (await tx.appointment.updateMany(where)).count;
+      moved.waitlist = (await tx.waitlistEntry.updateMany(where)).count;
+      moved.tickets = (await tx.ticket.updateMany(where)).count;
+      moved.encounters = (await tx.encounter.updateMany(where)).count;
+      moved.prescriptions = (await tx.prescription.updateMany(where)).count;
+      moved.examRequests = (await tx.examRequest.updateMany(where)).count;
+      moved.vaccinations = (await tx.vaccination.updateMany(where)).count;
+      moved.admissions = (await tx.admission.updateMany(where)).count;
+      moved.stockMovements = (await tx.stockMovement.updateMany(where)).count;
+      moved.dispensations = (await tx.dispensation.updateMany(where)).count;
+      moved.administrations = (await tx.administration.updateMany(where)).count;
+      moved.popExecutions = (await tx.popExecution.updateMany(where)).count;
+      moved.production = (await tx.productionRecord.updateMany(where)).count;
+      moved.messages = (await tx.messageLog.updateMany(where)).count;
+      moved.activeSearch = (await tx.activeSearchCase.updateMany(where)).count;
+      await tx.family.updateMany({ where: { responsibleId: d.id }, data: { responsibleId: s.id } });
+      await tx.patient.update({
+        where: { id: s.id },
+        data: {
+          ...fill,
+          familyId: s.familyId ?? d.familyId,
+          kinship: s.kinship ?? d.kinship,
+          whatsappOptIn: s.whatsappOptIn || d.whatsappOptIn,
+          cadsusSyncedAt: s.cadsusSyncedAt ?? d.cadsusSyncedAt,
+        },
+      });
+      await this.audit.record(ctx, tx, { action: 'paciente.unificar', entityType: 'Patient', entityId: s.id, payload: { duplicateId: d.id, moved, filled: Object.keys(fill) } });
+      return { survivorId: s.id, duplicateId: d.id, moved, filled: Object.keys(fill) };
+    });
   }
 }

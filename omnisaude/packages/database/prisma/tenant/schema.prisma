@@ -54,6 +54,7 @@ model Unit {
   assignments    UserAssignment[]
   teams          Team[]
   cnesStaged     CnesProfessional[]
+  households     Household[]
   schedules      Schedule[]
   tickets        Ticket[]
   encounters     Encounter[]
@@ -121,8 +122,9 @@ model Team {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  unit    Unit         @relation(fields: [unitId], references: [id])
-  members TeamMember[]
+  unit       Unit         @relation(fields: [unitId], references: [id])
+  members    TeamMember[]
+  households Household[]
 
   @@map("teams")
 }
@@ -261,8 +263,32 @@ model Patient {
   ibgeCode       String?   @map("ibge_code")
   cadsusSyncedAt DateTime? @map("cadsus_synced_at")
   deceasedAt     DateTime? @map("deceased_at")
+  /// Documentos e dados sociais (cadastro individual do e-SUS).
+  rg             String?
+  rgIssuer       String?   @map("rg_issuer")
+  rgUf           String?   @map("rg_uf") @db.Char(2)
+  /// NIS/PIS (Bolsa Família e benefícios).
+  nis            String?   @db.Char(11)
+  birthIbgeCode  String?   @map("birth_ibge_code")
+  /// Códigos do e-SUS: escolaridade, situação no mercado de trabalho e parentesco com o responsável familiar.
+  education      String?   @db.Char(2)
+  workSituation  String?   @map("work_situation") @db.Char(2)
+  occupationCbo  String?   @map("occupation_cbo") @db.Char(6)
+  homeless       Boolean   @default(false)
+  city           String?
+  uf             String?   @db.Char(2)
+  familyId       String?   @map("family_id") @db.Uuid
+  kinship        String?   @db.Char(2)
+  /// Cadastro unificado em outro: sai das buscas e redireciona para o que ficou.
+  mergedIntoId   String?   @map("merged_into_id") @db.Uuid
+  mergedAt       DateTime? @map("merged_at")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  family        Family?   @relation("FamilyMembers", fields: [familyId], references: [id])
+  responsibleOf Family[]  @relation("FamilyResponsible")
+  mergedInto    Patient?  @relation("PatientMerge", fields: [mergedIntoId], references: [id])
+  mergedFrom    Patient[] @relation("PatientMerge")
 
   allergies   PatientAllergy[]
   conditions  PatientCondition[]
@@ -276,7 +302,70 @@ model Patient {
   activeSearchCases ActiveSearchCase[]
 
   @@index([nameKey, birthDate])
+  @@index([familyId])
   @@map("patients")
+}
+
+/// Domicílio (cadastro domiciliar do e-SUS): endereço, condições de moradia e as famílias que vivem nele.
+model Household {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  cep            String?  @db.Char(8)
+  street         String?
+  number         String?
+  complement     String?
+  district       String?
+  city           String?
+  uf             String?  @db.Char(2)
+  ibgeCode       String?  @map("ibge_code")
+  latitude       Float?
+  longitude      Float?
+  /// Códigos do e-SUS: tipo de imóvel, tipo de domicílio, situação de moradia, material das paredes, água, esgoto, lixo.
+  propertyType   String?  @map("property_type") @db.Char(2)
+  dwellingType   String?  @map("dwelling_type") @db.Char(2)
+  tenure         String?  @db.Char(2)
+  wallMaterial   String?  @map("wall_material") @db.Char(2)
+  waterSupply    String?  @map("water_supply") @db.Char(2)
+  waterTreatment String?  @map("water_treatment") @db.Char(2)
+  sewage         String?  @db.Char(2)
+  garbage        String?  @db.Char(2)
+  electricity    Boolean?
+  rooms          Int?
+  animals        String?
+  microArea      String?  @map("micro_area")
+  unitId         String?  @map("unit_id") @db.Uuid
+  teamId         String?  @map("team_id") @db.Uuid
+  notes          String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  unit     Unit?    @relation(fields: [unitId], references: [id])
+  team     Team?    @relation(fields: [teamId], references: [id])
+  families Family[]
+
+  @@index([cep])
+  @@index([ibgeCode, district])
+  @@map("households")
+}
+
+/// Família de um domicílio: responsável, membros (pacientes) e renda.
+model Family {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  householdId   String   @map("household_id") @db.Uuid
+  responsibleId String?  @map("responsible_id") @db.Uuid
+  /// Número do prontuário familiar em papel, quando a unidade usa.
+  recordNumber  String?  @map("record_number")
+  incomeBracket String?  @map("income_bracket") @db.Char(2)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  household   Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  responsible Patient?  @relation("FamilyResponsible", fields: [responsibleId], references: [id])
+  members     Patient[] @relation("FamilyMembers")
+
+  @@index([householdId])
+  @@map("families")
 }
 
 model PatientAllergy {

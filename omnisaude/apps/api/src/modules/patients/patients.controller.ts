@@ -27,6 +27,24 @@ export class PatientsController {
     return this.patients.findDuplicates(ctx, body);
   }
 
+  @Get('cep/:cep')
+  @RequirePermission('paciente.cadastrar')
+  cep(@Param('cep') cep: string) {
+    return this.patients.lookupCep(cep);
+  }
+
+  @Get('duplicates/candidates')
+  @RequirePermission('paciente.unificar')
+  candidates(@Ctx() ctx: RequestContext) {
+    return this.patients.duplicateCandidates(ctx);
+  }
+
+  @Post(':id/merge')
+  @RequirePermission('paciente.unificar')
+  merge(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(z.object({ duplicateId: z.string().uuid() }))) body: { duplicateId: string }) {
+    return this.patients.merge(ctx, id, body.duplicateId);
+  }
+
   @Get(':id')
   @RequirePermission('paciente.ler')
   get(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string) {

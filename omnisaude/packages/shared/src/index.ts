@@ -4,6 +4,7 @@ export * from './clinical';
 export * from './cnes';
 export * from './dates';
 export * from './documents';
+export * from './esus';
 export * from './gs1';
 export * from './roles';
 export * from './session';

@@ -1,4 +1,4 @@
-import { RACA_COR } from '@omnisaude/shared';
+import { codeIn, ESCOLARIDADE, RACA_COR, SITUACAO_TRABALHO, UFS } from '@omnisaude/shared';
 import { z } from 'zod';
 
 export const patientSchema = z.object({
@@ -14,6 +14,16 @@ export const patientSchema = z.object({
   phone: z.string().nullish(),
   whatsappOptIn: z.boolean().nullish(),
   email: z.string().email().nullish(),
+  /** Documentos e dados sociais (cadastro individual do e-SUS). */
+  rg: z.string().trim().max(20).nullish(),
+  rgIssuer: z.string().trim().max(20).nullish(),
+  rgUf: z.enum(UFS).nullish(),
+  nis: z.string().nullish(),
+  birthIbgeCode: z.string().regex(/^\d{6,7}$/).nullish(),
+  education: z.enum(codeIn(ESCOLARIDADE)).nullish(),
+  workSituation: z.enum(codeIn(SITUACAO_TRABALHO)).nullish(),
+  occupationCbo: z.string().regex(/^\d{6}$/).nullish(),
+  homeless: z.boolean().nullish(),
   address: z
     .object({
       cep: z.string().nullish(),
@@ -21,6 +31,8 @@ export const patientSchema = z.object({
       number: z.string().nullish(),
       complement: z.string().nullish(),
       district: z.string().nullish(),
+      city: z.string().nullish(),
+      uf: z.enum(UFS).nullish(),
       ibgeCode: z.string().nullish(),
     })
     .nullish(),

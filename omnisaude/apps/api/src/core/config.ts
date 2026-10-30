@@ -60,6 +60,8 @@ const schema = z.object({
   SIGTAP_ZIP_URL: z.string().optional(),
   /** API de dados abertos do Ministério da Saúde (estabelecimentos do CNES); os testes apontam para o simulador. */
   CNES_API_URL: z.string().url().default('https://apidadosabertos.saude.gov.br'),
+  /** Consulta de endereço por CEP (ViaCEP); os testes apontam para o simulador. */
+  CEP_API_URL: z.string().url().default('https://viacep.com.br/ws'),
   /** Chave da central de intérpretes de Libras (login dos intérpretes no canal de vídeo). */
   LIBRAS_INTERPRETER_KEY: z.string().optional(),
   STUN_URL: z.string().default('stun:stun.l.google.com:19302'),
