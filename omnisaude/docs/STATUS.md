@@ -121,10 +121,9 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
   público e reinício da API quando a configuração do Worker muda. `wrangler deploy --dry-run` aceita a
   configuração. O build da imagem pela Cloudflare e o PlanetScale real não foram exercitados aqui.
 
-## Próximos passos sugeridos
+## Próximos passos
 
-1. Conector ICP-Brasil (assinatura dos registros clínicos e documentos).
-2. Validar perfis RNDS, layout BPA e base do copiloto com as fontes oficiais; credenciamento na RNDS.
-3. APAC e lote AIH; cliente SOAP real da SEFAZ (NFeDistribuicaoDFe).
-4. Adaptador Redis do Socket.IO e central de intérpretes compartilhada para várias instâncias da API.
-5. Compilar e assinar o APK/AAB num ambiente com Android SDK; pipeline de CI.
+O plano completo, comparado com Celk, Inovadora e MV e organizado em ondas, está em [`ROADMAP.md`](ROADMAP.md).
+Em resumo, a onda 0 (pré-requisitos para uso real) é: telas de administração de unidades e profissionais,
+importação do CNES, cadastro completo do cidadão, assinatura ICP-Brasil, validação do BPA e credenciamento na
+RNDS; em paralelo, o envio ao e-SUS APS e o painel dos indicadores do cofinanciamento.

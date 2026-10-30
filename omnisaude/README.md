@@ -30,7 +30,9 @@ e BI conversacional).
 O que está parcial ou pendente está listado em [`docs/STATUS.md`](docs/STATUS.md). A arquitetura está em
 [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md). A publicação em `https://mm.api.br/omnisaude`, 100% na Cloudflare
 (Workers, Containers, PlanetScale e R2), está em [`docs/PUBLICACAO.md`](docs/PUBLICACAO.md); num servidor
-próprio com Docker Compose, em [`docs/PUBLICACAO-SERVIDOR.md`](docs/PUBLICACAO-SERVIDOR.md).
+próprio com Docker Compose, em [`docs/PUBLICACAO-SERVIDOR.md`](docs/PUBLICACAO-SERVIDOR.md). A comparação com os
+sistemas do mercado (Celk, Inovadora, MV) e o plano de melhorias por ondas estão em
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Estrutura
 
