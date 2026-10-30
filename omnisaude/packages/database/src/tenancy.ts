@@ -127,8 +127,11 @@ export class TenantConnectionManager {
     else this.catalog.clear();
   }
 
+  /** Confere o status a cada uso (cache de catalogTtlMs): tenant suspenso perde o acesso mesmo com conexão aberta. */
   async client(tenantId: string): Promise<TenantClient> {
-    return (await this.openTenant(tenantId)).client;
+    const info = await this.resolve(tenantId);
+    if (info.status !== 'ATIVO') throw new TenantUnavailableError(info.slug, info.status);
+    return (await this.openTenant(info.id)).client;
   }
 
   /**
@@ -136,9 +139,10 @@ export class TenantConnectionManager {
    * com o papel omni_bi, search_path restrito ao schema "bi", transações somente leitura e timeout.
    */
   async readonlyPool(tenantId: string): Promise<Pool> {
-    const t = await this.openTenant(tenantId);
+    const info = await this.resolve(tenantId);
+    if (info.status !== 'ATIVO') throw new TenantUnavailableError(info.slug, info.status);
+    const t = await this.openTenant(info.id);
     if (!t.readonly) {
-      const info = await this.resolve(tenantId);
       const cred = this.options.credentials(info.db.credentialsRef, 'readonly');
       const timeout = this.options.biStatementTimeoutMs ?? 15_000;
       t.readonly = new Pool({

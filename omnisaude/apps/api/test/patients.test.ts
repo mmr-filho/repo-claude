@@ -50,3 +50,29 @@ describe.runIf(enabled)('pacientes', () => {
     await t.http().get(`/api/patients/${maria.id}/timeline`).set('authorization', `Bearer ${recepcao}`).expect(403);
   });
 });
+
+describe.runIf(enabled)('documentos do paciente', () => {
+  let t: TestApp;
+  beforeAll(async () => {
+    t = await startTestApp('documents');
+  });
+  afterAll(async () => {
+    await t?.close();
+  });
+
+  it('anexa, lista e devolve o arquivo conferindo o hash', async () => {
+    const token = await t.login('recepcao', 'UBS Centro', 'RECEPCAO');
+    const [p] = (await t.http().get('/api/patients?q=thiago').set('authorization', `Bearer ${token}`)).body;
+    const content = Buffer.from('%PDF-1.4 termo de consentimento de teste');
+    const up = await t.http().post(`/api/patients/${p.id}/documents`).set('authorization', `Bearer ${token}`).send({ kind: 'TERMO_CONSENTIMENTO', mimeType: 'application/pdf', fileBase64: content.toString('base64') }).expect(201);
+    expect(up.body.sha256).toMatch(/^[0-9a-f]{64}$/);
+    const list = await t.http().get(`/api/patients/${p.id}/documents`).set('authorization', `Bearer ${token}`).expect(200);
+    expect(list.body).toHaveLength(1);
+    const file = await t.http().get(`/api/patients/${p.id}/documents/${up.body.id}/content`).set('authorization', `Bearer ${token}`).buffer(true).parse((res, cb) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => cb(null, Buffer.concat(chunks)));
+    }).expect(200);
+    expect(Buffer.compare(file.body as Buffer, content)).toBe(0);
+  });
+});

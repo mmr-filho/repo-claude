@@ -9,6 +9,7 @@ import { Public } from './context';
 import { OutboxService } from './outbox.service';
 import { RealtimeGateway } from './realtime.gateway';
 import { RealtimeService } from './realtime.service';
+import { StorageService } from './storage.service';
 import { TokenService } from './tokens';
 
 @Controller('health')
@@ -31,9 +32,10 @@ class HealthController {
     OutboxService,
     RealtimeService,
     RealtimeGateway,
+    StorageService,
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
-  exports: [APP_CONFIG, TokenService, AuditService, OutboxService, RealtimeService, DatabaseModule],
+  exports: [APP_CONFIG, TokenService, AuditService, OutboxService, RealtimeService, StorageService, DatabaseModule],
 })
 export class CoreModule {}
