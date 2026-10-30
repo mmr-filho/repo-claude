@@ -1,0 +1,4 @@
+# Scripts executados dentro dos containers Linux precisam de quebra de linha LF,
+# mesmo quando o repositório é clonado no Windows (core.autocrlf).
+*.sh text eol=lf
+apps/mobile/android/gradlew text eol=lf
