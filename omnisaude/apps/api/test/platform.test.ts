@@ -1,4 +1,5 @@
 import { Client } from 'pg';
+import { latestMigration } from '@omnisaude/database';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { pgAvailable, startTestApp, TEST_PG, type TestApp } from './harness';
 
@@ -31,7 +32,7 @@ describe.runIf(enabled)('operação da plataforma', () => {
     const list = await t.http().get('/api/platform/tenants').set(auth).expect(200);
     const novo = list.body.find((x: { slug: string }) => x.slug === SLUG);
     expect(novo.status).toBe('ATIVO');
-    expect(novo.database.schemaVersion).toBe('0002_bi_e_auditoria');
+    expect(novo.database.schemaVersion).toBe(latestMigration('tenant'));
 
     const demo = list.body.find((x: { slug: string }) => x.slug === t.slug);
     const upd = await t.http().patch(`/api/platform/tenants/${demo.id}`).set(auth).send({ settings: { aiEnabled: false } }).expect(200);

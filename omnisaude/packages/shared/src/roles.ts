@@ -69,6 +69,9 @@ export const PERMISSIONS = [
   'pop.consultar',
   'pop.executar',
   'libras.acionar',
+  'cadastros.unidades',
+  'cadastros.profissionais',
+  'seguranca.gerir',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -164,6 +167,9 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'gestao.pautas',
     'parametros.gerir',
     'auditoria.ler',
+    'cadastros.unidades',
+    'cadastros.profissionais',
+    'seguranca.gerir',
   ],
 };
 

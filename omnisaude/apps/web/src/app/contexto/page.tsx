@@ -3,9 +3,10 @@
 import { Building2, ChevronRight } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { MfaEnroll } from '@/components/account/account-forms';
 import { Card } from '@/components/ui/card';
 import { Alert } from '@/components/ui/misc';
-import { errorMessage } from '@/lib/api';
+import { ApiError, errorMessage } from '@/lib/api';
 import { useSession } from '@/lib/session';
 import type { Assignment } from '@/lib/types';
 
@@ -15,6 +16,8 @@ export default function ContextPage() {
   const router = useRouter();
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [error, setError] = useState<string | null>(null);
+  /** Papel que exige 2FA ainda não configurado: o autenticador é configurado aqui mesmo. */
+  const [mfaFor, setMfaFor] = useState<Assignment | null>(null);
 
   useEffect(() => {
     const pending = session.pendingAssignments();
@@ -28,8 +31,32 @@ export default function ContextPage() {
       await session.selectContext(a.unitId, a.role);
       router.replace('/inicio');
     } catch (err) {
+      if (err instanceof ApiError && err.code === 'MFA_OBRIGATORIO' && !(err.details as { mfaEnabled?: boolean } | undefined)?.mfaEnabled) {
+        setMfaFor(a);
+        setError(null);
+        return;
+      }
       setError(errorMessage(err));
     }
+  }
+
+  if (mfaFor) {
+    return (
+      <main className="flex min-h-dvh items-center justify-center bg-slate-100 p-4">
+        <div className="w-full max-w-2xl">
+          <h1 className="mb-1 text-xl font-semibold">Verificação em duas etapas obrigatória</h1>
+          <p className="mb-4 text-sm text-slate-600">
+            O papel <b>{mfaFor.roleLabel}</b> exige um aplicativo autenticador. Configure agora para continuar; o código será pedido a cada login.
+          </p>
+          <Card className="p-4">
+            <MfaEnroll autoStart setup={session.pendingMfaSetup} enable={session.pendingMfaEnable} onDone={() => choose(mfaFor)} doneMessage="Autenticador configurado" />
+          </Card>
+          <button className="mt-3 text-sm text-slate-500 underline-offset-2 hover:underline" onClick={() => setMfaFor(null)}>
+            Escolher outro papel
+          </button>
+        </div>
+      </main>
+    );
   }
 
   return (

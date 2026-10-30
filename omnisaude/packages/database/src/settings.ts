@@ -1,4 +1,4 @@
-import type { RiskColor } from '@omnisaude/shared';
+import type { RiskColor, Role } from '@omnisaude/shared';
 
 /** Preferências institucionais guardadas em tenants.settings (master_auth_db). */
 export interface TenantSettings {
@@ -12,6 +12,8 @@ export interface TenantSettings {
   accrMaxWaitMinutes: Partial<Record<RiskColor, number>>;
   /** Horas de antecedência da confirmação de consulta por WhatsApp. */
   appointmentReminderHours: number;
+  /** Papéis que só podem ser assumidos com verificação em duas etapas ativa (ex.: GESTOR, FATURAMENTO). */
+  mfaRequiredRoles: Role[];
 }
 
 export const DEFAULT_TENANT_SETTINGS: TenantSettings = {
@@ -21,6 +23,7 @@ export const DEFAULT_TENANT_SETTINGS: TenantSettings = {
   icpBrasilEnabled: false,
   accrMaxWaitMinutes: {},
   appointmentReminderHours: 48,
+  mfaRequiredRoles: [],
 };
 
 export function tenantSettings(raw: unknown): TenantSettings {

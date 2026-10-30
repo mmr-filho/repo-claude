@@ -1,9 +1,9 @@
-import { Injectable, UnauthorizedException, type CanActivate, type ExecutionContext } from '@nestjs/common';
+import { HttpStatus, Injectable, UnauthorizedException, type CanActivate, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { roleHasPermission, type Permission } from '@omnisaude/shared';
-import { AUTHENTICATED_KEY, clientIp, PERMISSION_KEY, PUBLIC_KEY, type ContextRequest } from './context';
+import { AUTHENTICATED_KEY, clientIp, PERMISSION_KEY, PROVISIONAL_OK_KEY, PUBLIC_KEY, type ContextRequest } from './context';
 import { TenantsService } from './database';
-import { forbidden } from './errors';
+import { DomainError, forbidden } from './errors';
 import { TokenService } from './tokens';
 
 /**
@@ -34,6 +34,13 @@ export class AuthGuard implements CanActivate {
 
     const tenant = await this.tenants.resolve(claims.tid);
     const db = await this.tenants.client(tenant.id);
+    // Conferido a cada requisição: desativar um profissional ou redefinir sua senha vale na hora, mesmo com
+    // um token ainda válido.
+    const user = await db.user.findUnique({ where: { id: claims.sub }, select: { active: true, mustChangePassword: true } });
+    if (!user || !user.active) throw new UnauthorizedException('Conta desativada');
+    if (user.mustChangePassword && !this.reflector.getAllAndOverride<boolean>(PROVISIONAL_OK_KEY, targets)) {
+      throw new DomainError('SENHA_PROVISORIA', 'Troque a senha provisória antes de continuar', HttpStatus.FORBIDDEN);
+    }
     req.ctx = {
       session: {
         tenantId: tenant.id,

@@ -10,7 +10,7 @@ export interface Assignment {
 }
 
 export interface Me {
-  user: { id: string; name: string; cpf: string; cns: string | null; mfaEnabled: boolean };
+  user: { id: string; name: string; cpf: string; cns: string | null; mfaEnabled: boolean; mustChangePassword: boolean };
   tenant: { id: string; slug: string; name: string; timeZone: string };
   context: { unitId: string; unitName: string; unitType: string; role: Role; roleLabel: string; cbo: string; mfa: boolean };
   permissions: Permission[];

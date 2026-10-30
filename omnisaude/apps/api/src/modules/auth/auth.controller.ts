@@ -2,7 +2,7 @@ import { Body, Controller, Get, Headers, HttpCode, Post, Req, UnauthorizedExcept
 import { ROLES } from '@omnisaude/shared';
 import type { Request } from 'express';
 import { z } from 'zod';
-import { Authenticated, clientIp, Ctx, Public, type RequestContext } from '../../core/context';
+import { AllowProvisionalPassword, Authenticated, clientIp, Ctx, Public, type RequestContext } from '../../core/context';
 import { TokenService } from '../../core/tokens';
 import { zv } from '../../core/zod';
 import { AuthService } from './auth.service';
@@ -14,6 +14,8 @@ const contextSchema = z.object({ unitId: z.string().uuid(), role: z.enum(ROLES) 
 const passwordSchema = z.object({ current: z.string(), next: z.string() });
 
 @Controller('auth')
+// Quem está com senha provisória só consegue chegar aqui (conta, senha e 2FA) até trocá-la.
+@AllowProvisionalPassword()
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
@@ -40,6 +42,20 @@ export class AuthController {
   @HttpCode(200)
   async context(@Body(zv(contextSchema)) body: z.infer<typeof contextSchema>, @Headers('authorization') authz: string | undefined) {
     return this.auth.selectContext(await this.bearer(authz), body.unitId, body.role);
+  }
+
+  /** 2FA exigido pelo papel antes de abrir a sessão: usa o token da etapa "context". */
+  @Public()
+  @Post('pending/mfa/setup')
+  async pendingMfaSetup(@Headers('authorization') authz: string | undefined) {
+    return this.auth.startPendingMfaSetup(await this.bearer(authz));
+  }
+
+  @Public()
+  @Post('pending/mfa/enable')
+  @HttpCode(200)
+  async pendingMfaEnable(@Body(zv(mfaEnableSchema)) body: z.infer<typeof mfaEnableSchema>, @Headers('authorization') authz: string | undefined, @Req() req: Request) {
+    return this.auth.confirmPendingMfaSetup(await this.bearer(authz), body.code, body.setupToken, clientIp(req));
   }
 
   @Authenticated()

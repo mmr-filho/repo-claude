@@ -35,6 +35,9 @@ model Unit {
   ibgeCode  String   @map("ibge_code")
   address   String?
   phone     String?
+  email     String?
+  /// Texto livre, ex.: "Segunda a sexta, 7h às 19h".
+  openingHours String? @map("opening_hours")
   active    Boolean  @default(true)
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -77,6 +80,9 @@ model User {
   failedLogins   Int       @default(0) @map("failed_logins")
   lockedUntil    DateTime? @map("locked_until")
   lastLoginAt    DateTime? @map("last_login_at")
+  /// Senha provisória (cadastro ou redefinição pela administração): só a troca de senha libera o sistema.
+  mustChangePassword Boolean   @default(false) @map("must_change_password")
+  passwordChangedAt  DateTime? @map("password_changed_at")
   createdAt      DateTime  @default(now()) @map("created_at")
 
   assignments UserAssignment[]

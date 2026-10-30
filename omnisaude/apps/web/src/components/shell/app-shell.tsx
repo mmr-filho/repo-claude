@@ -30,10 +30,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (!session.loading && !session.me) router.replace('/login');
   }, [session.loading, session.me, router]);
   useEffect(() => setDrawer(false), [pathname]);
+  // Senha provisória (cadastro ou redefinição pela administração): só a troca libera as demais telas.
+  const provisional = !!session.me?.user.mustChangePassword;
+  useEffect(() => {
+    if (provisional && pathname !== '/configuracoes') router.replace('/configuracoes');
+  }, [provisional, pathname, router]);
 
   if (session.loading || !session.me) return <Spinner className="min-h-dvh" />;
   const me = session.me;
-  const items = NAV.filter((n) => n.any.length === 0 || n.any.some((p) => me.permissions.includes(p)));
+  const items = NAV.filter((n) => (provisional ? n.href === '/configuracoes' : n.any.length === 0 || n.any.some((p) => me.permissions.includes(p))));
 
   const nav = (
     <nav className="flex flex-col gap-0.5 p-3" aria-label="Menu principal">

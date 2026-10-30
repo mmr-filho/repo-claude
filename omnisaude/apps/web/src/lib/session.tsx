@@ -11,6 +11,11 @@ let pendingToken: string | null = null;
 let pendingAssignments: Assignment[] = [];
 
 export type LoginResult = { stage: 'mfa' } | { stage: 'context'; assignments: Assignment[] };
+export interface MfaSetupData {
+  secret: string;
+  otpauthUrl: string;
+  setupToken: string;
+}
 
 interface SessionValue {
   me: Me | null;
@@ -22,6 +27,9 @@ interface SessionValue {
   pendingAssignments(): Assignment[];
   /** Escolhe (ou troca) unidade e papel ativos. */
   selectContext(unitId: string, role: Role): Promise<void>;
+  /** 2FA exigido pelo papel escolhido: configuração ainda na etapa de contexto (token pendente). */
+  pendingMfaSetup(): Promise<MfaSetupData>;
+  pendingMfaEnable(code: string, setupToken: string): Promise<void>;
   logout(): void;
   refresh(): Promise<void>;
   can(...permissions: Permission[]): boolean;
@@ -82,6 +90,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         pendingToken = null;
         pendingAssignments = [];
         setMe(await api.get<Me>('/auth/me'));
+      },
+      pendingMfaSetup: () => api.post<MfaSetupData>('/auth/pending/mfa/setup', {}, { token: pendingToken ?? tokenStore.get() }),
+      async pendingMfaEnable(code, setupToken) {
+        const res = await api.post<{ token: string }>('/auth/pending/mfa/enable', { code, setupToken }, { token: pendingToken ?? tokenStore.get() });
+        pendingToken = res.token;
       },
       logout() {
         tokenStore.clear();

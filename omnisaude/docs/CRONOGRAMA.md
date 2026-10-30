@@ -16,7 +16,7 @@ Regras de trabalho:
 
 | Semana | Código | Entrega | Pronto quando | Precisa de você |
 |---|---|---|---|---|
-| 1 (3 a 7/11) | NUC-6 | Área **Administração** no sistema: unidades (cadastro, tipo, CNES, horário), profissionais (CPF, nome, CNS, conselho/registro, CBO, e-mail, telefone), lotações (unidade + papel + CBO), ativar/desativar, redefinição de senha com senha provisória, 2FA obrigatório por papel, usuários de plataforma | O gestor cadastra uma unidade e um profissional novos pela tela e esse profissional entra no sistema sem a carga de demonstração | Decidir quais papéis exigem 2FA (sugestão: gestão, faturamento, farmácia e médico) |
+| 1 (3 a 7/11) ✅ entregue em 30/10 | NUC-6 | Área **Administração** no sistema: unidades (cadastro, tipo, CNES, horário), profissionais (CPF, nome, CNS, conselho/registro, CBO, e-mail, telefone), lotações (unidade + papel + CBO), ativar/desativar, redefinição de senha com senha provisória, 2FA obrigatório por papel, usuários de plataforma | O gestor cadastra uma unidade e um profissional novos pela tela e esse profissional entra no sistema sem a carga de demonstração | Decidir quais papéis exigem 2FA (sugestão: gestão, faturamento, farmácia e médico) |
 | 2 (10 a 14/11) | NUC-2/3 | **Importação do CNES**: estabelecimentos, profissionais, vínculos e equipes (INE) a partir do arquivo mensal do CNES ou da API do DATASUS, com conciliação (o que é novo, o que mudou, o que sumiu) e revisão antes de aplicar | Importar o CNES de um município real cria as unidades e os profissionais corretos, sem duplicar os existentes | Código IBGE do município de teste; se houver, o arquivo do CNES baixado do portal |
 | 3 (17 a 21/11) | NUC-1 | **Cadastro completo do cidadão**: documentos, endereço com CEP (busca automática), domicílio e família, responsável, raça/cor, escolaridade, situação de rua; **unificação de cadastros duplicados** com histórico preservado; CPF como identificador | Dois cadastros da mesma pessoa viram um, e o prontuário mostra tudo; o cadastro atende aos campos da ficha de cadastro individual do e-SUS | |
 | 4 (24 a 28/11) | ATD-4 | **Assinatura ICP-Brasil**: certificado A1 no servidor (por profissional ou da instituição, guardado no R2 cifrado), assinatura de prontuário, receita, atestado e documentos em PAdES/CAdES; validação da assinatura; preparar A3/nuvem pelo navegador | Um documento assinado é validado pelo validador do ITI | Um certificado A1 de teste (ou real) para validar o fluxo |
@@ -64,7 +64,7 @@ porque reaproveita o app Android já existente e é insumo dos indicadores.
 
 | Insumo | Para | Situação |
 |---|---|---|
-| Papéis com 2FA obrigatório | NUC-6 (semana 1) | aguardando decisão (há sugestão) |
+| Papéis com 2FA obrigatório | NUC-6 (semana 1) | a gestão define em Administração > Segurança (padrão: nenhum, para não travar a demonstração) |
 | Código IBGE / arquivo CNES do município de teste | NUC-2/3 (semana 2) | aguardando |
 | Certificado A1 de teste | ATD-4 (semana 4) | aguardando |
 | Credenciamento na RNDS (homologação) | INT-1 (semana 5) | aguardando |

@@ -4,6 +4,7 @@ import {
   BarChart3,
   BedDouble,
   BookOpenCheck,
+  Building2,
   CalendarDays,
   ClipboardList,
   HeartPulse,
@@ -43,5 +44,6 @@ export const NAV: NavItem[] = [
   { href: '/servico-social', label: 'Busca ativa', icon: MessagesSquare, any: ['busca_ativa.gerir'] },
   { href: '/pops', label: 'POPs', icon: BookOpenCheck, any: ['pop.consultar'] },
   { href: '/auditoria', label: 'Auditoria', icon: ClipboardList, any: ['auditoria.ler'] },
+  { href: '/administracao', label: 'Administração', icon: Building2, any: ['cadastros.unidades', 'cadastros.profissionais', 'seguranca.gerir'] },
   { href: '/configuracoes', label: 'Minha conta', icon: Settings, any: [] },
 ];

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { CoreModule } from './core/core.module';
 import { AccessibilityModule } from './modules/accessibility/accessibility.module';
+import { AdminModule } from './modules/admin/admin.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BedsModule } from './modules/beds/beds.module';
 import { BiModule } from './modules/bi/bi.module';
@@ -21,6 +22,7 @@ import { TriageModule } from './modules/triage/triage.module';
   imports: [
     CoreModule,
     AuthModule,
+    AdminModule,
     IntegrationsModule,
     PatientsModule,
     SchedulingModule,

@@ -99,11 +99,24 @@ export class AuthService {
   /** Escolhe (ou troca) a unidade e o papel ativos sem novo login. */
   async selectContext(claims: TokenClaims, unitId: string, role: Role) {
     if (claims.stage !== 'context' && claims.stage !== 'access') throw invalidLogin();
-    const db = await this.tenants.client(claims.tid);
+    const tenant = await this.tenants.resolve(claims.tid);
+    const db = await this.tenants.client(tenant.id);
     const assignment = await db.userAssignment.findFirst({
       where: { userId: claims.sub, unitId, role, active: true, user: { active: true }, unit: { active: true } },
     });
     if (!assignment) throw new DomainError('CONTEXTO_INVALIDO', 'Você não tem este papel nesta unidade', HttpStatus.FORBIDDEN);
+    // Papéis sensíveis (definidos pela gestão em Administração > Segurança) exigem o segundo fator na sessão.
+    if (tenant.settings.mfaRequiredRoles.includes(role) && !claims.mfa) {
+      const user = await db.user.findUniqueOrThrow({ where: { id: claims.sub }, select: { mfaEnabled: true } });
+      throw new DomainError(
+        'MFA_OBRIGATORIO',
+        user.mfaEnabled
+          ? 'Este papel exige o segundo fator: entre de novo com o código do autenticador'
+          : 'Este papel exige verificação em duas etapas: configure o autenticador para continuar',
+        HttpStatus.FORBIDDEN,
+        { mfaEnabled: user.mfaEnabled, role },
+      );
+    }
     const token = await this.tokens.sign({ ...claims, stage: 'access', unit: unitId, role, cbo: assignment.cbo });
     return { token, permissions: ROLE_PERMISSIONS[role] };
   }
@@ -113,7 +126,7 @@ export class AuthService {
     const unit = await ctx.db.unit.findUniqueOrThrow({ where: { id: ctx.session.unitId } });
     const { aiEnabled, whatsappEnabled, rndsEnabled, icpBrasilEnabled } = ctx.tenant.settings;
     return {
-      user: { id: user.id, name: user.socialName ?? user.name, cpf: user.cpf, cns: user.cns, mfaEnabled: user.mfaEnabled },
+      user: { id: user.id, name: user.socialName ?? user.name, cpf: user.cpf, cns: user.cns, mfaEnabled: user.mfaEnabled, mustChangePassword: user.mustChangePassword },
       tenant: { id: ctx.tenant.id, slug: ctx.tenant.slug, name: ctx.tenant.name, timeZone: ctx.tenant.timeZone },
       context: { unitId: unit.id, unitName: unit.name, unitType: unit.type, role: ctx.session.role, roleLabel: ROLE_LABELS[ctx.session.role], cbo: ctx.cbo, mfa: ctx.session.mfa },
       permissions: ROLE_PERMISSIONS[ctx.session.role],
@@ -128,30 +141,56 @@ export class AuthService {
    */
   async startMfaSetup(ctx: RequestContext) {
     const user = await ctx.db.user.findUniqueOrThrow({ where: { id: ctx.session.userId } });
-    if (user.mfaEnabled && !ctx.session.mfa) {
+    return this.newMfaSetup(ctx.tenant.slug, user, ctx.session.mfa);
+  }
+
+  async confirmMfaSetup(ctx: RequestContext, code: string, setupToken: string) {
+    await this.enableMfa(ctx.db, { userId: ctx.session.userId, unitId: ctx.session.unitId, role: ctx.session.role, ip: ctx.ip, mfa: ctx.session.mfa }, code, setupToken);
+    return { mfaEnabled: true };
+  }
+
+  /** Configuração do 2FA ainda na etapa de escolha do contexto (papel que exige o segundo fator). */
+  async startPendingMfaSetup(claims: TokenClaims) {
+    if (claims.stage !== 'context') throw invalidLogin();
+    const tenant = await this.tenants.resolve(claims.tid);
+    const db = await this.tenants.client(tenant.id);
+    const user = await db.user.findUniqueOrThrow({ where: { id: claims.sub } });
+    if (!user.active) throw invalidLogin();
+    return this.newMfaSetup(tenant.slug, user, claims.mfa);
+  }
+
+  async confirmPendingMfaSetup(claims: TokenClaims, code: string, setupToken: string, ip: string) {
+    if (claims.stage !== 'context') throw invalidLogin();
+    const db = await this.tenants.client(claims.tid);
+    await this.enableMfa(db, { userId: claims.sub, ip, mfa: claims.mfa }, code, setupToken);
+    // O código confirmado prova a posse do autenticador: a sessão passa a contar com o segundo fator.
+    return { mfaEnabled: true, token: await this.tokens.sign({ ...claims, mfa: true }) };
+  }
+
+  private newMfaSetup(slug: string, user: { id: string; cpf: string; mfaEnabled: boolean }, sessionMfa: boolean) {
+    if (user.mfaEnabled && !sessionMfa) {
       throw new DomainError('MFA_SESSAO', 'Entre com o código do autenticador atual para trocá-lo', HttpStatus.FORBIDDEN);
     }
     const secret = generateTotpSecret();
     const setupToken = encryptSecret(JSON.stringify({ uid: user.id, secret, exp: Date.now() + 10 * 60_000 }), this.config.DATA_KEY);
-    return { secret, otpauthUrl: otpauthUrl(secret, `${ctx.tenant.slug}:${user.cpf}`), setupToken };
+    return { secret, otpauthUrl: otpauthUrl(secret, `${slug}:${user.cpf}`), setupToken };
   }
 
-  async confirmMfaSetup(ctx: RequestContext, code: string, setupToken: string) {
+  private async enableMfa(db: TenantClient, who: { userId: string; unitId?: string; role?: Role; ip: string; mfa: boolean }, code: string, setupToken: string) {
     let pending: { uid: string; secret: string; exp: number };
     try {
       pending = JSON.parse(decryptSecret(setupToken, this.config.DATA_KEY));
     } catch {
       throw new DomainError('MFA_CONFIGURACAO', 'Configuração de 2FA inválida: comece de novo', HttpStatus.UNPROCESSABLE_ENTITY);
     }
-    if (pending.uid !== ctx.session.userId || pending.exp < Date.now()) {
+    if (pending.uid !== who.userId || pending.exp < Date.now()) {
       throw new DomainError('MFA_CONFIGURACAO', 'Configuração de 2FA expirada: comece de novo', HttpStatus.UNPROCESSABLE_ENTITY);
     }
     if (!verifyTotp(pending.secret, code)) throw new DomainError('MFA_INVALIDO', 'Código de verificação inválido', HttpStatus.UNPROCESSABLE_ENTITY);
-    await ctx.db.$transaction(async (tx) => {
-      await tx.user.update({ where: { id: ctx.session.userId }, data: { totpSecret: encryptSecret(pending.secret, this.config.DATA_KEY), mfaEnabled: true } });
-      await appendAudit(tx, { userId: ctx.session.userId, unitId: ctx.session.unitId, role: ctx.session.role, ip: ctx.ip, mfa: ctx.session.mfa, action: 'auth.mfa_ativar', entityType: 'User', entityId: ctx.session.userId, payload: {} });
+    await db.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: who.userId }, data: { totpSecret: encryptSecret(pending.secret, this.config.DATA_KEY), mfaEnabled: true } });
+      await appendAudit(tx, { userId: who.userId, unitId: who.unitId, role: who.role, ip: who.ip, mfa: who.mfa, action: 'auth.mfa_ativar', entityType: 'User', entityId: who.userId, payload: {} });
     });
-    return { mfaEnabled: true };
   }
 
   async changePassword(ctx: RequestContext, current: string, next: string) {
@@ -159,7 +198,12 @@ export class AuthService {
     if (!(await verifyPassword(current, user.passwordHash))) throw new DomainError('SENHA_INCORRETA', 'Senha atual incorreta', HttpStatus.UNPROCESSABLE_ENTITY);
     const problems = passwordProblems(next);
     if (problems.length) throw new DomainError('SENHA_FRACA', problems.join('; '), HttpStatus.UNPROCESSABLE_ENTITY);
-    await ctx.db.user.update({ where: { id: user.id }, data: { passwordHash: await hashPassword(next) } });
+    if (next === current) throw new DomainError('SENHA_REPETIDA', 'A nova senha precisa ser diferente da atual', HttpStatus.UNPROCESSABLE_ENTITY);
+    const passwordHash = await hashPassword(next);
+    await ctx.db.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: user.id }, data: { passwordHash, mustChangePassword: false, passwordChangedAt: new Date() } });
+      await appendAudit(tx, { userId: user.id, unitId: ctx.session.unitId, role: ctx.session.role, ip: ctx.ip, mfa: ctx.session.mfa, action: 'auth.senha_alterar', entityType: 'User', entityId: user.id, payload: {} });
+    });
     return { ok: true };
   }
 

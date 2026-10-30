@@ -94,6 +94,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | Tela | Status | Observação |
 |---|---|---|
 | Login em etapas, troca de unidade/papel, menu por permissão | ✅ | |
+| Administração: unidades, profissionais e lotações, senha provisória, 2FA obrigatório por papel | ✅ | NUC-6 do roadmap; cadastro pela tela sem depender da carga de demonstração; desativar vale na hora |
 | Recepção (OCR, CADSUS, duplicidade, senhas, acolhimento, pulseira) | ✅ | |
 | Painel de chamada (TV) com voz | ✅ | exige um clique para liberar o som (regra dos navegadores) |
 | Classificação de risco com mapa corporal 2D e escala 0–10 | ✅ | |
@@ -109,9 +110,11 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 
 ## Verificação feita
 
-- 271 testes automatizados passando: 196 nas bibliotecas e no Worker da Cloudflare e 75 de integração da API
+- 277 testes automatizados passando: 196 nas bibliotecas e no Worker da Cloudflare e 81 de integração da API
   contra PostgreSQL real.
-- Teste de fumaça com Playwright (`e2e/smoke.e2e.mjs`) percorrendo 12 telas com 8 papéis no build de produção.
+- Teste de fumaça com Playwright (`e2e/smoke.e2e.mjs`) percorrendo 13 telas com 8 papéis no build de produção.
+- Fluxo de administração no navegador: a gestora cadastra uma unidade e um profissional, recebe a senha
+  provisória, o profissional entra, só vê "Minha conta" até trocar a senha e depois acessa a Recepção.
 - Imagem Docker da API construída e executada: migrações, login com contexto e consulta de BI na conexão
   somente leitura.
 - Exportação estática do front-end e `cap sync android` concluídos.

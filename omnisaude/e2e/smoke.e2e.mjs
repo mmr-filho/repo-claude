@@ -19,7 +19,7 @@ const journeys = [
   { cpf: '100.000.007-95', unit: 'Hospital Municipal São Lucas', role: 'Farmácia', pages: ['/farmacia'] },
   { cpf: '100.000.006-04', unit: null, role: 'NIR', pages: ['/leitos'] },
   { cpf: '100.000.008-76', unit: 'UPA 24h Norte', role: 'Faturamento', pages: ['/faturamento'] },
-  { cpf: '100.000.009-57', unit: 'UBS Centro', role: 'Gestor', pages: ['/gestao', '/bi', '/auditoria'] },
+  { cpf: '100.000.009-57', unit: 'UBS Centro', role: 'Gestor', pages: ['/gestao', '/bi', '/auditoria', '/administracao'] },
   { cpf: '100.000.005-23', unit: 'UBS Centro', role: 'Serviço Social', pages: ['/servico-social'] },
 ];
 

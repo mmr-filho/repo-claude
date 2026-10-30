@@ -75,6 +75,7 @@ export const api = {
   get: <T>(path: string, opts?: RequestOptions) => request<T>('GET', path, undefined, opts),
   post: <T>(path: string, body?: Body, opts?: RequestOptions) => request<T>('POST', path, body ?? {}, opts),
   patch: <T>(path: string, body?: Body, opts?: RequestOptions) => request<T>('PATCH', path, body ?? {}, opts),
+  put: <T>(path: string, body?: Body, opts?: RequestOptions) => request<T>('PUT', path, body ?? {}, opts),
   delete: <T>(path: string, opts?: RequestOptions) => request<T>('DELETE', path, undefined, opts),
   /** Download autenticado (CSV, BPA, etiquetas): devolve o arquivo para salvar. */
   async download(path: string, init: { method?: string; body?: unknown } = {}): Promise<{ blob: Blob; fileName: string | null }> {
