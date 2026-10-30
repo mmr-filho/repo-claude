@@ -62,7 +62,7 @@ CMD ["npm", "run", "start", "-w", "@omnisaude/web"]
 
 # ── API e worker (mesma imagem; o worker muda só o comando) ──
 # Último estágio de propósito: é o alvo padrão de `docker build` e o que a Cloudflare constrói
-# (apps/cloudflare/wrangler.jsonc aponta para este Dockerfile sem escolher estágio).
+# (wrangler.jsonc aponta para este Dockerfile sem escolher estágio).
 FROM node:22-bookworm-slim AS api
 ENV NODE_ENV=production
 WORKDIR /app

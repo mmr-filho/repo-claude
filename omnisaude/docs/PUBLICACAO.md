@@ -11,7 +11,7 @@ navegador ──HTTPS──► Cloudflare: Worker "omnisaude" (rota mm.api.br/om
 Cron Triggers do Worker (a cada 5 min e 1x por dia) → jobs de WhatsApp, RNDS e SIGTAP
 ```
 
-O código da publicação está em `apps/cloudflare` (`wrangler.jsonc`, `src/index.ts`). O restante de
+A configuração está em `wrangler.jsonc` (na pasta `omnisaude`) e o código do Worker em `apps/cloudflare`. O restante de
 `mm.api.br` não é afetado: o Worker só recebe o que começa com `/omnisaude`.
 
 > **Atenção:** com `SEED_DEMO=true` (padrão) sobe a instituição de demonstração `demo`, com dados fictícios e
@@ -83,11 +83,11 @@ substitui a senha pública da demonstração nessa conta.
 
    | Campo | Valor |
    |---|---|
-   | Project name | `omnisaude` (igual ao `name` de `apps/cloudflare/wrangler.jsonc`) |
+   | Project name | `omnisaude` (igual ao `name` de `wrangler.jsonc`) |
    | Production branch | `claude/busy-cray-f9aqxw` (ou `main`, depois do merge) |
    | Root directory | `omnisaude` |
    | Build command | `npm ci && npm run build:web -w @omnisaude/cloudflare` |
-   | Deploy command | `npx wrangler deploy -c apps/cloudflare/wrangler.jsonc` |
+   | Deploy command | `npx wrangler deploy` (o padrão) |
    | Variável de build | `NODE_VERSION` = `22` |
 
 3. Salve. O primeiro build leva alguns minutos: gera as telas, constrói a imagem da API a partir do
@@ -109,7 +109,7 @@ substitui a senha pública da demonstração nessa conta.
    Use **Secret** para tudo isso: segredos sobrevivem aos deploys. As variáveis de texto do `wrangler.jsonc`
    (`vars`) são regravadas a cada deploy, e uma variável criada no painel com o mesmo nome seria apagada.
 
-O banco não tem réplica? Em `apps/cloudflare/wrangler.jsonc`, troque `"PG_USE_REPLICA": "true"` por `"false"`
+O banco não tem réplica? Em `wrangler.jsonc`, troque `"PG_USE_REPLICA": "true"` por `"false"`
 e faça commit (o build roda de novo sozinho).
 
 ## Passo 5: domínio
@@ -121,7 +121,7 @@ A rota só funciona se `mm.api.br` passar pelo proxy da Cloudflare:
 - Se ainda não existe registro para `mm.api.br`, crie um `AAAA` com nome `mm.api.br`, conteúdo `100::` e
   **Proxied** (endereço reservado para "só Workers").
 - Se o domínio aparece na Cloudflare com outro nome de zona (por exemplo `api.br`), ajuste `zone_name` em
-  `apps/cloudflare/wrangler.jsonc`.
+  `wrangler.jsonc`.
 
 ## Passo 6: primeiro acesso
 
@@ -134,6 +134,23 @@ A rota só funciona se `mm.api.br` passar pelo proxy da Cloudflare:
 Para conferir: **Workers & Pages → omnisaude → Logs** mostra o Worker e os jobs; em **Containers** ficam a
 instância e o log da API (a partida escreve "Papéis e banco master conferidos" e o estado das migrações de
 cada instituição).
+
+## Se aparecer "Não encontrado — mm.api.br" (404)
+
+Essa página é do outro sistema que atende `mm.api.br`, não do OmniSaúde: a Cloudflare só manda `/omnisaude`
+para o OmniSaúde quando o Worker `omnisaude` está publicado com a rota. Confira, nesta ordem:
+
+1. **Workers & Pages** lista um Worker chamado `omnisaude`? Se não, faça o passo 4.
+2. Em **omnisaude → Deployments** (ou **Builds**), o último build terminou com sucesso? Se falhou, abra o log:
+   a mensagem de erro aparece no fim. Erros comuns:
+   - `Containers` não disponível: a conta precisa do plano **Workers Paid**;
+   - nome diferente: o projeto precisa se chamar `omnisaude`, como em `wrangler.jsonc`;
+   - zona não encontrada: ajuste `zone_name` (passo 5).
+3. Em **omnisaude → Settings → Domains & Routes** aparece a rota `mm.api.br/omnisaude*`? Se não, o deploy não
+   chegou ao fim.
+
+Quando o Worker está no ar, https://mm.api.br/omnisaude mostra a tela de login do OmniSaúde, mesmo antes de
+configurar o banco; sem os segredos, só o login falha, com uma mensagem dizendo o que falta configurar.
 
 ## Atualizações e operação
 
@@ -154,7 +171,7 @@ cada instituição).
 
 ## Sair do modo demonstração
 
-Em `apps/cloudflare/wrangler.jsonc`, troque `SEED_DEMO` e `DEMO_MOCKS` para `"false"` e configure as
+Em `wrangler.jsonc`, troque `SEED_DEMO` e `DEMO_MOCKS` para `"false"` e configure as
 integrações reais como segredos: `WHATSAPP_*`, `RNDS_*`, `SEFAZ_URL`, `SIGTAP_ZIP_URL`. O certificado
 ICP-Brasil da RNDS (arquivo `.pfx`) vai para o bucket do R2 (botão **Upload**, por exemplo em
 `certificados/rnds.pfx`), com o segredo `RNDS_CERT_PFX` = `r2:certificados/rnds.pfx` e a senha em
@@ -175,7 +192,7 @@ npm run cloudflare:deploy
 Depois cadastre os segredos do passo 4, um de cada vez:
 
 ```powershell
-npx wrangler secret put PG_HOST -c apps/cloudflare/wrangler.jsonc
+npx wrangler secret put PG_HOST
 ```
 
 ## Limites desta publicação

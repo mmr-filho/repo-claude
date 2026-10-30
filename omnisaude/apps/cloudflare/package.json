@@ -5,7 +5,7 @@
   "description": "Publicação 100% Cloudflare: Worker em mm.api.br/omnisaude com as telas (estáticas) e a API no Cloudflare Containers.",
   "scripts": {
     "build:web": "node scripts/build-web.mjs",
-    "deploy": "npm run build:web && wrangler deploy",
+    "deploy": "npm run build:web && wrangler deploy -c ../../wrangler.jsonc",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
