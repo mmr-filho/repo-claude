@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- NF-e FICTÍCIA para desenvolvimento e testes do OmniSaúde (ambiente de homologação, sem assinatura digital). -->
+<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+  <NFe xmlns="http://www.portalfiscal.inf.br/nfe">
+    <infNFe Id="NFe52260311222333000181550010000015231482139773" versao="4.00">
+      <ide><cUF>52</cUF><cNF>48213977</cNF><natOp>VENDA DE MERCADORIA ADQUIRIDA DE TERCEIROS</natOp><mod>55</mod><serie>1</serie><nNF>1523</nNF><dhEmi>2026-03-02T10:15:00-03:00</dhEmi><dhSaiEnt>2026-03-02T10:15:00-03:00</dhSaiEnt><tpNF>1</tpNF><idDest>2</idDest><cMunFG>5208707</cMunFG><tpImp>1</tpImp><tpEmis>1</tpEmis><cDV>3</cDV><tpAmb>2</tpAmb><finNFe>1</finNFe><indFinal>1</indFinal><indPres>9</indPres><procEmi>0</procEmi><verProc>DISTRIB-1.0</verProc></ide>
+      <emit><CNPJ>11222333000181</CNPJ><xNome>DISTRIBUIDORA DE MEDICAMENTOS CERRADO LTDA</xNome><xFant>CERRADO MED</xFant><enderEmit><xLgr>Rua 10, 250</xLgr><nro>S/N</nro><xBairro>Setor Central</xBairro><cMun>5208707</cMun><xMun>Goiania</xMun><UF>GO</UF><CEP>74013020</CEP><cPais>1058</cPais><xPais>BRASIL</xPais></enderEmit><IE>109876543</IE><CRT>3</CRT></emit>
+      <dest><CNPJ>04512345000185</CNPJ><xNome>CONSORCIO INTERMUNICIPAL DE SAUDE DEMO</xNome><enderDest><xLgr>Av. Goias, 1500</xLgr><nro>1500</nro><xBairro>Centro</xBairro><cMun>1709500</cMun><xMun>Gurupi</xMun><UF>TO</UF><CEP>77405010</CEP><cPais>1058</cPais><xPais>BRASIL</xPais></enderDest><indIEDest>9</indIEDest><email>compras@consorciodemo.example</email></dest>
+      <det nItem="1">
+        <prod><cProd>DIP500</cProd><cEAN>7891000000014</cEAN><xProd>DIPIRONA SODICA 500MG COMPRIMIDO CX C/ 100</xProd><NCM>30049069</NCM><CFOP>6102</CFOP><uCom>CX</uCom><qCom>10.0000</qCom><vUnCom>45.9000</vUnCom><vProd>459.00</vProd><cEANTrib>7891000000014</cEANTrib><uTrib>CX</uTrib><qTrib>10.0000</qTrib><vUnTrib>45.9000</vUnTrib><indTot>1</indTot><rastro><nLote>DP26A01</nLote><qLote>10.000</qLote><dFab>2026-01-10</dFab><dVal>2028-01-10</dVal></rastro><med><cProdANVISA>1057300750011</cProdANVISA><vPMC>68.50</vPMC></med></prod>
+        <imposto><ICMS><ICMS40><orig>0</orig><CST>40</CST></ICMS40></ICMS><PIS><PISNT><CST>04</CST></PISNT></PIS><COFINS><COFINSNT><CST>04</CST></COFINSNT></COFINS></imposto>
+      </det>
+      <det nItem="2">
+        <prod><cProd>AMX500</cProd><cEAN>7891000000021</cEAN><xProd>AMOXICILINA 500MG CAPSULA CX C/ 21</xProd><NCM>30041019</NCM><CFOP>6102</CFOP><uCom>CX</uCom><qCom>50.0000</qCom><vUnCom>12.4000</vUnCom><vProd>620.00</vProd><cEANTrib>7891000000021</cEANTrib><uTrib>CX</uTrib><qTrib>50.0000</qTrib><vUnTrib>12.4000</vUnTrib><indTot>1</indTot><rastro><nLote>AM26B07</nLote><qLote>30.000</qLote><dFab>2026-02-01</dFab><dVal>2028-01-31</dVal></rastro><rastro><nLote>AM26B09</nLote><qLote>20.000</qLote><dFab>2026-02-12</dFab><dVal>2028-02-29</dVal></rastro><med><cProdANVISA>1043101230027</cProdANVISA><vPMC>18.90</vPMC></med></prod>
+        <imposto><ICMS><ICMS40><orig>0</orig><CST>40</CST></ICMS40></ICMS><PIS><PISNT><CST>04</CST></PISNT></PIS><COFINS><COFINSNT><CST>04</CST></COFINSNT></COFINS></imposto>
+      </det>
+      <det nItem="3">
+        <prod><cProd>LOS50</cProd><cEAN>7891000000038</cEAN><xProd>LOSARTANA POTASSICA 50MG COMPRIMIDO CX C/ 30</xProd><NCM>30049069</NCM><CFOP>6102</CFOP><uCom>CX</uCom><qCom>100.0000</qCom><vUnCom>4.8500</vUnCom><vProd>485.00</vProd><cEANTrib>7891000000038</cEANTrib><uTrib>CX</uTrib><qTrib>100.0000</qTrib><vUnTrib>4.8500</vUnTrib><indTot>1</indTot><rastro><nLote>LS2601</nLote><qLote>100.000</qLote><dFab>2026-01-20</dFab><dVal>2028-01-20</dVal></rastro><med><cProdANVISA>1058300120013</cProdANVISA><vPMC>7.40</vPMC></med></prod>
+        <imposto><ICMS><ICMS40><orig>0</orig><CST>40</CST></ICMS40></ICMS><PIS><PISNT><CST>04</CST></PISNT></PIS><COFINS><COFINSNT><CST>04</CST></COFINSNT></COFINS></imposto>
+      </det>
+      <total><ICMSTot><vBC>0.00</vBC><vICMS>0.00</vICMS><vICMSDeson>0.00</vICMSDeson><vFCP>0.00</vFCP><vBCST>0.00</vBCST><vST>0.00</vST><vFCPST>0.00</vFCPST><vFCPSTRet>0.00</vFCPSTRet><vProd>1564.00</vProd><vFrete>0.00</vFrete><vSeg>0.00</vSeg><vDesc>0.00</vDesc><vII>0.00</vII><vIPI>0.00</vIPI><vIPIDevol>0.00</vIPIDevol><vPIS>0.00</vPIS><vCOFINS>0.00</vCOFINS><vOutro>0.00</vOutro><vNF>1564.00</vNF></ICMSTot></total>
+      <transp><modFrete>0</modFrete></transp>
+      <pag><detPag><indPag>1</indPag><tPag>15</tPag><vPag>1564.00</vPag></detPag></pag>
+      <infAdic><infCpl>Medicamentos com rastreabilidade por lote. Empenho 2026/0042.</infCpl></infAdic>
+    </infNFe>
+  </NFe>
+  <protNFe versao="4.00"><infProt><tpAmb>2</tpAmb><verAplic>SVRS202603</verAplic><chNFe>52260311222333000181550010000015231482139773</chNFe><dhRecbto>2026-03-02T10:15:00-03:00</dhRecbto><nProt>152260000012345</nProt><cStat>100</cStat><xMotivo>Autorizado o uso da NF-e</xMotivo></infProt></protNFe>
+</nfeProc>
