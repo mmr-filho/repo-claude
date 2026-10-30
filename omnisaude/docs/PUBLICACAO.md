@@ -143,7 +143,9 @@ para o OmniSaúde quando o Worker `omnisaude` está publicado com a rota. Confir
 1. **Workers & Pages** lista um Worker chamado `omnisaude`? Se não, faça o passo 4.
    O build parou em `Failed: root directory not found`? A Cloudflare clonou um branch sem a pasta
    `omnisaude`: em **omnisaude → Settings → Build → Branch control**, troque o branch de produção para
-   `claude/busy-cray-f9aqxw` e confira se o **Root directory** é `omnisaude`.
+   `claude/busy-cray-f9aqxw` e confira se o **Root directory** é `omnisaude`. Depois disso, **Retry build** não
+   resolve: ele refaz o mesmo commit do branch antigo. O build novo começa com o próximo commit no branch
+   `claude/busy-cray-f9aqxw`.
 2. Em **omnisaude → Deployments** (ou **Builds**), o último build terminou com sucesso? Se falhou, abra o log:
    a mensagem de erro aparece no fim. Erros comuns:
    - `Containers` não disponível: a conta precisa do plano **Workers Paid**;
