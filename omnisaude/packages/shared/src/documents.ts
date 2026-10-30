@@ -83,3 +83,33 @@ export function personNameKey(value: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/** Completa os 9 dígitos-base com os verificadores. Útil para dados de teste e demonstração. */
+export function completeCpf(base9: string): string {
+  const base = onlyDigits(base9);
+  if (base.length !== 9) throw new Error('A base do CPF deve ter 9 dígitos');
+  let cpf = base;
+  for (const len of [9, 10]) {
+    let sum = 0;
+    for (let i = 0; i < len; i++) sum += Number(cpf[i]) * (len + 1 - i);
+    const rest = (sum * 10) % 11;
+    cpf += String(rest === 10 ? 0 : rest);
+  }
+  return cpf;
+}
+
+/** Gera um CNS definitivo a partir de 11 dígitos-base (iniciando com 1 ou 2). */
+export function cnsFromBase(base11: string): string {
+  const pis = onlyDigits(base11);
+  if (pis.length !== 11 || !/^[12]/.test(pis)) throw new Error('A base do CNS deve ter 11 dígitos e iniciar com 1 ou 2');
+  let sum = 0;
+  for (let i = 0; i < 11; i++) sum += Number(pis[i]) * (15 - i);
+  let dv = 11 - (sum % 11);
+  if (dv === 11) dv = 0;
+  if (dv === 10) {
+    sum += 2;
+    dv = 11 - (sum % 11);
+    return `${pis}001${dv}`;
+  }
+  return `${pis}000${dv}`;
+}

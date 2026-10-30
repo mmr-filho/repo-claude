@@ -1,0 +1,135 @@
+// master_auth_db: registro das entidades contratantes, licenças, integrações e catálogo de roteamento.
+// Nenhum dado assistencial fica aqui: prontuários, estoques e faturamento vivem no banco de cada tenant.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../../src/generated/master"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TenantKind {
+  PREFEITURA
+  CONSORCIO
+  ESTADO
+  OUTRO
+}
+
+enum TenantStatus {
+  PROVISIONANDO
+  ATIVO
+  SUSPENSO
+  ENCERRADO
+}
+
+model Tenant {
+  id        String       @id @default(uuid(7)) @db.Uuid
+  slug      String       @unique
+  name      String
+  kind      TenantKind
+  cnpj      String       @unique
+  ibgeCode  String       @map("ibge_code")
+  uf        String       @db.Char(2)
+  timeZone  String       @default("America/Sao_Paulo") @map("time_zone")
+  status    TenantStatus @default(PROVISIONANDO)
+  /// Preferências institucionais (IA, WhatsApp, ICP-Brasil, tempos do ACCR...). Ver TenantSettings em @omnisaude/database.
+  settings  Json         @default("{}")
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  database     TenantDatabase?
+  licenses     License[]
+  integrations TenantIntegration[]
+
+  @@map("tenants")
+}
+
+/// Catálogo de roteamento: onde está o banco OLTP e a réplica de leitura do tenant.
+/// Senhas não ficam aqui: credentialsRef aponta para um conjunto de credenciais do cofre/ambiente.
+model TenantDatabase {
+  tenantId       String   @id @map("tenant_id") @db.Uuid
+  dbName         String   @unique @map("db_name")
+  primaryHost    String   @map("primary_host")
+  primaryPort    Int      @default(5432) @map("primary_port")
+  replicaHost    String?  @map("replica_host")
+  replicaPort    Int?     @map("replica_port")
+  credentialsRef String   @default("default") @map("credentials_ref")
+  schemaVersion  String?  @map("schema_version")
+  migratedAt     DateTime? @map("migrated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_databases")
+}
+
+model License {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  plan       String
+  /// Módulos contratados (ex.: "aps", "urgencia", "hospitalar", "farmacia", "faturamento", "ia", "whatsapp", "libras").
+  modules    String[]
+  seats      Int
+  validFrom  DateTime  @map("valid_from") @db.Date
+  validUntil DateTime? @map("valid_until") @db.Date
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("licenses")
+}
+
+enum IntegrationKind {
+  RNDS
+  CADSUS
+  SEFAZ
+  WHATSAPP
+  ICP_BRASIL
+  STORAGE
+  SISREG
+}
+
+/// Metadados de credenciamento das integrações do tenant (configuração não secreta + referência ao segredo).
+model TenantIntegration {
+  id        String          @id @default(uuid(7)) @db.Uuid
+  tenantId  String          @map("tenant_id") @db.Uuid
+  kind      IntegrationKind
+  enabled   Boolean         @default(false)
+  config    Json            @default("{}")
+  secretRef String?         @map("secret_ref")
+  updatedAt DateTime        @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, kind])
+  @@map("tenant_integrations")
+}
+
+/// Operadores da plataforma (provisionamento de tenants). Profissionais de saúde ficam no banco do tenant.
+model PlatformUser {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  email        String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  totpSecret   String?  @map("totp_secret")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("platform_users")
+}
+
+model PlatformAudit {
+  id        BigInt   @id @default(autoincrement())
+  at        DateTime @default(now())
+  actorId   String?  @map("actor_id") @db.Uuid
+  action    String
+  tenantId  String?  @map("tenant_id") @db.Uuid
+  details   Json     @default("{}")
+  ip        String?
+
+  @@index([tenantId, at])
+  @@map("platform_audit")
+}

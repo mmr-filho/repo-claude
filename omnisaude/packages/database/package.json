@@ -2,7 +2,7 @@
   "name": "@omnisaude/database",
   "version": "0.1.0",
   "private": true,
-  "description": "Esquemas do master_auth_db e do tenant_db (Prisma), migrações e roteamento de conexões por tenant.",
+  "description": "Esquemas do master_auth_db e do tenant_db (Prisma), migra\u00e7\u00f5es e roteamento de conex\u00f5es por tenant.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -11,11 +11,29 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist",
+    "prisma"
+  ],
   "scripts": {
-    "build": "tsc -b",
+    "generate": "prisma generate --config prisma.master.config.ts && prisma generate --config prisma.tenant.config.ts",
+    "build": "npm run generate && tsc -b",
+    "migrate": "node dist/cli.js migrate",
+    "seed": "node dist/cli.js seed",
+    "tenant:create": "node dist/cli.js tenant:create",
     "test": "vitest run --root ../.. --project packages packages/database/test"
   },
-  "dependencies": { "@omnisaude/shared": "0.1.0", "@prisma/adapter-pg": "7.10.1", "@prisma/client": "7.10.1", "pg": "^8.23.0" },
-  "devDependencies": { "@types/pg": "^8.15.0", "prisma": "7.10.1" }
+  "dependencies": {
+    "@omnisaude/shared": "0.1.0",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "pg": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.15.0",
+    "prisma": "7.10.1"
+  },
+  "bin": {
+    "omnisaude-db": "dist/cli.js"
+  }
 }

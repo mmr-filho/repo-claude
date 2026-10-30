@@ -1,0 +1,1332 @@
+// tenant_db_<id>: base transacional (OLTP) isolada de cada contratante.
+// O prontuário é único dentro do tenant: o que é registrado na UBS aparece na UPA e no hospital da mesma rede.
+// As views analíticas (schema "bi") e os gatilhos da trilha de auditoria estão em migrations/*_bi_e_auditoria.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../../src/generated/tenant"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────────────────────── Estrutura da rede ─────────────────────────────
+
+enum UnitType {
+  UBS
+  UPA
+  POLICLINICA
+  HOSPITAL
+  CEO
+  SAMU
+  CAPS
+  FARMACIA_CENTRAL
+  ALMOXARIFADO
+  LABORATORIO
+}
+
+model Unit {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  cnes      String   @unique @db.Char(7)
+  name      String
+  type      UnitType
+  ibgeCode  String   @map("ibge_code")
+  address   String?
+  phone     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  assignments    UserAssignment[]
+  schedules      Schedule[]
+  tickets        Ticket[]
+  encounters     Encounter[]
+  wards          Ward[]
+  stockLocations StockLocation[]
+
+  @@map("units")
+}
+
+enum Role {
+  RECEPCAO
+  ENFERMAGEM
+  MEDICO
+  MULTIPROFISSIONAL
+  SERVICO_SOCIAL
+  NIR
+  FARMACIA
+  FATURAMENTO
+  GESTOR
+}
+
+/// Profissionais e colaboradores do tenant. O login é por CPF dentro do tenant.
+model User {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  cpf            String    @unique @db.Char(11)
+  cns            String?   @unique @db.Char(15)
+  name           String
+  socialName     String?   @map("social_name")
+  email          String?
+  phone          String?
+  passwordHash   String    @map("password_hash")
+  /// Segredo TOTP (RFC 6238) cifrado com a chave do servidor.
+  totpSecret     String?   @map("totp_secret")
+  mfaEnabled     Boolean   @default(false) @map("mfa_enabled")
+  active         Boolean   @default(true)
+  failedLogins   Int       @default(0) @map("failed_logins")
+  lockedUntil    DateTime? @map("locked_until")
+  lastLoginAt    DateTime? @map("last_login_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  assignments UserAssignment[]
+
+  @@map("users")
+}
+
+/// Papel de um profissional em uma unidade (contexto Tenant + Unidade + Papel).
+model UserAssignment {
+  id       String  @id @default(uuid(7)) @db.Uuid
+  userId   String  @map("user_id") @db.Uuid
+  unitId   String  @map("unit_id") @db.Uuid
+  role     Role
+  /// Ocupação (CBO 2002, 6 dígitos): usada no faturamento e na compatibilidade com a SIGTAP.
+  cbo      String  @db.Char(6)
+  /// Registro no conselho, ex.: "CRM-SP 123456", "COREN-SP 98765".
+  council  String?
+  active   Boolean @default(true)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  unit Unit @relation(fields: [unitId], references: [id])
+
+  @@unique([userId, unitId, role])
+  @@map("user_assignments")
+}
+
+// ───────────────────────────── Pacientes ─────────────────────────────
+
+enum Sex {
+  M
+  F
+}
+
+model Patient {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  cns            String?   @unique @db.Char(15)
+  cpf            String?   @unique @db.Char(11)
+  name           String
+  socialName     String?   @map("social_name")
+  /// Nome sem acentos e em maiúsculas, para busca e detecção de duplicidade.
+  nameKey        String    @map("name_key")
+  motherName     String?   @map("mother_name")
+  fatherName     String?   @map("father_name")
+  birthDate      DateTime  @map("birth_date") @db.Date
+  sex            Sex
+  racaCor        String    @default("99") @map("raca_cor") @db.Char(2)
+  etnia          String?   @db.Char(4)
+  nationality    String    @default("010") @db.Char(3)
+  phone          String?
+  whatsappOptIn  Boolean   @default(false) @map("whatsapp_opt_in")
+  email          String?
+  cep            String?   @db.Char(8)
+  street         String?
+  number         String?
+  complement     String?
+  district       String?
+  ibgeCode       String?   @map("ibge_code")
+  cadsusSyncedAt DateTime? @map("cadsus_synced_at")
+  deceasedAt     DateTime? @map("deceased_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  allergies   PatientAllergy[]
+  conditions  PatientCondition[]
+  documents   PatientDocument[]
+  encounters  Encounter[]
+  appointments Appointment[]
+  prescriptions Prescription[]
+  examRequests ExamRequest[]
+  vaccinations Vaccination[]
+  dispensations Dispensation[]
+  activeSearchCases ActiveSearchCase[]
+
+  @@index([nameKey, birthDate])
+  @@map("patients")
+}
+
+model PatientAllergy {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  patientId  String   @map("patient_id") @db.Uuid
+  substance  String
+  reaction   String?
+  severity   String?
+  recordedBy String?  @map("recorded_by") @db.Uuid
+  recordedAt DateTime @default(now()) @map("recorded_at")
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@map("patient_allergies")
+}
+
+enum CodeSystem {
+  CID10
+  CID11
+  CIAP2
+}
+
+enum LineOfCare {
+  HIPERTENSAO
+  DIABETES
+  GESTANTE
+  ONCOLOGIA
+  SAUDE_MENTAL
+  TUBERCULOSE
+  HANSENIASE
+}
+
+model PatientCondition {
+  id          String      @id @default(uuid(7)) @db.Uuid
+  patientId   String      @map("patient_id") @db.Uuid
+  system      CodeSystem
+  code        String
+  description String
+  /// Linha de cuidado acompanhada pelo painel de busca ativa (crônicos e gestantes).
+  lineOfCare  LineOfCare? @map("line_of_care")
+  onsetAt     DateTime?   @map("onset_at") @db.Date
+  active      Boolean     @default(true)
+  recordedAt  DateTime    @default(now()) @map("recorded_at")
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@index([lineOfCare, active])
+  @@map("patient_conditions")
+}
+
+/// Arquivos guardados no storage de objetos (Cloudflare R2): documentos digitalizados, termos, laudos, PDFs assinados.
+model PatientDocument {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  patientId  String   @map("patient_id") @db.Uuid
+  kind       String
+  storageKey String   @map("storage_key")
+  mimeType   String   @map("mime_type")
+  sizeBytes  Int      @map("size_bytes")
+  sha256     String   @db.Char(64)
+  createdBy  String   @map("created_by") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId])
+  @@map("patient_documents")
+}
+
+// ───────────────────────────── Agenda e regulação local ─────────────────────────────
+
+model Schedule {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  unitId         String   @map("unit_id") @db.Uuid
+  professionalId String   @map("professional_id") @db.Uuid
+  name           String
+  cbo            String   @db.Char(6)
+  slotMinutes    Int      @default(20) @map("slot_minutes")
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  unit         Unit            @relation(fields: [unitId], references: [id])
+  rules        ScheduleRule[]
+  blocks       ScheduleBlock[]
+  appointments Appointment[]
+
+  @@index([unitId])
+  @@map("schedules")
+}
+
+/// Grade semanal: horário de funcionamento e cotas de primeira consulta e retorno por turno.
+model ScheduleRule {
+  id               String @id @default(uuid(7)) @db.Uuid
+  scheduleId       String @map("schedule_id") @db.Uuid
+  weekday          Int // 0 = domingo
+  startTime        String @map("start_time") @db.Char(5)
+  endTime          String @map("end_time") @db.Char(5)
+  firstVisitQuota  Int    @map("first_visit_quota")
+  returnQuota      Int    @map("return_quota")
+
+  schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@map("schedule_rules")
+}
+
+model ScheduleBlock {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  scheduleId String   @map("schedule_id") @db.Uuid
+  startsAt   DateTime @map("starts_at")
+  endsAt     DateTime @map("ends_at")
+  reason     String
+  createdBy  String   @map("created_by") @db.Uuid
+
+  schedule Schedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@index([scheduleId, startsAt])
+  @@map("schedule_blocks")
+}
+
+enum AppointmentKind {
+  PRIMEIRA_CONSULTA
+  RETORNO
+}
+
+enum AppointmentStatus {
+  AGENDADO
+  CONFIRMADO
+  CANCELADO
+  FALTOU
+  ATENDIDO
+  REMARCADO
+}
+
+model Appointment {
+  id                  String            @id @default(uuid(7)) @db.Uuid
+  scheduleId          String            @map("schedule_id") @db.Uuid
+  unitId              String            @map("unit_id") @db.Uuid
+  patientId           String            @map("patient_id") @db.Uuid
+  professionalId      String            @map("professional_id") @db.Uuid
+  startsAt            DateTime          @map("starts_at")
+  endsAt              DateTime          @map("ends_at")
+  kind                AppointmentKind
+  status              AppointmentStatus @default(AGENDADO)
+  confirmationChannel String?           @map("confirmation_channel")
+  confirmedAt         DateTime?         @map("confirmed_at")
+  cancelledAt         DateTime?         @map("cancelled_at")
+  cancelReason        String?           @map("cancel_reason")
+  rescheduledFromId   String?           @map("rescheduled_from_id") @db.Uuid
+  notes               String?
+  createdBy           String            @map("created_by") @db.Uuid
+  createdAt           DateTime          @default(now()) @map("created_at")
+
+  schedule Schedule @relation(fields: [scheduleId], references: [id])
+  patient  Patient  @relation(fields: [patientId], references: [id])
+
+  @@index([scheduleId, startsAt])
+  @@index([patientId, startsAt])
+  @@index([status, startsAt])
+  @@map("appointments")
+}
+
+enum WaitlistStatus {
+  AGUARDANDO
+  OFERTADO
+  AGENDADO
+  DESISTIU
+}
+
+model WaitlistEntry {
+  id          String         @id @default(uuid(7)) @db.Uuid
+  unitId      String         @map("unit_id") @db.Uuid
+  cbo         String         @db.Char(6)
+  patientId   String         @map("patient_id") @db.Uuid
+  priority    Int            @default(0)
+  reason      String?
+  status      WaitlistStatus @default(AGUARDANDO)
+  offeredAppointmentId String? @map("offered_appointment_id") @db.Uuid
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  @@index([unitId, cbo, status])
+  @@map("waitlist_entries")
+}
+
+// ───────────────────────────── Recepção, senhas e atendimento ─────────────────────────────
+
+enum TicketKind {
+  NORMAL
+  PRIORIDADE
+}
+
+enum TicketStatus {
+  AGUARDANDO
+  CHAMADA
+  EM_ATENDIMENTO
+  FINALIZADA
+  AUSENTE
+}
+
+model Ticket {
+  id        String       @id @default(uuid(7)) @db.Uuid
+  unitId    String       @map("unit_id") @db.Uuid
+  /// Data local (AAAA-MM-DD) da unidade: a numeração recomeça a cada dia.
+  day       String       @db.Char(10)
+  sequence  Int
+  code      String
+  kind      TicketKind
+  sector    String       @default("RECEPCAO")
+  patientId String?      @map("patient_id") @db.Uuid
+  encounterId String?    @map("encounter_id") @db.Uuid
+  status    TicketStatus @default(AGUARDANDO)
+  desk      String?
+  calledAt  DateTime?    @map("called_at")
+  calledBy  String?      @map("called_by") @db.Uuid
+  callCount Int          @default(0) @map("call_count")
+  createdAt DateTime     @default(now()) @map("created_at")
+
+  unit Unit @relation(fields: [unitId], references: [id])
+
+  @@unique([unitId, day, kind, sequence])
+  @@index([unitId, day, status])
+  @@map("tickets")
+}
+
+enum EncounterKind {
+  AMBULATORIAL
+  URGENCIA
+  INTERNACAO
+  DOMICILIAR
+  ODONTOLOGICO
+}
+
+enum EncounterStatus {
+  ABERTO
+  TRIADO
+  EM_ATENDIMENTO
+  ENCERRADO
+  CANCELADO
+  EVADIU
+}
+
+enum EncounterOutcome {
+  ALTA
+  INTERNACAO
+  ENCAMINHAMENTO
+  TRANSFERENCIA
+  OBITO
+  EVASAO
+}
+
+model Encounter {
+  id            String            @id @default(uuid(7)) @db.Uuid
+  unitId        String            @map("unit_id") @db.Uuid
+  patientId     String            @map("patient_id") @db.Uuid
+  kind          EncounterKind
+  status        EncounterStatus   @default(ABERTO)
+  appointmentId String?           @map("appointment_id") @db.Uuid
+  ticketId      String?           @map("ticket_id") @db.Uuid
+  responsibleId String?           @map("responsible_id") @db.Uuid
+  mainCid       String?           @map("main_cid")
+  outcome       EncounterOutcome?
+  startedAt     DateTime          @default(now()) @map("started_at")
+  endedAt       DateTime?         @map("ended_at")
+  createdBy     String            @map("created_by") @db.Uuid
+
+  unit          Unit            @relation(fields: [unitId], references: [id])
+  patient       Patient         @relation(fields: [patientId], references: [id])
+  triages       Triage[]
+  notes         ClinicalNote[]
+  prescriptions Prescription[]
+  examRequests  ExamRequest[]
+  admission     Admission?
+
+  @@index([patientId, startedAt])
+  @@index([unitId, status])
+  @@map("encounters")
+}
+
+enum RiskColor {
+  VERMELHO
+  LARANJA
+  AMARELO
+  VERDE
+  AZUL
+}
+
+/// Acolhimento com Classificação de Risco: sinais vitais, mapa topográfico da dor e cor.
+model Triage {
+  id              String    @id @default(uuid(7)) @db.Uuid
+  encounterId     String    @map("encounter_id") @db.Uuid
+  nurseId         String    @map("nurse_id") @db.Uuid
+  complaint       String
+  systolic        Int?
+  diastolic       Int?
+  heartRate       Int?      @map("heart_rate")
+  respiratoryRate Int?      @map("respiratory_rate")
+  temperature     Decimal?  @db.Decimal(4, 1)
+  spo2            Int?
+  glucose         Int?
+  weightKg        Decimal?  @map("weight_kg") @db.Decimal(5, 2)
+  heightCm        Int?      @map("height_cm")
+  painScore       Int?      @map("pain_score")
+  /// Regiões marcadas no diagrama corporal 2D: [{ view: "FRENTE"|"COSTAS", region, x, y, intensity }].
+  painMap         Json      @default("[]") @map("pain_map")
+  flags           String[]
+  vulnerability   String?
+  suggestedColor  RiskColor @map("suggested_color")
+  riskColor       RiskColor @map("risk_color")
+  overrideReason  String?   @map("override_reason")
+  classifiedAt    DateTime  @default(now()) @map("classified_at")
+
+  encounter Encounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+
+  @@index([encounterId])
+  @@map("triages")
+}
+
+enum NoteKind {
+  SOAP
+  EVOLUCAO
+  ODONTOGRAMA
+  LAUDO_INTERNACAO
+  ATESTADO
+  SUMARIO_ALTA
+}
+
+enum NoteStatus {
+  RASCUNHO
+  ASSINADO
+}
+
+model ClinicalNote {
+  id          String     @id @default(uuid(7)) @db.Uuid
+  encounterId String     @map("encounter_id") @db.Uuid
+  authorId    String     @map("author_id") @db.Uuid
+  role        Role
+  cbo         String     @db.Char(6)
+  kind        NoteKind
+  subjective  String?
+  objective   String?
+  assessment  String?
+  plan        String?
+  /// Conteúdo estruturado específico do tipo (odontograma, atestado, sumário de alta...).
+  data        Json       @default("{}")
+  codes       String[]
+  status      NoteStatus @default(RASCUNHO)
+  signedAt    DateTime?  @map("signed_at")
+  /// Hash SHA-256 registrado na trilha de auditoria no momento da assinatura.
+  auditHash   String?    @map("audit_hash") @db.Char(64)
+  /// Assinatura ICP-Brasil (CMS/PAdES) quando o conector estiver ativo no tenant.
+  signature   String?
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  encounter Encounter @relation(fields: [encounterId], references: [id], onDelete: Cascade)
+
+  @@index([encounterId])
+  @@index([status, createdAt])
+  @@map("clinical_notes")
+}
+
+// ───────────────────────────── Prescrição e exames ─────────────────────────────
+
+enum PrescriptionKind {
+  AMBULATORIAL
+  HOSPITALAR
+}
+
+enum PrescriptionStatus {
+  ATIVA
+  SUSPENSA
+  ENCERRADA
+}
+
+model Prescription {
+  id            String             @id @default(uuid(7)) @db.Uuid
+  encounterId   String             @map("encounter_id") @db.Uuid
+  patientId     String             @map("patient_id") @db.Uuid
+  prescriberId  String             @map("prescriber_id") @db.Uuid
+  kind          PrescriptionKind
+  status        PrescriptionStatus @default(ATIVA)
+  /// Alertas do copiloto clínico exibidos no momento da prescrição.
+  alerts        Json               @default("[]")
+  /// Justificativa formal exigida quando há alerta GRAVE.
+  justification String?
+  signedAt      DateTime           @default(now()) @map("signed_at")
+  auditHash     String?            @map("audit_hash") @db.Char(64)
+
+  encounter Encounter          @relation(fields: [encounterId], references: [id])
+  patient   Patient            @relation(fields: [patientId], references: [id])
+  items     PrescriptionItem[]
+
+  @@index([patientId, signedAt])
+  @@map("prescriptions")
+}
+
+model PrescriptionItem {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  prescriptionId   String   @map("prescription_id") @db.Uuid
+  productId        String?  @map("product_id") @db.Uuid
+  description      String
+  activeIngredient String?  @map("active_ingredient")
+  dose             Decimal? @db.Decimal(10, 3)
+  doseUnit         String?  @map("dose_unit")
+  route            String?
+  frequencyHours   Int?     @map("frequency_hours")
+  durationDays     Int?     @map("duration_days")
+  quantity         Decimal? @db.Decimal(10, 2)
+  instructions     String?
+  suspendedAt      DateTime? @map("suspended_at")
+
+  prescription Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+
+  @@index([prescriptionId])
+  @@map("prescription_items")
+}
+
+enum ExamStatus {
+  SOLICITADO
+  COLETADO
+  RESULTADO
+  CANCELADO
+}
+
+model ExamRequest {
+  id          String     @id @default(uuid(7)) @db.Uuid
+  encounterId String?    @map("encounter_id") @db.Uuid
+  patientId   String     @map("patient_id") @db.Uuid
+  requesterId String     @map("requester_id") @db.Uuid
+  sigtapCode  String     @map("sigtap_code") @db.Char(10)
+  name        String
+  /// Código do analito usado pelo copiloto (ex.: CREATININA, POTASSIO, HBA1C).
+  analyte     String?
+  status      ExamStatus @default(SOLICITADO)
+  resultValue Decimal?   @map("result_value") @db.Decimal(12, 4)
+  resultUnit  String?    @map("result_unit")
+  resultText  String?    @map("result_text")
+  resultAt    DateTime?  @map("result_at")
+  requestedAt DateTime   @default(now()) @map("requested_at")
+
+  encounter Encounter? @relation(fields: [encounterId], references: [id])
+  patient   Patient    @relation(fields: [patientId], references: [id])
+
+  @@index([patientId, analyte, resultAt])
+  @@map("exam_requests")
+}
+
+model Vaccination {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  patientId      String   @map("patient_id") @db.Uuid
+  unitId         String   @map("unit_id") @db.Uuid
+  professionalId String   @map("professional_id") @db.Uuid
+  vaccineCode    String   @map("vaccine_code")
+  vaccineName    String   @map("vaccine_name")
+  lot            String
+  manufacturer   String
+  dose           String
+  route          String
+  site           String?
+  appliedAt      DateTime @map("applied_at")
+
+  patient Patient @relation(fields: [patientId], references: [id])
+
+  @@index([patientId])
+  @@map("vaccinations")
+}
+
+// ───────────────────────────── Leitos e NIR ─────────────────────────────
+
+enum WardKind {
+  CLINICA_MEDICA
+  CIRURGICA
+  UTI_ADULTO
+  UTI_PEDIATRICA
+  PEDIATRIA
+  OBSTETRICIA
+  OBSERVACAO
+}
+
+model Ward {
+  id     String   @id @default(uuid(7)) @db.Uuid
+  unitId String   @map("unit_id") @db.Uuid
+  name   String
+  kind   WardKind
+
+  unit Unit  @relation(fields: [unitId], references: [id])
+  beds Bed[]
+
+  @@map("wards")
+}
+
+enum BedStatus {
+  VAGO
+  OCUPADO
+  HIGIENIZACAO
+  BLOQUEADO
+}
+
+enum Isolation {
+  NENHUM
+  CONTATO
+  GOTICULAS
+  AEROSSOIS
+}
+
+model Bed {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  wardId    String    @map("ward_id") @db.Uuid
+  code      String
+  status    BedStatus @default(VAGO)
+  isolation Isolation @default(NENHUM)
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  ward       Ward        @relation(fields: [wardId], references: [id])
+  admissions Admission[]
+  events     BedEvent[]
+
+  @@unique([wardId, code])
+  @@map("beds")
+}
+
+model BedEvent {
+  id     String    @id @default(uuid(7)) @db.Uuid
+  bedId  String    @map("bed_id") @db.Uuid
+  status BedStatus
+  isolation Isolation
+  reason String?
+  userId String    @map("user_id") @db.Uuid
+  at     DateTime  @default(now())
+
+  bed Bed @relation(fields: [bedId], references: [id])
+
+  @@index([bedId, at])
+  @@map("bed_events")
+}
+
+model Admission {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  encounterId    String    @unique @map("encounter_id") @db.Uuid
+  patientId      String    @map("patient_id") @db.Uuid
+  bedId          String?   @map("bed_id") @db.Uuid
+  mainCid        String    @map("main_cid")
+  /// Código de regulação da central de vagas (SISREG), quando a vaga veio regulada.
+  regulationCode String?   @map("regulation_code")
+  aihNumber      String?   @map("aih_number") @db.Char(13)
+  admittedAt     DateTime  @default(now()) @map("admitted_at")
+  dischargedAt   DateTime? @map("discharged_at")
+
+  encounter Encounter @relation(fields: [encounterId], references: [id])
+  bed       Bed?      @relation(fields: [bedId], references: [id])
+
+  @@index([bedId])
+  @@map("admissions")
+}
+
+// ───────────────────────────── Suprimentos e farmácia ─────────────────────────────
+
+enum ControlledList {
+  A1
+  A2
+  A3
+  B1
+  B2
+  C1
+  C2
+  C3
+  C4
+  C5
+}
+
+/// Catálogo institucional padronizado (CATMAT/CATSER).
+model Product {
+  id                String          @id @default(uuid(7)) @db.Uuid
+  code              String          @unique
+  catmat            String?
+  description       String
+  activeIngredient  String?         @map("active_ingredient")
+  concentration     String?
+  pharmaceuticalForm String?        @map("pharmaceutical_form")
+  /// Unidade de dispensação/estoque (CP, AMP, FR, ML, UN...).
+  unit              String
+  gtin              String?
+  /// Lista da Portaria SVS/MS 344/98 quando controlado.
+  controlledList    ControlledList? @map("controlled_list")
+  /// Medicamento de alta vigilância: administração exige POP com dupla checagem.
+  highAlert         Boolean         @default(false) @map("high_alert")
+  antimicrobialRestricted Boolean   @default(false) @map("antimicrobial_restricted")
+  active            Boolean         @default(true)
+
+  mappings ProductMapping[]
+  lots     StockLot[]
+
+  @@index([gtin])
+  @@map("products")
+}
+
+/// "De-Para": código do fornecedor/GTIN da nota fiscal para o item do catálogo, com fator de conversão.
+model ProductMapping {
+  id               String  @id @default(uuid(7)) @db.Uuid
+  productId        String  @map("product_id") @db.Uuid
+  supplierCnpj     String? @map("supplier_cnpj") @db.Char(14)
+  supplierCode     String? @map("supplier_code")
+  gtin             String?
+  conversionFactor Decimal @default(1) @map("conversion_factor") @db.Decimal(10, 3)
+
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([supplierCnpj, supplierCode])
+  @@index([gtin])
+  @@map("product_mappings")
+}
+
+enum StockLocationKind {
+  ALMOXARIFADO_CENTRAL
+  FARMACIA_CENTRAL
+  FARMACIA_SETORIAL
+  POSTO_ENFERMAGEM
+}
+
+model StockLocation {
+  id     String            @id @default(uuid(7)) @db.Uuid
+  unitId String            @map("unit_id") @db.Uuid
+  name   String
+  kind   StockLocationKind
+
+  unit     Unit           @relation(fields: [unitId], references: [id])
+  balances StockBalance[]
+
+  @@map("stock_locations")
+}
+
+model StockLot {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  productId    String    @map("product_id") @db.Uuid
+  lotNumber    String    @map("lot_number")
+  expiry       DateTime  @db.Date
+  manufacturedAt DateTime? @map("manufactured_at") @db.Date
+  manufacturer String?
+
+  product  Product        @relation(fields: [productId], references: [id])
+  balances StockBalance[]
+
+  @@unique([productId, lotNumber])
+  @@map("stock_lots")
+}
+
+model StockBalance {
+  locationId String  @map("location_id") @db.Uuid
+  lotId      String  @map("lot_id") @db.Uuid
+  quantity   Decimal @default(0) @db.Decimal(12, 3)
+
+  location StockLocation @relation(fields: [locationId], references: [id])
+  lot      StockLot      @relation(fields: [lotId], references: [id])
+
+  @@id([locationId, lotId])
+  @@map("stock_balances")
+}
+
+enum MovementKind {
+  ENTRADA_NFE
+  TRANSFERENCIA_SAIDA
+  TRANSFERENCIA_ENTRADA
+  DISPENSACAO
+  ADMINISTRACAO
+  DEVOLUCAO
+  UNITARIZACAO_SAIDA
+  UNITARIZACAO_ENTRADA
+  AJUSTE
+  PERDA
+}
+
+model StockMovement {
+  id         String       @id @default(uuid(7)) @db.Uuid
+  kind       MovementKind
+  locationId String       @map("location_id") @db.Uuid
+  lotId      String       @map("lot_id") @db.Uuid
+  quantity   Decimal      @db.Decimal(12, 3)
+  refType    String?      @map("ref_type")
+  refId      String?      @map("ref_id") @db.Uuid
+  patientId  String?      @map("patient_id") @db.Uuid
+  userId     String       @map("user_id") @db.Uuid
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  @@index([locationId, createdAt])
+  @@index([lotId])
+  @@map("stock_movements")
+}
+
+model Invoice {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  accessKey    String   @unique @map("access_key") @db.Char(44)
+  number       String
+  series       String
+  supplierCnpj String   @map("supplier_cnpj") @db.Char(14)
+  supplierName String   @map("supplier_name")
+  issuedAt     DateTime @map("issued_at")
+  totalValue   Decimal  @map("total_value") @db.Decimal(14, 2)
+  locationId   String   @map("location_id") @db.Uuid
+  source       String   // SEFAZ ou UPLOAD
+  xml          String
+  importedBy   String   @map("imported_by") @db.Uuid
+  importedAt   DateTime @default(now()) @map("imported_at")
+
+  items InvoiceItem[]
+
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  invoiceId    String   @map("invoice_id") @db.Uuid
+  productId    String?  @map("product_id") @db.Uuid
+  supplierCode String   @map("supplier_code")
+  description  String
+  gtin         String?
+  ncm          String?
+  anvisaCode   String?  @map("anvisa_code")
+  quantity     Decimal  @db.Decimal(12, 3)
+  unitPrice    Decimal  @map("unit_price") @db.Decimal(14, 6)
+  /// Bloco <rastro> da NF-e: [{ lot, quantity, manufacturedAt, expiry }].
+  lots         Json     @default("[]")
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@map("invoice_items")
+}
+
+enum TransferStatus {
+  SEPARACAO
+  EXPEDIDA
+  RECEBIDA
+  DIVERGENTE
+  CANCELADA
+}
+
+model Transfer {
+  id             String         @id @default(uuid(7)) @db.Uuid
+  fromLocationId String         @map("from_location_id") @db.Uuid
+  toLocationId   String         @map("to_location_id") @db.Uuid
+  status         TransferStatus @default(SEPARACAO)
+  createdBy      String         @map("created_by") @db.Uuid
+  createdAt      DateTime       @default(now()) @map("created_at")
+  dispatchedBy   String?        @map("dispatched_by") @db.Uuid
+  dispatchedAt   DateTime?      @map("dispatched_at")
+  receivedBy     String?        @map("received_by") @db.Uuid
+  receivedAt     DateTime?      @map("received_at")
+  notes          String?
+
+  items TransferItem[]
+
+  @@map("transfers")
+}
+
+model TransferItem {
+  id               String   @id @default(uuid(7)) @db.Uuid
+  transferId       String   @map("transfer_id") @db.Uuid
+  lotId            String   @map("lot_id") @db.Uuid
+  quantity         Decimal  @db.Decimal(12, 3)
+  receivedQuantity Decimal? @map("received_quantity") @db.Decimal(12, 3)
+
+  transfer Transfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+
+  @@map("transfer_items")
+}
+
+enum UnitDoseStatus {
+  DISPONIVEL
+  ADMINISTRADA
+  DEVOLVIDA
+  DESCARTADA
+}
+
+/// Dose unitária serializada (RDC 67/2007), identificada por Datamatrix GS1.
+model UnitDose {
+  id         String         @id @default(uuid(7)) @db.Uuid
+  serial     String         @unique
+  productId  String         @map("product_id") @db.Uuid
+  lotId      String         @map("lot_id") @db.Uuid
+  gtin       String
+  /// Validade recalculada após fracionamento/diluição (nunca posterior à do lote original).
+  expiry     DateTime       @db.Date
+  locationId String         @map("location_id") @db.Uuid
+  status     UnitDoseStatus @default(DISPONIVEL)
+  gs1        String
+  createdBy  String         @map("created_by") @db.Uuid
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  @@index([locationId, status])
+  @@map("unit_doses")
+}
+
+model Dispensation {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  unitId         String   @map("unit_id") @db.Uuid
+  locationId     String   @map("location_id") @db.Uuid
+  patientId      String   @map("patient_id") @db.Uuid
+  prescriptionId String?  @map("prescription_id") @db.Uuid
+  /// Receita externa (papel): número, prescritor e data, exigidos para controlados.
+  externalPrescription Json? @map("external_prescription")
+  controlled     Boolean  @default(false)
+  dispensedBy    String   @map("dispensed_by") @db.Uuid
+  dispensedAt    DateTime @default(now()) @map("dispensed_at")
+
+  patient Patient            @relation(fields: [patientId], references: [id])
+  items   DispensationItem[]
+
+  @@index([patientId, dispensedAt])
+  @@map("dispensations")
+}
+
+model DispensationItem {
+  id             String  @id @default(uuid(7)) @db.Uuid
+  dispensationId String  @map("dispensation_id") @db.Uuid
+  productId      String  @map("product_id") @db.Uuid
+  lotId          String  @map("lot_id") @db.Uuid
+  quantity       Decimal @db.Decimal(12, 3)
+
+  dispensation Dispensation @relation(fields: [dispensationId], references: [id], onDelete: Cascade)
+
+  @@map("dispensation_items")
+}
+
+enum AdministrationStatus {
+  ADMINISTRADO
+  BLOQUEADO
+  RECUSADO_PACIENTE
+}
+
+/// Administração beira-leito: a baixa definitiva do estoque do posto acontece aqui.
+model Administration {
+  id                 String               @id @default(uuid(7)) @db.Uuid
+  patientId          String               @map("patient_id") @db.Uuid
+  prescriptionItemId String               @map("prescription_item_id") @db.Uuid
+  unitDoseId         String?              @map("unit_dose_id") @db.Uuid
+  locationId         String               @map("location_id") @db.Uuid
+  status             AdministrationStatus
+  /// Resultado da checagem dos 5 certos: [{ check, ok, detail }].
+  checks             Json
+  route              String?
+  scheduledFor       DateTime?            @map("scheduled_for")
+  administeredBy     String               @map("administered_by") @db.Uuid
+  doubleCheckBy      String?              @map("double_check_by") @db.Uuid
+  popExecutionId     String?              @map("pop_execution_id") @db.Uuid
+  at                 DateTime             @default(now())
+
+  @@index([patientId, at])
+  @@map("administrations")
+}
+
+// ───────────────────────────── POPs (hard e soft gates) ─────────────────────────────
+
+enum PopKind {
+  HARD
+  SOFT
+}
+
+model Pop {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  code      String  @unique
+  title     String
+  kind      PopKind
+  /// Gatilho de aplicação, ex.: "administracao.alta_vigilancia", "administracao.hemoderivado".
+  trigger   String?
+  version   Int     @default(1)
+  content   String
+  /// Itens do checklist: [{ id, text, required }].
+  checklist Json    @default("[]")
+  requiresDoubleCheck Boolean @default(false) @map("requires_double_check")
+  active    Boolean @default(true)
+
+  executions PopExecution[]
+
+  @@map("pops")
+}
+
+model PopExecution {
+  id                String   @id @default(uuid(7)) @db.Uuid
+  popId             String   @map("pop_id") @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  patientId         String?  @map("patient_id") @db.Uuid
+  answers           Json
+  doubleCheckUserId String?  @map("double_check_user_id") @db.Uuid
+  completedAt       DateTime @default(now()) @map("completed_at")
+  /// Consumida por uma administração; uma execução não libera duas doses.
+  consumedAt        DateTime? @map("consumed_at")
+
+  pop Pop @relation(fields: [popId], references: [id])
+
+  @@map("pop_executions")
+}
+
+// ───────────────────────────── Faturamento SUS ─────────────────────────────
+
+model SigtapProcedure {
+  code         String   @id @db.Char(10)
+  name         String
+  complexity   String?
+  /// M, F, I (indiferente) ou N (não se aplica).
+  sex          String   @db.Char(1)
+  minAgeMonths Int      @map("min_age_months")
+  maxAgeMonths Int      @map("max_age_months")
+  maxQuantity  Int      @map("max_quantity")
+  valueSh      Decimal  @default(0) @map("value_sh") @db.Decimal(12, 2)
+  valueSa      Decimal  @default(0) @map("value_sa") @db.Decimal(12, 2)
+  valueSp      Decimal  @default(0) @map("value_sp") @db.Decimal(12, 2)
+  /// Instrumentos de registro permitidos: BPA_I, BPA_C, APAC, AIH.
+  instruments  String[]
+  competencia  String   @db.Char(6)
+
+  @@map("sigtap_procedures")
+}
+
+model SigtapProcedureCbo {
+  procedureCode String @map("procedure_code") @db.Char(10)
+  cbo           String @db.Char(6)
+
+  @@id([procedureCode, cbo])
+  @@map("sigtap_procedure_cbo")
+}
+
+model SigtapProcedureCid {
+  procedureCode String @map("procedure_code") @db.Char(10)
+  cid           String @db.VarChar(4)
+
+  @@id([procedureCode, cid])
+  @@map("sigtap_procedure_cid")
+}
+
+model SigtapSync {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  competencia String    @db.Char(6)
+  source      String
+  status      String
+  procedures  Int       @default(0)
+  startedAt   DateTime  @default(now()) @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+  error       String?
+
+  @@map("sigtap_syncs")
+}
+
+enum BillingInstrument {
+  BPA_I
+  BPA_C
+  APAC
+  AIH
+}
+
+enum ProductionStatus {
+  PENDENTE
+  VALIDADO
+  GLOSA_PREVISTA
+  EXPORTADO
+}
+
+model ProductionRecord {
+  id             String            @id @default(uuid(7)) @db.Uuid
+  unitId         String            @map("unit_id") @db.Uuid
+  competencia    String            @db.Char(6)
+  encounterId    String?           @map("encounter_id") @db.Uuid
+  patientId      String?           @map("patient_id") @db.Uuid
+  professionalId String            @map("professional_id") @db.Uuid
+  cbo            String            @db.Char(6)
+  procedureCode  String            @map("procedure_code") @db.Char(10)
+  cid            String?           @db.VarChar(4)
+  quantity       Int               @default(1)
+  performedAt    DateTime          @map("performed_at")
+  instrument     BillingInstrument
+  status         ProductionStatus  @default(PENDENTE)
+  /// Inconsistências encontradas pelo motor de auditoria pré-glosa.
+  issues         Json              @default("[]")
+  exportId       String?           @map("export_id") @db.Uuid
+  createdAt      DateTime          @default(now()) @map("created_at")
+
+  @@index([unitId, competencia, status])
+  @@map("production_records")
+}
+
+model BillingExport {
+  id           String            @id @default(uuid(7)) @db.Uuid
+  unitId       String            @map("unit_id") @db.Uuid
+  competencia  String            @db.Char(6)
+  instrument   BillingInstrument
+  fileName     String            @map("file_name")
+  content      String
+  lines        Int
+  controlField String            @map("control_field")
+  createdBy    String            @map("created_by") @db.Uuid
+  createdAt    DateTime          @default(now()) @map("created_at")
+
+  @@map("billing_exports")
+}
+
+// ───────────────────────────── Interoperabilidade e mensageria ─────────────────────────────
+
+enum OutboxKind {
+  RNDS_RAC
+  RNDS_IMUNIZACAO
+  RNDS_DISPENSACAO
+  RNDS_SUMARIO_ALTA
+}
+
+enum OutboxStatus {
+  PENDENTE
+  ENVIADO
+  ERRO
+  DESCARTADO
+}
+
+/// Outbox transacional: o registro clínico e a mensagem para a RNDS são gravados na mesma transação.
+model OutboxMessage {
+  id          String       @id @default(uuid(7)) @db.Uuid
+  kind        OutboxKind
+  aggregateId String       @map("aggregate_id") @db.Uuid
+  payload     Json
+  status      OutboxStatus @default(PENDENTE)
+  attempts    Int          @default(0)
+  lastError   String?      @map("last_error")
+  notBefore   DateTime     @default(now()) @map("not_before")
+  externalId  String?      @map("external_id")
+  sentAt      DateTime?    @map("sent_at")
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  @@index([status, notBefore])
+  @@map("outbox_messages")
+}
+
+enum MessageKind {
+  CONFIRMACAO_CONSULTA
+  LEMBRETE_MEDICACAO
+  REMARCACAO
+  AVISO
+}
+
+enum MessageStatus {
+  AGENDADA
+  ENVIADA
+  ENTREGUE
+  LIDA
+  FALHOU
+  CANCELADA
+}
+
+model MessageLog {
+  id                String        @id @default(uuid(7)) @db.Uuid
+  patientId         String?       @map("patient_id") @db.Uuid
+  phone             String
+  kind              MessageKind
+  refId             String?       @map("ref_id") @db.Uuid
+  scheduledFor      DateTime      @map("scheduled_for")
+  status            MessageStatus @default(AGENDADA)
+  providerMessageId String?       @unique @map("provider_message_id")
+  payload           Json          @default("{}")
+  response          String?
+  respondedAt       DateTime?     @map("responded_at")
+  sentAt            DateTime?     @map("sent_at")
+  error             String?
+  createdAt         DateTime      @default(now()) @map("created_at")
+
+  @@index([status, scheduledFor])
+  @@index([refId])
+  @@map("message_logs")
+}
+
+// ───────────────────────────── Serviço social: busca ativa ─────────────────────────────
+
+enum ActiveSearchStatus {
+  ABERTO
+  EM_CONTATO
+  AGENDADO
+  ENCERRADO
+}
+
+model ActiveSearchCase {
+  id          String             @id @default(uuid(7)) @db.Uuid
+  patientId   String             @map("patient_id") @db.Uuid
+  lineOfCare  LineOfCare         @map("line_of_care")
+  status      ActiveSearchStatus @default(ABERTO)
+  assignedTo  String?            @map("assigned_to") @db.Uuid
+  lastVisitAt DateTime?          @map("last_visit_at")
+  openedAt    DateTime           @default(now()) @map("opened_at")
+  closedAt    DateTime?          @map("closed_at")
+  closeReason String?            @map("close_reason")
+
+  patient  Patient               @relation(fields: [patientId], references: [id])
+  contacts ActiveSearchContact[]
+
+  @@index([status, lineOfCare])
+  @@map("active_search_cases")
+}
+
+model ActiveSearchContact {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  caseId          String   @map("case_id") @db.Uuid
+  channel         String
+  outcome         String
+  /// Motivos de vulnerabilidade: TRANSPORTE, ABANDONO, BARREIRA_SOCIAL, FINANCEIRA, MOBILIDADE...
+  vulnerabilities String[]
+  /// Ações tomadas: TRANSPORTE_SANITARIO, VISITA_DOMICILIAR, CONSULTA_AGENDADA...
+  actions         String[]
+  notes           String?
+  userId          String   @map("user_id") @db.Uuid
+  at              DateTime @default(now())
+
+  case ActiveSearchCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@map("active_search_contacts")
+}
+
+// ───────────────────────────── Gestão ─────────────────────────────
+
+model MeetingAgenda {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  periodStart DateTime @map("period_start")
+  periodEnd   DateTime @map("period_end")
+  scope       String
+  content     Json
+  markdown    String
+  createdBy   String?  @map("created_by") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("meeting_agendas")
+}
+
+model BiQueryLog {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  question  String
+  sql       String?
+  rows      Int?
+  ok        Boolean
+  error     String?
+  ms        Int?
+  at        DateTime @default(now())
+
+  @@index([userId, at])
+  @@map("bi_query_logs")
+}
+
+model LibrasCall {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  roomId        String    @unique @map("room_id")
+  requestedBy   String    @map("requested_by") @db.Uuid
+  unitId        String    @map("unit_id") @db.Uuid
+  encounterId   String?   @map("encounter_id") @db.Uuid
+  interpreterId String?   @map("interpreter_id")
+  status        String
+  requestedAt   DateTime  @default(now()) @map("requested_at")
+  answeredAt    DateTime? @map("answered_at")
+  endedAt       DateTime? @map("ended_at")
+
+  @@map("libras_calls")
+}
+
+// ───────────────────────────── Trilha de auditoria ─────────────────────────────
+
+/// Encadeamento SHA-256: cada entrada inclui o hash da anterior. UPDATE e DELETE são bloqueados por gatilho.
+model AuditEntry {
+  seq         BigInt   @id @default(autoincrement())
+  at          DateTime @default(now()) @db.Timestamptz(3)
+  userId      String?  @map("user_id") @db.Uuid
+  unitId      String?  @map("unit_id") @db.Uuid
+  role        String?
+  ip          String?
+  mfa         Boolean  @default(false)
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String?  @map("entity_id")
+  payloadHash String   @map("payload_hash") @db.Char(64)
+  prevHash    String   @map("prev_hash") @db.Char(64)
+  hash        String   @unique @db.Char(64)
+
+  @@index([entityType, entityId])
+  @@index([userId, at])
+  @@map("audit_entries")
+}

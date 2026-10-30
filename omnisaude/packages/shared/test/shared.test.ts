@@ -101,3 +101,13 @@ describe('papéis', () => {
     expect(roleHasPermission('GESTOR', 'bi.consultar')).toBe(true);
   });
 });
+
+describe('geradores de documentos', () => {
+  it('gera CPF e CNS válidos', async () => {
+    const { completeCpf, cnsFromBase } = await import('@omnisaude/shared');
+    for (let i = 0; i < 50; i++) {
+      expect(isValidCpf(completeCpf(String(100000000 + i * 7919)))).toBe(true);
+      expect(isValidCns(cnsFromBase(String(10000000000 + i * 104729)))).toBe(true);
+    }
+  });
+});

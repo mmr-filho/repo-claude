@@ -1,0 +1,10 @@
+export { PrismaClient as MasterClient, Prisma as MasterPrisma } from './generated/master/client';
+export type * as MasterModels from './generated/master/client';
+export { PrismaClient as TenantClient, Prisma as TenantPrisma } from './generated/tenant/client';
+export type * as TenantModels from './generated/tenant/client';
+export * from './audit';
+export * from './migrate';
+export * from './provision';
+export * from './settings';
+export * from './tenancy';
+export * from './passwords';
