@@ -37,14 +37,16 @@ export const STATUS_LABEL: Record<ProductionStatus, { label: string; tone: 'slat
 };
 
 export const RULE_LABEL: Record<string, string> = {
-  PROCEDIMENTO: 'Procedimento inexistente na SIGTAP',
-  CBO: 'CBO incompatível',
-  CID: 'CID ausente ou incompatível',
-  SEXO: 'Sexo incompatível',
-  IDADE: 'Idade fora dos limites',
-  QUANTIDADE: 'Quantidade acima do máximo',
-  INSTRUMENTO: 'Instrumento de registro não permitido',
-  CNS: 'CNS ausente',
+  PROCEDIMENTO_INEXISTENTE: 'Procedimento inexistente na SIGTAP',
+  CBO_INCOMPATIVEL: 'CBO incompatível',
+  CID_OBRIGATORIO: 'CID obrigatório',
+  CID_INCOMPATIVEL: 'CID incompatível',
+  INSTRUMENTO_INCOMPATIVEL: 'Instrumento de registro não permitido',
+  SEXO_INCOMPATIVEL: 'Sexo incompatível',
+  IDADE_INCOMPATIVEL: 'Idade fora dos limites',
+  QUANTIDADE_EXCEDIDA: 'Quantidade acima do máximo',
+  CNS_PACIENTE_AUSENTE: 'CNS do paciente ausente',
+  CNS_PROFISSIONAL_AUSENTE: 'CNS do profissional ausente',
 };
 
 /** "202610" -> "out/2026" */

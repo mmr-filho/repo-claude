@@ -6,7 +6,9 @@ const staticExport = process.env.OMNI_STATIC_EXPORT === '1';
 
 const config: NextConfig = {
   // Permite builds paralelos (ex.: CI e desenvolvimento) sem disputar a mesma pasta.
-  distDir: process.env.NEXT_DIST_DIR ?? '.next',
+  // Na exportação estática o Next 16 grava o site no distDir (por padrão out/, lido pelo Capacitor), mas
+  // também reescreve .next: depois de exportar para o app, rode `next build` de novo antes de `next start`.
+  distDir: process.env.NEXT_DIST_DIR ?? (staticExport ? 'out' : '.next'),
   ...(staticExport ? { output: 'export' as const, trailingSlash: true } : {}),
   images: { unoptimized: true },
   poweredByHeader: false,

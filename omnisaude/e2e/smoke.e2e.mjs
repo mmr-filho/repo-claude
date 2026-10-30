@@ -2,7 +2,10 @@
 // Pré-requisitos: API em http://localhost:3001 (com a carga de demonstração) e web em WEB_URL.
 //   node e2e/smoke.e2e.mjs
 import { mkdirSync } from 'node:fs';
-import { chromium } from 'playwright';
+import { createRequire } from 'node:module';
+
+// require (e não import) para achar também um Playwright instalado globalmente (NODE_PATH).
+const { chromium } = createRequire(import.meta.url)('playwright');
 
 const WEB = process.env.WEB_URL ?? 'http://localhost:3000';
 const OUT = process.env.SCREENSHOTS ?? './e2e-screenshots';
@@ -41,8 +44,9 @@ for (const j of journeys) {
     await page.waitForURL(/\/inicio/);
     for (const path of j.pages) {
       await page.goto(`${WEB}${path}`);
-      await page.waitForLoadState('networkidle');
-      await page.waitForTimeout(500);
+      // O Socket.IO mantém a rede ativa: espera o carregamento e um intervalo para as chamadas da API.
+      await page.waitForLoadState('load');
+      await page.waitForTimeout(2500);
       const shot = `${OUT}/${String(++step).padStart(2, '0')}-${j.role.replace(/\W+/g, '_')}${path.replace(/\//g, '_')}.png`;
       await page.screenshot({ path: shot, fullPage: true });
       const crashed = await page.getByText(/Application error|Unhandled Runtime Error/).count();

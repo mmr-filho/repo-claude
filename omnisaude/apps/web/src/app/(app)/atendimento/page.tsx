@@ -157,7 +157,7 @@ function Workspace() {
               </p>
             )}
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex w-full flex-wrap gap-2 md:w-auto">
             {!closed && (e.status === 'ABERTO' || e.status === 'TRIADO') && session.can('prontuario.evoluir') && (
               <Button onClick={start} loading={starting}>
                 <PlayCircle className="h-4 w-4" /> Iniciar atendimento
@@ -185,7 +185,7 @@ function Workspace() {
         )}
       </Card>
 
-      <div className={cn('grid gap-4', showTimeline && 'xl:grid-cols-[22rem_minmax(0,1fr)]')}>
+      <div className={cn('grid grid-cols-1 gap-4', showTimeline && 'xl:grid-cols-[22rem_minmax(0,1fr)]')}>
         {showTimeline && (
           <Card className="max-h-[75vh] overflow-y-auto">
             <CardBody>

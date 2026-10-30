@@ -35,7 +35,7 @@ export function CodesInput({ value, onChange, disabled }: { value: CodeRef[]; on
         {value.length === 0 && <span className="text-sm text-slate-500">Nenhum código informado</span>}
       </div>
       {!disabled && (
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Select value={system} onChange={(e) => setSystem(e.target.value as CodeRef['system'])} className="w-28" aria-label="Sistema de codificação">
             <option value="CID10">CID-10</option>
             <option value="CIAP2">CIAP-2</option>

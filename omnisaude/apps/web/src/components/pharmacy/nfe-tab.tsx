@@ -183,7 +183,7 @@ export function NfeTab() {
                         {d.imported ? (
                           <Badge tone="green">Importada</Badge>
                         ) : (
-                          <Button size="sm" onClick={() => importSefaz(d.accessKey)} loading={pending}>
+                          <Button size="sm" onClick={() => importSefaz(d.accessKey)} loading={pending && lastKey === d.accessKey} disabled={pending}>
                             Importar
                           </Button>
                         )}

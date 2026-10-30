@@ -26,7 +26,14 @@ export function PrintPortal({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Imprime depois que o conteúdo da área de impressão foi renderizado. */
+/** Imprime quando a área de impressão estiver pronta (códigos QR carregados), com limite de espera. */
 export function printSoon() {
-  setTimeout(() => window.print(), 350);
+  const started = Date.now();
+  const tick = () => {
+    const area = document.getElementById('omni-print-area');
+    const pending = !area || !area.firstChild || area.querySelector('.animate-pulse');
+    if (pending && Date.now() - started < 4000) setTimeout(tick, 150);
+    else window.print();
+  };
+  setTimeout(tick, 200);
 }

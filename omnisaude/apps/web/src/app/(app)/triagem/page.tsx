@@ -67,7 +67,7 @@ export default function TriagePage() {
       {!q ? (
         <Spinner />
       ) : (
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <Card>
             <CardHeader title={`Aguardando classificação (${q.awaitingTriage.length})`} description="Por ordem de chegada" />
             <CardBody>

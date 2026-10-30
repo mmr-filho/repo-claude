@@ -188,8 +188,17 @@ export function PrescriptionEditor({ encounter, items, setItems, onChanged }: { 
         <>
           <div className="flex flex-col gap-4">
             {items.map((i, idx) => (
-              <fieldset key={i.key} className="grid gap-3 rounded-lg border border-slate-200 p-3 sm:grid-cols-2 lg:grid-cols-6">
+              <fieldset key={i.key} className="relative grid gap-3 rounded-lg border border-slate-200 p-3 pt-4 sm:grid-cols-2 lg:grid-cols-6">
                 <legend className="px-1 text-xs font-medium text-slate-500">Item {idx + 1}</legend>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="absolute right-2 top-1"
+                  onClick={() => setItems((s) => (s.length > 1 ? s.filter((x) => x.key !== i.key) : [emptyItem()]))}
+                  aria-label={`Remover item ${idx + 1}`}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
                 <Field label="Medicamento" htmlFor={`rx-desc-${i.key}`} className="sm:col-span-2 lg:col-span-3">
                   <Input
                     id={`rx-desc-${i.key}`}
@@ -214,7 +223,7 @@ export function PrescriptionEditor({ encounter, items, setItems, onChanged }: { 
                 <Field label="Princípio ativo" htmlFor={`rx-ai-${i.key}`} className="lg:col-span-3">
                   <Input id={`rx-ai-${i.key}`} value={i.activeIngredient} onChange={(e) => update(i.key, { activeIngredient: e.target.value })} placeholder="Ex.: losartana" />
                 </Field>
-                <Field label="Dose" htmlFor={`rx-dose-${i.key}`}>
+                <Field label="Dose" htmlFor={`rx-dose-${i.key}`} className="lg:col-span-2">
                   <div className="flex gap-1">
                     <Input id={`rx-dose-${i.key}`} inputMode="decimal" value={i.dose} onChange={(e) => update(i.key, { dose: e.target.value })} />
                     <Select value={i.doseUnit} onChange={(e) => update(i.key, { doseUnit: e.target.value })} className="w-24" aria-label="Unidade da dose">
@@ -242,11 +251,6 @@ export function PrescriptionEditor({ encounter, items, setItems, onChanged }: { 
                 <Field label="Quantidade" htmlFor={`rx-qty-${i.key}`}>
                   <Input id={`rx-qty-${i.key}`} inputMode="decimal" value={i.quantity} onChange={(e) => update(i.key, { quantity: e.target.value })} />
                 </Field>
-                <div className="flex items-end">
-                  <Button variant="ghost" onClick={() => setItems((s) => (s.length > 1 ? s.filter((x) => x.key !== i.key) : [emptyItem()]))} aria-label={`Remover item ${idx + 1}`}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
                 <Field label="Orientações" htmlFor={`rx-instr-${i.key}`} className="sm:col-span-2 lg:col-span-6">
                   <Input id={`rx-instr-${i.key}`} value={i.instructions} onChange={(e) => update(i.key, { instructions: e.target.value })} placeholder="Ex.: tomar após o café da manhã" />
                 </Field>

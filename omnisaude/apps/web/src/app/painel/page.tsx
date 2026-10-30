@@ -98,7 +98,7 @@ function Panel() {
           </div>
         </div>
         <p className="font-mono text-4xl tabular-nums" aria-label="Horário atual">
-          {now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          {now.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' })}
         </p>
       </header>
       <section className="grid flex-1 gap-6 p-8 lg:grid-cols-[2fr_1fr]" aria-live="assertive">

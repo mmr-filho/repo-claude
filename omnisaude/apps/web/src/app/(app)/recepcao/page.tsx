@@ -85,7 +85,7 @@ export default function ReceptionPage() {
           )
         }
       />
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_26rem]">
+      <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_26rem]">
         <Tabs
           value={tab}
           onValueChange={setTab}
@@ -137,7 +137,7 @@ export default function ReceptionPage() {
                         )}
                       </div>
                       <Button size="lg" onClick={checkIn} loading={checking}>
-                        <LogIn className="h-4 w-4" /> Acolher
+                        <LogIn className="h-4 w-4" /> Acolher paciente
                       </Button>
                     </div>
                     {checkInMsg && <Alert tone="warn">{checkInMsg}</Alert>}
