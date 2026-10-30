@@ -107,7 +107,7 @@ export function Duplicates() {
               Cancelar
             </Button>
             <Button loading={busy} disabled={!keep} onClick={merge}>
-              <GitMerge className="h-4 w-4" /> Unificar nos selecionado
+              <GitMerge className="h-4 w-4" /> Unificar no selecionado
             </Button>
           </>
         }
