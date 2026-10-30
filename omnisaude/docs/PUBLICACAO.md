@@ -84,8 +84,8 @@ substitui a senha pública da demonstração nessa conta.
    | Campo | Valor |
    |---|---|
    | Project name | `omnisaude` (igual ao `name` de `wrangler.jsonc`) |
-   | Production branch | `claude/busy-cray-f9aqxw` (ou `main`, depois do merge) |
-   | Root directory | `omnisaude` |
+   | Production branch | `claude/busy-cray-f9aqxw` (não deixe o padrão: o branch padrão do repositório é o do Sigilo, sem a pasta `omnisaude`) |
+   | Root directory | `omnisaude` (sem barra) |
    | Build command | `npm ci && npm run build:web -w @omnisaude/cloudflare` |
    | Deploy command | `npx wrangler deploy` (o padrão) |
    | Variável de build | `NODE_VERSION` = `22` |
@@ -141,6 +141,9 @@ Essa página é do outro sistema que atende `mm.api.br`, não do OmniSaúde: a C
 para o OmniSaúde quando o Worker `omnisaude` está publicado com a rota. Confira, nesta ordem:
 
 1. **Workers & Pages** lista um Worker chamado `omnisaude`? Se não, faça o passo 4.
+   O build parou em `Failed: root directory not found`? A Cloudflare clonou um branch sem a pasta
+   `omnisaude`: em **omnisaude → Settings → Build → Branch control**, troque o branch de produção para
+   `claude/busy-cray-f9aqxw` e confira se o **Root directory** é `omnisaude`.
 2. Em **omnisaude → Deployments** (ou **Builds**), o último build terminou com sucesso? Se falhou, abra o log:
    a mensagem de erro aparece no fim. Erros comuns:
    - `Containers` não disponível: a conta precisa do plano **Workers Paid**;
