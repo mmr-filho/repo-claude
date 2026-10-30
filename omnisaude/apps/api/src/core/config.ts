@@ -45,6 +45,9 @@ const schema = z.object({
   RNDS_REQUESTER_CPF: z.string().optional(),
   SEFAZ_URL: z.string().optional(),
   SIGTAP_ZIP_URL: z.string().optional(),
+  /** Chave da central de intérpretes de Libras (login dos intérpretes no canal de vídeo). */
+  LIBRAS_INTERPRETER_KEY: z.string().optional(),
+  STUN_URL: z.string().default('stun:stun.l.google.com:19302'),
   TURN_URL: z.string().optional(),
   TURN_USERNAME: z.string().optional(),
   TURN_CREDENTIAL: z.string().optional(),
