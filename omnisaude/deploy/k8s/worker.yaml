@@ -1,0 +1,22 @@
+# Jobs em segundo plano (WhatsApp, outbox RNDS, SIGTAP) via BullMQ/Redis.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omnisaude-worker
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: omnisaude-worker } }
+  template:
+    metadata: { labels: { app: omnisaude-worker } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000 }
+      containers:
+        - name: worker
+          image: omnisaude-api
+          command: ['node', 'apps/api/dist/worker.js']
+          envFrom:
+            - configMapRef: { name: omnisaude-config }
+            - secretRef: { name: omnisaude-secrets }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }

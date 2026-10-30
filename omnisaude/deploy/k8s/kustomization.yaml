@@ -1,0 +1,21 @@
+# Implantação de referência no Kubernetes. Postgres (master, tenants e réplicas) e Redis devem ser
+# serviços gerenciados ou operados à parte (ex.: operador CloudNativePG), com backup por banco de tenant.
+#   kubectl apply -k deploy/k8s
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: omnisaude
+resources:
+  - namespace.yaml
+  - config.yaml
+  - migrate-job.yaml
+  - api.yaml
+  - worker.yaml
+  - web.yaml
+  - ingress.yaml
+images:
+  - name: omnisaude-api
+    newName: registry.exemplo.gov.br/omnisaude/api
+    newTag: '0.1.0'
+  - name: omnisaude-web
+    newName: registry.exemplo.gov.br/omnisaude/web
+    newTag: '0.1.0'

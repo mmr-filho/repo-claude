@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: omnisaude-config
+data:
+  NODE_ENV: production
+  TENANT_DB_HOST: tenants-primary.db.svc
+  TENANT_DB_PORT: '5432'
+  TENANT_REPLICA_HOST: tenants-replica.db.svc
+  TENANT_REPLICA_PORT: '5432'
+  DB_SSL: 'true'
+  REDIS_URL: redis://redis.cache.svc:6379
+  CORS_ORIGINS: https://omnisaude.exemplo.gov.br,capacitor://localhost,https://localhost
+  PUBLIC_API_URL: https://omnisaude.exemplo.gov.br/api
+  RNDS_AUTH_URL: https://ehr-auth.saude.gov.br
+  RNDS_EHR_URL: https://ehr-services.saude.gov.br
+---
+# Modelo: crie o segredo real pelo cofre (Vault, Sealed Secrets, External Secrets). Nunca versionar valores.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: omnisaude-secrets
+type: Opaque
+stringData:
+  MASTER_DATABASE_URL: postgresql://omni_app:TROCAR@master.db.svc:5432/master_auth_db?sslmode=require
+  TENANT_DB_USER: omni_app
+  TENANT_DB_PASSWORD: TROCAR
+  TENANT_ADMIN_USER: omni_admin
+  TENANT_ADMIN_PASSWORD: TROCAR
+  TENANT_BI_USER: omni_bi_reader
+  TENANT_BI_PASSWORD: TROCAR
+  JWT_SECRET: TROCAR-por-pelo-menos-32-caracteres-aleatorios
+  DATA_KEY: TROCAR-32-bytes-em-base64
+  ANTHROPIC_API_KEY: ''
+  R2_ACCOUNT_ID: ''
+  R2_ACCESS_KEY_ID: ''
+  R2_SECRET_ACCESS_KEY: ''
+  R2_BUCKET: ''
+  WHATSAPP_ACCESS_TOKEN: ''
+  WHATSAPP_APP_SECRET: ''
+  RNDS_CERT_PASSPHRASE: ''

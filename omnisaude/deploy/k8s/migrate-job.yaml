@@ -1,0 +1,17 @@
+# Aplica as migrações no master e em todos os bancos de tenant (rodar a cada versão nova).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: omnisaude-migrate
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: omnisaude-api
+          command: ['node', 'packages/database/dist/cli.js', 'migrate']
+          envFrom:
+            - configMapRef: { name: omnisaude-config }
+            - secretRef: { name: omnisaude-secrets }

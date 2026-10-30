@@ -1,0 +1,11 @@
+**/node_modules
+**/dist
+**/.next*
+**/out
+**/*.tsbuildinfo
+**/.storage
+packages/database/src/generated
+apps/mobile/android
+.git
+*.log
+.env

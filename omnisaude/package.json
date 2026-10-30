@@ -2,7 +2,7 @@
   "name": "omnisaude",
   "private": true,
   "version": "0.1.0",
-  "description": "OmniSaúde: gestão integrada de redes públicas de saúde (APS, urgência e hospital) com IA, interoperabilidade RNDS e faturamento SUS.",
+  "description": "OmniSa\u00fade: gest\u00e3o integrada de redes p\u00fablicas de sa\u00fade (APS, urg\u00eancia e hospital) com IA, interoperabilidade RNDS e faturamento SUS.",
   "workspaces": [
     "packages/shared",
     "packages/database",
@@ -19,7 +19,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "build:libs": "tsc -b packages/shared packages/database packages/ai-engine packages/messaging packages/fhir packages/accessibility",
+    "build:libs": "npm run generate -w @omnisaude/database && tsc -b packages/shared packages/database packages/ai-engine packages/messaging packages/fhir packages/accessibility",
     "build": "npm run build:libs && npm run build -w @omnisaude/api && npm run build -w @omnisaude/mocks && npm run build -w @omnisaude/web",
     "typecheck": "tsc -b packages/shared packages/database packages/ai-engine packages/messaging packages/fhir packages/accessibility apps/api infra/mocks && npm run typecheck -w @omnisaude/web",
     "test": "vitest run",

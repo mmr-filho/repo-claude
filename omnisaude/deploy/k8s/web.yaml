@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omnisaude-web
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: omnisaude-web } }
+  template:
+    metadata: { labels: { app: omnisaude-web } }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000 }
+      containers:
+        - name: web
+          image: omnisaude-web
+          ports: [{ containerPort: 3000 }]
+          readinessProbe:
+            httpGet: { path: /login, port: 3000 }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: omnisaude-web
+spec:
+  selector: { app: omnisaude-web }
+  ports: [{ port: 80, targetPort: 3000 }]

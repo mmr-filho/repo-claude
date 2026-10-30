@@ -1,0 +1,131 @@
+# Ambiente completo de desenvolvimento do OmniSaúde.
+#   docker compose up --build        sobe tudo e cria o tenant de demonstração "demo"
+#   http://localhost:3000            web (login: instituição "demo", senha OmniSaude2026)
+#   http://localhost:3001/api        API
+# Bancos: master_auth_db (master-db), tenant_db_* (tenant-db) e a réplica de leitura (tenant-db-replica).
+
+x-db-env: &tenant-db-env
+  MASTER_DATABASE_URL: postgresql://omni_app:omni_app@master-db:5432/master_auth_db
+  TENANT_DB_HOST: tenant-db
+  TENANT_DB_PORT: '5432'
+  TENANT_REPLICA_HOST: tenant-db-replica
+  TENANT_REPLICA_PORT: '5432'
+  TENANT_DB_USER: omni_app
+  TENANT_DB_PASSWORD: omni_app
+  TENANT_ADMIN_USER: omni_admin
+  TENANT_ADMIN_PASSWORD: omni_admin
+  TENANT_BI_USER: omni_bi_reader
+  TENANT_BI_PASSWORD: omni_bi
+
+x-api-env: &api-env
+  <<: *tenant-db-env
+  NODE_ENV: development
+  JWT_SECRET: ${JWT_SECRET:-troque-este-segredo-de-desenvolvimento-32+}
+  DATA_KEY: ${DATA_KEY:-BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=}
+  REDIS_URL: redis://redis:6379
+  CORS_ORIGINS: http://localhost:3000,capacitor://localhost,https://localhost
+  MOCKS_URL: http://mocks:4010
+  RNDS_REQUESTER_CPF: '52998224725'
+  WHATSAPP_VERIFY_TOKEN: verificacao-dev
+  LIBRAS_INTERPRETER_KEY: central-libras-dev
+  LOCAL_STORAGE_DIR: /tmp/omni-storage
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+  R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+  R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+  R2_BUCKET: ${R2_BUCKET:-}
+
+services:
+  master-db:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: omni_app
+      POSTGRES_PASSWORD: omni_app
+      POSTGRES_DB: master_auth_db
+    ports: ['5433:5432']
+    volumes: [master-data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U omni_app -d master_auth_db']
+      interval: 5s
+      retries: 20
+
+  tenant-db:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      REPLICATION_PASSWORD: replicator
+    command: ['postgres', '-c', 'wal_level=replica', '-c', 'max_wal_senders=10', '-c', 'hot_standby=on']
+    ports: ['5434:5432']
+    volumes:
+      - tenant-data:/var/lib/postgresql/data
+      - ./docker/postgres/01-roles.sql:/docker-entrypoint-initdb.d/01-roles.sql:ro
+      - ./docker/postgres/02-replication.sh:/docker-entrypoint-initdb.d/02-replication.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      retries: 20
+
+  tenant-db-replica:
+    image: postgres:17-bookworm
+    user: postgres
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      PRIMARY_HOST: tenant-db
+      REPLICATION_PASSWORD: replicator
+    entrypoint: ['/replica-entrypoint.sh']
+    ports: ['5435:5432']
+    volumes:
+      - replica-data:/var/lib/postgresql/data
+      - ./docker/postgres/replica-entrypoint.sh:/replica-entrypoint.sh:ro
+    depends_on:
+      tenant-db: { condition: service_healthy }
+
+  redis:
+    image: redis:7-bookworm
+    ports: ['6379:6379']
+
+  mocks:
+    build: { context: ., target: mocks }
+    ports: ['4010:4010']
+    environment: { PORT: '4010' }
+
+  # Aplica migrações e cria o tenant de demonstração (idempotente).
+  migrate:
+    build: { context: ., target: api }
+    command: ['node', 'packages/database/dist/cli.js', 'seed']
+    environment: *tenant-db-env
+    depends_on:
+      master-db: { condition: service_healthy }
+      tenant-db: { condition: service_healthy }
+
+  api:
+    build: { context: ., target: api }
+    ports: ['3001:3001']
+    environment: *api-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+      mocks: { condition: service_started }
+      tenant-db-replica: { condition: service_started }
+
+  worker:
+    build: { context: ., target: api }
+    command: ['node', 'apps/api/dist/worker.js']
+    environment: *api-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+
+  web:
+    build:
+      context: .
+      target: web
+      args: { NEXT_PUBLIC_API_URL: 'http://localhost:3001/api' }
+    ports: ['3000:3000']
+    depends_on: [api]
+
+volumes:
+  master-data:
+  tenant-data:
+  replica-data:

@@ -1,0 +1,28 @@
+# Socket.IO (painel de senhas, censo de leitos, Libras) exige afinidade de sessão entre réplicas da API
+# enquanto não houver adaptador Redis para o Socket.IO.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omnisaude
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 20m
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '3600'
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [omnisaude.exemplo.gov.br]
+      secretName: omnisaude-tls
+  rules:
+    - host: omnisaude.exemplo.gov.br
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend: { service: { name: omnisaude-api, port: { number: 80 } } }
+          - path: /socket.io
+            pathType: Prefix
+            backend: { service: { name: omnisaude-api, port: { number: 80 } } }
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: omnisaude-web, port: { number: 80 } } }

@@ -1,6 +1,8 @@
 node_modules/
 dist/
-.next/
+.next*/
+next-env.d.ts
+.storage/
 out/
 *.tsbuildinfo
 coverage/
