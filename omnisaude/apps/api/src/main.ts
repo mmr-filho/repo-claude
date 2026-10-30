@@ -6,7 +6,7 @@ import { AppModule } from './app.module';
 import { APP_CONFIG, type AppConfig } from './core/config';
 
 export async function createApp() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true, rawBody: true });
   const config = app.get<AppConfig>(APP_CONFIG);
   app.setGlobalPrefix('api');
   app.set('trust proxy', 1);

@@ -5,9 +5,10 @@ import { APP_CONFIG, type AppConfig } from './config';
 
 /**
  * Etapas do login: "mfa" (aguardando o código TOTP), "context" (autenticado, escolhendo unidade e papel)
- * e "access" (contexto ativo). Só o token "access" abre a API.
+ * e "access" (contexto ativo). Só o token "access" abre a API. "panel" é o token somente leitura
+ * da TV do painel de chamadas de uma unidade.
  */
-export type TokenStage = 'mfa' | 'context' | 'access';
+export type TokenStage = 'mfa' | 'context' | 'access' | 'panel';
 
 export interface TokenClaims {
   stage: TokenStage;
@@ -29,7 +30,7 @@ export class TokenService {
   }
 
   async sign(claims: TokenClaims): Promise<string> {
-    const ttl = claims.stage === 'access' ? `${this.config.SESSION_HOURS}h` : '10m';
+    const ttl = claims.stage === 'access' ? `${this.config.SESSION_HOURS}h` : claims.stage === 'panel' ? '30d' : '10m';
     const { sub, ...rest } = claims;
     return new SignJWT({ ...rest })
       .setProtectedHeader({ alg: 'HS256' })
@@ -44,7 +45,7 @@ export class TokenService {
     try {
       const { payload } = await jwtVerify(token, this.key, { issuer: 'omnisaude', algorithms: ['HS256'] });
       const stage = payload.stage;
-      if (stage !== 'mfa' && stage !== 'context' && stage !== 'access') return null;
+      if (stage !== 'mfa' && stage !== 'context' && stage !== 'access' && stage !== 'panel') return null;
       if (typeof payload.tid !== 'string' || typeof payload.sub !== 'string') return null;
       const claims: TokenClaims = {
         stage,
@@ -58,6 +59,10 @@ export class TokenService {
         claims.unit = payload.unit;
         claims.role = payload.role;
         claims.cbo = String(payload.cbo ?? '');
+      }
+      if (stage === 'panel') {
+        if (typeof payload.unit !== 'string') return null;
+        claims.unit = payload.unit;
       }
       return claims;
     } catch {

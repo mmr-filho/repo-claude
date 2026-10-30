@@ -39,6 +39,7 @@ async function resetDatabases(masterDb: string, tenantDb: string) {
 
 export interface TestApp {
   slug: string;
+  baseUrl: string;
   app: INestApplication;
   http: () => ReturnType<typeof request>;
   login: (staffKey: string, unitName?: string, role?: string) => Promise<string>;
@@ -71,8 +72,9 @@ export async function startTestApp(name: string, extraEnv: Record<string, string
 
   const { createApp } = await import('../src/main');
   const app = await createApp();
-  await app.init();
-  const http = () => request(app.getHttpServer());
+  await app.listen(0, '127.0.0.1');
+  const baseUrl = await app.getUrl();
+  const http = () => request(baseUrl.replace('[::1]', '127.0.0.1'));
 
   const login = async (staffKey: string, unitName?: string, role?: string) => {
     const staff = demoFixtures.STAFF.find((s) => s.key === staffKey);
@@ -90,5 +92,5 @@ export async function startTestApp(name: string, extraEnv: Record<string, string
     return ctx.body.token as string;
   };
 
-  return { slug: SLUG, app, http, login, close: () => app.close() };
+  return { slug: SLUG, baseUrl, app, http, login, close: () => app.close() };
 }

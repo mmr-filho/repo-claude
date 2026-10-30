@@ -7,6 +7,7 @@ import { DatabaseModule } from './database';
 import { AllExceptionsFilter } from './errors';
 import { Public } from './context';
 import { OutboxService } from './outbox.service';
+import { RealtimeGateway } from './realtime.gateway';
 import { RealtimeService } from './realtime.service';
 import { TokenService } from './tokens';
 
@@ -29,6 +30,7 @@ class HealthController {
     AuditService,
     OutboxService,
     RealtimeService,
+    RealtimeGateway,
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],

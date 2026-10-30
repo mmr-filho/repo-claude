@@ -26,7 +26,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const res = host.switchToHttp().getResponse<Response>();
     if (!res || typeof res.status !== 'function') return; // WebSocket: tratado pelo gateway
     const body = this.toBody(exception);
-    if (body.statusCode >= 500) this.logger.error(exception instanceof Error ? exception.stack : String(exception));
+    if (body.statusCode >= 500 && !(exception instanceof DomainError)) this.logger.error(exception instanceof Error ? exception.stack : String(exception));
     res.status(body.statusCode).json(body);
   }
 
