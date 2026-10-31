@@ -895,6 +895,100 @@ export async function seedDemo(opts: SeedOptions) {
       data: { tripId: viagem.id, patientId: patient.jose!, pickupAddress: 'Rua Exemplo, 101, Centro', appointmentAt: daysAhead(2, 9), appointmentPlace: 'Hospital Geral de Palmas, oftalmologia', wheelchair: true },
     });
 
+    // ── Central de leitos da rede e AIH (REG-7) ──
+    const upaEnc = await db.encounter.findFirst({ where: { patientId: patient.thiago!, unitId: unit.upa, kind: 'URGENCIA' }, select: { id: true } });
+    const vagaThiago = await db.bedRequest.create({
+      data: {
+        protocol: `LEI-${ano}-000001`,
+        patientId: patient.thiago!,
+        encounterId: upaEnc?.id ?? null,
+        originUnitId: unit.upa,
+        requesterId: medica,
+        requesterCbo: '225125',
+        bedKind: 'UTI_ADULTO',
+        specialty: 'Cirurgia geral / trauma',
+        priority: 'VERMELHA',
+        requestedPriority: 'VERMELHA',
+        cid: 'S821',
+        clinicalSummary: 'Politrauma por acidente de moto com fratura exposta de tíbia e suspeita de lesão esplênica; hipotensão respondendo a volume.',
+        vitals: { pas: 92, pad: 58, fc: 112, fr: 24, sato2: 92, temp: 36.4, consciencia: 'ALERTA', oxigenio: true },
+        support: { oxigenio: true, drogaVasoativa: true },
+        news2: 10,
+        createdAt: daysAgo(0, 2),
+      },
+    });
+    await db.bedRequestEvent.create({
+      data: { requestId: vagaThiago.id, kind: 'CRIADA', toStatus: 'PENDENTE', userId: medica, role: 'MEDICO', notes: 'UTI adulto · Cirurgia geral / trauma · Emergência · NEWS2 10', at: daysAgo(0, 2) },
+    });
+    const vagaAntonia = await db.bedRequest.create({
+      data: {
+        protocol: `LEI-${ano}-000002`,
+        patientId: patient.antonia!,
+        originUnitId: unit.ubs,
+        requesterId: medica,
+        requesterCbo: '225125',
+        bedKind: 'CLINICA_MEDICA',
+        specialty: 'Clínica médica',
+        priority: 'AMARELA',
+        requestedPriority: 'VERDE',
+        cid: 'E11',
+        clinicalSummary: 'Descompensação diabética com hiperglicemia persistente (HGT > 400), desidratação e vômitos; sem resposta ao manejo ambulatorial.',
+        vitals: { pas: 104, pad: 66, fc: 98, fr: 20, sato2: 96, temp: 37.2, consciencia: 'ALERTA', oxigenio: false },
+        support: {},
+        news2: 3,
+        status: 'AUTORIZADA',
+        regulatorId: staff.nir!,
+        decisionAt: daysAgo(0, 1),
+        decisionReason: 'Vaga na clínica médica; leito reservado. Transferir em veículo sanitário.',
+        destinationUnitId: unit.hosp,
+        destinationKind: 'CLINICA_MEDICA',
+        reservedBedId: bedIds['CM-09']!,
+        transport: 'VEICULO_SANITARIO',
+        createdAt: daysAgo(0, 5),
+      },
+    });
+    await db.bed.update({ where: { id: bedIds['CM-09']! }, data: { status: 'RESERVADO' } });
+    await db.bedEvent.create({ data: { bedId: bedIds['CM-09']!, status: 'RESERVADO', isolation: 'NENHUM', reason: `Reserva LEI-${ano}-000002 (Clínica médica)`, userId: staff.nir!, at: daysAgo(0, 1) } });
+    await db.bedRequestEvent.createMany({
+      data: [
+        { requestId: vagaAntonia.id, kind: 'CRIADA', toStatus: 'PENDENTE', userId: medica, role: 'MEDICO', notes: 'Clínica médica · Prioritária · NEWS2 3', at: daysAgo(0, 5) },
+        { requestId: vagaAntonia.id, kind: 'EM_ANALISE', fromStatus: 'PENDENTE', toStatus: 'EM_ANALISE', userId: staff.nir!, role: 'NIR', at: daysAgo(0, 4) },
+        {
+          requestId: vagaAntonia.id,
+          kind: 'AUTORIZADA',
+          fromStatus: 'EM_ANALISE',
+          toStatus: 'AUTORIZADA',
+          userId: staff.nir!,
+          role: 'NIR',
+          notes: 'Hospital Municipal São Lucas · Clínica médica · leito reservado · Veículo sanitário · prioridade Prioritária → Urgência',
+          at: daysAgo(0, 1),
+        },
+      ],
+    });
+    const faixa = await db.aihRange.create({ data: { name: `Faixa ${ano} · Hospital Municipal`, unitId: unit.hosp, uf: 'TO', year: ano, aihType: '1', seqStart: 1_000_001, seqEnd: 1_000_500, seqNext: 1_000_001 } });
+    const admFrancisco = await db.admission.findFirst({ where: { patientId: patient.francisco!, dischargedAt: null } });
+    if (admFrancisco) {
+      await db.aihRequest.create({
+        data: {
+          patientId: patient.francisco!,
+          admissionId: admFrancisco.id,
+          unitId: unit.hosp,
+          requesterId: medica,
+          requesterCbo: '225125',
+          procedureCode: '0303140151',
+          procedureName: 'Tratamento de pneumonias ou influenza (gripe)',
+          mainCid: 'J18',
+          specialtyCode: '03',
+          nature: '02',
+          symptoms: 'Tosse produtiva, febre de 39 °C e dispneia há 4 dias.',
+          conditions: 'Hipoxemia (SatO2 88% em ar ambiente) e comorbidade (DPOC): antibiótico venoso e oxigenoterapia.',
+          diagnostics: 'RX de tórax com consolidação em lobo inferior direito; leucocitose com desvio.',
+          rangeId: faixa.id,
+          createdAt: daysAgo(2),
+        },
+      });
+    }
+
     return { tenantId, dbName, skipped: false };
   } finally {
     await db.$disconnect();

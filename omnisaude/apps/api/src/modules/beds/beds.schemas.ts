@@ -18,6 +18,8 @@ export const admissionSchema = z
     bedId: uuid,
     mainCid: z.string().min(3).max(4),
     regulationCode: z.string().max(40).optional(),
+    /** Solicitação da central de leitos da rede que reservou este leito (REG-7). */
+    bedRequestId: uuid.optional(),
     /** Precaução exigida pelo paciente (o leito precisa ser compatível). */
     isolation: z.enum(ISOLATIONS).default('NENHUM'),
   })

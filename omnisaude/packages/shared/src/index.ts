@@ -9,6 +9,7 @@ export * from './dates';
 export * from './documents';
 export * from './esus';
 export * from './gs1';
+export * from './leitos';
 export * from './regulacao';
 export * from './roles';
 export * from './session';

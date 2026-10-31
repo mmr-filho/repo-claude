@@ -17,6 +17,7 @@ const DESCRIPTIONS: Record<string, string> = {
   '/beira-leito': 'Administração com leitura da pulseira e da dose (5 certos).',
   '/leitos': 'Censo de leitos em tempo real, internações e altas.',
   '/regulacao': 'Fila única de consultas especializadas, exames e procedimentos, com protocolos e devolutiva.',
+  '/central-leitos': 'Mapa de leitos da rede, solicitações de vaga, regulação com reserva de leito, transferência e AIH.',
   '/tfd': 'Tratamento Fora do Domicílio: laudo, parecer, agendamento, ajuda de custo e transporte.',
   '/transporte': 'Frota, motoristas, rotas, viagens com passageiros e roteiro do dia.',
   '/faturamento': 'SIGTAP, crítica pré-glosa e exportação BPA.',

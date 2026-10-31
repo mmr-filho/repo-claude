@@ -442,6 +442,8 @@ model Patient {
   regulationRequests RegulationRequest[]
   tfdProcesses TfdProcess[]
   transportPassengers TransportPassenger[]
+  bedRequests BedRequest[]
+  aihRequests AihRequest[]
 
   @@index([nameKey, birthDate])
   @@index([familyId])
@@ -977,6 +979,162 @@ model TfdEvent {
 
   @@index([processId, at])
   @@map("tfd_events")
+}
+
+// ───────────────────────────── Regulação de leitos da rede e AIH (REG-7) ─────────────────────────────
+
+enum BedRequestStatus {
+  PENDENTE
+  EM_ANALISE
+  DEVOLVIDA
+  AUTORIZADA
+  EM_TRANSFERENCIA
+  INTERNADA
+  NEGADA
+  CANCELADA
+}
+
+/// Solicitação de vaga/internação à central de leitos da rede.
+model BedRequest {
+  id                 String             @id @default(uuid(7)) @db.Uuid
+  /// LEI-AAAA-NNNNNN, único no tenant.
+  protocol           String             @unique
+  patientId          String             @map("patient_id") @db.Uuid
+  encounterId        String?            @map("encounter_id") @db.Uuid
+  originUnitId       String             @map("origin_unit_id") @db.Uuid
+  requesterId        String             @map("requester_id") @db.Uuid
+  requesterCbo       String             @map("requester_cbo") @db.Char(6)
+  bedKind            WardKind           @map("bed_kind")
+  specialty          String
+  priority           RegulationPriority
+  requestedPriority  RegulationPriority @map("requested_priority")
+  cid                String?            @db.VarChar(5)
+  clinicalSummary    String             @map("clinical_summary")
+  /// Sinais vitais informados (PA, FC, FR, SatO2, temperatura, consciência, oxigênio).
+  vitals             Json?
+  /// Suporte em uso: ventilação mecânica, droga vasoativa, oxigênio, diálise.
+  support            Json               @default("{}")
+  news2              Int?
+  isolation          Isolation          @default(NENHUM)
+  elective           Boolean            @default(false)
+  status             BedRequestStatus   @default(PENDENTE)
+  regulatorId        String?            @map("regulator_id") @db.Uuid
+  decisionAt         DateTime?          @map("decision_at")
+  decisionReason     String?            @map("decision_reason")
+  secondOpinionAt    DateTime?          @map("second_opinion_at")
+  secondOpinionBy    String?            @map("second_opinion_by") @db.Uuid
+  secondOpinionNotes String?            @map("second_opinion_notes")
+  destinationUnitId  String?            @map("destination_unit_id") @db.Uuid
+  destinationKind    WardKind?          @map("destination_kind")
+  reservedBedId      String?            @map("reserved_bed_id") @db.Uuid
+  transport          String?
+  transferAt         DateTime?          @map("transfer_at")
+  transferNotes      String?            @map("transfer_notes")
+  admissionId        String?            @unique @map("admission_id") @db.Uuid
+  returnedCount      Int                @default(0) @map("returned_count")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+  closedAt           DateTime?          @map("closed_at")
+
+  patient     Patient           @relation(fields: [patientId], references: [id])
+  reservedBed Bed?              @relation(fields: [reservedBedId], references: [id])
+  admission   Admission?        @relation(fields: [admissionId], references: [id])
+  events      BedRequestEvent[]
+  aihRequests AihRequest[]
+
+  @@index([status, priority, createdAt])
+  @@index([patientId])
+  @@index([originUnitId, status])
+  @@index([destinationUnitId, status])
+  @@map("bed_requests")
+}
+
+model BedRequestEvent {
+  id         String            @id @default(uuid(7)) @db.Uuid
+  requestId  String            @map("request_id") @db.Uuid
+  kind       String
+  fromStatus BedRequestStatus? @map("from_status")
+  toStatus   BedRequestStatus? @map("to_status")
+  userId     String            @map("user_id") @db.Uuid
+  role       Role
+  notes      String?
+  at         DateTime          @default(now())
+
+  request BedRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId, at])
+  @@map("bed_request_events")
+}
+
+enum AihStatus {
+  PENDENTE
+  AUTORIZADA
+  NEGADA
+  CANCELADA
+}
+
+/// Laudo médico para solicitação/autorização de internação hospitalar (AIH).
+model AihRequest {
+  id               String     @id @default(uuid(7)) @db.Uuid
+  patientId        String     @map("patient_id") @db.Uuid
+  admissionId      String?    @unique @map("admission_id") @db.Uuid
+  bedRequestId     String?    @map("bed_request_id") @db.Uuid
+  /// Estabelecimento solicitante/executante (CNES da AIH).
+  unitId           String     @map("unit_id") @db.Uuid
+  requesterId      String     @map("requester_id") @db.Uuid
+  requesterCbo     String     @map("requester_cbo") @db.Char(6)
+  procedureCode    String     @map("procedure_code") @db.Char(10)
+  procedureName    String     @map("procedure_name")
+  mainCid          String     @map("main_cid") @db.VarChar(5)
+  secondaryCid     String?    @map("secondary_cid") @db.VarChar(5)
+  associatedCid    String?    @map("associated_cid") @db.VarChar(5)
+  /// Especialidade do leito (tabela SIH) e caráter de atendimento (01 eletivo, 02 urgência...).
+  specialtyCode    String     @map("specialty_code") @db.Char(2)
+  nature           String     @db.Char(2)
+  symptoms         String
+  conditions       String
+  diagnostics      String
+  notes            String?
+  status           AihStatus  @default(PENDENTE)
+  authorizerId     String?    @map("authorizer_id") @db.Uuid
+  authorizedAt     DateTime?  @map("authorized_at")
+  decisionNotes    String?    @map("decision_notes")
+  aihNumber        String?    @unique @map("aih_number") @db.Char(13)
+  aihType          String     @default("1") @map("aih_type") @db.Char(1)
+  rangeId          String?    @map("range_id") @db.Uuid
+  validUntil       DateTime?  @map("valid_until") @db.Date
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
+
+  patient    Patient     @relation(fields: [patientId], references: [id])
+  admission  Admission?  @relation(fields: [admissionId], references: [id])
+  bedRequest BedRequest? @relation(fields: [bedRequestId], references: [id])
+  range      AihRange?   @relation(fields: [rangeId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([patientId])
+  @@index([unitId, status])
+  @@map("aih_requests")
+}
+
+/// Faixa numérica de AIH distribuída pelo gestor (UF + ano + tipo + sequencial inicial/final).
+model AihRange {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  name      String
+  unitId    String?  @map("unit_id") @db.Uuid
+  uf        String   @db.Char(2)
+  year      Int
+  aihType   String   @default("1") @map("aih_type") @db.Char(1)
+  seqStart  Int      @map("seq_start")
+  seqEnd    Int      @map("seq_end")
+  seqNext   Int      @map("seq_next")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  aihs AihRequest[]
+
+  @@index([active, unitId])
+  @@map("aih_ranges")
 }
 
 enum VehicleKind {
@@ -1526,6 +1684,8 @@ enum BedStatus {
   OCUPADO
   HIGIENIZACAO
   BLOQUEADO
+  /// Reservado pela central de leitos para um paciente em transferência.
+  RESERVADO
 }
 
 enum Isolation {
@@ -1544,8 +1704,9 @@ model Bed {
   updatedAt DateTime  @updatedAt @map("updated_at")
 
   ward       Ward        @relation(fields: [wardId], references: [id])
-  admissions Admission[]
-  events     BedEvent[]
+  admissions   Admission[]
+  events       BedEvent[]
+  reservations BedRequest[]
 
   @@unique([wardId, code])
   @@map("beds")
@@ -1578,8 +1739,10 @@ model Admission {
   admittedAt     DateTime  @default(now()) @map("admitted_at")
   dischargedAt   DateTime? @map("discharged_at")
 
-  encounter Encounter @relation(fields: [encounterId], references: [id])
-  bed       Bed?      @relation(fields: [bedId], references: [id])
+  encounter  Encounter   @relation(fields: [encounterId], references: [id])
+  bed        Bed?        @relation(fields: [bedId], references: [id])
+  bedRequest BedRequest?
+  aih        AihRequest?
 
   @@index([bedId])
   @@map("admissions")

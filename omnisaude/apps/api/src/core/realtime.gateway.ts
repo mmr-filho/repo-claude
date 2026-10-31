@@ -30,6 +30,7 @@ export class RealtimeGateway implements OnGatewayInit, OnGatewayConnection {
       return;
     }
     await client.join(RealtimeService.unitRoom(claims.tid, claims.unit));
+    await client.join(RealtimeService.tenantRoom(claims.tid));
     client.emit('conectado', { unitId: claims.unit });
     this.logger.debug(`Cliente ${client.id} na unidade ${claims.unit}`);
   }

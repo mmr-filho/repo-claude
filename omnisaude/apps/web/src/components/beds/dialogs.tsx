@@ -105,10 +105,13 @@ export function BedStatusDialog({ bed, onClose, onDone }: { bed: BedView; onClos
 }
 
 export function AdmitDialog({ bed, onClose, onDone }: { bed: BedView; onClose: () => void; onDone: () => void }) {
-  const [patient, setPatient] = useState<PatientSummary | null>(null);
-  const [mainCid, setMainCid] = useState('');
+  const reserva = bed.reservation;
+  const [patient, setPatient] = useState<PatientSummary | null>(
+    reserva ? ({ id: reserva.patientId, name: reserva.name, civilName: reserva.name, cns: null, cpf: null, birthDate: '', age: reserva.age, sex: reserva.sex, motherName: null } as PatientSummary) : null,
+  );
+  const [mainCid, setMainCid] = useState(reserva?.mainCid ?? '');
   const [regulationCode, setRegulationCode] = useState('');
-  const [isolation, setIsolation] = useState<Isolation>(bed.isolation);
+  const [isolation, setIsolation] = useState<Isolation>(reserva?.isolation ?? bed.isolation);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   return (
@@ -134,6 +137,7 @@ export function AdmitDialog({ bed, onClose, onDone }: { bed: BedView; onClose: (
                   bedId: bed.id,
                   mainCid: mainCid.trim().toUpperCase().replace('.', ''),
                   regulationCode: regulationCode.trim() || undefined,
+                  bedRequestId: reserva?.requestId,
                   isolation,
                 });
                 onDone();
@@ -150,12 +154,19 @@ export function AdmitDialog({ bed, onClose, onDone }: { bed: BedView; onClose: (
       }
     >
       <div className="space-y-4">
+        {reserva && (
+          <Alert tone="info" title={`Leito reservado pela central de leitos · ${reserva.protocol}`}>
+            {reserva.name} · {reserva.age} anos · vindo de {reserva.originUnit ?? 'outra unidade'}. A internação encerra a solicitação de vaga.
+          </Alert>
+        )}
         {patient ? (
           <Alert tone="info">
             {patient.name} · {patient.age} anos
-            <Button variant="link" size="sm" className="ml-2" onClick={() => setPatient(null)}>
-              trocar
-            </Button>
+            {!reserva && (
+              <Button variant="link" size="sm" className="ml-2" onClick={() => setPatient(null)}>
+                trocar
+              </Button>
+            )}
           </Alert>
         ) : (
           <Field label="Paciente">
@@ -260,7 +271,13 @@ export function DischargeDialog({ bed, onClose, onDone }: { bed: BedView; onClos
 
   if (result) {
     return (
-      <Dialog open onOpenChange={(o) => !o && onDone()} title="Alta registrada" description="O sumário de alta foi enfileirado para a RNDS e o leito foi para higienização." footer={<Button onClick={onDone}>Concluir</Button>}>
+      <Dialog
+        open
+        onOpenChange={(o) => !o && onDone()}
+        title="Alta registrada"
+        description="O sumário de alta foi enfileirado para a RNDS e o leito foi para higienização."
+        footer={<Button onClick={onDone}>Concluir</Button>}
+      >
         {result.pendingUnitDoses.length === 0 ? (
           <p className="text-sm text-slate-600">Não há doses unitárias pendentes dos medicamentos desta internação nos postos.</p>
         ) : (

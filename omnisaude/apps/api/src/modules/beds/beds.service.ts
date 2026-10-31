@@ -10,7 +10,7 @@ import { RealtimeService } from '../../core/realtime.service';
 import type { admissionSchema, bedUpdateSchema, dischargeSchema, transferBedSchema } from './beds.schemas';
 
 type Tx = TenantPrisma.TransactionClient;
-type BedStatus = 'VAGO' | 'OCUPADO' | 'HIGIENIZACAO' | 'BLOQUEADO';
+type BedStatus = 'VAGO' | 'OCUPADO' | 'HIGIENIZACAO' | 'BLOQUEADO' | 'RESERVADO';
 type Isolation = 'NENHUM' | 'CONTATO' | 'GOTICULAS' | 'AEROSSOIS';
 
 const DAY = 86_400_000;
@@ -33,12 +33,16 @@ export class BedsService {
       include: {
         beds: {
           orderBy: { code: 'asc' },
-          include: { admissions: { where: { dischargedAt: null }, include: { encounter: { include: { patient: true } } } } },
+          include: {
+            admissions: { where: { dischargedAt: null }, include: { encounter: { include: { patient: true } } } },
+            reservations: { where: { status: { in: ['AUTORIZADA', 'EM_TRANSFERENCIA'] } }, include: { patient: { select: { name: true, socialName: true, birthDate: true, sex: true } } }, take: 1 },
+          },
         },
       },
     });
     const now = Date.now();
-    const totals: Record<BedStatus, number> = { VAGO: 0, OCUPADO: 0, HIGIENIZACAO: 0, BLOQUEADO: 0 };
+    const totals: Record<BedStatus, number> = { VAGO: 0, OCUPADO: 0, HIGIENIZACAO: 0, BLOQUEADO: 0, RESERVADO: 0 };
+    const unitNames = new Map((await ctx.db.unit.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
     const isolated = { total: 0 };
     const view = wards.map((w) => ({
       id: w.id,
@@ -49,12 +53,28 @@ export class BedsService {
         if (b.isolation !== 'NENHUM') isolated.total++;
         const adm = b.admissions[0];
         const patient = adm?.encounter.patient;
+        const res = b.status === 'RESERVADO' ? b.reservations[0] : undefined;
         return {
           id: b.id,
           code: b.code,
           status: b.status,
           isolation: b.isolation,
           updatedAt: b.updatedAt,
+          reservation: res
+            ? {
+                requestId: res.id,
+                protocol: res.protocol,
+                patientId: res.patientId,
+                name: res.patient.socialName ?? res.patient.name,
+                age: ageInYears(res.patient.birthDate),
+                sex: res.patient.sex,
+                originUnit: unitNames.get(res.originUnitId) ?? null,
+                priority: res.priority,
+                status: res.status,
+                mainCid: res.cid,
+                isolation: res.isolation,
+              }
+            : null,
           occupant: adm
             ? {
                 admissionId: adm.id,
@@ -104,6 +124,9 @@ export class BedsService {
     const bed = await this.bedWithUnit(ctx, bedId);
     const occupied = bed.admissions.length > 0 || bed.status === 'OCUPADO';
     if (input.status === 'OCUPADO') throw new DomainError('LEITO_TRANSICAO', 'Leito só fica ocupado por meio de uma internação');
+    if (bed.status === 'RESERVADO' && input.status) {
+      throw new DomainError('LEITO_RESERVADO', 'Reserva de leito é feita e desfeita pela central de leitos (solicitação de vaga)');
+    }
     if (input.status && occupied && input.status !== bed.status) {
       throw new DomainError('LEITO_OCUPADO', 'Leito ocupado: libere pela alta ou transferência do paciente');
     }
@@ -112,7 +135,12 @@ export class BedsService {
     const updated = await ctx.db.$transaction(async (tx) => {
       const b = await tx.bed.update({ where: { id: bed.id }, data: { status, isolation } });
       await this.event(tx, ctx, bed.id, status, isolation, input.reason);
-      await this.audit.record(ctx, tx, { action: 'leito.atualizar', entityType: 'Bed', entityId: bed.id, payload: { from: { status: bed.status, isolation: bed.isolation }, to: { status, isolation }, reason: input.reason } });
+      await this.audit.record(ctx, tx, {
+        action: 'leito.atualizar',
+        entityType: 'Bed',
+        entityId: bed.id,
+        payload: { from: { status: bed.status, isolation: bed.isolation }, to: { status, isolation }, reason: input.reason },
+      });
       return b;
     });
     this.emit(ctx, bed.ward.unitId, { bedId: bed.id, code: bed.code, status, isolation });
@@ -139,20 +167,29 @@ export class BedsService {
    */
   async admit(ctx: RequestContext, input: z.infer<typeof admissionSchema>) {
     const bed = await this.bedWithUnit(ctx, input.bedId);
-    if (bed.status !== 'VAGO' || bed.admissions.length) throw new DomainError('LEITO_INDISPONIVEL', `Leito ${bed.code} não está vago (${bed.status})`);
-    const isolation = this.isolationFor(bed, input.isolation);
+    const request = input.bedRequestId ? await ctx.db.bedRequest.findUnique({ where: { id: input.bedRequestId } }) : null;
+    if (input.bedRequestId && !request) throw notFound('Solicitação de vaga');
+    if (request && !['AUTORIZADA', 'EM_TRANSFERENCIA'].includes(request.status)) throw new DomainError('SOLICITACAO_INVALIDA', 'A solicitação de vaga não está autorizada');
+    if (request && request.destinationUnitId && request.destinationUnitId !== bed.ward.unitId) throw new DomainError('UNIDADE_DIVERGENTE', 'O leito não é da unidade de destino autorizada');
+    if (bed.status === 'RESERVADO') {
+      const reserva = await ctx.db.bedRequest.findFirst({ where: { reservedBedId: bed.id, status: { in: ['AUTORIZADA', 'EM_TRANSFERENCIA'] } }, select: { id: true, protocol: true } });
+      if (!request || !reserva || reserva.id !== request.id) throw new DomainError('LEITO_RESERVADO', `Leito ${bed.code} está reservado${reserva ? ` para a solicitação ${reserva.protocol}` : ''}`);
+    } else if (bed.status !== 'VAGO' || bed.admissions.length) throw new DomainError('LEITO_INDISPONIVEL', `Leito ${bed.code} não está vago (${bed.status})`);
+    const isolation = this.isolationFor(bed, request ? (request.isolation as Isolation) : input.isolation);
     const origin = input.encounterId ? await ctx.db.encounter.findUnique({ where: { id: input.encounterId }, include: { admission: true } }) : null;
     if (input.encounterId && !origin) throw notFound('Atendimento');
     if (origin && ['ENCERRADO', 'CANCELADO', 'EVADIU'].includes(origin.status)) throw new DomainError('ATENDIMENTO_ENCERRADO', 'Atendimento já encerrado');
-    const patientId = origin?.patientId ?? input.patientId!;
+    const patientId = origin?.patientId ?? input.patientId ?? request?.patientId;
+    if (!patientId) throw new DomainError('PACIENTE_OBRIGATORIO', 'Informe o paciente');
     if (input.patientId && origin && input.patientId !== origin.patientId) throw new DomainError('PACIENTE_DIVERGENTE', 'Paciente não corresponde ao atendimento');
+    if (request && request.patientId !== patientId) throw new DomainError('PACIENTE_DIVERGENTE', 'Paciente não corresponde à solicitação de vaga');
     const active = await ctx.db.admission.findFirst({ where: { patientId, dischargedAt: null } });
     if (active) throw conflict('Paciente já está internado', { admissionId: active.id });
     const patient = await ctx.db.patient.findUnique({ where: { id: patientId } });
     if (!patient) throw notFound('Paciente');
 
     const result = await ctx.db.$transaction(async (tx) => {
-      const { count } = await tx.bed.updateMany({ where: { id: bed.id, status: 'VAGO' }, data: { status: 'OCUPADO', isolation } });
+      const { count } = await tx.bed.updateMany({ where: { id: bed.id, status: { in: request ? ['VAGO', 'RESERVADO'] : ['VAGO'] } }, data: { status: 'OCUPADO', isolation } });
       if (count !== 1) throw new DomainError('LEITO_INDISPONIVEL', 'O leito acabou de ser ocupado');
       let encounterId: string;
       if (origin && origin.unitId === bed.ward.unitId && !origin.admission) {
@@ -166,14 +203,49 @@ export class BedsService {
         if (origin) await tx.encounter.update({ where: { id: origin.id }, data: { status: 'ENCERRADO', outcome: 'INTERNACAO', endedAt: new Date() } });
       }
       const admission = await tx.admission.create({
-        data: { encounterId, patientId, bedId: bed.id, mainCid: input.mainCid.toUpperCase(), regulationCode: input.regulationCode ?? null },
+        data: { encounterId, patientId, bedId: bed.id, mainCid: input.mainCid.toUpperCase(), regulationCode: input.regulationCode ?? request?.protocol ?? null },
       });
+      if (request) {
+        await tx.bedRequest.update({ where: { id: request.id }, data: { status: 'INTERNADA', admissionId: admission.id, reservedBedId: bed.id, closedAt: new Date() } });
+        await tx.bedRequestEvent.create({
+          data: { requestId: request.id, kind: 'INTERNADA', fromStatus: request.status, toStatus: 'INTERNADA', userId: ctx.session.userId, role: ctx.session.role, notes: `Internação no leito ${bed.code}` },
+        });
+      }
       await this.event(tx, ctx, bed.id, 'OCUPADO', isolation, `Internação ${admission.id}`);
-      await this.audit.record(ctx, tx, { action: 'internacao.admitir', entityType: 'Admission', entityId: admission.id, payload: { bedId: bed.id, patientId, encounterId, mainCid: input.mainCid, regulationCode: input.regulationCode } });
+      await this.audit.record(ctx, tx, {
+        action: 'internacao.admitir',
+        entityType: 'Admission',
+        entityId: admission.id,
+        payload: { bedId: bed.id, patientId, encounterId, mainCid: input.mainCid, regulationCode: input.regulationCode },
+      });
       return admission;
     });
     this.emit(ctx, bed.ward.unitId, { bedId: bed.id, code: bed.code, status: 'OCUPADO', admissionId: result.id });
+    if (request) this.realtime.emitToUnit(ctx.tenant.id, request.originUnitId, 'leitos_rede.atualizado', { id: request.id, protocol: request.protocol, status: 'INTERNADA' });
     return result;
+  }
+
+  /** Reserva ou libera um leito para a central de leitos (dentro da transação da solicitação). */
+  async reservar(tx: Tx, ctx: RequestContext, bedId: string, reason: string): Promise<{ unitId: string; code: string }> {
+    const bed = await tx.bed.findUnique({ where: { id: bedId }, include: { ward: true, admissions: { where: { dischargedAt: null } } } });
+    if (!bed) throw notFound('Leito');
+    if (bed.status !== 'VAGO' || bed.admissions.length) throw new DomainError('LEITO_INDISPONIVEL', `Leito ${bed.code} não está vago (${bed.status})`);
+    const { count } = await tx.bed.updateMany({ where: { id: bed.id, status: 'VAGO' }, data: { status: 'RESERVADO' } });
+    if (count !== 1) throw new DomainError('LEITO_INDISPONIVEL', 'O leito acabou de ser ocupado');
+    await this.event(tx, ctx, bed.id, 'RESERVADO', bed.isolation as Isolation, reason);
+    return { unitId: bed.ward.unitId, code: bed.code };
+  }
+
+  async liberarReserva(tx: Tx, ctx: RequestContext, bedId: string, reason: string): Promise<{ unitId: string; code: string } | null> {
+    const bed = await tx.bed.findUnique({ where: { id: bedId }, include: { ward: true } });
+    if (!bed || bed.status !== 'RESERVADO') return null;
+    await tx.bed.update({ where: { id: bed.id }, data: { status: 'VAGO' } });
+    await this.event(tx, ctx, bed.id, 'VAGO', bed.isolation as Isolation, reason);
+    return { unitId: bed.ward.unitId, code: bed.code };
+  }
+
+  notificarCenso(ctx: RequestContext, unitId: string, payload: Record<string, unknown>) {
+    this.emit(ctx, unitId, payload);
   }
 
   private async activeAdmission(ctx: RequestContext, admissionId: string) {

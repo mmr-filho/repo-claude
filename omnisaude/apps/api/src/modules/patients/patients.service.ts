@@ -1,5 +1,5 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
-import { ageInYears, isValidCns, isValidCpf, normalizePersonName, onlyDigits, personNameKey, STATUS_SOLICITACAO, STATUS_TFD } from '@omnisaude/shared';
+import { ageInYears, isValidCns, isValidCpf, normalizePersonName, onlyDigits, personNameKey, STATUS_SOLICITACAO, STATUS_TFD, STATUS_SOLICITACAO_LEITO, TIPO_LEITO } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
@@ -296,7 +296,7 @@ export class PatientsService {
   async timeline(ctx: RequestContext, patientId: string) {
     await this.ensure(ctx, patientId);
     const db = ctx.db;
-    const [encounters, prescriptions, dispensations, exams, vaccinations, appointments, regulations, tfds] = await Promise.all([
+    const [encounters, prescriptions, dispensations, exams, vaccinations, appointments, regulations, tfds, leitos] = await Promise.all([
       db.encounter.findMany({
         where: { patientId },
         orderBy: { startedAt: 'desc' },
@@ -310,6 +310,7 @@ export class PatientsService {
       db.appointment.findMany({ where: { patientId }, orderBy: { startsAt: 'desc' }, take: 30, include: { schedule: true } }),
       db.regulationRequest.findMany({ where: { patientId }, orderBy: { createdAt: 'desc' }, take: 30 }),
       db.tfdProcess.findMany({ where: { patientId }, orderBy: { createdAt: 'desc' }, take: 20 }),
+      db.bedRequest.findMany({ where: { patientId }, orderBy: { createdAt: 'desc' }, take: 20 }),
     ]);
     const units = new Map((await db.unit.findMany()).map((u) => [u.id, u.name]));
     const users = new Map((await db.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
@@ -405,6 +406,16 @@ export class PatientsService {
         unit: units.get(t.unitId),
         title: `TFD ${t.destinationCity}/${t.destinationUf} – ${STATUS_TFD[t.status] ?? t.status}`,
         detail: { protocol: t.protocol, status: t.status, procedureName: t.procedureName, appointmentAt: t.appointmentAt, destination: `${t.destinationCity}/${t.destinationUf}` },
+      });
+    }
+    for (const l of leitos) {
+      events.push({
+        at: l.createdAt,
+        type: 'LEITO',
+        id: l.id,
+        unit: units.get(l.originUnitId),
+        title: `Vaga de leito: ${TIPO_LEITO[l.bedKind as keyof typeof TIPO_LEITO] ?? l.bedKind} – ${STATUS_SOLICITACAO_LEITO[l.status] ?? l.status}`,
+        detail: { protocol: l.protocol, status: l.status, priority: l.priority, specialty: l.specialty, destinationUnit: l.destinationUnitId ? units.get(l.destinationUnitId) : null, news2: l.news2 },
       });
     }
     events.sort((a, b) => b.at.getTime() - a.at.getTime());

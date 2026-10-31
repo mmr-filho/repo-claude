@@ -20,8 +20,20 @@ export class RealtimeService {
     return `t:${tenantId}:u:${unitId}`;
   }
 
+  static tenantRoom(tenantId: string) {
+    return `t:${tenantId}`;
+  }
+
+  /** Evento para todas as unidades do tenant (central de regulação, mapa de leitos). */
+  emitToTenant(tenantId: string, event: string, payload: unknown) {
+    this.emitRoom(RealtimeService.tenantRoom(tenantId), event, payload);
+  }
+
   emitToUnit(tenantId: string, unitId: string, event: string, payload: unknown) {
-    const room = RealtimeService.unitRoom(tenantId, unitId);
+    this.emitRoom(RealtimeService.unitRoom(tenantId, unitId), event, payload);
+  }
+
+  private emitRoom(room: string, event: string, payload: unknown) {
     this.recent.push({ room, event, payload });
     if (this.recent.length > 200) this.recent.shift();
     if (!this.server) return;
