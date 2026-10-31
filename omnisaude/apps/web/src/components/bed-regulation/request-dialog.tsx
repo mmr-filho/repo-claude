@@ -32,6 +32,8 @@ const vazio = () => ({
   isolation: 'NENHUM' as Isolation,
   elective: false,
   priority: '' as PrioridadeRegulacao | '',
+  procedureCode: '',
+  externalCode: '',
 });
 const num = (v: string) => (v.trim() === '' ? null : Number(v.replace(',', '.')));
 
@@ -88,6 +90,8 @@ export function BedRequestDialog({
         isolation: existente.isolation,
         elective: existente.elective,
         priority: '',
+        procedureCode: existente.procedureCode ?? '',
+        externalCode: existente.externalCode ?? '',
       });
     } else {
       setPatient(prefill?.patient ?? null);
@@ -261,6 +265,14 @@ export function BedRequestDialog({
           <div className="self-end text-sm">
             <Badge tone={PRIORIDADE_LEITO_TONE[prioridade]}>{PRIORIDADE_LEITO[prioridade].label}</Badge> <span className="text-slate-600">{PRIORIDADE_LEITO[prioridade].descricao}</span>
           </div>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Field label="Procedimento SIGTAP da internação (RNDS)" htmlFor="leito-sigtap" hint="Exigido pelo MIRA para enviar a solicitação à RNDS; o laudo de AIH também o fornece.">
+            <Input id="leito-sigtap" inputMode="numeric" value={f.procedureCode} onChange={(e) => set('procedureCode', e.target.value)} placeholder="0303010xxx" />
+          </Field>
+          <Field label="Código no SISREG / e-SUS Regulação" htmlFor="leito-externo" hint="Quando a vaga também está registrada no sistema do estado.">
+            <Input id="leito-externo" value={f.externalCode} onChange={(e) => set('externalCode', e.target.value)} />
+          </Field>
         </div>
         {existente && (
           <Field label="O que foi complementado" htmlFor="leito-notas">

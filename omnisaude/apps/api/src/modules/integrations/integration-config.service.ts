@@ -27,6 +27,8 @@ export interface RndsConfig {
   requesterCpf?: string;
   /** Identificador do solicitante credenciado (compõe o identificador dos documentos). */
   requesterId: string;
+  /** CNES da central de regulação, autora dos registros de regulação assistencial (RIRA). */
+  regulatorCnes?: string;
   tls?: { pfx: Buffer; passphrase?: string };
 }
 
@@ -110,6 +112,7 @@ export class IntegrationConfigService {
       requesterCns,
       requesterCpf,
       requesterId: (c.requesterId as string) ?? tenantId,
+      regulatorCnes: (c.regulatorCnes as string) ?? this.config.RNDS_REGULATOR_CNES,
       tls: pfx ? { pfx, passphrase } : undefined,
     };
   }

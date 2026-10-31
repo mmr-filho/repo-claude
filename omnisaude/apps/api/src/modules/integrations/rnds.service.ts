@@ -16,6 +16,7 @@ import {
   type ProblemInput,
 } from '@omnisaude/fhir';
 import { IntegrationConfigService, type RndsConfig } from './integration-config.service';
+import { montarRegulacaoRnds, RegulacaoIncompleta, type RegulacaoOutboxPayload } from './rnds-regulacao';
 import type { SystemContext } from './messaging.service';
 
 const MAX_ATTEMPTS = 8;
@@ -49,7 +50,7 @@ export class RndsService {
   /** Situação da configuração da RNDS da instituição, sem segredos, e a fila de envio. */
   async status(sys: SystemContext) {
     const cfg = await this.integrations.rnds(sys.tenant.id);
-    const groups = await sys.db.outboxMessage.groupBy({ by: ['status'], _count: { _all: true }, where: { kind: { in: ['RNDS_RAC', 'RNDS_IMUNIZACAO', 'RNDS_DISPENSACAO', 'RNDS_SUMARIO_ALTA'] } } });
+    const groups = await sys.db.outboxMessage.groupBy({ by: ['status'], _count: { _all: true }, where: { kind: { in: ['RNDS_RAC', 'RNDS_IMUNIZACAO', 'RNDS_DISPENSACAO', 'RNDS_SUMARIO_ALTA', 'RNDS_REGULACAO'] } } });
     const mask = (v: string) => `${v.slice(0, 3)}${'*'.repeat(Math.max(0, v.length - 5))}${v.slice(-2)}`;
     return {
       enabled: sys.tenant.settings.rndsEnabled,
@@ -96,14 +97,18 @@ export class RndsService {
     const due = await sys.db.outboxMessage.findMany({ where: { status: { in: ['PENDENTE', 'ERRO'] }, notBefore: { lte: now } }, orderBy: { createdAt: 'asc' }, take: limit });
     for (const msg of due) {
       try {
-        const bundle = await this.buildBundle(sys, msg.kind, msg.aggregateId, msg.payload as Record<string, unknown>, rnds.cfg.requesterId, msg.id);
+        const bundle = await this.buildBundle(sys, msg.kind, msg.aggregateId, msg.payload as Record<string, unknown>, rnds.cfg.requesterId, msg.id, rnds.cfg);
         const validation = validateRndsBundle(bundle);
         if (!validation.valid) throw new PermanentError(validation.issues.map((i) => `${i.path}: ${i.message}`).join('; '));
         const sent = await rnds.client.sendBundle(bundle);
         await sys.db.outboxMessage.update({ where: { id: msg.id }, data: { status: 'ENVIADO', externalId: sent.id, sentAt: new Date(), attempts: { increment: 1 }, lastError: null } });
         result.sent++;
       } catch (err) {
-        const permanent = err instanceof PermanentError || err instanceof FhirInputError || (err instanceof RndsError && err.status >= 400 && err.status < 500 && err.status !== 429 && err.status !== 401);
+        const permanent =
+          err instanceof PermanentError ||
+          err instanceof FhirInputError ||
+          err instanceof RegulacaoIncompleta ||
+          (err instanceof RndsError && err.status >= 400 && err.status < 500 && err.status !== 429 && err.status !== 401);
         const attempts = msg.attempts + 1;
         const discard = permanent || attempts >= MAX_ATTEMPTS;
         await sys.db.outboxMessage.update({
@@ -134,8 +139,16 @@ export class RndsService {
     return { cpf: u.cpf, ...(u.cns ? { cns: u.cns } : {}), cbo, name: u.name };
   }
 
-  async buildBundle(sys: SystemContext, kind: string, aggregateId: string, payload: Record<string, unknown>, requesterId: string, localId: string): Promise<FhirBundle> {
+  async buildBundle(sys: SystemContext, kind: string, aggregateId: string, payload: Record<string, unknown>, requesterId: string, localId: string, cfg?: Pick<RndsConfig, 'regulatorCnes'>): Promise<FhirBundle> {
     const meta = { rndsRequesterId: requesterId, localId };
+    if (kind === 'RNDS_REGULACAO') {
+      const anterior = await sys.db.outboxMessage.findFirst({ where: { kind: 'RNDS_REGULACAO', aggregateId, status: 'ENVIADO', id: { not: localId } }, orderBy: { sentAt: 'desc' }, select: { externalId: true } });
+      return montarRegulacaoRnds(sys, aggregateId, payload as unknown as RegulacaoOutboxPayload, {
+        ...meta,
+        regulatorCnes: cfg?.regulatorCnes,
+        ...(anterior?.externalId ? { replaces: `Composition/${anterior.externalId}` } : {}),
+      });
+    }
     if (kind === 'RNDS_RAC') {
       const note = await sys.db.clinicalNote.findUniqueOrThrow({ where: { id: aggregateId }, include: { encounter: { include: { unit: true, triages: { orderBy: { classifiedAt: 'desc' }, take: 1 } } } } });
       const enc = note.encounter;

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { TenantPrisma } from '@omnisaude/database';
 
-export type OutboxKind = 'RNDS_RAC' | 'RNDS_IMUNIZACAO' | 'RNDS_DISPENSACAO' | 'RNDS_SUMARIO_ALTA';
+export type OutboxKind = 'RNDS_RAC' | 'RNDS_IMUNIZACAO' | 'RNDS_DISPENSACAO' | 'RNDS_SUMARIO_ALTA' | 'RNDS_REGULACAO';
 
 /**
  * Outbox transacional para a RNDS: grave a mensagem na MESMA transação do registro clínico.

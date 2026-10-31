@@ -11,6 +11,7 @@ export * from './esus';
 export * from './gs1';
 export * from './leitos';
 export * from './regulacao';
+export * from './rnds-regulacao';
 export * from './roles';
 export * from './session';
 export * from './tfd';

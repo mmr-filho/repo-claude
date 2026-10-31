@@ -5,6 +5,7 @@ import { RefreshCw, Scale } from 'lucide-react';
 import { useState } from 'react';
 import { DetailDialog } from '@/components/regulation/detail-dialog';
 import { ProvidersTab } from '@/components/regulation/providers-tab';
+import { RndsTab } from '@/components/regulation/rnds-tab';
 import { PRIORIDADE_TONE, STATUS_TONE, type Protocolos, type Solicitacao } from '@/components/regulation/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -112,8 +113,12 @@ export default function RegulacaoPage() {
           { value: 'unidade', label: 'Solicitações da unidade' },
           { value: 'prestadores', label: 'Prestadores e cotas' },
           { value: 'protocolos', label: 'Protocolos' },
+          { value: 'rnds', label: 'Envio à RNDS' },
         ]}
       >
+        <TabPanel value="rnds">
+          <RndsTab />
+        </TabPanel>
         <TabPanel value="prestadores">
           <ProvidersTab podeGerir={regula} />
         </TabPanel>

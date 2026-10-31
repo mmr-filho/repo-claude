@@ -36,7 +36,10 @@ const solicitacaoSchema = z.object({
   support: suporte,
   isolation: isolamento.optional(),
   elective: z.boolean().optional(),
+  procedureCode: texto(14).nullish(),
+  externalCode: texto(40).nullish(),
 });
+const codigoExternoSchema = z.object({ externalCode: texto(40).nullish() });
 const complementarSchema = solicitacaoSchema.partial().extend({ notes: texto(2000).nullish() });
 const autorizarSchema = z.object({
   destinationUnitId: z.string().uuid(),
@@ -167,6 +170,13 @@ export class BedRegulationController {
   @RequirePermission('leitos_rede.solicitar', 'leitos_rede.regular')
   cancelar(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(motivoSchema)) body: z.infer<typeof motivoSchema>) {
     return this.leitos.cancelar(ctx, id, body.reason);
+  }
+
+  @Post('solicitacoes/:id/codigo-externo')
+  @HttpCode(200)
+  @RequirePermission('leitos_rede.regular')
+  codigoExterno(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(codigoExternoSchema)) body: z.infer<typeof codigoExternoSchema>) {
+    return this.leitos.codigoExterno(ctx, id, body.externalCode ?? null);
   }
 
   @Post('solicitacoes/:id/mensagem')

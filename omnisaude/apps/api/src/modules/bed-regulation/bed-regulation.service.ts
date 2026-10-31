@@ -23,6 +23,7 @@ import {
 } from '@omnisaude/shared';
 import { TenantPrisma as Prisma } from '@omnisaude/database';
 import { AuditService } from '../../core/audit.service';
+import { OutboxService } from '../../core/outbox.service';
 import type { RequestContext } from '../../core/context';
 import { DomainError, forbidden, notFound } from '../../core/errors';
 import { RealtimeService } from '../../core/realtime.service';
@@ -44,6 +45,10 @@ export interface SolicitacaoInput {
   support?: Suporte | null;
   isolation?: Isolation;
   elective?: boolean;
+  /** Procedimento SIGTAP da internação (exigido pelo MIRA para o envio à RNDS). */
+  procedureCode?: string | null;
+  /** Código no SISREG / e-SUS Regulação, quando também registrada lá. */
+  externalCode?: string | null;
 }
 
 export interface AutorizacaoInput {
@@ -69,7 +74,14 @@ export class BedRegulationService {
     private readonly audit: AuditService,
     private readonly realtime: RealtimeService,
     private readonly beds: BedsService,
+    private readonly outbox: OutboxService,
   ) {}
+
+  /** Registro de Regulação Assistencial para a RNDS (Portaria GM/MS 6.656/2025): um documento por mudança de situação. */
+  private async rnds(ctx: RequestContext, tx: Prisma.TransactionClient, id: string, status: StatusSolicitacaoLeito, evento: string | null) {
+    const sequencia = (await tx.outboxMessage.count({ where: { kind: 'RNDS_REGULACAO', aggregateId: id } })) + 1;
+    await this.outbox.enqueue(tx, 'RNDS_REGULACAO', id, { fonte: 'LEITO', status, evento, at: new Date().toISOString(), unitId: ctx.session.unitId, sequencia });
+  }
 
   private async proximoProtocolo(ctx: RequestContext) {
     const ano = new Date().getFullYear();
@@ -127,6 +139,8 @@ export class BedRegulationService {
           news2: news?.pontos ?? null,
           isolation: input.isolation ?? 'NENHUM',
           elective: !!input.elective,
+          procedureCode: input.procedureCode?.replace(/\D/g, '') || null,
+          externalCode: input.externalCode?.trim() || null,
         },
       });
       await tx.bedRequestEvent.create({
@@ -140,6 +154,7 @@ export class BedRegulationService {
         },
       });
       await this.audit.record(ctx, tx, { action: 'leitos_rede.solicitar', entityType: 'BedRequest', entityId: created.id, payload: { protocol, bedKind: input.bedKind, priority, news2: news?.pontos ?? null } });
+      await this.rnds(ctx, tx, created.id, 'PENDENTE', 'CRIADA');
       return created;
     });
     this.realtime.emitToTenant(ctx.tenant.id, 'leitos_rede.fila', { id: r.id, protocol, priority });
@@ -183,6 +198,8 @@ export class BedRegulationService {
           requestedPriority: priority,
           status: 'PENDENTE',
           decisionReason: null,
+          ...(input.procedureCode !== undefined ? { procedureCode: input.procedureCode?.replace(/\D/g, '') || null } : {}),
+          ...(input.externalCode !== undefined ? { externalCode: input.externalCode?.trim() || null } : {}),
         },
       });
       await tx.bedRequestEvent.create({
@@ -197,6 +214,7 @@ export class BedRegulationService {
         },
       });
       await this.audit.record(ctx, tx, { action: 'leitos_rede.complementar', entityType: 'BedRequest', entityId: id, payload: { protocol: r.protocol } });
+      await this.rnds(ctx, tx, id, 'PENDENTE', r.status === 'DEVOLVIDA' ? 'COMPLEMENTADA' : 'ATUALIZADA');
     });
     this.realtime.emitToTenant(ctx.tenant.id, 'leitos_rede.fila', { id, protocol: r.protocol, priority });
     return this.detalhe(ctx, id);
@@ -230,6 +248,7 @@ export class BedRegulationService {
       await t.bedRequest.update({ where: { id: r.id }, data: { status: to, ...data } });
       await t.bedRequestEvent.create({ data: { requestId: r.id, kind, fromStatus: r.status, toStatus: to, userId: ctx.session.userId, role: ctx.session.role, notes } });
       await this.audit.record(ctx, t, { action: audit, entityType: 'BedRequest', entityId: r.id, payload: { protocol: r.protocol, from: r.status, to, notes } });
+      if (to !== r.status || kind === 'AUTORIZADA') await this.rnds(ctx, t, r.id, to, kind);
     };
     if (tx) await run(tx);
     else await ctx.db.$transaction(run);
@@ -401,6 +420,14 @@ export class BedRegulationService {
     return this.detalhe(ctx, id);
   }
 
+  /** Código da mesma solicitação no SISREG / e-SUS Regulação (conciliação quando o município usa os dois). */
+  async codigoExterno(ctx: RequestContext, id: string, externalCode: string | null) {
+    const r = await this.carregar(ctx, id);
+    await ctx.db.bedRequest.update({ where: { id }, data: { externalCode: externalCode?.trim() || null } });
+    await this.audit.recordStandalone(ctx, { action: 'leitos_rede.codigo_externo', entityType: 'BedRequest', entityId: id, payload: { protocol: r.protocol, externalCode } });
+    return this.detalhe(ctx, id);
+  }
+
   async mensagem(ctx: RequestContext, id: string, notes: string) {
     const r = await this.carregar(ctx, id);
     this.exigirSolicitante(ctx, r);
@@ -483,6 +510,8 @@ export class BedRegulationService {
       transferAt: r.transferAt?.toISOString() ?? null,
       transferNotes: r.transferNotes,
       admissionId: r.admissionId,
+      procedureCode: r.procedureCode,
+      externalCode: r.externalCode,
       returnedCount: r.returnedCount,
       createdAt: r.createdAt.toISOString(),
       closedAt: r.closedAt?.toISOString() ?? null,

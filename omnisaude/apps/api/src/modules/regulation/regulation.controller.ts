@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put
 import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
 import { zv } from '../../core/zod';
+import { RegulationRndsService } from './regulation-rnds.service';
 import { RegulationService } from './regulation.service';
 
 const prioridade = z.enum(['VERMELHA', 'AMARELA', 'VERDE', 'AZUL']);
@@ -93,9 +94,16 @@ const complementarSchema = z.object({
 const mensagemSchema = z.object({ notes: texto(2000).min(2) });
 
 /** Regulação ambulatorial: solicitações a partir do atendimento, fila única, decisão do regulador e devolutiva. */
+const rndsListaSchema = z.object({ status: z.enum(['PENDENTE', 'ENVIADO', 'ERRO', 'DESCARTADO']).optional(), fonte: z.enum(['AMBULATORIAL', 'LEITO']).optional(), requestId: z.string().uuid().optional() });
+const rndsEnfileirarSchema = z.object({ fonte: z.enum(['AMBULATORIAL', 'LEITO']), requestId: z.string().uuid() });
+const codigoExternoSchema = z.object({ externalCode: z.string().trim().max(40).nullish() });
+
 @Controller('regulacao')
 export class RegulationController {
-  constructor(private readonly regulation: RegulationService) {}
+  constructor(
+    private readonly regulation: RegulationService,
+    private readonly rnds: RegulationRndsService,
+  ) {}
 
   @Get('protocolos')
   @RequirePermission('regulacao.ler')
@@ -268,5 +276,53 @@ export class RegulationController {
   @RequirePermission('regulacao.solicitar', 'regulacao.regular')
   mensagem(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(mensagemSchema)) body: z.infer<typeof mensagemSchema>) {
     return this.regulation.mensagem(ctx, id, body.notes);
+  }
+
+  // ─── Envio à RNDS (Portaria GM/MS 6.656/2025) ───
+
+  @Get('rnds/painel')
+  @RequirePermission('regulacao.ler', 'leitos_rede.ler')
+  rndsPainel(@Ctx() ctx: RequestContext) {
+    return this.rnds.painel(ctx);
+  }
+
+  @Get('rnds/documentos')
+  @RequirePermission('regulacao.ler', 'leitos_rede.ler')
+  rndsDocumentos(@Ctx() ctx: RequestContext, @Query(zv(rndsListaSchema)) q: z.infer<typeof rndsListaSchema>) {
+    return this.rnds.documentos(ctx, q);
+  }
+
+  @Get('rnds/documentos/:id/previa')
+  @RequirePermission('regulacao.regular', 'leitos_rede.regular')
+  rndsPrevia(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string) {
+    return this.rnds.previa(ctx, id);
+  }
+
+  @Post('rnds/documentos/:id/reenviar')
+  @HttpCode(200)
+  @RequirePermission('regulacao.regular', 'leitos_rede.regular')
+  rndsReenviar(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string) {
+    return this.rnds.reenviar(ctx, id);
+  }
+
+  @Post('rnds/enfileirar')
+  @HttpCode(200)
+  @RequirePermission('regulacao.regular', 'leitos_rede.regular')
+  rndsEnfileirar(@Ctx() ctx: RequestContext, @Body(zv(rndsEnfileirarSchema)) body: z.infer<typeof rndsEnfileirarSchema>) {
+    return this.rnds.enfileirar(ctx, body.fonte, body.requestId);
+  }
+
+  @Post('rnds/carga-inicial')
+  @HttpCode(200)
+  @RequirePermission('regulacao.regular')
+  rndsCargaInicial(@Ctx() ctx: RequestContext) {
+    return this.rnds.cargaInicial(ctx);
+  }
+
+  @Post('solicitacoes/:id/codigo-externo')
+  @HttpCode(200)
+  @RequirePermission('regulacao.regular')
+  codigoExterno(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(codigoExternoSchema)) body: z.infer<typeof codigoExternoSchema>) {
+    return this.rnds.codigoExterno(ctx, id, body.externalCode ?? null);
   }
 }

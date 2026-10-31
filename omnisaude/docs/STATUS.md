@@ -89,7 +89,8 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | e-SUS APS (LEDI/Thrift) e API do PEC | 🟡 | `packages/esus` + `modules/esus`; seis modelos de informação; visita domiciliar e atividade coletiva aguardam as fontes (APS-3, APS-7); homologação num PEC real pendente |
 | Indicadores do cofinanciamento da APS | 🟡 | `packages/shared/src/aps-indicadores.ts` + `modules/indicators`; apuração própria a partir dos registros (não substitui o Siaps) |
 | Consulta CADSUS | ✅ | |
-| Integração com a central de vagas (SISREG) | ⏳ | a regulação ambulatorial própria está em REG-1/2; o envio à RNDS (Portaria 6.656/2025) e o e-SUS Regulação ficam para INT-5; o SISREG não tem API pública |
+| Envio da regulação à RNDS (Portaria GM/MS 6.656/2025): Registro de Regulação Assistencial (RIRA/MIRA) para solicitações ambulatoriais e de vaga de leito, um documento por mudança de situação, validação, fila com novas tentativas, painel de conferência, pré-visualização do FHIR, reenvio e carga inicial | ✅ | INT-5; substituição do documento anterior e identificadores a confirmar na homologação (`docs/RNDS.md` §6) |
+| Integração com SISREG / e-SUS Regulação | 🟡 | sem API pública (FAQ e wiki do MS só tratam de adesão); pela Portaria 6.656 o caminho dos sistemas próprios é a RNDS; o código externo da solicitação permite conciliar os registros |
 
 ## Front-end (web e Android)
 

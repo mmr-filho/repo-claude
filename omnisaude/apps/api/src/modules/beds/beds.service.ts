@@ -210,6 +210,8 @@ export class BedsService {
         await tx.bedRequestEvent.create({
           data: { requestId: request.id, kind: 'INTERNADA', fromStatus: request.status, toStatus: 'INTERNADA', userId: ctx.session.userId, role: ctx.session.role, notes: `Internação no leito ${bed.code}` },
         });
+        const sequencia = (await tx.outboxMessage.count({ where: { kind: 'RNDS_REGULACAO', aggregateId: request.id } })) + 1;
+        await this.outbox.enqueue(tx, 'RNDS_REGULACAO', request.id, { fonte: 'LEITO', status: 'INTERNADA', evento: 'INTERNADA', at: new Date().toISOString(), unitId: ctx.session.unitId, sequencia });
       }
       await this.event(tx, ctx, bed.id, 'OCUPADO', isolation, `Internação ${admission.id}`);
       await this.audit.record(ctx, tx, {

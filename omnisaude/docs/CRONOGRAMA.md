@@ -39,7 +39,7 @@ Regras de trabalho:
 | 14 ✅ entregue em 31/10 | REG-3, REG-4 | PPI e cotas, contratos de prestadores, agendamento regulado, confirmação e remarcação (`docs/REGULACAO.md`) |
 | 15 ✅ entregue em 31/10 | REG-5, REG-6 | TFD completo (laudo, envio, parecer, agendamento, ajuda de custo, impressão) e transporte sanitário (frota, motoristas, rotas, viagens, roteiro do dia, manutenção e abastecimento) (`docs/TFD-TRANSPORTE.md`) |
 | 16 e 17 ✅ entregue em 31/10 | REG-7 | Regulação de leitos da rede (mapa, solicitação de vaga com NEWS2, fila por prioridade, segunda avaliação, reserva de leito, transferência, internação) e AIH (laudo, faixas numéricas, autorização com DV, espelho) (`docs/REGULACAO-LEITOS.md`) |
-| 18 | INT-5 | Envio da regulação à RNDS (Portaria 6.656/2025) e integração com o e-SUS Regulação conforme a documentação do DATASUS |
+| 18 ✅ entregue em 31/10 | INT-5 | Envio da regulação à RNDS (Portaria 6.656/2025) no guia RIRA/MIRA oficial, com fila, conferência, reenvio e carga inicial; e-SUS Regulação sem API pública, conciliado por código externo (`docs/RNDS.md` §6) |
 
 Em paralelo, na semana 12: **APS-3, app do ACS** (cadastro domiciliar, visitas, mapa, trabalho sem internet),
 porque reaproveita o app Android já existente e é insumo dos indicadores. ✅ entregue em 31/10: tela

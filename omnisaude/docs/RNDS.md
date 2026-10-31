@@ -87,3 +87,46 @@ Todos os nomes ficam em `packages/fhir/src/rnds.ts`. O pacote oficial consultado
 `br.ufg.cgis.rnds-lite` 0.5.0 (espelho do projeto "Rede Nacional de Dados em Saúde" no Simplifier); o projeto
 publica também os perfis "BR Core" mais novos, que ainda não valem para os documentos enviados aqui. A
 homologação com o DATASUS é o passo que fecha as versões.
+
+## 6. Regulação assistencial (Portaria GM/MS 6.656/2025)
+
+A Portaria GM/MS nº 6.656, de 7 de março de 2025, tornou obrigatório o envio à RNDS de **todos os registros de
+solicitação de procedimentos ou encaminhamento a serviços de atenção especializada**, no Modelo de Informação
+da Regulação Assistencial (MIRA, Portaria Conjunta SAES/SEIDIGI nº 3/2023). Sistemas próprios (art. 3º, II e
+IV) transmitem **diariamente, com as informações até o dia anterior** (art. 5º); o status "atendido/internado"
+e a data de execução são facultativos (art. 2º, §3º). SISREG e e-SUS Regulação transmitem sozinhos (art. 4º).
+
+O OmniSaúde implementa o **Registro de Regulação Assistencial (RIRA)**, guia oficial `br.gov.saude.rira.fhir`
+1.0.0-release (publicado em 29/10/2026; perfis de 2023 no projeto RNDS do Simplifier, atualizados em
+12/12/2025): um Bundle `document` com
+
+| Recurso | Perfil | Conteúdo |
+|---|---|---|
+| Composition | `BRRegulacaoAssistencial` | tipo `RA`, modalidade (`04` hospitalar, `09` ambulatorial), indivíduo (CPF ou CNS, sistema `BRIndividuo-1.0`), data (só dia), autor (CNES da central reguladora), **um evento** com a situação (`pending`, `returned-to-requester`, `booked`, `attended`, `cancelled`, `absence`, `excluded`), a data da alteração e o estabelecimento que a fez; `relatesTo replaces` para o documento anterior |
+| ServiceRequest | `BRRequisicaoRegulacaoAssistencial` | status/intent conforme a situação, modalidade, caráter (`routine`/`urgent`), procedimento SIGTAP, solicitante (CNES), data da solicitação, CBO do executante, executante (CNES, só quando agendada/atendida/falta), execução, motivo |
+| Appointment | `BRAgendamentoRegulacaoAssistencial` | status conforme a situação, modalidade, procedimento, CBO, caráter, motivo, regulador, início/fim do agendamento, data da autorização, paciente |
+| Condition | `BRProblemaDiagnostico` | motivo (CID-10 ou CIAP-2), obrigatório para solicitações a partir de 1/1/2025 (`mira-1`) |
+
+As invariantes `mira-1` a `mira-19` (executante proibido quando pendente, obrigatório quando agendada, data de
+execução quando atendida ou falta, estados FHIR por situação) estão em `packages/shared/src/rnds-regulacao.ts`
+e no construtor `buildRegulationBundle` (`packages/fhir/src/builders/regulation.ts`), com testes.
+
+**Mapeamento das situações** (`statusMiraAmbulatorial` / `statusMiraLeito`): pendente, em análise e
+autorizada sem agendamento → `pending`; devolvida → `returned-to-requester`; agendada (ou vaga autorizada com
+destino) → `booked`; realizada / internada → `attended`; falta → `absence`; negada e cancelada → `cancelled`.
+
+**Como funciona**: cada solicitação (ambulatorial ou de vaga de leito) e cada mudança de situação grava uma
+mensagem `RNDS_REGULACAO` no outbox, na mesma transação; o job de integração monta o documento a partir do
+estado atual, valida e envia (com novas tentativas e descarte dos erros permanentes: pessoa sem CPF/CNS, vaga
+sem SIGTAP). A tela **Regulação > Envio à RNDS** mostra o painel (fila, enviados, erros, atrasados há mais de
+24 h), os documentos por solicitação, a pré-visualização do FHIR validado, o reenvio, o enfileiramento da
+situação atual e a **carga inicial** (todas as solicitações que ainda não têm documento).
+
+Configuração adicional: `RNDS_REGULATOR_CNES` (ou `regulatorCnes` em `tenant_integrations`) com o CNES da
+central de regulação, autora dos documentos; sem ele, o autor é a unidade que alterou a situação.
+
+Pontos a confirmar na homologação: a referência do documento substituído (`Composition/<id>` devolvido no
+`Location`) e a aceitação do identificador `BRIndividuo-1.0`/`BREstabelecimentoSaude-1.0` como nos exemplos
+oficiais. A integração direta com o **e-SUS Regulação** não tem API pública: a wiki do MS e o FAQ só tratam de
+adesão e operação; pela portaria, o caminho dos sistemas próprios é a RNDS, e o campo **código no SISREG /
+e-SUS Regulação** das solicitações serve para conciliar os registros quando o município usa os dois.

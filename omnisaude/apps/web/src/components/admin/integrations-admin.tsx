@@ -109,6 +109,9 @@ export function IntegrationsAdmin() {
                           .map(([k, n]) => `${n} ${OUTBOX_LABEL[k] ?? k.toLowerCase()}`)
                           .join(' · ')
                       : 'nenhum documento na fila'}
+                    <span className="block text-xs text-slate-500">
+                      RAC, imunização, dispensação, sumário de alta e regulação assistencial (Portaria 6.656/2025); a conferência da regulação fica em Regulação &gt; Envio à RNDS.
+                    </span>
                   </dd>
                 </div>
               </dl>

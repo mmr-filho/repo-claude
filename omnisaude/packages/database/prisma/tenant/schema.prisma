@@ -850,6 +850,8 @@ model RegulationRequest {
   scheduledAt           DateTime?          @map("scheduled_at")
   noShowCount           Int                @default(0) @map("no_show_count")
   returnedCount         Int                @default(0) @map("returned_count")
+  /// Código da solicitação no SISREG ou no e-SUS Regulação, quando também registrada lá.
+  externalCode          String?            @map("external_code")
   createdAt             DateTime           @default(now()) @map("created_at")
   updatedAt             DateTime           @updatedAt @map("updated_at")
   closedAt              DateTime?          @map("closed_at")
@@ -1032,6 +1034,10 @@ model BedRequest {
   transferNotes      String?            @map("transfer_notes")
   admissionId        String?            @unique @map("admission_id") @db.Uuid
   returnedCount      Int                @default(0) @map("returned_count")
+  /// Procedimento SIGTAP da internação (exigido pelo MIRA para o envio à RNDS).
+  procedureCode      String?            @map("procedure_code") @db.Char(10)
+  /// Código da solicitação no SISREG ou no e-SUS Regulação, quando também registrada lá.
+  externalCode       String?            @map("external_code")
   createdAt          DateTime           @default(now()) @map("created_at")
   updatedAt          DateTime           @updatedAt @map("updated_at")
   closedAt           DateTime?          @map("closed_at")
@@ -2197,6 +2203,8 @@ enum OutboxKind {
   RNDS_IMUNIZACAO
   RNDS_DISPENSACAO
   RNDS_SUMARIO_ALTA
+  /// Registro de Regulação Assistencial (Portaria GM/MS 6.656/2025).
+  RNDS_REGULACAO
 }
 
 enum OutboxStatus {

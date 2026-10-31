@@ -29,6 +29,7 @@ import {
   type TipoSolicitacao,
 } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
+import { OutboxService } from '../../core/outbox.service';
 import type { RequestContext } from '../../core/context';
 import { conflict, DomainError, forbidden, notFound } from '../../core/errors';
 import { RealtimeService } from '../../core/realtime.service';
@@ -118,7 +119,14 @@ export class RegulationService {
     private readonly realtime: RealtimeService,
     private readonly messaging: MessagingService,
     private readonly scheduling: SchedulingService,
+    private readonly outbox: OutboxService,
   ) {}
+
+  /** Registro de Regulação Assistencial para a RNDS (Portaria GM/MS 6.656/2025): um documento por mudança de situação. */
+  private async rnds(ctx: RequestContext, tx: Parameters<OutboxService['enqueue']>[0], id: string, status: StatusSolicitacao, evento: string | null) {
+    const sequencia = (await tx.outboxMessage.count({ where: { kind: 'RNDS_REGULACAO', aggregateId: id } })) + 1;
+    await this.outbox.enqueue(tx, 'RNDS_REGULACAO', id, { fonte: 'AMBULATORIAL', status, evento, at: new Date().toISOString(), unitId: ctx.session.unitId, sequencia });
+  }
 
   protocolos() {
     return { especialidades: ESPECIALIDADES, procedimentos: PROCEDIMENTOS_REGULADOS, prioridades: PRIORIDADES, status: STATUS_SOLICITACAO };
@@ -232,6 +240,7 @@ export class RegulationService {
         entityId: r.id,
         payload: { protocol, kind: input.kind, specialty: input.specialty, priority: input.priority, patientId: input.patientId, pendencias: verificacao.pendencias },
       });
+      await this.rnds(ctx, tx, r.id, 'PENDENTE', 'CRIADA');
       return r;
     });
     this.realtime.emitToUnit(ctx.tenant.id, ctx.session.unitId, 'regulacao.atualizada', { id: created.id, status: created.status });
@@ -395,6 +404,7 @@ export class RegulationService {
       await tx.regulationRequest.update({ where: { id }, data: { status: to, ...data } });
       await tx.regulationEvent.create({ data: { requestId: id, kind, fromStatus: r.status, toStatus: to, userId: ctx.session.userId, role: ctx.session.role, notes } });
       await this.audit.record(ctx, tx, { action: audit, entityType: 'RegulationRequest', entityId: id, payload: { protocol: r.protocol, from: r.status, to, notes } });
+      await this.rnds(ctx, tx, id, to, kind);
     });
     this.realtime.emitToUnit(ctx.tenant.id, r.unitId, 'regulacao.atualizada', { id, protocol: r.protocol, status: to });
     return r;
@@ -855,6 +865,7 @@ export class RegulationService {
     const novo = await this.scheduling.reschedule(sys, atual.id, input.startsAt, ctx.session.userId);
     await ctx.db.$transaction(async (tx) => {
       await tx.regulationRequest.update({ where: { id }, data: { appointmentId: novo.id, scheduledAt: novo.startsAt } });
+      await this.rnds(ctx, tx, id, 'AGENDADA', 'REMARCADA');
       await tx.regulationEvent.create({
         data: { requestId: id, kind: 'REMARCADA', userId: ctx.session.userId, role: ctx.session.role, notes: `${this.quando(atual.startsAt, ctx)} → ${this.quando(novo.startsAt, ctx)} · ${atual.schedule.name}` },
       });
@@ -939,6 +950,7 @@ export class RegulationService {
     await ctx.db.$transaction(async (tx) => {
       await tx.regulationRequest.update({ where: { id: r.id }, data: { status: to, ...data } });
       await tx.regulationEvent.create({ data: { requestId: r.id, kind, fromStatus: r.status, toStatus: to, userId: ctx.session.userId, role: ctx.session.role, notes } });
+      await this.rnds(ctx, tx, r.id, to, kind);
     });
     this.realtime.emitToUnit(ctx.tenant.id, r.unitId, 'regulacao.atualizada', { id: r.id, protocol: r.protocol, status: to });
   }

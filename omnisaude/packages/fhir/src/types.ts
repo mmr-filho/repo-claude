@@ -1,4 +1,4 @@
-import type { VitalSigns } from '@omnisaude/shared';
+import type { CaraterMira, ModalidadeMira, StatusMira, VitalSigns } from '@omnisaude/shared';
 
 /** Paciente identificado por CPF (preferencial na RNDS) e/ou CNS. */
 export interface PatientIdentity {
@@ -105,4 +105,35 @@ export interface DischargeSummaryInput extends DocumentMeta {
   dischargeMedications?: { name: string; catmatCode?: string; instructions: string }[];
   clinicalSummary?: string;
   followUp?: string;
+}
+
+/** Registro de Regulação Assistencial (RIRA): uma solicitação de procedimento regulado e sua situação atual. */
+export interface RegulationDocumentInput extends DocumentMeta {
+  patient: PatientIdentity;
+  /** Estabelecimento autor do documento (a central reguladora ou, na falta dela, o estabelecimento que alterou a situação). */
+  author: EstablishmentIdentity;
+  /** Estabelecimento que realizou a última alteração da situação (Composition.event.detail). */
+  statusChangedBy: EstablishmentIdentity;
+  status: StatusMira;
+  statusChangedAt: Date;
+  modality: ModalidadeMira;
+  priority: CaraterMira;
+  procedure: { sigtapCode: string; display?: string };
+  /** Estabelecimento solicitante e data da solicitação. */
+  requester: EstablishmentIdentity;
+  authoredOn: Date;
+  /** CBO da especialidade do executante (opcional). */
+  performerCbo?: string;
+  /** Estabelecimento executante: obrigatório quando agendada, atendida ou falta; proibido quando pendente. */
+  performer?: EstablishmentIdentity;
+  /** Estabelecimento regulador (Appointment.supportingInformation). */
+  regulator?: EstablishmentIdentity;
+  /** Motivo da solicitação (CID-10 ou CIAP-2): obrigatório para solicitações a partir de 1/1/2025. */
+  reason?: ProblemInput;
+  /** Agendamento: início/fim obrigatórios quando agendada, atendida ou falta; created = data da autorização. */
+  appointment?: { start: Date; end?: Date; created?: Date };
+  /** Data da execução (atendida ou falta). */
+  occurrence?: Date;
+  /** Referência ao documento anterior na RNDS (ex.: "Composition/<id>") quando este o substitui. */
+  replaces?: string;
 }

@@ -55,6 +55,10 @@ export const CODE_SYSTEMS = {
   roleCode: 'http://terminology.hl7.org/CodeSystem/v3-RoleCode',
   diagnosisRole: 'http://terminology.hl7.org/CodeSystem/diagnosis-role',
   dischargeDisposition: 'http://terminology.hl7.org/CodeSystem/discharge-disposition',
+  modalidadeAssistencial: `${RNDS_BASE}/CodeSystem/BRModalidadeAssistencial`,
+  statusRegulacao: `${RNDS_BASE}/CodeSystem/BRStatusRegulacaoAssistencial`,
+  tipoParticipante: `${RNDS_BASE}/CodeSystem/BRTipoParticipante`,
+  requestPriority: 'http://hl7.org/fhir/request-priority',
 } as const;
 
 const sd = (name: string) => `${RNDS_BASE}/StructureDefinition/${name}`;
@@ -80,6 +84,19 @@ export const PROFILES = {
   dischargeComposition: sd('BRSumarioAlta-1.0'),
   dischargeEncounter: sd('BRInternacao-1.0'),
   dischargeMedication: sd('BRPrescricaoAlta-1.0'),
+  /** Registro de Regulação Assistencial (guia br.gov.saude.rira.fhir 1.0.0-release). */
+  regulationComposition: sd('BRRegulacaoAssistencial'),
+  regulationAppointment: sd('BRAgendamentoRegulacaoAssistencial'),
+  regulationRequest: sd('BRRequisicaoRegulacaoAssistencial'),
+} as const;
+
+/**
+ * Identificadores lógicos usados pelo RIRA (diferentes dos NamingSystems das buscas): o indivíduo pelo CPF ou
+ * CNS e o estabelecimento pelo CNES, com o sistema apontando para o perfil.
+ */
+export const RIRA_IDENTIFIERS = {
+  individuo: sd('BRIndividuo-1.0'),
+  estabelecimento: sd('BREstabelecimentoSaude-1.0'),
 } as const;
 
 /** Códigos de BRTipoDocumento usados em Composition.type. */
@@ -88,6 +105,7 @@ export const DOCUMENT_TYPES = {
   immunization: { code: 'RIA', display: 'Registro de Imunobiológico Administrado' },
   dispensation: { code: 'RDM', display: 'Registro de Dispensação de Medicamento' },
   discharge: { code: 'SA', display: 'Sumário de Alta' },
+  regulation: { code: 'RA', display: 'Regulação Assistencial' },
 } as const;
 
 export const LOINC = {

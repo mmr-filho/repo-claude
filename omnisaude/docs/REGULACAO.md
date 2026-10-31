@@ -138,5 +138,5 @@ ecocardiograma) e as agendas de cardiologia e oftalmologia na Policlínica.
 ## Próximos passos
 
 TFD e transporte sanitário (REG-5/REG-6), regulação de leitos e AIH (REG-7) e a integração com a RNDS
-(Portaria 6.656/2025) e o e-SUS Regulação (INT-5). Prestadores externos sem agenda no sistema recebem a
+(Portaria 6.656/2025) está em `docs/RNDS.md`, seção 6 (aba **Envio à RNDS** desta tela); o e-SUS Regulação não tem API pública e é conciliado pelo código externo da solicitação (INT-5). Prestadores externos sem agenda no sistema recebem a
 autorização e o agendamento é registrado manualmente (data informada ao cidadão pela unidade).

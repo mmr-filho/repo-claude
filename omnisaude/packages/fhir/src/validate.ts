@@ -1,6 +1,6 @@
 import { isValidCns, isValidCpf } from '@omnisaude/shared';
 import { z } from 'zod';
-import { BUNDLE_IDENTIFIER_PREFIX, NAMING_SYSTEMS, RNDS_BASE } from './rnds';
+import { BUNDLE_IDENTIFIER_PREFIX, NAMING_SYSTEMS, RIRA_IDENTIFIERS, RNDS_BASE } from './rnds';
 
 export interface ValidationIssue {
   severity: 'error' | 'warning';
@@ -14,25 +14,11 @@ export interface ValidationResult {
 }
 
 const FHIR_DATE = /^\d{4}(-(0[1-9]|1[0-2])(-(0[1-9]|[12]\d|3[01]))?)?$/;
-const FHIR_DATE_TIME =
-  /^\d{4}(-(0[1-9]|1[0-2])(-(0[1-9]|[12]\d|3[01])(T([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d{1,9})?(Z|[+-]((0\d|1[0-3]):[0-5]\d|14:00)))?)?)?$/;
+const FHIR_DATE_TIME = /^\d{4}(-(0[1-9]|1[0-2])(-(0[1-9]|[12]\d|3[01])(T([01]\d|2[0-3]):[0-5]\d:([0-5]\d|60)(\.\d{1,9})?(Z|[+-]((0\d|1[0-3]):[0-5]\d|14:00)))?)?)?$/;
 const URN_UUID = /^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DATE_KEYS = new Set(['birthDate', 'expirationDate', 'recordedDate']);
-const DATE_TIME_KEYS = new Set([
-  'date',
-  'timestamp',
-  'lastUpdated',
-  'start',
-  'end',
-  'occurrenceDateTime',
-  'effectiveDateTime',
-  'performedDateTime',
-  'whenHandedOver',
-  'whenPrepared',
-  'authoredOn',
-  'issued',
-]);
+const DATE_TIME_KEYS = new Set(['date', 'timestamp', 'lastUpdated', 'start', 'end', 'occurrenceDateTime', 'effectiveDateTime', 'performedDateTime', 'whenHandedOver', 'whenPrepared', 'authoredOn', 'issued']);
 
 const bundleSchema = z.object({
   resourceType: z.literal('Bundle'),
@@ -43,7 +29,15 @@ const bundleSchema = z.object({
     .array(
       z.object({
         fullUrl: z.string(),
-        resource: z.object({ resourceType: z.string(), meta: z.object({ profile: z.array(z.string()).optional() }).loose().optional() }).loose(),
+        resource: z
+          .object({
+            resourceType: z.string(),
+            meta: z
+              .object({ profile: z.array(z.string()).optional() })
+              .loose()
+              .optional(),
+          })
+          .loose(),
       }),
     )
     .min(1),
@@ -92,6 +86,8 @@ export function validateRndsBundle(bundle: unknown): ValidationResult {
       if (key === 'reference' && typeof value === 'string') {
         if (value.startsWith('urn:uuid:')) {
           if (!fullUrls.has(value)) error(path, `Referência não encontrada no Bundle: ${value}`);
+        } else if (/relatesTo/.test(path) && /^(Composition|Bundle)\/[A-Za-z0-9.-]+$/.test(value)) {
+          // Documento substituído: referência ao id atribuído pela RNDS.
         } else {
           error(path, `Documentos RNDS só aceitam referências urn:uuid internas ou por identificador: ${value}`);
         }
@@ -101,6 +97,8 @@ export function validateRndsBundle(bundle: unknown): ValidationResult {
         if (value === NAMING_SYSTEMS.cpf && !isValidCpf(v)) error(path.replace(/\.system$/, '.value'), `CPF inválido: ${v}`);
         if (value === NAMING_SYSTEMS.cns && !isValidCns(v)) error(path.replace(/\.system$/, '.value'), `CNS inválido: ${v}`);
         if (value === NAMING_SYSTEMS.cnes && !/^\d{7}$/.test(v)) error(path.replace(/\.system$/, '.value'), `CNES inválido: ${v}`);
+        if (value === RIRA_IDENTIFIERS.individuo && !isValidCpf(v) && !isValidCns(v)) error(path.replace(/\.system$/, '.value'), `CPF/CNS inválido: ${v}`);
+        if (value === RIRA_IDENTIFIERS.estabelecimento && !/^\d{7}$/.test(v)) error(path.replace(/\.system$/, '.value'), `CNES inválido: ${v}`);
       }
       if (typeof value === 'string' && DATE_TIME_KEYS.has(key) && !FHIR_DATE_TIME.test(value)) {
         error(path, `Data/hora fora do formato FHIR: ${value}`);

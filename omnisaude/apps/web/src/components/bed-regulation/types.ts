@@ -37,6 +37,8 @@ export interface SolicitacaoLeito {
   transferAt: string | null;
   transferNotes: string | null;
   admissionId: string | null;
+  procedureCode: string | null;
+  externalCode: string | null;
   returnedCount: number;
   createdAt: string;
   closedAt: string | null;

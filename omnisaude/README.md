@@ -25,7 +25,8 @@ e BI conversacional).
   Datamatrix GS1, dispensação (Portaria 344) e **administração beira-leito com os 5 certos**.
 - **Regulação** ambulatorial com fila única, protocolos, prestadores e cotas ([`docs/REGULACAO.md`](docs/REGULACAO.md));
   **TFD** e **transporte sanitário** com frota, rotas, viagens e roteiro do dia ([`docs/TFD-TRANSPORTE.md`](docs/TFD-TRANSPORTE.md));
-  **central de leitos** da rede com NEWS2, reserva de leito e **AIH** ([`docs/REGULACAO-LEITOS.md`](docs/REGULACAO-LEITOS.md)).
+  **central de leitos** da rede com NEWS2, reserva de leito e **AIH** ([`docs/REGULACAO-LEITOS.md`](docs/REGULACAO-LEITOS.md));
+  envio da regulação à **RNDS** (Portaria 6.656/2025, guia RIRA/MIRA) com conferência e reenvio ([`docs/RNDS.md`](docs/RNDS.md)).
 - **Leitos/NIR**, **POPs** (hard e soft gates), **faturamento** (SIGTAP, crítica pré-glosa, BPA-I/BPA-C),
   **BI conversacional** com Text-to-SQL blindado, **gestão** (produtividade, SLAs, pautas) e **busca ativa**.
 - **Acessibilidade**: VLibras e chamada de intérprete de Libras por vídeo (WebRTC).
