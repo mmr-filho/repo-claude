@@ -440,6 +440,8 @@ model Patient {
   activeSearchCases ActiveSearchCase[]
   homeVisits  HomeVisit[]
   regulationRequests RegulationRequest[]
+  tfdProcesses TfdProcess[]
+  transportPassengers TransportPassenger[]
 
   @@index([nameKey, birthDate])
   @@index([familyId])
@@ -892,6 +894,245 @@ model RegulationAttachment {
 
   @@unique([requestId, documentId])
   @@map("regulation_attachments")
+}
+
+// ───────────────────────────── TFD e transporte sanitário ─────────────────────────────
+
+enum TfdStatus {
+  ABERTO
+  ENVIADO
+  DEFERIDO
+  INDEFERIDO
+  AGENDADO
+  CONCLUIDO
+  CANCELADO
+}
+
+/// Processo de Tratamento Fora do Domicílio (Portaria SAS/MS 55/1999): laudo, envio, parecer, agendamento, ajuda de custo e viagem.
+model TfdProcess {
+  id                 String    @id @default(uuid(7)) @db.Uuid
+  protocol           String    @unique
+  patientId          String    @map("patient_id") @db.Uuid
+  requestId          String?   @map("request_id") @db.Uuid
+  unitId             String    @map("unit_id") @db.Uuid
+  requesterId        String    @map("requester_id") @db.Uuid
+  requesterCbo       String    @map("requester_cbo") @db.Char(6)
+  cid                String?   @db.VarChar(5)
+  diagnosis          String
+  procedureName      String    @map("procedure_name")
+  procedureCode      String?   @map("procedure_code") @db.Char(10)
+  clinicalSummary    String    @map("clinical_summary")
+  /// Por que o tratamento não é possível no município (exigência do TFD).
+  justification      String
+  urgency            Boolean   @default(false)
+  destinationCity    String    @map("destination_city")
+  destinationUf      String    @map("destination_uf") @db.Char(2)
+  destinationIbge    String?   @map("destination_ibge")
+  destinationUnit    String?   @map("destination_unit")
+  transport          String
+  needsCompanion     Boolean   @default(false) @map("needs_companion")
+  companionName      String?   @map("companion_name")
+  companionCpf       String?   @map("companion_cpf") @db.Char(11)
+  companionRelation  String?   @map("companion_relation")
+  accommodation      Boolean   @default(false)
+  status             TfdStatus @default(ABERTO)
+  sentAt             DateTime? @map("sent_at")
+  opinionAt          DateTime? @map("opinion_at")
+  opinionBy          String?   @map("opinion_by") @db.Uuid
+  opinionNotes       String?   @map("opinion_notes")
+  allowanceApproved  Boolean   @default(false) @map("allowance_approved")
+  appointmentAt      DateTime? @map("appointment_at")
+  appointmentPlace   String?   @map("appointment_place")
+  appointmentNotes   String?   @map("appointment_notes")
+  /// Itens da ajuda de custo: [{ tipo, beneficiario, quantidade, valorUnitario, descricao }].
+  allowance          Json      @default("[]")
+  allowanceTotal     Decimal   @default(0) @map("allowance_total") @db.Decimal(12, 2)
+  allowancePaidAt    DateTime? @map("allowance_paid_at")
+  tripId             String?   @map("trip_id") @db.Uuid
+  closedAt           DateTime? @map("closed_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  patient Patient    @relation(fields: [patientId], references: [id])
+  events  TfdEvent[]
+
+  @@index([status, createdAt])
+  @@index([patientId])
+  @@index([unitId, status])
+  @@map("tfd_processes")
+}
+
+model TfdEvent {
+  id         String     @id @default(uuid(7)) @db.Uuid
+  processId  String     @map("process_id") @db.Uuid
+  kind       String
+  fromStatus TfdStatus? @map("from_status")
+  toStatus   TfdStatus? @map("to_status")
+  userId     String     @map("user_id") @db.Uuid
+  role       Role
+  notes      String?
+  at         DateTime   @default(now())
+
+  process TfdProcess @relation(fields: [processId], references: [id], onDelete: Cascade)
+
+  @@index([processId, at])
+  @@map("tfd_events")
+}
+
+enum VehicleKind {
+  AMBULANCIA_BASICA
+  AMBULANCIA_UTI
+  VAN
+  MICRO_ONIBUS
+  ONIBUS
+  CARRO
+}
+
+model Vehicle {
+  id                String      @id @default(uuid(7)) @db.Uuid
+  plate             String      @unique
+  model             String
+  kind              VehicleKind
+  seats             Int
+  wheelchair        Boolean     @default(false)
+  odometerKm        Int         @default(0) @map("odometer_km")
+  nextMaintenanceKm Int?        @map("next_maintenance_km")
+  nextMaintenanceAt DateTime?   @map("next_maintenance_at") @db.Date
+  unitId            String?     @map("unit_id") @db.Uuid
+  active            Boolean     @default(true)
+  notes             String?
+  createdAt         DateTime    @default(now()) @map("created_at")
+
+  trips TransportTrip[]
+  logs  VehicleLog[]
+
+  @@map("vehicles")
+}
+
+model Driver {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  name        String
+  cpf         String?  @db.Char(11)
+  phone       String?
+  cnh         String
+  cnhCategory String   @map("cnh_category") @db.Char(2)
+  cnhExpiry   DateTime @map("cnh_expiry") @db.Date
+  userId      String?  @map("user_id") @db.Uuid
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  trips TransportTrip[]
+
+  @@map("drivers")
+}
+
+/// Rota recorrente (ex.: Gurupi → Palmas, seg/qua/sex às 5h) com pontos de embarque.
+model TransportRoute {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  name            String
+  destinationCity String   @map("destination_city")
+  destinationUf   String   @map("destination_uf") @db.Char(2)
+  /// Pontos de embarque: [{ nome, endereco, horario }].
+  stops           Json     @default("[]")
+  weekdays        Int[]
+  departureTime   String   @map("departure_time") @db.Char(5)
+  returnTime      String?  @map("return_time") @db.Char(5)
+  vehicleId       String?  @map("vehicle_id") @db.Uuid
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  trips TransportTrip[]
+
+  @@map("transport_routes")
+}
+
+enum TripStatus {
+  PLANEJADA
+  EM_ANDAMENTO
+  CONCLUIDA
+  CANCELADA
+}
+
+model TransportTrip {
+  id               String     @id @default(uuid(7)) @db.Uuid
+  routeId          String?    @map("route_id") @db.Uuid
+  vehicleId        String     @map("vehicle_id") @db.Uuid
+  driverId         String     @map("driver_id") @db.Uuid
+  date             DateTime   @db.Date
+  departureTime    String     @map("departure_time") @db.Char(5)
+  destinationCity  String     @map("destination_city")
+  destinationUf    String     @map("destination_uf") @db.Char(2)
+  destinationPlace String?    @map("destination_place")
+  status           TripStatus @default(PLANEJADA)
+  odometerStart    Int?       @map("odometer_start")
+  odometerEnd      Int?       @map("odometer_end")
+  fuelLiters       Decimal?   @map("fuel_liters") @db.Decimal(8, 2)
+  fuelCost         Decimal?   @map("fuel_cost") @db.Decimal(10, 2)
+  notes            String?
+  createdBy        String     @map("created_by") @db.Uuid
+  createdAt        DateTime   @default(now()) @map("created_at")
+
+  route      TransportRoute?      @relation(fields: [routeId], references: [id])
+  vehicle    Vehicle              @relation(fields: [vehicleId], references: [id])
+  driver     Driver               @relation(fields: [driverId], references: [id])
+  passengers TransportPassenger[]
+
+  @@index([date, status])
+  @@index([vehicleId, date])
+  @@map("transport_trips")
+}
+
+enum PassengerStatus {
+  AGENDADO
+  EMBARCOU
+  FALTOU
+  CANCELADO
+}
+
+model TransportPassenger {
+  id               String          @id @default(uuid(7)) @db.Uuid
+  tripId           String          @map("trip_id") @db.Uuid
+  patientId        String          @map("patient_id") @db.Uuid
+  companionName    String?         @map("companion_name")
+  pickupAddress    String?         @map("pickup_address")
+  appointmentAt    DateTime?       @map("appointment_at")
+  appointmentPlace String?         @map("appointment_place")
+  wheelchair       Boolean         @default(false)
+  tfdId            String?         @map("tfd_id") @db.Uuid
+  requestId        String?         @map("request_id") @db.Uuid
+  status           PassengerStatus @default(AGENDADO)
+  notes            String?
+  createdAt        DateTime        @default(now()) @map("created_at")
+
+  trip    TransportTrip @relation(fields: [tripId], references: [id], onDelete: Cascade)
+  patient Patient       @relation(fields: [patientId], references: [id])
+
+  @@index([tripId])
+  @@index([patientId])
+  @@map("transport_passengers")
+}
+
+enum VehicleLogKind {
+  MANUTENCAO
+  ABASTECIMENTO
+}
+
+model VehicleLog {
+  id          String         @id @default(uuid(7)) @db.Uuid
+  vehicleId   String         @map("vehicle_id") @db.Uuid
+  kind        VehicleLogKind
+  at          DateTime       @default(now())
+  odometerKm  Int            @map("odometer_km")
+  cost        Decimal        @db.Decimal(10, 2)
+  liters      Decimal?       @db.Decimal(8, 2)
+  description String
+  userId      String         @map("user_id") @db.Uuid
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  vehicle Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId, at])
+  @@map("vehicle_logs")
 }
 
 // ───────────────────────────── Recepção, senhas e atendimento ─────────────────────────────

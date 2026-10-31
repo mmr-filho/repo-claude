@@ -794,6 +794,107 @@ export async function seedDemo(opts: SeedOptions) {
       events: [{ kind: 'CRIADA', toStatus: 'PENDENTE', userId: medica, role: 'MEDICO', at: daysAgo(40, 8) }],
     });
 
+    // ── Transporte sanitário e TFD ──
+    const van = await db.vehicle.create({ data: { plate: 'QKA2B34', model: 'Fiat Ducato 2022', kind: 'VAN', seats: 12, wheelchair: true, odometerKm: 48200, nextMaintenanceKm: 50000, nextMaintenanceAt: daysAhead(45) } });
+    await db.vehicle.create({ data: { plate: 'QKB5C67', model: 'Renault Master ambulância 2021', kind: 'AMBULANCIA_BASICA', seats: 2, odometerKm: 91300, nextMaintenanceKm: 92000 } });
+    const motorista = await db.driver.create({ data: { name: 'Raimundo Costa Motorista', cpf: completeCpf('300000101'), phone: '(63) 99888-0101', cnh: '01234567890', cnhCategory: 'D', cnhExpiry: daysAhead(400) } });
+    await db.driver.create({ data: { name: 'Eliane Souza Motorista', cnh: '09876543210', cnhCategory: 'D', cnhExpiry: daysAhead(20) } });
+    const rota = await db.transportRoute.create({
+      data: {
+        name: 'Gurupi → Palmas (consultas e exames)',
+        destinationCity: 'Palmas',
+        destinationUf: 'TO',
+        stops: [
+          { nome: 'UBS Centro', endereco: 'Rua Exemplo, 100', horario: '04:30' },
+          { nome: 'Rodoviária', endereco: 'Av. Goiás, s/n', horario: '04:45' },
+        ],
+        weekdays: [1, 3, 5],
+        departureTime: '04:30',
+        returnTime: '17:00',
+        vehicleId: van.id,
+      },
+    });
+    await db.vehicleLog.createMany({
+      data: [
+        { vehicleId: van.id, kind: 'ABASTECIMENTO', at: daysAgo(20), odometerKm: 47400, cost: 420, liters: 70, description: 'Diesel S10', userId: staff.nir! },
+        { vehicleId: van.id, kind: 'ABASTECIMENTO', at: daysAgo(8), odometerKm: 48100, cost: 432, liters: 72, description: 'Diesel S10', userId: staff.nir! },
+        { vehicleId: van.id, kind: 'MANUTENCAO', at: daysAgo(60), odometerKm: 45000, cost: 1850, description: 'Revisão de 45.000 km, pastilhas de freio', userId: staff.nir! },
+      ],
+    });
+    const viagem = await db.transportTrip.create({
+      data: {
+        routeId: rota.id,
+        vehicleId: van.id,
+        driverId: motorista.id,
+        date: daysAhead(2, 12),
+        departureTime: '04:30',
+        destinationCity: 'Palmas',
+        destinationUf: 'TO',
+        destinationPlace: 'Hospital Geral de Palmas',
+        createdBy: staff.nir!,
+      },
+    });
+    const tfd = await db.tfdProcess.create({
+      data: {
+        protocol: `TFD-${ano}-000001`,
+        patientId: patient.maria!,
+        unitId: unit.ubs,
+        requesterId: medica,
+        requesterCbo: '225125',
+        cid: 'C50',
+        diagnosis: 'Neoplasia maligna da mama em investigação',
+        procedureName: 'Consulta em oncologia clínica e estadiamento',
+        clinicalSummary: 'Nódulo mamário com biópsia positiva; necessita avaliação oncológica e estadiamento.',
+        justification: 'Não há serviço de oncologia clínica no município nem na região de saúde.',
+        urgency: true,
+        destinationCity: 'Palmas',
+        destinationUf: 'TO',
+        destinationIbge: '1721000',
+        destinationUnit: 'Hospital Geral de Palmas',
+        transport: 'VEICULO_SANITARIO',
+        needsCompanion: true,
+        companionName: 'Benedita da Silva',
+        companionRelation: 'Mãe',
+        status: 'AGENDADO',
+        sentAt: daysAgo(12, 10),
+        opinionAt: daysAgo(6, 11),
+        opinionBy: staff.nir!,
+        opinionNotes: 'Deferido pela regional: consulta em oncologia no HGP.',
+        allowanceApproved: true,
+        appointmentAt: daysAhead(2, 11),
+        appointmentPlace: 'Hospital Geral de Palmas, ambulatório de oncologia',
+        allowance: [
+          { tipo: 'DIARIA', beneficiario: 'PACIENTE', quantidade: 1, valorUnitario: 50 },
+          { tipo: 'DIARIA', beneficiario: 'ACOMPANHANTE', quantidade: 1, valorUnitario: 50 },
+        ],
+        allowanceTotal: 100,
+        tripId: viagem.id,
+        createdAt: daysAgo(14, 9),
+        events: {
+          create: [
+            { kind: 'ABERTO', toStatus: 'ABERTO', userId: medica, role: 'MEDICO', at: daysAgo(14, 9) },
+            { kind: 'ENVIADO', fromStatus: 'ABERTO', toStatus: 'ENVIADO', userId: staff.social!, role: 'SERVICO_SOCIAL', notes: 'Processo enviado à regional de saúde.', at: daysAgo(12, 10) },
+            { kind: 'DEFERIDO', fromStatus: 'ENVIADO', toStatus: 'DEFERIDO', userId: staff.nir!, role: 'NIR', notes: 'Deferido pela regional: consulta em oncologia no HGP.', at: daysAgo(6, 11) },
+            { kind: 'AGENDADO', fromStatus: 'DEFERIDO', toStatus: 'AGENDADO', userId: staff.social!, role: 'SERVICO_SOCIAL', notes: 'Consulta marcada no HGP; vaga na viagem de segunda.', at: daysAgo(5, 15) },
+          ],
+        },
+      },
+    });
+    await db.transportPassenger.create({
+      data: {
+        tripId: viagem.id,
+        patientId: patient.maria!,
+        companionName: 'Benedita da Silva',
+        pickupAddress: 'Rua Exemplo, 100, Centro',
+        appointmentAt: daysAhead(2, 11),
+        appointmentPlace: 'HGP, ambulatório de oncologia',
+        tfdId: tfd.id,
+      },
+    });
+    await db.transportPassenger.create({
+      data: { tripId: viagem.id, patientId: patient.jose!, pickupAddress: 'Rua Exemplo, 101, Centro', appointmentAt: daysAhead(2, 9), appointmentPlace: 'Hospital Geral de Palmas, oftalmologia', wheelchair: true },
+    });
+
     return { tenantId, dbName, skipped: false };
   } finally {
     await db.$disconnect();

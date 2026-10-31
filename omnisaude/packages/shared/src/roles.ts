@@ -74,14 +74,35 @@ export const PERMISSIONS = [
   'vacinas.aplicar',
   'acs.campo',
   'acs.territorio',
+  'tfd.ler',
+  'tfd.gerir',
+  'transporte.ler',
+  'transporte.gerir',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
 const COMMON: Permission[] = ['paciente.ler', 'pop.consultar', 'libras.acionar'];
 
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
-  RECEPCAO: ['regulacao.ler', 'vacinas.ler', ...COMMON, 'paciente.cadastrar', 'paciente.ocr', 'paciente.unificar', 'cadsus.consultar', 'agenda.ler', 'agenda.marcar', 'fila.emitir', 'fila.chamar', 'pulseira.emitir'],
+  RECEPCAO: [
+    'tfd.ler',
+    'transporte.ler',
+    'regulacao.ler',
+    'vacinas.ler',
+    ...COMMON,
+    'paciente.cadastrar',
+    'paciente.ocr',
+    'paciente.unificar',
+    'cadsus.consultar',
+    'agenda.ler',
+    'agenda.marcar',
+    'fila.emitir',
+    'fila.chamar',
+    'pulseira.emitir',
+  ],
   ENFERMAGEM: [
+    'tfd.ler',
+    'transporte.ler',
     'regulacao.solicitar',
     'regulacao.ler',
     'acs.territorio',
@@ -118,6 +139,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'leitos.ler',
     'regulacao.solicitar',
     'regulacao.ler',
+    'tfd.ler',
+    'tfd.gerir',
     'pop.executar',
   ],
   MULTIPROFISSIONAL: [
@@ -134,11 +157,15 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'exame.solicitar',
     'odontograma.registrar',
   ],
-  SERVICO_SOCIAL: ['regulacao.ler', 'vacinas.ler', 'aps.programas', ...COMMON, 'agenda.ler', 'agenda.marcar', 'prontuario.ler', 'prontuario.evoluir', 'busca_ativa.gerir'],
-  NIR: [...COMMON, 'prontuario.ler', 'leitos.ler', 'leitos.gerir', 'regulacao.solicitar', 'regulacao.ler', 'regulacao.regular', 'agenda.ler'],
+  SERVICO_SOCIAL: ['tfd.ler', 'tfd.gerir', 'transporte.ler', 'regulacao.ler', 'vacinas.ler', 'aps.programas', ...COMMON, 'agenda.ler', 'agenda.marcar', 'prontuario.ler', 'prontuario.evoluir', 'busca_ativa.gerir'],
+  NIR: [...COMMON, 'prontuario.ler', 'leitos.ler', 'leitos.gerir', 'regulacao.solicitar', 'regulacao.ler', 'regulacao.regular', 'agenda.ler', 'tfd.ler', 'tfd.gerir', 'transporte.ler', 'transporte.gerir'],
   FARMACIA: ['vacinas.ler', ...COMMON, 'prontuario.ler', 'estoque.ler', 'estoque.movimentar', 'nfe.importar', 'unitarizacao.executar', 'dispensacao.registrar', 'controlados.relatorio', 'pop.executar'],
   FATURAMENTO: ['aps.indicadores', ...COMMON, 'prontuario.ler', 'faturamento.ler', 'faturamento.criticar', 'faturamento.exportar', 'sigtap.sincronizar', 'auditoria.ler', 'esus.ler', 'esus.gerir'],
   GESTOR: [
+    'tfd.ler',
+    'tfd.gerir',
+    'transporte.ler',
+    'transporte.gerir',
     'regulacao.ler',
     'regulacao.regular',
     'acs.territorio',

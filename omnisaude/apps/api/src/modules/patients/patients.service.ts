@@ -1,5 +1,5 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
-import { ageInYears, isValidCns, isValidCpf, normalizePersonName, onlyDigits, personNameKey, STATUS_SOLICITACAO } from '@omnisaude/shared';
+import { ageInYears, isValidCns, isValidCpf, normalizePersonName, onlyDigits, personNameKey, STATUS_SOLICITACAO, STATUS_TFD } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
@@ -296,7 +296,7 @@ export class PatientsService {
   async timeline(ctx: RequestContext, patientId: string) {
     await this.ensure(ctx, patientId);
     const db = ctx.db;
-    const [encounters, prescriptions, dispensations, exams, vaccinations, appointments, regulations] = await Promise.all([
+    const [encounters, prescriptions, dispensations, exams, vaccinations, appointments, regulations, tfds] = await Promise.all([
       db.encounter.findMany({
         where: { patientId },
         orderBy: { startedAt: 'desc' },
@@ -309,6 +309,7 @@ export class PatientsService {
       db.vaccination.findMany({ where: { patientId }, orderBy: { appliedAt: 'desc' } }),
       db.appointment.findMany({ where: { patientId }, orderBy: { startsAt: 'desc' }, take: 30, include: { schedule: true } }),
       db.regulationRequest.findMany({ where: { patientId }, orderBy: { createdAt: 'desc' }, take: 30 }),
+      db.tfdProcess.findMany({ where: { patientId }, orderBy: { createdAt: 'desc' }, take: 20 }),
     ]);
     const units = new Map((await db.unit.findMany()).map((u) => [u.id, u.name]));
     const users = new Map((await db.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
@@ -394,6 +395,16 @@ export class PatientsService {
           decisionReason: r.decisionReason,
           providerUnit: r.providerUnitId ? units.get(r.providerUnitId) : null,
         },
+      });
+    }
+    for (const t of tfds) {
+      events.push({
+        at: t.createdAt,
+        type: 'TFD',
+        id: t.id,
+        unit: units.get(t.unitId),
+        title: `TFD ${t.destinationCity}/${t.destinationUf} – ${STATUS_TFD[t.status] ?? t.status}`,
+        detail: { protocol: t.protocol, status: t.status, procedureName: t.procedureName, appointmentAt: t.appointmentAt, destination: `${t.destinationCity}/${t.destinationUf}` },
       });
     }
     events.sort((a, b) => b.at.getTime() - a.at.getTime());

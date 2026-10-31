@@ -12,5 +12,6 @@ export * from './gs1';
 export * from './regulacao';
 export * from './roles';
 export * from './session';
+export * from './tfd';
 export * from './units';
 export * from './vacinas';

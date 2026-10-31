@@ -1,6 +1,6 @@
 'use client';
 
-import { CalendarDays, FlaskConical, Pill, Scale, Stethoscope, Syringe, Truck } from 'lucide-react';
+import { CalendarDays, FlaskConical, Pill, Plane, Scale, Stethoscope, Syringe, Truck } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type { RiskColor } from '@omnisaude/shared';
 import { Badge, RiskBadge } from '@/components/ui/badge';
@@ -17,6 +17,7 @@ const META: Record<TimelineEvent['type'], { label: string; icon: typeof Stethosc
   VACINA: { label: 'Vacina', icon: Syringe, tone: 'green' },
   AGENDAMENTO: { label: 'Agendamento', icon: CalendarDays, tone: 'slate' },
   REGULACAO: { label: 'Regulação', icon: Scale, tone: 'violet' },
+  TFD: { label: 'TFD', icon: Plane, tone: 'blue' },
 };
 
 interface NoteDetail {

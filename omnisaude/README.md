@@ -23,6 +23,8 @@ e BI conversacional).
   janela de silêncio (22h–06h).
 - **Farmácia**: NF-e com `<rastro>`, De-Para, transferências com dupla conferência, unitarização com
   Datamatrix GS1, dispensação (Portaria 344) e **administração beira-leito com os 5 certos**.
+- **Regulação** ambulatorial com fila única, protocolos, prestadores e cotas ([`docs/REGULACAO.md`](docs/REGULACAO.md));
+  **TFD** e **transporte sanitário** com frota, rotas, viagens e roteiro do dia ([`docs/TFD-TRANSPORTE.md`](docs/TFD-TRANSPORTE.md)).
 - **Leitos/NIR**, **POPs** (hard e soft gates), **faturamento** (SIGTAP, crítica pré-glosa, BPA-I/BPA-C),
   **BI conversacional** com Text-to-SQL blindado, **gestão** (produtividade, SLAs, pautas) e **busca ativa**.
 - **Acessibilidade**: VLibras e chamada de intérprete de Libras por vídeo (WebRTC).

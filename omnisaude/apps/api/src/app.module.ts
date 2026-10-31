@@ -22,6 +22,8 @@ import { ReceptionModule } from './modules/reception/reception.module';
 import { RegulationModule } from './modules/regulation/regulation.module';
 import { SchedulingModule } from './modules/scheduling/scheduling.module';
 import { SignaturesModule } from './modules/signatures/signatures.module';
+import { TfdModule } from './modules/tfd/tfd.module';
+import { TransportModule } from './modules/transport/transport.module';
 import { SocialModule } from './modules/social/social.module';
 import { TriageModule } from './modules/triage/triage.module';
 
@@ -43,6 +45,8 @@ import { TriageModule } from './modules/triage/triage.module';
     VaccinesModule,
     AcsModule,
     RegulationModule,
+    TransportModule,
+    TfdModule,
     PharmacyModule,
     BedsModule,
     PopsModule,
