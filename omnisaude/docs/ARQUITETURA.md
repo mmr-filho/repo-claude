@@ -104,6 +104,7 @@ Este documento explica as decisões de arquitetura e onde cada parte da especifi
 | CADSUS | `packages/fhir/src/cadsus.ts` | Consulta `Patient` na RNDS por CPF/CNS |
 | WhatsApp Business (Cloud API) | `packages/messaging`, `modules/integrations/messaging.service.ts` | Confirmação 48h antes com botões; lembretes de adesão; janela de silêncio 22h–06h (adiado para 06h01); webhook com HMAC |
 | SEFAZ (NF-e) | `modules/pharmacy` | Consulta de notas destinadas (mock REST em desenvolvimento) e upload de XML como contingência |
+| e-SUS APS (LEDI 8.7.0, Thrift) | `packages/esus`, `modules/esus` | Esquema gerado dos `.thrift` oficiais, TBinaryProtocol próprio (sem dependência em produção), montagem das fichas a partir dos registros, validação prévia com as regras do dicionário, lotes com `.esus` em zip e envio pela API do PEC (`docs/ESUS.md`) |
 | DATASUS SIGTAP / BPA | `modules/billing` | Leitura do pacote oficial (zip + layouts), sincronização no primeiro dia útil, crítica pré-glosa, BPA-I/BPA-C no layout oficial de exportação (`bpa-layout.ts`, com CPF do indivíduo e situação de rua) e conferência de arquivos BPA (`validateBpaFile`) |
 | Claude (Anthropic) | `packages/ai-engine/src/llm` | Saídas estruturadas (zod), fallback em recusas, modelo configurável |
 | Cloudflare R2 | `apps/api/src/core/storage.service.ts` | API S3; SHA-256 conferido na leitura |

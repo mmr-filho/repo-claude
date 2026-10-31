@@ -11,6 +11,7 @@ const alias = {
   '@omnisaude/ai-engine': pkg('ai-engine'),
   '@omnisaude/messaging': pkg('messaging'),
   '@omnisaude/fhir': pkg('fhir'),
+  '@omnisaude/esus': pkg('esus'),
   '@omnisaude/accessibility': pkg('accessibility'),
 };
 

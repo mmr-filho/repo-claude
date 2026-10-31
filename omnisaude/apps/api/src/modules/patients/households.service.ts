@@ -73,7 +73,7 @@ export class HouseholdsService {
 
   async create(ctx: RequestContext, input: HouseholdInput & { family?: FamilyInput | null }) {
     return ctx.db.$transaction(async (tx) => {
-      const h = await tx.household.create({ data: this.data(input) });
+      const h = await tx.household.create({ data: { ...this.data(input), unitId: input.unitId ?? ctx.session.unitId ?? null } });
       if (input.family) await this.newFamily(ctx, tx, h.id, input.family);
       await this.audit.record(ctx, tx, { action: 'domicilio.cadastrar', entityType: 'Household', entityId: h.id, payload: input });
       const full = await tx.household.findUniqueOrThrow({ where: { id: h.id }, include: householdInclude });

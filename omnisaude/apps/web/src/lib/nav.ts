@@ -1,5 +1,5 @@
 import type { Permission } from '@omnisaude/shared';
-import { Activity, BarChart3, BedDouble, BookOpenCheck, Building2, CalendarDays, ClipboardList, FileSearch, HeartPulse, Home, MessagesSquare, Pill, Receipt, ScanLine, Settings, Stethoscope, type LucideIcon, UserRoundSearch, Users } from 'lucide-react';
+import { Activity, BarChart3, BedDouble, BookOpenCheck, Building2, CalendarDays, ClipboardList, FileOutput, FileSearch, HeartPulse, Home, type LucideIcon, MessagesSquare, Pill, Receipt, ScanLine, Settings, Stethoscope, UserRoundSearch, Users } from 'lucide-react';
 
 export interface NavItem {
   href: string;
@@ -20,6 +20,7 @@ export const NAV: NavItem[] = [
   { href: '/beira-leito', label: 'Beira-leito', icon: ScanLine, any: ['administracao.registrar'] },
   { href: '/leitos', label: 'Leitos (NIR)', icon: BedDouble, any: ['leitos.ler'] },
   { href: '/faturamento', label: 'Faturamento SUS', icon: Receipt, any: ['faturamento.ler'] },
+  { href: '/esus', label: 'e-SUS APS', icon: FileOutput, any: ['esus.ler'] },
   { href: '/gestao', label: 'Gestão', icon: Activity, any: ['gestao.paineis'] },
   { href: '/bi', label: 'BI conversacional', icon: BarChart3, any: ['bi.consultar'] },
   { href: '/servico-social', label: 'Busca ativa', icon: MessagesSquare, any: ['busca_ativa.gerir'] },

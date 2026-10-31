@@ -23,6 +23,7 @@
     "@omnisaude/ai-engine": "0.1.0",
     "@omnisaude/database": "0.1.0",
     "@omnisaude/fhir": "0.1.0",
+    "@omnisaude/esus": "0.1.0",
     "@omnisaude/messaging": "0.1.0",
     "@omnisaude/shared": "0.1.0",
     "@signpdf/placeholder-pdf-lib": "^4.0.0",

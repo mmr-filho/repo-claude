@@ -86,6 +86,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | BPA-I e BPA-C | 🟡 | layout conferido campo a campo com o documento oficial do DATASUS (Layout de Exportação do BPA, com CPF do indivíduo e situação de rua, vigente desde 12/2024); numéricos opcionais em branco, CNS ou CPF (nunca os dois), INE da equipe; conferência automática do arquivo gerado e de arquivos externos; falta importar uma competência real no BPA Magnético |
 | Laudo APAC e lote AIH | ⏳ | há o espelho de AIH; geração dos arquivos pendente |
 | RNDS: RAC, imunização, dispensação, sumário de alta (FHIR + mTLS) | 🟡 | cabeçalhos, token e endereços conforme o guia e a coleção oficial (CNS do solicitante, ambientes de homologação/produção por UF); perfis do RAC conferidos com o pacote oficial; imunização, dispensação e sumário de alta a confirmar na homologação; teste de conexão em Administração > Integrações; falta o credenciamento (`docs/RNDS.md`) |
+| e-SUS APS (LEDI/Thrift) e API do PEC | 🟡 | `packages/esus` + `modules/esus`; seis modelos de informação; visita domiciliar e atividade coletiva aguardam as fontes (APS-3, APS-7); homologação num PEC real pendente |
 | Consulta CADSUS | ✅ | |
 | Integração com a central de vagas (SISREG) | ⏳ | só o código de regulação na internação; o SISREG não tem API pública |
 
@@ -99,6 +100,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | Assinatura digital ICP-Brasil (A1 no servidor): certificado em Minha conta, "Assinar com certificado" no registro do prontuário, na receita e no atestado, PDF/PAdES para baixar, página "Validar documento" para qualquer usuário conferir um PDF | 🟡 | ATD-4; testado com certificado de teste no formato e-CPF (CPF no campo 2.16.76.1.3.1) e com o OpenSSL (`cms -verify -cades`); falta um A1 real para conferir no validador do ITI; A3/nuvem depois |
 | Faturamento: conferência de arquivos BPA (gerados aqui ou de fora) contra o layout oficial, com erros por linha e campo | ✅ | FAT-1; a tela de Arquivos BPA mostra o laudo da conferência |
 | Administração > Integrações: situação da RNDS (ambiente, endereços, solicitante, certificado, fila) e teste de conexão | ✅ | INT-1; o envio real depende do credenciamento |
+| e-SUS APS: lotes de fichas LEDI 8.7.0 (cadastro individual e domiciliar, atendimento individual e odontológico, procedimentos, vacinação), validação prévia, .zip, envio pela API do PEC, recusas e reprocessamento | 🟡 | APS-1; Thrift próprio conferido com a implementação de referência e o código oficial; falta receber um lote num PEC real (`docs/ESUS.md`) |
 | Cadastro completo do cidadão: documentos (RG, NIS), dados sociais (escolaridade, trabalho, ocupação, situação de rua), endereço com CEP automático, domicílio e família (cadastro domiciliar do e-SUS), unificação de cadastros duplicados | ✅ | NUC-1; o cadastro unificado redireciona para o que ficou e leva o histórico junto |
 | Recepção (OCR, CADSUS, duplicidade, senhas, acolhimento, pulseira) | ✅ | |
 | Painel de chamada (TV) com voz | ✅ | exige um clique para liberar o som (regra dos navegadores) |

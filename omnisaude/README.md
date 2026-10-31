@@ -122,6 +122,7 @@ Os testes da API criam bancos próprios por arquivo e exigem os papéis de `dock
 | `TENANT_DB_*`, `TENANT_ADMIN_*`, `TENANT_BI_*` | credenciais da aplicação, do provisionamento e do BI |
 | `DB_SSL`, `DB_POOL_SIZE` | TLS com o banco (bancos gerenciados) e conexões por banco de tenant |
 | `PLATFORM_ADMIN_EMAIL/PASSWORD` | conta de operação da plataforma criada na partida (`cli.js boot`/`seed`) |
+| `PEC_URL`, `PEC_USUARIO`, `PEC_SENHA` | PEC e-SUS APS do município e credencial de integração para o envio das fichas (`docs/ESUS.md`) |
 | `JWT_SECRET`, `DATA_KEY` | assinatura das sessões e chave AES-256 de segredos guardados (2FA, certificados A1 dos profissionais) |
 | `REDIS_URL`, `RUN_JOBS` | filas BullMQ e jobs em segundo plano |
 | `JOBS_SECRET` | disparo externo dos jobs (`POST /api/jobs/tick`), usado pelos Cron Triggers da Cloudflare |

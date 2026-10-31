@@ -73,6 +73,8 @@ export const PERMISSIONS = [
   'cadastros.unidades',
   'cadastros.profissionais',
   'seguranca.gerir',
+  'esus.ler',
+  'esus.gerir',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -103,6 +105,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'estoque.ler',
     'leitos.ler',
     'pop.executar',
+    'esus.ler',
   ],
   MEDICO: [
     ...COMMON,
@@ -155,6 +158,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'faturamento.exportar',
     'sigtap.sincronizar',
     'auditoria.ler',
+    'esus.ler', 'esus.gerir',
   ],
   GESTOR: [
     ...COMMON,
@@ -174,6 +178,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'cadastros.unidades',
     'cadastros.profissionais',
     'seguranca.gerir',
+    'esus.ler', 'esus.gerir',
   ],
 };
 

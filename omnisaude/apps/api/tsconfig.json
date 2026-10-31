@@ -19,6 +19,7 @@
     { "path": "../../packages/ai-engine" },
     { "path": "../../packages/messaging" },
     { "path": "../../packages/fhir" },
+    { "path": "../../packages/esus" },
     { "path": "../../packages/accessibility" }
   ]
 }

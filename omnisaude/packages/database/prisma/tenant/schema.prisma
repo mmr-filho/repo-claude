@@ -55,6 +55,7 @@ model Unit {
   teams          Team[]
   cnesStaged     CnesProfessional[]
   households     Household[]
+  esusBatches    EsusBatch[]
   schedules      Schedule[]
   tickets        Ticket[]
   encounters     Encounter[]
@@ -103,8 +104,77 @@ model User {
   cnesStaged  CnesProfessional[]
   certificates SigningCertificate[]
   signedDocuments SignedDocument[]
+  esusBatches  EsusBatch[]
 
   @@map("users")
+}
+
+enum EsusBatchStatus {
+  GERADO
+  ENVIANDO
+  ENVIADO
+  PARCIAL
+  ERRO
+}
+
+enum EsusRecordStatus {
+  GERADA
+  INVALIDA
+  ENVIADA
+  ACEITA
+  REJEITADA
+}
+
+/// Lote de fichas do e-SUS APS (LEDI) de uma unidade e período, gerado a partir dos registros do sistema.
+model EsusBatch {
+  id          String          @id @default(uuid(7)) @db.Uuid
+  unitId      String          @map("unit_id") @db.Uuid
+  periodStart DateTime        @map("period_start") @db.Date
+  periodEnd   DateTime        @map("period_end") @db.Date
+  /// Número sequencial do lote (numLote do DadoTransporte).
+  number      Int
+  status      EsusBatchStatus @default(GERADO)
+  createdBy   String          @map("created_by") @db.Uuid
+  createdAt   DateTime        @default(now()) @map("created_at")
+  sentAt      DateTime?       @map("sent_at")
+  lastError   String?         @map("last_error")
+
+  unit    Unit         @relation(fields: [unitId], references: [id])
+  creator User         @relation(fields: [createdBy], references: [id])
+  records EsusRecord[]
+
+  @@index([unitId, createdAt])
+  @@map("esus_batches")
+}
+
+/// Uma ficha do LEDI: tipo (TipoDadoSerializado), origem no sistema, DadoTransporte serializado e situação no PEC.
+model EsusRecord {
+  id         String           @id @default(uuid(7)) @db.Uuid
+  batchId    String           @map("batch_id") @db.Uuid
+  /// Código do TipoDadoSerializado (2 FCI, 3 FCD, 4 FAI, 5 FAO, 7 FP, 14 FV...).
+  kind       Int
+  /// uuidDadoSerializado (CNES-UUID), nome do arquivo .esus.
+  uuid       String           @unique
+  sourceType String           @map("source_type")
+  sourceId   String           @map("source_id") @db.Uuid
+  patientId  String?          @map("patient_id") @db.Uuid
+  cnes       String           @db.Char(7)
+  ine        String?          @db.Char(10)
+  status     EsusRecordStatus @default(GERADA)
+  /// Inconsistências da validação prévia ou mensagem de recusa do PEC.
+  issues     Json             @default("[]")
+  /// DadoTransporte serializado (TBinaryProtocol).
+  payload    Bytes?
+  /// Resumo legível da ficha (profissional, cidadão, data) para a tela.
+  summary    Json             @default("{}")
+  sentAt     DateTime?        @map("sent_at")
+  createdAt  DateTime         @default(now()) @map("created_at")
+
+  batch EsusBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@index([batchId, status])
+  @@index([sourceType, sourceId])
+  @@map("esus_records")
 }
 
 /// Certificado digital A1 (e-CPF ICP-Brasil) do profissional, guardado cifrado; a senha do arquivo é pedida a cada assinatura.

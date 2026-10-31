@@ -11,6 +11,7 @@ COPY packages/database/package.json packages/database/
 COPY packages/ai-engine/package.json packages/ai-engine/
 COPY packages/messaging/package.json packages/messaging/
 COPY packages/fhir/package.json packages/fhir/
+COPY packages/esus/package.json packages/esus/
 COPY packages/accessibility/package.json packages/accessibility/
 COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
@@ -27,7 +28,7 @@ RUN npm run build:libs && npx tsc -b apps/api infra/mocks
 FROM deps AS prod-deps
 RUN npm ci --omit=dev --no-audit --no-fund \
   -w @omnisaude/api -w @omnisaude/database -w @omnisaude/shared -w @omnisaude/ai-engine \
-  -w @omnisaude/messaging -w @omnisaude/fhir -w @omnisaude/accessibility -w @omnisaude/mocks
+  -w @omnisaude/messaging -w @omnisaude/fhir -w @omnisaude/esus -w @omnisaude/accessibility -w @omnisaude/mocks
 
 # ── Servidores simulados (RNDS/CADSUS, SEFAZ, WhatsApp) para desenvolvimento ──
 FROM node:22-bookworm-slim AS mocks

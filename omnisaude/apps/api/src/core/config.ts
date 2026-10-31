@@ -55,6 +55,10 @@ const schema = z.object({
   /** Certificado ICP-Brasil (PFX): caminho de arquivo ou "r2:<chave>" no armazenamento de objetos. */
   RNDS_CERT_PFX: z.string().optional(),
   RNDS_CERT_PASSPHRASE: z.string().optional(),
+  /** PEC e-SUS APS: endereço da instalação e credencial de integração (Integração > Credenciais de integração). */
+  PEC_URL: z.string().optional(),
+  PEC_USUARIO: z.string().optional(),
+  PEC_SENHA: z.string().optional(),
   RNDS_REQUESTER_CPF: z.string().optional(),
   /** CNS do profissional em nome de quem as requisições à RNDS são feitas (cabeçalho Authorization). */
   RNDS_REQUESTER_CNS: z.string().optional(),

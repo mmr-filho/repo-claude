@@ -1,0 +1,28 @@
+{
+  "name": "@omnisaude/esus",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fichas do e-SUS APS no LEDI (Thrift/TBinaryProtocol), validação prévia e envio ao PEC.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --root ../.. --project packages packages/esus/test",
+    "gen:schema": "node scripts/gen-ledi-schema.mjs"
+  },
+  "dependencies": {
+    "@omnisaude/shared": "0.1.0"
+  },
+  "devDependencies": {
+    "thrift": "^0.25.0"
+  }
+}

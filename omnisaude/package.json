@@ -9,6 +9,7 @@
     "packages/ai-engine",
     "packages/messaging",
     "packages/fhir",
+    "packages/esus",
     "packages/accessibility",
     "apps/api",
     "apps/web",
@@ -20,9 +21,9 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "build:libs": "npm run generate -w @omnisaude/database && tsc -b packages/shared packages/database packages/ai-engine packages/messaging packages/fhir packages/accessibility",
+    "build:libs": "npm run generate -w @omnisaude/database && tsc -b packages/shared packages/database packages/ai-engine packages/messaging packages/fhir packages/esus packages/accessibility",
     "build": "npm run build:libs && npm run build -w @omnisaude/api && npm run build -w @omnisaude/mocks && npm run build -w @omnisaude/web",
-    "typecheck": "tsc -b packages/shared packages/database packages/ai-engine packages/messaging packages/fhir packages/accessibility apps/api infra/mocks && npm run typecheck -w @omnisaude/web",
+    "typecheck": "tsc -b packages/shared packages/database packages/ai-engine packages/messaging packages/fhir packages/esus packages/accessibility apps/api infra/mocks && npm run typecheck -w @omnisaude/web",
     "test": "vitest run",
     "db:generate": "npm run generate -w @omnisaude/database",
     "db:migrate": "npm run migrate -w @omnisaude/database",

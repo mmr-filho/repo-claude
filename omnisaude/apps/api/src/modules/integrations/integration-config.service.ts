@@ -30,7 +30,7 @@ export interface RndsConfig {
   tls?: { pfx: Buffer; passphrase?: string };
 }
 
-type Kind = 'WHATSAPP' | 'RNDS' | 'SEFAZ';
+type Kind = 'WHATSAPP' | 'RNDS' | 'SEFAZ' | 'ESUS_PEC';
 
 /**
  * Configuração das integrações por tenant: tenant_integrations (master) com o segredo referenciado por nome
@@ -120,6 +120,19 @@ export class IntegrationConfigService {
    */
   private async certificate(path: string): Promise<Buffer> {
     return path.startsWith('r2:') ? this.storage.get(path.slice(3)) : readFileSync(path);
+  }
+
+  /** PEC e-SUS APS do município: URL da instalação e credencial de integração (senha por referência de segredo). */
+  async pec(tenantId: string): Promise<{ url: string; usuario: string; senha: string; simulado: boolean } | null> {
+    const row = await this.row(tenantId, 'ESUS_PEC');
+    if (row && !row.enabled) return null;
+    const c = row?.config ?? {};
+    const mocks = this.config.MOCKS_URL;
+    const url = (c.url as string) ?? this.config.PEC_URL ?? (mocks ? `${mocks}/pec` : undefined);
+    const usuario = (c.usuario as string) ?? this.config.PEC_USUARIO ?? (mocks ? 'integracao' : undefined);
+    const senha = this.secret(row?.secretRef) ?? this.config.PEC_SENHA ?? (mocks ? 'integracao' : undefined);
+    if (!url || !usuario || !senha) return null;
+    return { url, usuario, senha, simulado: !(c.url as string | undefined) && !this.config.PEC_URL };
   }
 
   async sefazUrl(tenantId: string): Promise<string | null> {

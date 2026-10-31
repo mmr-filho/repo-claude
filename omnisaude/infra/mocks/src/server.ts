@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as http from 'node:http';
+import { decodeLedi, structForTipo, TIPO_DADO_LABEL, type LediObject } from '@omnisaude/esus';
 import { citizenToPatient, NAMING_SYSTEMS, validateRndsBundle, type CadsusCitizen } from '@omnisaude/fhir';
 import { isValidCns, isValidCpf, onlyDigits } from '@omnisaude/shared';
 import { DEFAULT_FIXTURES_DIR, loadNfeFixtures, MOCK_CITIZENS, type NfeFixture } from './fixtures';
@@ -39,6 +40,8 @@ export interface MockState {
   whatsapp: SentWhatsAppMessage[];
   nfe: NfeFixture[];
   citizens: CadsusCitizen[];
+  /** Fichas do e-SUS APS recebidas pelo simulador do PEC. */
+  pec: { uuid: string; tipo: number; tipoLabel: string; cnes: string; ine: string | null; receivedAt: string }[];
 }
 
 const MAX_BODY = 5 * 1024 * 1024;
@@ -231,6 +234,47 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
+function readRawBody(req: http.IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY) {
+        reject(new HttpError(413, { error: 'Corpo excede 5 MB' }));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+/** Leitor mínimo de multipart/form-data (campos de texto e um arquivo), para o simulador do PEC. */
+function parseMultipart(req: http.IncomingMessage, body: Buffer): { name: string; filename?: string; data: Buffer }[] {
+  const boundary = /boundary=("?)([^";]+)\1/.exec(String(req.headers['content-type'] ?? ''))?.[2];
+  if (!boundary) throw new HttpError(400, { message: 'Esperado multipart/form-data' });
+  const delimiter = Buffer.from(`--${boundary}`);
+  const parts: { name: string; filename?: string; data: Buffer }[] = [];
+  let pos = body.indexOf(delimiter);
+  while (pos >= 0) {
+    const start = pos + delimiter.length;
+    if (body.subarray(start, start + 2).toString() === '--') break;
+    const headerEnd = body.indexOf('\r\n\r\n', start);
+    if (headerEnd < 0) break;
+    const headers = body.subarray(start, headerEnd).toString('utf8');
+    const next = body.indexOf(delimiter, headerEnd + 4);
+    const data = body.subarray(headerEnd + 4, (next < 0 ? body.length : next) - 2);
+    const name = /name="([^"]*)"/.exec(headers)?.[1] ?? '';
+    const filename = /filename="([^"]*)"/.exec(headers)?.[1];
+    parts.push({ name, filename, data });
+    pos = next;
+  }
+  return parts;
+}
+
 function parseJson(text: string, onError: () => HttpError): unknown {
   try {
     return JSON.parse(text);
@@ -243,6 +287,7 @@ export function createMockServer(opts: MockServerOptions = {}): http.Server & { 
   const state: MockState = {
     tokens: new Map(),
     bundles: [],
+    pec: [],
     whatsapp: [],
     nfe: loadNfeFixtures(opts.fixturesDir ?? DEFAULT_FIXTURES_DIR),
     citizens: opts.citizens ?? MOCK_CITIZENS,
@@ -269,7 +314,7 @@ export function createMockServer(opts: MockServerOptions = {}): http.Server & { 
     };
 
     if (path === '/health' && method === 'GET') {
-      return json(200, { status: 'ok', services: ['rnds', 'cadsus', 'sefaz', 'whatsapp', 'cnes', 'viacep'] });
+      return json(200, { status: 'ok', services: ['rnds', 'cadsus', 'sefaz', 'whatsapp', 'cnes', 'viacep', 'pec'] });
     }
 
     // ViaCEP: consulta de endereço por CEP (dois CEPs conhecidos; os demais devolvem {"erro": true}).
@@ -359,6 +404,51 @@ export function createMockServer(opts: MockServerOptions = {}): http.Server & { 
       );
     }
 
+    // ── PEC e-SUS APS: API de transmissão de registros LEDI ───────────────────
+    if (path === '/pec/api/recebimento/login' && method === 'POST') {
+      const parts = parseMultipart(req, await readRawBody(req));
+      const field = (n: string) => parts.find((p) => p.name === n)?.data.toString('utf8');
+      if (field('usuario') !== 'integracao' || field('senha') !== 'integracao') throw new HttpError(400, { message: 'Usuário ou senha inválidos' });
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'set-cookie': 'JSESSIONID=pec-simulado; Path=/; HttpOnly' }).end('{}');
+      return;
+    }
+    if (path === '/pec/api/v1/recebimento/ficha' && method === 'POST') {
+      if (!/JSESSIONID=pec-simulado/.test(String(req.headers.cookie ?? ''))) throw new HttpError(401, { message: 'Sessão ausente ou expirada' });
+      const ficha = parseMultipart(req, await readRawBody(req)).find((p) => p.name === 'ficha');
+      if (!ficha) throw new HttpError(400, { message: 'Parâmetro "ficha" ausente' });
+      if (!/\.esus$/.test(ficha.filename ?? '')) throw new HttpError(400, { message: 'O arquivo deve ter a extensão .esus (uuid da ficha)' });
+      let dado: LediObject;
+      try {
+        dado = decodeLedi('DadoTransporteThrift', ficha.data);
+      } catch {
+        throw new HttpError(400, { message: 'Erro ao deserializar o registro Thrift' });
+      }
+      const tipo = Number(dado.tipoDadoSerializado);
+      const cnes = String(dado.cnesDadoSerializado ?? '');
+      const uuid = String(dado.uuidDadoSerializado ?? '');
+      const versao = dado.versao as LediObject | undefined;
+      if (!TIPO_DADO_LABEL[tipo]) throw new HttpError(400, { message: `tipoDadoSerializado desconhecido: ${tipo}` });
+      if (!/^\d{7}$/.test(cnes)) throw new HttpError(400, { message: 'cnesDadoSerializado deve ter 7 dígitos' });
+      if (!uuid.startsWith(`${cnes}-`) || uuid.length > 44) throw new HttpError(400, { message: 'uuidDadoSerializado deve ser CNES-UUID' });
+      if (!versao || Number(versao.major) !== 8) throw new HttpError(400, { message: 'Versão do LEDI não suportada pela instalação' });
+      let inner: LediObject;
+      try {
+        inner = decodeLedi(structForTipo(tipo), dado.dadoSerializado as Uint8Array);
+      } catch {
+        throw new HttpError(400, { message: 'Erro ao deserializar a ficha (dadoSerializado)' });
+      }
+      const nome = String((inner.identificacaoUsuarioCidadao as LediObject | undefined)?.nomeCidadao ?? '');
+      if (/REJEITAR/.test(nome)) throw new HttpError(400, { message: 'Cidadão de teste recusado pelo simulador: nome contém REJEITAR' });
+      state.pec.push({ uuid, tipo, tipoLabel: TIPO_DADO_LABEL[tipo]!, cnes, ine: (dado.ineDadoSerializado as string | undefined) ?? null, receivedAt: new Date().toISOString() });
+      return json(201, { message: 'Ficha recebida' });
+    }
+    if (path === '/pec/_received') {
+      if (method === 'GET') return json(200, state.pec);
+      if (method === 'DELETE') {
+        state.pec.length = 0;
+        return json(200, { cleared: true });
+      }
+    }
     if (path === '/rnds/_received') {
       if (method === 'GET') return json(200, state.bundles);
       if (method === 'DELETE') {

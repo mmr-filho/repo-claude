@@ -90,6 +90,7 @@ enum IntegrationKind {
   ICP_BRASIL
   STORAGE
   SISREG
+  ESUS_PEC
 }
 
 /// Metadados de credenciamento das integrações do tenant (configuração não secreta + referência ao segredo).

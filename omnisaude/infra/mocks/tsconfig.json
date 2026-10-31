@@ -10,5 +10,6 @@
     "incremental": true
   },
   "include": ["src"],
-  "references": [{ "path": "../../packages/shared" }, { "path": "../../packages/fhir" }]
+  "references": [{ "path": "../../packages/shared" }, { "path": "../../packages/fhir" },
+    { "path": "../../packages/esus" }]
 }
