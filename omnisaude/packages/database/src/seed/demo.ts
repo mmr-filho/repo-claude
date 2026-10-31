@@ -119,6 +119,7 @@ export async function seedDemo(opts: SeedOptions) {
           racaCor: '03',
           phone: p.phone ?? null,
           whatsappOptIn: p.whatsapp ?? false,
+          bolsaFamilia: p.key === 'luana' || p.key === 'fernanda',
           district: p.district,
           ibgeCode: DEMO_TENANT.ibgeCode,
           cep: '01001000',

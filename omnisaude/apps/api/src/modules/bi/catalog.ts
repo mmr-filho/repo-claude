@@ -48,7 +48,7 @@ export const BI_CATALOG: BiCatalog = {
         { name: 'sistema', type: 'text', description: 'CID10, CID11 ou CIAP2' },
         { name: 'codigo', type: 'text', description: 'Código, ex.: I10, E11, K86' },
         { name: 'descricao', type: 'text' },
-        { name: 'linha_cuidado', type: 'text', description: 'HIPERTENSAO, DIABETES, GESTANTE, ONCOLOGIA, SAUDE_MENTAL, TUBERCULOSE, HANSENIASE ou nulo' },
+        { name: 'linha_cuidado', type: 'text', description: 'HIPERTENSAO, DIABETES, GESTANTE, ONCOLOGIA, SAUDE_MENTAL, TUBERCULOSE, HANSENIASE, CRIANCA, IDOSO, MULHER, BOLSA_FAMILIA, SISVAN ou nulo' },
         { name: 'inicio', type: 'date' },
         { name: 'ativa', type: 'boolean' },
       ],

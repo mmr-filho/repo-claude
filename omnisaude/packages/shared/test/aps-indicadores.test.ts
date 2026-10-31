@@ -104,6 +104,8 @@ describe('indicadores do componente de qualidade da APS', () => {
     expect(componentesDaVacina(null, 'Influenza trivalente')).toEqual(['INFLUENZA']);
     expect(componentesDaVacina('57', 'dTpa adulto')).toEqual(['DTPA_ADULTO']);
     expect(componentesDaVacina(null, 'HPV quadrivalente')).toEqual(['HPV']);
-    expect(componentesDaVacina(null, 'BCG')).toEqual([]);
+    expect(componentesDaVacina(null, 'BCG')).toEqual(['BCG']);
+    expect(componentesDaVacina(null, 'Vacina rotavírus')).toEqual(['ROTA']);
+    expect(componentesDaVacina(null, 'Soro antirrábico')).toEqual([]);
   });
 });

@@ -35,6 +35,7 @@ export interface Pessoa {
   name: string;
   birthDate: Date;
   sex: string;
+  bolsaFamilia?: boolean;
   /** Data do cadastro: a pessoa só conta nos meses em que já estava cadastrada. */
   cadastradoEm: Date;
 }
@@ -56,6 +57,8 @@ export interface Medicao {
   at: Date;
   pa: boolean;
   pesoAltura: boolean;
+  peso?: number | null;
+  altura?: number | null;
 }
 export interface Exame {
   patientId: string;
@@ -164,15 +167,15 @@ const codesBatem = (codes: string[], cids: readonly string[], ciaps: readonly st
     const code = normCode(raw);
     return raw.toUpperCase().startsWith('CIAP2:') ? ciaps.includes(code) : prefixo(code, cids);
   });
-const idade = (p: Pessoa, at: Date) => ageInYears(p.birthDate, at);
+export const idade = (p: Pessoa, at: Date) => ageInYears(p.birthDate, at);
 const dataIso = (d: Date) => d.toISOString().slice(0, 10);
 /** Segundo aniversário como data sem hora (AAAA-MM-DD). */
 const segundoAniversario = (nasc: Date) => dataIso(new Date(Date.UTC(nasc.getUTCFullYear() + 2, nasc.getUTCMonth(), nasc.getUTCDate())));
-const cadastradas = (pessoas: Pessoa[], asOf: Date) => pessoas.filter((p) => p.cadastradoEm.getTime() <= asOf.getTime());
+export const cadastradas = (pessoas: Pessoa[], asOf: Date) => pessoas.filter((p) => p.cadastradoEm.getTime() <= asOf.getTime());
 const nomeIdade = (p: Pessoa, at: Date) => ({ patientId: p.id, nome: p.name, idade: idade(p, at), sexo: p.sex });
 
 /** Doses com intervalo mínimo de 30 dias entre si. */
-function dosesValidas(datas: Date[], minimo: Date | null = null): number {
+export function dosesValidas(datas: Date[], minimo: Date | null = null): number {
   const ordenadas = datas.filter((d) => !minimo || d.getTime() >= minimo.getTime()).sort((a, b) => a.getTime() - b.getTime());
   let n = 0;
   let ultima: Date | null = null;
@@ -185,7 +188,7 @@ function dosesValidas(datas: Date[], minimo: Date | null = null): number {
   return n;
 }
 
-class Indice {
+export class Indice {
   readonly consultas = new Map<string, Consulta[]>();
   readonly medicoes = new Map<string, Medicao[]>();
   readonly exames = new Map<string, Exame[]>();
@@ -248,7 +251,7 @@ class Indice {
 
 // ───────────────────────────── boas práticas por pessoa ─────────────────────────────
 
-interface Pontuacao {
+export interface Pontuacao {
   pontos: number;
   maximo: number;
   obtidas: BoaPratica[];
@@ -270,7 +273,7 @@ function pontuar(praticas: BoaPratica[], cumpre: (bp: BoaPratica) => boolean, eA
 const praticas = (codigo: CodigoIndicador) => INDICADOR_POR_CODIGO[codigo].boasPraticas ?? [];
 
 /** C2: criança avaliada até os dois anos de vida (ou até o corte, se antes). */
-function pontuarCrianca(ix: Indice, p: Pessoa, corte: Date, eAp: boolean): Pontuacao {
+export function pontuarCrianca(ix: Indice, p: Pessoa, corte: Date, eAp: boolean): Pontuacao {
   const nasc = p.birthDate;
   const doisAnos = new Date(Date.UTC(nasc.getUTCFullYear() + 2, nasc.getUTCMonth(), nasc.getUTCDate(), 23, 59, 59));
   const fim = doisAnos.getTime() < corte.getTime() ? doisAnos : corte;
@@ -328,7 +331,7 @@ export function gestacoes(ix: Indice): Gestacao[] {
   return out;
 }
 
-function pontuarGestacao(ix: Indice, g: Gestacao, corte: Date, eAp: boolean): Pontuacao {
+export function pontuarGestacao(ix: Indice, g: Gestacao, corte: Date, eAp: boolean): Pontuacao {
   const { dum, fimGestacao: fimG, fimPuerperio: fimP } = g;
   const pid = g.patientId;
   const t1 = addDias(dum, 91);
@@ -376,7 +379,7 @@ function pontuarGestacao(ix: Indice, g: Gestacao, corte: Date, eAp: boolean): Po
   );
 }
 
-function pontuarCronico(codigo: 'C4' | 'C5', ix: Indice, p: Pessoa, asOf: Date, eAp: boolean): Pontuacao {
+export function pontuarCronico(codigo: 'C4' | 'C5', ix: Indice, p: Pessoa, asOf: Date, eAp: boolean): Pontuacao {
   const m6 = addMeses(asOf, -6);
   const m12 = addMeses(asOf, -12);
   return pontuar(
@@ -403,7 +406,7 @@ function pontuarCronico(codigo: 'C4' | 'C5', ix: Indice, p: Pessoa, asOf: Date, 
   );
 }
 
-function pontuarIdoso(ix: Indice, p: Pessoa, asOf: Date, eAp: boolean): Pontuacao {
+export function pontuarIdoso(ix: Indice, p: Pessoa, asOf: Date, eAp: boolean): Pontuacao {
   const m12 = addMeses(asOf, -12);
   return pontuar(
     praticas('C6'),
@@ -426,13 +429,13 @@ function pontuarIdoso(ix: Indice, p: Pessoa, asOf: Date, eAp: boolean): Pontuaca
 }
 
 /** C7: cada boa prática tem a própria faixa etária; a pessoa é avaliada só nas faixas em que está. */
-function praticasC7Aplicaveis(p: Pessoa, asOf: Date): BoaPratica[] {
+export function praticasC7Aplicaveis(p: Pessoa, asOf: Date): BoaPratica[] {
   const a = idade(p, asOf);
   if (p.sex !== 'F') return [];
   return praticas('C7').filter((bp) => (bp.letra === 'A' && a >= 25 && a <= 64) || (bp.letra === 'B' && a >= 9 && a <= 14) || (bp.letra === 'C' && a >= 14 && a <= 69) || (bp.letra === 'D' && a >= 50 && a <= 69));
 }
 
-function cumpreC7(ix: Indice, p: Pessoa, bp: BoaPratica, asOf: Date): boolean {
+export function cumpreC7(ix: Indice, p: Pessoa, bp: BoaPratica, asOf: Date): boolean {
   switch (bp.letra) {
     case 'A':
       return (
@@ -457,12 +460,12 @@ function cumpreC7(ix: Indice, p: Pessoa, bp: BoaPratica, asOf: Date): boolean {
 
 // ───────────────────────────── populações ─────────────────────────────
 
-const cronicos = (ix: Indice, codigo: 'C4' | 'C5', asOf: Date) => {
+export const cronicos = (ix: Indice, codigo: 'C4' | 'C5', asOf: Date) => {
   const [cids, ciaps] = codigo === 'C4' ? [CID_DIABETES_PREFIXOS, CIAP_DIABETES] : [CID_HIPERTENSAO_PREFIXOS, CIAP_HIPERTENSAO];
   const linha = codigo === 'C4' ? 'DIABETES' : 'HIPERTENSAO';
   return cadastradas(ix.dados.pessoas, asOf).filter((p) => ix.condicoesAtivas(p.id, asOf).some((c) => c.lineOfCare === linha || condicaoBate(c, cids, ciaps)));
 };
-const idosos = (ix: Indice, asOf: Date) => cadastradas(ix.dados.pessoas, asOf).filter((p) => idade(p, asOf) >= 60);
+export const idosos = (ix: Indice, asOf: Date) => cadastradas(ix.dados.pessoas, asOf).filter((p) => idade(p, asOf) >= 60);
 const pessoaPorId = (ix: Indice) => new Map(ix.dados.pessoas.map((p) => [p.id, p]));
 
 // ───────────────────────────── apuração mensal ─────────────────────────────

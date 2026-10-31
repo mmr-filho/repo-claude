@@ -4,6 +4,7 @@ import { AlertTriangle, Pencil, Plus, Printer } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useState } from 'react';
 import { FamilyCard } from '@/components/patients/family-card';
+import { StratificationCard } from '@/components/programs/stratification-card';
 import { PrintPortal, printSoon } from '@/components/patients/print-portal';
 import { Timeline } from '@/components/patients/timeline';
 import type { PatientDetail, TimelineEvent, Wristband } from '@/components/patients/types';
@@ -64,6 +65,7 @@ function toForm(p: PatientDetail): PatientFormValues {
     workSituation: p.workSituation ?? '',
     occupationCbo: p.occupationCbo ?? '',
     homeless: p.homeless,
+    bolsaFamilia: p.bolsaFamilia,
   };
 }
 
@@ -198,6 +200,7 @@ function PatientRecord() {
             </CardBody>
           </Card>
           <FamilyCard patient={p} onChanged={() => void patient.reload()} />
+          <StratificationCard patientId={p.id} patientName={p.name} />
           <Card>
             <CardHeader title="Contato" />
             <CardBody className="text-sm text-slate-700">

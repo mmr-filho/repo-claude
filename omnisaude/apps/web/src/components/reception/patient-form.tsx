@@ -46,6 +46,7 @@ export interface PatientFormValues {
   workSituation: string;
   occupationCbo: string;
   homeless: boolean;
+  bolsaFamilia: boolean;
 }
 
 export const EMPTY_PATIENT: PatientFormValues = {
@@ -78,6 +79,7 @@ export const EMPTY_PATIENT: PatientFormValues = {
   workSituation: '',
   occupationCbo: '',
   homeless: false,
+  bolsaFamilia: false,
 };
 
 interface Citizen {
@@ -98,7 +100,18 @@ type Duplicate = PatientSummary & { reason: 'CPF' | 'CNS' | 'NOME_NASCIMENTO' };
 
 interface OcrResult {
   source: 'IA' | 'TEXTO';
-  extracted: { docType: string; fullName: string | null; motherName: string | null; fatherName: string | null; birthDate: string | null; cpf: string | null; cns: string | null; rg: string | null; sex: 'M' | 'F' | null; confidence: number };
+  extracted: {
+    docType: string;
+    fullName: string | null;
+    motherName: string | null;
+    fatherName: string | null;
+    birthDate: string | null;
+    cpf: string | null;
+    cns: string | null;
+    rg: string | null;
+    sex: 'M' | 'F' | null;
+    confidence: number;
+  };
   issues: { field: string; severity: 'erro' | 'aviso'; message: string }[];
   valid: boolean;
   cadsus: { found: true; citizen: Citizen; localMatches: Duplicate[] } | { found: false } | { error: string } | null;
@@ -132,7 +145,17 @@ export function toPatientPayload(v: PatientFormValues) {
     workSituation: opt(v.workSituation),
     occupationCbo: opt(onlyDigits(v.occupationCbo)),
     homeless: v.homeless,
-    address: { cep: opt(onlyDigits(v.cep)), street: opt(v.street), number: opt(v.number), complement: opt(v.complement), district: opt(v.district), city: opt(v.city), uf: opt(v.uf), ibgeCode: opt(onlyDigits(v.ibgeCode)) },
+    bolsaFamilia: v.bolsaFamilia,
+    address: {
+      cep: opt(onlyDigits(v.cep)),
+      street: opt(v.street),
+      number: opt(v.number),
+      complement: opt(v.complement),
+      district: opt(v.district),
+      city: opt(v.city),
+      uf: opt(v.uf),
+      ibgeCode: opt(onlyDigits(v.ibgeCode)),
+    },
   };
 }
 
@@ -276,6 +299,10 @@ export function PatientFields({ values, onChange }: { values: PatientFormValues;
       <label className="flex min-h-11 items-center gap-2 text-sm sm:col-span-2 lg:col-span-3">
         <input type="checkbox" className="h-5 w-5" checked={values.homeless} onChange={(e) => set('homeless', e.target.checked)} />
         Pessoa em situação de rua
+      </label>
+      <label className="flex min-h-11 items-center gap-2 text-sm sm:col-span-2 lg:col-span-3">
+        <input type="checkbox" className="h-5 w-5" checked={values.bolsaFamilia} onChange={(e) => set('bolsaFamilia', e.target.checked)} />
+        Família beneficiária do Bolsa Família (condicionalidades de saúde)
       </label>
       <h3 className="mt-2 text-sm font-semibold text-slate-700 sm:col-span-2 lg:col-span-3">Endereço</h3>
       <Field label="CEP" htmlFor="pf-cep" hint={cepStatus ?? 'Preenche o endereço automaticamente'}>
@@ -489,7 +516,11 @@ export function NewPatientForm({ onCreated }: { onCreated: (p: PatientSummary) =
                 </ul>
               </Alert>
             )}
-            {ocr.divergences.length > 0 && <Alert tone="warn" title="Divergências com o CADSUS">{ocr.divergences.join('; ')}</Alert>}
+            {ocr.divergences.length > 0 && (
+              <Alert tone="warn" title="Divergências com o CADSUS">
+                {ocr.divergences.join('; ')}
+              </Alert>
+            )}
             {ocr.cadsus && 'error' in ocr.cadsus && <Alert tone="warn">CADSUS indisponível: {ocr.cadsus.error}</Alert>}
           </CardBody>
         )}
@@ -569,7 +600,15 @@ export function NewPatientForm({ onCreated }: { onCreated: (p: PatientSummary) =
           ) : undefined
         }
       >
-        {dupes && <DuplicateList list={dupes.list} onPick={(p) => { setDupes(null); onCreated(p); }} />}
+        {dupes && (
+          <DuplicateList
+            list={dupes.list}
+            onPick={(p) => {
+              setDupes(null);
+              onCreated(p);
+            }}
+          />
+        )}
       </Dialog>
     </div>
   );

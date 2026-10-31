@@ -98,6 +98,7 @@ export class PatientsService {
       workSituation: p.workSituation,
       occupationCbo: p.occupationCbo,
       homeless: p.homeless,
+      bolsaFamilia: p.bolsaFamilia,
       kinship: p.kinship,
       address: { cep: p.cep, street: p.street, number: p.number, complement: p.complement, district: p.district, city: p.city, uf: p.uf, ibgeCode: p.ibgeCode },
       cadsusSyncedAt: p.cadsusSyncedAt,
@@ -188,6 +189,7 @@ export class PatientsService {
       workSituation: input.workSituation ?? null,
       occupationCbo: input.occupationCbo ?? null,
       homeless: input.homeless ?? false,
+      bolsaFamilia: input.bolsaFamilia ?? false,
     };
   }
 
@@ -232,6 +234,7 @@ export class PatientsService {
         workSituation: current.workSituation,
         occupationCbo: current.occupationCbo,
         homeless: current.homeless,
+        bolsaFamilia: current.bolsaFamilia,
         address: { cep: current.cep, street: current.street, number: current.number, complement: current.complement, district: current.district, city: current.city, uf: current.uf, ibgeCode: current.ibgeCode },
       },
       ...input,

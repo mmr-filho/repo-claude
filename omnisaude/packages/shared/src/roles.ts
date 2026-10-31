@@ -66,6 +66,7 @@ export const PERMISSIONS = [
   'esus.ler',
   'esus.gerir',
   'aps.indicadores',
+  'aps.programas',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -74,6 +75,7 @@ const COMMON: Permission[] = ['paciente.ler', 'pop.consultar', 'libras.acionar']
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   RECEPCAO: [...COMMON, 'paciente.cadastrar', 'paciente.ocr', 'paciente.unificar', 'cadsus.consultar', 'agenda.ler', 'agenda.marcar', 'fila.emitir', 'fila.chamar', 'pulseira.emitir'],
   ENFERMAGEM: [
+    'aps.programas',
     'aps.indicadores',
     ...COMMON,
     'cadsus.consultar',
@@ -89,6 +91,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'esus.ler',
   ],
   MEDICO: [
+    'aps.programas',
     'aps.indicadores',
     ...COMMON,
     'agenda.ler',
@@ -102,12 +105,13 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'regulacao.solicitar',
     'pop.executar',
   ],
-  MULTIPROFISSIONAL: [...COMMON, 'agenda.ler', 'fila.chamar', 'prontuario.ler', 'prontuario.evoluir', 'prontuario.encerrar', 'exame.solicitar', 'odontograma.registrar'],
-  SERVICO_SOCIAL: [...COMMON, 'agenda.ler', 'agenda.marcar', 'prontuario.ler', 'prontuario.evoluir', 'busca_ativa.gerir'],
+  MULTIPROFISSIONAL: ['aps.programas', ...COMMON, 'agenda.ler', 'fila.chamar', 'prontuario.ler', 'prontuario.evoluir', 'prontuario.encerrar', 'exame.solicitar', 'odontograma.registrar'],
+  SERVICO_SOCIAL: ['aps.programas', ...COMMON, 'agenda.ler', 'agenda.marcar', 'prontuario.ler', 'prontuario.evoluir', 'busca_ativa.gerir'],
   NIR: [...COMMON, 'prontuario.ler', 'leitos.ler', 'leitos.gerir', 'regulacao.solicitar'],
   FARMACIA: [...COMMON, 'prontuario.ler', 'estoque.ler', 'estoque.movimentar', 'nfe.importar', 'unitarizacao.executar', 'dispensacao.registrar', 'controlados.relatorio', 'pop.executar'],
   FATURAMENTO: ['aps.indicadores', ...COMMON, 'prontuario.ler', 'faturamento.ler', 'faturamento.criticar', 'faturamento.exportar', 'sigtap.sincronizar', 'auditoria.ler', 'esus.ler', 'esus.gerir'],
   GESTOR: [
+    'aps.programas',
     'aps.indicadores',
     ...COMMON,
     'agenda.ler',

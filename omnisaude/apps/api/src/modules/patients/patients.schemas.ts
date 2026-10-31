@@ -30,6 +30,8 @@ export const patientSchema = z.object({
     .regex(/^\d{6}$/)
     .nullish(),
   homeless: z.boolean().nullish(),
+  /** Família beneficiária do Bolsa Família (condicionalidades de saúde acompanhadas pela APS). */
+  bolsaFamilia: z.boolean().nullish(),
   address: z
     .object({
       cep: z.string().nullish(),
@@ -54,7 +56,7 @@ export const conditionSchema = z.object({
   system: z.enum(['CID10', 'CID11', 'CIAP2']),
   code: z.string().min(2),
   description: z.string().min(2),
-  lineOfCare: z.enum(['HIPERTENSAO', 'DIABETES', 'GESTANTE', 'ONCOLOGIA', 'SAUDE_MENTAL', 'TUBERCULOSE', 'HANSENIASE']).optional(),
+  lineOfCare: z.enum(['HIPERTENSAO', 'DIABETES', 'GESTANTE', 'ONCOLOGIA', 'SAUDE_MENTAL', 'TUBERCULOSE', 'HANSENIASE', 'CRIANCA', 'IDOSO', 'MULHER', 'BOLSA_FAMILIA', 'SISVAN']).optional(),
   /** Início da condição (na gestação, a DUM), usado nos indicadores da APS. */
   onsetAt: z
     .string()

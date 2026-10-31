@@ -4,7 +4,7 @@ import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { conflict, DomainError, notFound } from '../../core/errors';
 
-export const LINES_OF_CARE = ['HIPERTENSAO', 'DIABETES', 'GESTANTE', 'ONCOLOGIA', 'SAUDE_MENTAL', 'TUBERCULOSE', 'HANSENIASE'] as const;
+export const LINES_OF_CARE = ['HIPERTENSAO', 'DIABETES', 'GESTANTE', 'ONCOLOGIA', 'SAUDE_MENTAL', 'TUBERCULOSE', 'HANSENIASE', 'CRIANCA', 'IDOSO', 'MULHER', 'BOLSA_FAMILIA', 'SISVAN'] as const;
 export type LineOfCare = (typeof LINES_OF_CARE)[number];
 
 /** Dias sem consulta a partir dos quais o paciente entra no painel de busca ativa. */
@@ -16,6 +16,11 @@ export const RETURN_THRESHOLD_DAYS: Record<LineOfCare, number> = {
   SAUDE_MENTAL: 90,
   TUBERCULOSE: 90,
   HANSENIASE: 90,
+  CRIANCA: 60,
+  IDOSO: 365,
+  MULHER: 365,
+  BOLSA_FAMILIA: 180,
+  SISVAN: 180,
 };
 
 /** Janela em que uma falta (FALTOU) também coloca o paciente no painel. */
@@ -148,17 +153,21 @@ export class SocialService {
     const users = new Map((await ctx.db.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
     return {
       ...c,
-      patient: { id: c.patient.id, name: c.patient.socialName ?? c.patient.name, cns: c.patient.cns, phone: c.patient.phone, whatsappOptIn: c.patient.whatsappOptIn, district: c.patient.district, age: ageInYears(c.patient.birthDate) },
+      patient: {
+        id: c.patient.id,
+        name: c.patient.socialName ?? c.patient.name,
+        cns: c.patient.cns,
+        phone: c.patient.phone,
+        whatsappOptIn: c.patient.whatsappOptIn,
+        district: c.patient.district,
+        age: ageInYears(c.patient.birthDate),
+      },
       assignedToName: c.assignedTo ? (users.get(c.assignedTo) ?? null) : null,
       contacts: c.contacts.map((k) => ({ ...k, userName: users.get(k.userId) ?? null })),
     };
   }
 
-  async addContact(
-    ctx: RequestContext,
-    caseId: string,
-    input: { channel: string; outcome: string; vulnerabilities: string[]; actions: string[]; notes?: string },
-  ) {
+  async addContact(ctx: RequestContext, caseId: string, input: { channel: string; outcome: string; vulnerabilities: string[]; actions: string[]; notes?: string }) {
     const c = await ctx.db.activeSearchCase.findUnique({ where: { id: caseId } });
     if (!c) throw notFound('Caso de busca ativa');
     if (c.status === 'ENCERRADO') throw new DomainError('CASO_ENCERRADO', 'O caso já foi encerrado');

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { TenantClient } from '@omnisaude/database';
+import type { TenantClient, TenantPrisma } from '@omnisaude/database';
 import {
   blocoDaEquipe,
   classificacaoNotaFinal,
@@ -218,11 +218,25 @@ export function mesesDoQuadrimestre(competencia: string, tz: string, now: Date):
 const MES_MS = 30.4375 * 86_400_000;
 
 /** Carrega os registros de uma equipe: pessoas vinculadas (domicílio da equipe) e produção dos membros. */
-export async function carregarDadosEquipe(db: TenantClient, team: { id: string; typeCode: string; name: string; unitId: string }, membros: Set<string>, asOf: Date): Promise<DadosEquipe> {
+export function carregarDadosEquipe(db: TenantClient, team: { id: string; typeCode: string; name: string; unitId: string }, membros: Set<string>, asOf: Date): Promise<DadosEquipe> {
+  return carregarDados(db, team, membros, asOf, { mergedIntoId: null, deceasedAt: null, family: { household: { teamId: team.id, active: true } } });
+}
+
+/** Carrega os registros de uma unidade: pessoas de domicílios da unidade ou das suas equipes (programas da APS). */
+export function carregarDadosUnidade(db: TenantClient, unit: { id: string; name: string }, asOf: Date): Promise<DadosEquipe> {
+  return carregarDados(db, { id: unit.id, typeCode: '00', name: unit.name, unitId: unit.id }, new Set(), asOf, {
+    mergedIntoId: null,
+    deceasedAt: null,
+    family: { household: { active: true, OR: [{ unitId: unit.id }, { team: { unitId: unit.id, active: true } }] } },
+  });
+}
+
+type Vinculo = TenantPrisma.PatientWhereInput;
+
+async function carregarDados(db: TenantClient, team: { id: string; typeCode: string; name: string; unitId: string }, membros: Set<string>, asOf: Date, vinculo: Vinculo): Promise<DadosEquipe> {
   const desde = new Date(asOf.getTime() - 61 * MES_MS);
-  const vinculo = { mergedIntoId: null, deceasedAt: null, family: { household: { teamId: team.id, active: true } } } as const;
   const membroIds = [...membros];
-  const pessoas = await db.patient.findMany({ where: vinculo, select: { id: true, name: true, socialName: true, birthDate: true, sex: true, createdAt: true }, orderBy: { name: 'asc' } });
+  const pessoas = await db.patient.findMany({ where: vinculo, select: { id: true, name: true, socialName: true, birthDate: true, sex: true, createdAt: true, bolsaFamilia: true }, orderBy: { name: 'asc' } });
   const ids = pessoas.map((p) => p.id);
   const [notes, triages, exams, vaccinations, conditions] = await Promise.all([
     db.clinicalNote.findMany({
@@ -288,9 +302,16 @@ export async function carregarDadosEquipe(db: TenantClient, team: { id: string; 
   return {
     team: { id: team.id, typeCode: team.typeCode, name: team.name },
     membros,
-    pessoas: pessoas.map((p) => ({ id: p.id, name: p.socialName ?? p.name, birthDate: p.birthDate, sex: p.sex, cadastradoEm: p.createdAt })),
+    pessoas: pessoas.map((p) => ({ id: p.id, name: p.socialName ?? p.name, birthDate: p.birthDate, sex: p.sex, cadastradoEm: p.createdAt, bolsaFamilia: p.bolsaFamilia })),
     consultas,
-    medicoes: triages.map((t) => ({ patientId: t.encounter.patientId, at: t.classifiedAt, pa: t.systolic !== null && t.diastolic !== null, pesoAltura: t.weightKg !== null && t.heightCm !== null })),
+    medicoes: triages.map((t) => ({
+      patientId: t.encounter.patientId,
+      at: t.classifiedAt,
+      pa: t.systolic !== null && t.diastolic !== null,
+      pesoAltura: t.weightKg !== null && t.heightCm !== null,
+      peso: t.weightKg === null ? null : Number(t.weightKg),
+      altura: t.heightCm,
+    })),
     exames: exams.map((e) => ({ patientId: e.patientId, code: e.sigtapCode, analyte: e.analyte, requestedAt: e.requestedAt, resultAt: e.resultAt })),
     vacinas: vaccinations.map((v) => ({ patientId: v.patientId, componentes: componentesDaVacina(v.vaccineCode, v.vaccineName), at: v.appliedAt })),
     procedimentos: producao,

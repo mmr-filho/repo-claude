@@ -1,4 +1,4 @@
-export const LINES = ['HIPERTENSAO', 'DIABETES', 'GESTANTE', 'ONCOLOGIA', 'SAUDE_MENTAL', 'TUBERCULOSE', 'HANSENIASE'] as const;
+export const LINES = ['HIPERTENSAO', 'DIABETES', 'GESTANTE', 'ONCOLOGIA', 'SAUDE_MENTAL', 'TUBERCULOSE', 'HANSENIASE', 'CRIANCA', 'IDOSO', 'MULHER', 'BOLSA_FAMILIA', 'SISVAN'] as const;
 export type LineOfCare = (typeof LINES)[number];
 
 export const LINE_LABELS: Record<LineOfCare, string> = {
@@ -9,6 +9,11 @@ export const LINE_LABELS: Record<LineOfCare, string> = {
   SAUDE_MENTAL: 'Saúde mental',
   TUBERCULOSE: 'Tuberculose',
   HANSENIASE: 'Hanseníase',
+  CRIANCA: 'Criança (puericultura)',
+  IDOSO: 'Pessoa idosa',
+  MULHER: 'Saúde da mulher',
+  BOLSA_FAMILIA: 'Bolsa Família',
+  SISVAN: 'SISVAN',
 };
 
 export const CHANNELS = { TELEFONE: 'Telefone', WHATSAPP: 'WhatsApp', VISITA_DOMICILIAR: 'Visita domiciliar', ACS: 'Agente comunitário (ACS)' } as const;

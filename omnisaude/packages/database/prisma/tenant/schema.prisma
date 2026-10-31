@@ -409,6 +409,8 @@ model Patient {
   workSituation  String?   @map("work_situation") @db.Char(2)
   occupationCbo  String?   @map("occupation_cbo") @db.Char(6)
   homeless       Boolean   @default(false)
+  /// Família beneficiária do Bolsa Família.
+  bolsaFamilia   Boolean   @default(false) @map("bolsa_familia")
   city           String?
   uf             String?   @db.Char(2)
   familyId       String?   @map("family_id") @db.Uuid
@@ -421,6 +423,7 @@ model Patient {
 
   family        Family?   @relation("FamilyMembers", fields: [familyId], references: [id])
   responsibleOf Family[]  @relation("FamilyResponsible")
+  risks         RiskStratification[]
   mergedInto    Patient?  @relation("PatientMerge", fields: [mergedIntoId], references: [id])
   mergedFrom    Patient[] @relation("PatientMerge")
 
@@ -531,6 +534,40 @@ enum LineOfCare {
   SAUDE_MENTAL
   TUBERCULOSE
   HANSENIASE
+  CRIANCA
+  IDOSO
+  MULHER
+  BOLSA_FAMILIA
+  SISVAN
+}
+
+enum RiskKind {
+  GESTANTE
+  PE_DIABETICO
+  MCHAT
+}
+
+/// Estratificação de risco aplicada no atendimento (risco gestacional, pé diabético, M-CHAT-R).
+model RiskStratification {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  patientId   String    @map("patient_id") @db.Uuid
+  encounterId String?   @map("encounter_id") @db.Uuid
+  kind        RiskKind
+  /// Resultado: ALTO_RISCO/RISCO_HABITUAL, grau 0 a 3, BAIXO/MEDIO/ALTO.
+  result      String
+  score       Int?
+  /// Respostas do instrumento (critérios marcados ou itens sim/não).
+  answers     Json      @default("{}")
+  notes       String?
+  /// Data sugerida da próxima avaliação pelo resultado.
+  nextDueAt   DateTime? @map("next_due_at") @db.Date
+  assessedBy  String    @map("assessed_by") @db.Uuid
+  assessedAt  DateTime  @default(now()) @map("assessed_at")
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId, kind, assessedAt])
+  @@map("risk_stratifications")
 }
 
 model PatientCondition {

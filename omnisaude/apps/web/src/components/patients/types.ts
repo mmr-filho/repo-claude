@@ -44,6 +44,7 @@ export interface PatientDetail extends PatientSummary {
   workSituation: string | null;
   occupationCbo: string | null;
   homeless: boolean;
+  bolsaFamilia: boolean;
   kinship: string | null;
   address: { cep: string | null; street: string | null; number: string | null; complement: string | null; district: string | null; city: string | null; uf: string | null; ibgeCode: string | null };
   cadsusSyncedAt: string | null;
