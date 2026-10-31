@@ -1,12 +1,5 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
-import {
-  ageInYears,
-  isValidCns,
-  isValidCpf,
-  normalizePersonName,
-  onlyDigits,
-  personNameKey,
-} from '@omnisaude/shared';
+import { ageInYears, isValidCns, isValidCpf, normalizePersonName, onlyDigits, personNameKey } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
@@ -53,12 +46,7 @@ export class PatientsService {
 
   async search(ctx: RequestContext, q: string, limit = 20) {
     const digits = onlyDigits(q);
-    const where =
-      digits.length === 11
-        ? { cpf: digits }
-        : digits.length === 15
-          ? { cns: digits }
-          : { nameKey: { contains: personNameKey(q) } };
+    const where = digits.length === 11 ? { cpf: digits } : digits.length === 15 ? { cns: digits } : { nameKey: { contains: personNameKey(q) } };
     const rows = await ctx.db.patient.findMany({ where: { ...where, mergedIntoId: null }, take: limit, orderBy: { name: 'asc' } });
     return rows.map(patientSummary);
   }
@@ -145,7 +133,7 @@ export class PatientsService {
           }
         : null,
       allergies: p.allergies.map((a) => ({ id: a.id, substance: a.substance, reaction: a.reaction, severity: a.severity })),
-      conditions: p.conditions.map((c) => ({ id: c.id, system: c.system, code: c.code, description: c.description, lineOfCare: c.lineOfCare })),
+      conditions: p.conditions.map((c) => ({ id: c.id, system: c.system, code: c.code, description: c.description, lineOfCare: c.lineOfCare, onsetAt: c.onsetAt ? c.onsetAt.toISOString().slice(0, 10) : null })),
     };
   }
 
@@ -157,12 +145,7 @@ export class PatientsService {
     const rows = await ctx.db.patient.findMany({ where: { OR: or, mergedIntoId: null, ...(excludeId ? { id: { not: excludeId } } : {}) }, take: 10 });
     return rows.map((r) => ({
       ...patientSummary(r),
-      reason:
-        input.cpf && r.cpf === onlyDigits(input.cpf)
-          ? 'CPF'
-          : input.cns && r.cns === onlyDigits(input.cns)
-            ? 'CNS'
-            : 'NOME_NASCIMENTO',
+      reason: input.cpf && r.cpf === onlyDigits(input.cpf) ? 'CPF' : input.cns && r.cns === onlyDigits(input.cns) ? 'CNS' : 'NOME_NASCIMENTO',
     }));
   }
 
@@ -252,7 +235,21 @@ export class PatientsService {
         address: { cep: current.cep, street: current.street, number: current.number, complement: current.complement, district: current.district, city: current.city, uf: current.uf, ibgeCode: current.ibgeCode },
       },
       ...input,
-      ...(input.address ? { address: { cep: current.cep, street: current.street, number: current.number, complement: current.complement, district: current.district, city: current.city, uf: current.uf, ibgeCode: current.ibgeCode, ...input.address } } : {}),
+      ...(input.address
+        ? {
+            address: {
+              cep: current.cep,
+              street: current.street,
+              number: current.number,
+              complement: current.complement,
+              district: current.district,
+              city: current.city,
+              uf: current.uf,
+              ibgeCode: current.ibgeCode,
+              ...input.address,
+            },
+          }
+        : {}),
     } as PatientInput);
     const dupes = (await this.findDuplicates(ctx, { ...merged, birthDate: merged.birthDate.toISOString().slice(0, 10) }, id)).filter((d) => d.reason !== 'NOME_NASCIMENTO');
     if (dupes.length) throw conflict('CPF/CNS já pertence a outro paciente', { duplicates: dupes });
@@ -268,10 +265,24 @@ export class PatientsService {
     return ctx.db.patientAllergy.create({ data: { patientId, substance: input.substance.trim().toLowerCase(), reaction: input.reaction, severity: input.severity, recordedBy: ctx.session.userId } });
   }
 
-  async addCondition(ctx: RequestContext, patientId: string, input: { system: 'CID10' | 'CID11' | 'CIAP2'; code: string; description: string; lineOfCare?: string }) {
+  async addCondition(ctx: RequestContext, patientId: string, input: { system: 'CID10' | 'CID11' | 'CIAP2'; code: string; description: string; lineOfCare?: string; onsetAt?: string }) {
     await this.ensure(ctx, patientId);
     return ctx.db.patientCondition.create({
-      data: { patientId, system: input.system, code: input.code.toUpperCase(), description: input.description, lineOfCare: (input.lineOfCare as never) ?? null },
+      data: { patientId, system: input.system, code: input.code.toUpperCase(), description: input.description, lineOfCare: (input.lineOfCare as never) ?? null, onsetAt: input.onsetAt ? new Date(input.onsetAt) : null },
+    });
+  }
+
+  /** Inativa (com data do desfecho) ou reativa uma condição. A gestação encerrada aqui define o puerpério nos indicadores. */
+  async updateCondition(ctx: RequestContext, patientId: string, conditionId: string, input: { active?: boolean; resolvedAt?: string | null }) {
+    await this.ensure(ctx, patientId);
+    const c = await ctx.db.patientCondition.findFirst({ where: { id: conditionId, patientId } });
+    if (!c) throw notFound('Condição');
+    const active = input.active ?? c.active;
+    const resolvedAt = active ? null : input.resolvedAt ? new Date(input.resolvedAt) : (c.resolvedAt ?? new Date(new Date().toISOString().slice(0, 10)));
+    return ctx.db.$transaction(async (tx) => {
+      const row = await tx.patientCondition.update({ where: { id: conditionId }, data: { active, resolvedAt } });
+      await this.audit.record(ctx, tx, { action: active ? 'condicao.reativar' : 'condicao.resolver', entityType: 'Patient', entityId: patientId, payload: { conditionId, code: c.code, resolvedAt } });
+      return row;
     });
   }
 
@@ -336,7 +347,11 @@ export class PatientsService {
         type: 'PRESCRICAO',
         id: p.id,
         title: `Prescrição ${p.kind.toLowerCase()} (${p.items.length} itens)`,
-        detail: { prescriber: users.get(p.prescriberId), status: p.status, items: p.items.map((i) => ({ description: i.description, dose: i.dose, doseUnit: i.doseUnit, route: i.route, frequencyHours: i.frequencyHours, durationDays: i.durationDays })) },
+        detail: {
+          prescriber: users.get(p.prescriberId),
+          status: p.status,
+          items: p.items.map((i) => ({ description: i.description, dose: i.dose, doseUnit: i.doseUnit, route: i.route, frequencyHours: i.frequencyHours, durationDays: i.durationDays })),
+        },
       });
     }
     for (const d of dispensations) {
@@ -425,7 +440,32 @@ export class PatientsService {
     const [s, d] = await Promise.all([ctx.db.patient.findUnique({ where: { id: survivorId } }), ctx.db.patient.findUnique({ where: { id: duplicateId } })]);
     if (!s || s.mergedIntoId) throw notFound('Cadastro que fica');
     if (!d || d.mergedIntoId) throw notFound('Cadastro duplicado');
-    const fillable = ['cpf', 'cns', 'socialName', 'motherName', 'fatherName', 'phone', 'email', 'cep', 'street', 'number', 'complement', 'district', 'city', 'uf', 'ibgeCode', 'rg', 'rgIssuer', 'rgUf', 'nis', 'birthIbgeCode', 'education', 'workSituation', 'occupationCbo', 'etnia'] as const;
+    const fillable = [
+      'cpf',
+      'cns',
+      'socialName',
+      'motherName',
+      'fatherName',
+      'phone',
+      'email',
+      'cep',
+      'street',
+      'number',
+      'complement',
+      'district',
+      'city',
+      'uf',
+      'ibgeCode',
+      'rg',
+      'rgIssuer',
+      'rgUf',
+      'nis',
+      'birthIbgeCode',
+      'education',
+      'workSituation',
+      'occupationCbo',
+      'etnia',
+    ] as const;
     const fill: Record<string, unknown> = {};
     for (const f of fillable) if (s[f] == null && d[f] != null) fill[f] = d[f];
     if (s.racaCor === '99' && d.racaCor !== '99') fill.racaCor = d.racaCor;

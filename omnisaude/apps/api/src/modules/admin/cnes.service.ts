@@ -2,6 +2,9 @@ import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { appendAudit, type TenantPrisma } from '@omnisaude/database';
 import {
   CNES_UNIT_TYPES,
+  MODALIDADE_LABEL,
+  modalidadesDoTipo,
+  type ModalidadeEquipe,
   ibge6,
   ibge7,
   isRole,
@@ -111,7 +114,38 @@ const TEAM_COLUMNS = {
   area: ['area', 'co_area', 'segmento', 'segmento_territorial'],
 };
 
-const ACRONYMS = new Set(['UBS', 'USF', 'UPA', 'CEO', 'CAPS', 'SAMU', 'USA', 'USB', 'UTI', 'PSF', 'NASF', 'CER', 'CCZ', 'CAF', 'GAF', 'CTA', 'SAE', 'ESF', 'AD', 'SUS', 'CEREST', 'LACEN', 'I', 'II', 'III', 'IV', 'UFT', 'UMS', 'CRAS', 'CREAS']);
+const ACRONYMS = new Set([
+  'UBS',
+  'USF',
+  'UPA',
+  'CEO',
+  'CAPS',
+  'SAMU',
+  'USA',
+  'USB',
+  'UTI',
+  'PSF',
+  'NASF',
+  'CER',
+  'CCZ',
+  'CAF',
+  'GAF',
+  'CTA',
+  'SAE',
+  'ESF',
+  'AD',
+  'SUS',
+  'CEREST',
+  'LACEN',
+  'I',
+  'II',
+  'III',
+  'IV',
+  'UFT',
+  'UMS',
+  'CRAS',
+  'CREAS',
+]);
 const SMALL = new Set(['de', 'da', 'do', 'das', 'dos', 'e', 'em', 'a', 'o', 'na', 'no', 'ao', 'aos', 'à', 'às']);
 // Palavras do vocabulário da saúde devolvidas com acento (o CNES grava tudo em maiúsculas sem acento).
 const ACCENTS: Record<string, string> = {
@@ -386,8 +420,12 @@ export class CnesService {
   }
 
   private mapEstablishment(raw: Record<string, unknown>): CnesEstablishment {
-    const cnes = String(raw.codigo_cnes ?? '').replace(/\D/g, '').padStart(7, '0');
-    const typeCode = String(raw.codigo_tipo_unidade ?? '').replace(/\D/g, '').padStart(2, '0');
+    const cnes = String(raw.codigo_cnes ?? '')
+      .replace(/\D/g, '')
+      .padStart(7, '0');
+    const typeCode = String(raw.codigo_tipo_unidade ?? '')
+      .replace(/\D/g, '')
+      .padStart(2, '0');
     const legalNature = str(raw.descricao_natureza_juridica_estabelecimento ?? raw.codigo_natureza_juridica);
     const management = str(raw.tipo_gestao)?.charAt(0).toUpperCase() ?? null;
     const rawName = str(raw.nome_fantasia) ?? str(raw.nome_razao_social) ?? `Estabelecimento ${cnes}`;
@@ -533,7 +571,11 @@ export class CnesService {
       }
     }
     await ctx.db.$transaction((tx) =>
-      this.close(tx, ctx, imp.id, imp.summary, { acessos: access.length, vinculados: linked.length, preCadastros: staged.length }, 'cnes.profissionais', { acessos: access.map((a) => a.cpf), vinculados: linked, preCadastros: staged }),
+      this.close(tx, ctx, imp.id, imp.summary, { acessos: access.length, vinculados: linked.length, preCadastros: staged.length }, 'cnes.profissionais', {
+        acessos: access.map((a) => a.cpf),
+        vinculados: linked,
+        preCadastros: staged,
+      }),
     );
     return { access, linked, staged, warnings, errors: rows.filter((r) => r.status === 'erro').map((r) => `linha ${r.line}: ${r.errors.join(', ')}`) };
   }
@@ -639,7 +681,20 @@ export class CnesService {
       orderBy: { name: 'asc' },
       take: 300,
     });
-    return rows.map((r) => ({ id: r.id, name: r.name, cpf: r.cpf, cns: r.cns, cbo: r.cbo, cboLabel: cboLabel(r.cbo) ?? null, council: r.council, unitId: r.unitId, unitName: r.unit?.name ?? null, ine: r.ine, suggestedRole: roleFromCbo(r.cbo), importedAt: r.importedAt }));
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      cpf: r.cpf,
+      cns: r.cns,
+      cbo: r.cbo,
+      cboLabel: cboLabel(r.cbo) ?? null,
+      council: r.council,
+      unitId: r.unitId,
+      unitName: r.unit?.name ?? null,
+      ine: r.ine,
+      suggestedRole: roleFromCbo(r.cbo),
+      importedAt: r.importedAt,
+    }));
   }
 
   async ignoreStaged(ctx: RequestContext, id: string) {
@@ -648,7 +703,17 @@ export class CnesService {
     await ctx.db.$transaction(async (tx) => {
       await tx.cnesProfessional.update({ where: { id }, data: { status: 'IGNORADO' } });
       await tx.teamMember.deleteMany({ where: { stagedId: id } });
-      await appendAudit(tx, { userId: ctx.session.userId, unitId: ctx.session.unitId, role: ctx.session.role, ip: ctx.ip, mfa: ctx.session.mfa, action: 'cnes.pre_cadastro_ignorar', entityType: 'CnesProfessional', entityId: id, payload: { name: row.name } });
+      await appendAudit(tx, {
+        userId: ctx.session.userId,
+        unitId: ctx.session.unitId,
+        role: ctx.session.role,
+        ip: ctx.ip,
+        mfa: ctx.session.mfa,
+        action: 'cnes.pre_cadastro_ignorar',
+        entityType: 'CnesProfessional',
+        entityId: id,
+        payload: { name: row.name },
+      });
     });
     return { ok: true };
   }
@@ -658,7 +723,118 @@ export class CnesService {
       include: { unit: { select: { id: true, name: true } }, _count: { select: { members: { where: { active: true } } } } },
       orderBy: [{ unit: { name: 'asc' } }, { name: 'asc' }],
     });
-    return teams.map((t) => ({ id: t.id, ine: t.ine, name: t.name, typeCode: t.typeCode, typeLabel: teamTypeLabel(t.typeCode), unitId: t.unitId, unitName: t.unit.name, area: t.area, active: t.active, members: t._count.members, source: t.source }));
+    return teams.map((t) => this.teamRow(t));
+  }
+
+  private teamRow(t: {
+    id: string;
+    ine: string;
+    name: string;
+    typeCode: string;
+    unitId: string;
+    unit: { name: string };
+    area: string | null;
+    modality: string | null;
+    active: boolean;
+    source: string;
+    _count: { members: number };
+  }) {
+    const modality = (t.modality as ModalidadeEquipe | null) ?? null;
+    return {
+      id: t.id,
+      ine: t.ine,
+      name: t.name,
+      typeCode: t.typeCode,
+      typeLabel: teamTypeLabel(t.typeCode),
+      unitId: t.unitId,
+      unitName: t.unit.name,
+      area: t.area,
+      modality,
+      modalityLabel: modality ? MODALIDADE_LABEL[modality] : null,
+      modalityOptions: modalidadesDoTipo(t.typeCode).map((m) => ({ value: m, label: MODALIDADE_LABEL[m] })),
+      active: t.active,
+      members: t._count.members,
+      source: t.source,
+    };
+  }
+
+  private validarModalidade(typeCode: string, modality: string | null | undefined): ModalidadeEquipe | null {
+    if (!modality) return null;
+    const aceitas = modalidadesDoTipo(typeCode);
+    if (!aceitas.includes(modality as ModalidadeEquipe)) throw new DomainError('MODALIDADE_INVALIDA', `Modalidade ${modality} não vale para equipes do tipo ${typeCode}`, 400);
+    return modality as ModalidadeEquipe;
+  }
+
+  /** Cadastro manual de equipe (sem planilha do CNES), com modalidade do cofinanciamento e membros. */
+  async createTeam(
+    ctx: RequestContext,
+    input: { ine: string; name: string; typeCode: string; unitId: string; area?: string | null; modality?: string | null; members?: { userId: string; cbo: string; microArea?: string | null }[] },
+  ) {
+    const ine = input.ine.replace(/\D/g, '');
+    if (ine.length !== 10) throw new DomainError('INE_INVALIDO', 'O INE tem 10 dígitos', 400);
+    const typeCode = input.typeCode.padStart(2, '0');
+    if (!TEAM_TYPES[typeCode]) throw new DomainError('TIPO_EQUIPE_INVALIDO', `Tipo de equipe desconhecido: ${input.typeCode}`, 400);
+    const modality = this.validarModalidade(typeCode, input.modality);
+    const unit = await ctx.db.unit.findUnique({ where: { id: input.unitId } });
+    if (!unit) throw notFound('Unidade');
+    if (await ctx.db.team.findUnique({ where: { ine } })) throw new DomainError('INE_DUPLICADO', 'Já existe equipe com este INE', 409);
+    const members = input.members ?? [];
+    if (members.length) {
+      const users = await ctx.db.user.count({ where: { id: { in: members.map((m) => m.userId) } } });
+      if (users !== new Set(members.map((m) => m.userId)).size) throw notFound('Profissional');
+    }
+    return ctx.db.$transaction(async (tx) => {
+      const team = await tx.team.create({
+        data: {
+          ine,
+          name: input.name.trim(),
+          typeCode,
+          unitId: unit.id,
+          area: input.area?.trim() || null,
+          modality,
+          source: 'MANUAL',
+          members: { create: members.map((m) => ({ userId: m.userId, cbo: m.cbo, microArea: m.microArea?.trim() || null })) },
+        },
+        include: { unit: { select: { name: true } }, _count: { select: { members: { where: { active: true } } } } },
+      });
+      await appendAudit(tx, {
+        userId: ctx.session.userId,
+        unitId: ctx.session.unitId,
+        role: ctx.session.role,
+        ip: ctx.ip,
+        mfa: ctx.session.mfa,
+        action: 'equipe.criar',
+        entityType: 'Team',
+        entityId: team.id,
+        payload: { ine, name: team.name, typeCode, modality, members: members.length },
+      });
+      return this.teamRow(team);
+    });
+  }
+
+  async updateTeam(ctx: RequestContext, id: string, input: { name?: string; area?: string | null; modality?: string | null; active?: boolean }) {
+    const current = await ctx.db.team.findUnique({ where: { id } });
+    if (!current) throw notFound('Equipe');
+    const modality = input.modality === undefined ? undefined : this.validarModalidade(current.typeCode, input.modality);
+    return ctx.db.$transaction(async (tx) => {
+      const team = await tx.team.update({
+        where: { id },
+        data: { name: input.name?.trim(), area: input.area === undefined ? undefined : input.area?.trim() || null, modality, active: input.active },
+        include: { unit: { select: { name: true } }, _count: { select: { members: { where: { active: true } } } } },
+      });
+      await appendAudit(tx, {
+        userId: ctx.session.userId,
+        unitId: ctx.session.unitId,
+        role: ctx.session.role,
+        ip: ctx.ip,
+        mfa: ctx.session.mfa,
+        action: 'equipe.atualizar',
+        entityType: 'Team',
+        entityId: id,
+        payload: input,
+      });
+      return this.teamRow(team);
+    });
   }
 
   template(kind: 'profissionais' | 'equipes') {

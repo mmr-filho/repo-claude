@@ -7,6 +7,19 @@ import { AdminService } from './admin.service';
 import { CnesService } from './cnes.service';
 
 const optionalText = (max: number) => z.string().trim().max(max).nullable().optional();
+const teamSchema = z.object({
+  ine: z.string().min(10).max(14),
+  name: z.string().trim().min(2).max(120),
+  typeCode: z.string().regex(/^\d{2}$/),
+  unitId: z.string().uuid(),
+  area: optionalText(60),
+  modality: z.string().max(40).nullable().optional(),
+  members: z
+    .array(z.object({ userId: z.string().uuid(), cbo: z.string().regex(/^\d{6}$/), microArea: optionalText(10) }))
+    .max(60)
+    .optional(),
+});
+const teamUpdateSchema = z.object({ name: z.string().trim().min(2).max(120).optional(), area: optionalText(60), modality: z.string().max(40).nullable().optional(), active: z.boolean().optional() });
 const flag = z
   .enum(['true', 'false', '1', '0'])
   .transform((v) => v === 'true' || v === '1')
@@ -56,6 +69,18 @@ export class AdminController {
   @RequirePermission('cadastros.profissionais')
   teams(@Ctx() ctx: RequestContext) {
     return this.cnes.listTeams(ctx);
+  }
+
+  @Post('teams')
+  @RequirePermission('cadastros.profissionais')
+  createTeam(@Ctx() ctx: RequestContext, @Body(zv(teamSchema)) body: z.infer<typeof teamSchema>) {
+    return this.cnes.createTeam(ctx, body);
+  }
+
+  @Patch('teams/:id')
+  @RequirePermission('cadastros.profissionais')
+  updateTeam(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(teamUpdateSchema)) body: z.infer<typeof teamUpdateSchema>) {
+    return this.cnes.updateTeam(ctx, id, body);
   }
 
   @Get('units')

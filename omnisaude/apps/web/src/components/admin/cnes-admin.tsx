@@ -79,9 +79,14 @@ interface Team {
   id: string;
   ine: string;
   name: string;
+  typeCode: string;
   typeLabel: string;
+  unitId: string;
   unitName: string;
   area: string | null;
+  modality: string | null;
+  modalityLabel: string | null;
+  modalityOptions: { value: string; label: string }[];
   members: number;
   active: boolean;
 }
@@ -177,12 +182,13 @@ function EstablishmentsImport() {
   }
 
   const visible = preview?.rows.filter((r) => (filter === 'publicos' ? r.isPublic : filter === 'sus' ? r.isPublic || r.susAmbulatory : true)) ?? [];
-  const toggle = (cnes: string, on: boolean) => setSelected((s) => {
-    const n = new Set(s);
-    if (on) n.add(cnes);
-    else n.delete(cnes);
-    return n;
-  });
+  const toggle = (cnes: string, on: boolean) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      if (on) n.add(cnes);
+      else n.delete(cnes);
+      return n;
+    });
   const typeOf = (r: EstablishmentRow) => types[r.cnes] ?? r.suggestedType ?? '';
   const needsType = [...selected].some((c) => {
     const r = preview?.rows.find((x) => x.cnes === c);
@@ -263,7 +269,12 @@ function EstablishmentsImport() {
                           {r.existing ? (
                             <span className="text-sm">{UNIT_TYPE_LABELS[r.existing.type as UnitType] ?? r.existing.type}</span>
                           ) : selectable ? (
-                            <Select aria-label={`Tipo de ${r.name}`} value={typeOf(r)} onChange={(e) => setTypes((t) => ({ ...t, [r.cnes]: e.target.value as UnitType }))} className={!typeOf(r) && selected.has(r.cnes) ? 'border-amber-400' : undefined}>
+                            <Select
+                              aria-label={`Tipo de ${r.name}`}
+                              value={typeOf(r)}
+                              onChange={(e) => setTypes((t) => ({ ...t, [r.cnes]: e.target.value as UnitType }))}
+                              className={!typeOf(r) && selected.has(r.cnes) ? 'border-amber-400' : undefined}
+                            >
                               <option value="">Escolher…</option>
                               {UNIT_TYPES.map((t) => (
                                 <option key={t} value={t}>
@@ -330,11 +341,45 @@ function CsvDropzone({ onText, label }: { onText: (text: string) => void; label:
   );
 }
 
+const TEAM_TYPE_OPTIONS = [
+  ['70', 'eSF · Equipe de Saúde da Família'],
+  ['76', 'eAP · Equipe de Atenção Primária'],
+  ['71', 'eSB · Equipe de Saúde Bucal'],
+  ['72', 'eMulti · Equipe Multiprofissional'],
+  ['73', 'eCR · Consultório na Rua'],
+  ['74', 'eAPP · Atenção Primária Prisional'],
+] as const;
+
 function TeamsImport() {
   const toast = useToast();
   const teams = useApi<Team[]>('/admin/teams');
+  const units = useApi<AdminUnit[]>('/admin/units');
   const [preview, setPreview] = useState<CsvPreview<TeamRow> | null>(null);
   const [busy, setBusy] = useState(false);
+  const [novo, setNovo] = useState({ open: false, ine: '', name: '', typeCode: '70', unitId: '', modality: '' });
+
+  async function setModality(team: Team, modality: string) {
+    try {
+      await api.patch(`/admin/teams/${team.id}`, { modality: modality || null });
+      toast.success(`Modalidade de ${team.name} atualizada`);
+      await teams.reload();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  }
+  async function createTeam() {
+    setBusy(true);
+    try {
+      await api.post('/admin/teams', { ine: novo.ine.replace(/\D/g, ''), name: novo.name.trim(), typeCode: novo.typeCode, unitId: novo.unitId, modality: novo.modality || null });
+      toast.success('Equipe cadastrada. Defina os membros pela planilha de profissionais ou pelo cadastro de lotações.');
+      setNovo({ open: false, ine: '', name: '', typeCode: '70', unitId: '', modality: '' });
+      await teams.reload();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function load(text: string) {
     setBusy(true);
@@ -375,6 +420,49 @@ function TeamsImport() {
           </div>
         }
       />
+      <CardBody className="border-b border-slate-100">
+        {novo.open ? (
+          <div className="grid gap-3 md:grid-cols-5">
+            <Field label="INE" htmlFor="nt-ine">
+              <Input id="nt-ine" value={novo.ine} onChange={(e) => setNovo((n) => ({ ...n, ine: e.target.value }))} placeholder="10 dígitos" />
+            </Field>
+            <Field label="Nome" htmlFor="nt-name">
+              <Input id="nt-name" value={novo.name} onChange={(e) => setNovo((n) => ({ ...n, name: e.target.value }))} />
+            </Field>
+            <Field label="Tipo" htmlFor="nt-type">
+              <Select id="nt-type" value={novo.typeCode} onChange={(e) => setNovo((n) => ({ ...n, typeCode: e.target.value, modality: '' }))}>
+                {TEAM_TYPE_OPTIONS.map(([v, l]) => (
+                  <option key={v} value={v}>
+                    {l}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Unidade" htmlFor="nt-unit">
+              <Select id="nt-unit" value={novo.unitId} onChange={(e) => setNovo((n) => ({ ...n, unitId: e.target.value }))}>
+                <option value="">Escolha</option>
+                {(units.data ?? []).map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <div className="flex items-end gap-2">
+              <Button onClick={() => void createTeam()} loading={busy} disabled={novo.ine.replace(/\D/g, '').length !== 10 || novo.name.trim().length < 2 || !novo.unitId}>
+                Cadastrar
+              </Button>
+              <Button variant="ghost" onClick={() => setNovo((n) => ({ ...n, open: false }))}>
+                Cancelar
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <Button variant="secondary" onClick={() => setNovo((n) => ({ ...n, open: true }))}>
+            Nova equipe (sem planilha)
+          </Button>
+        )}
+      </CardBody>
       <CardBody className="flex flex-col gap-3">
         {busy && <Spinner className="py-2" />}
         {preview && (
@@ -403,7 +491,13 @@ function TeamsImport() {
                         <p className="text-xs text-slate-500">{r.typeLabel ?? ''}</p>
                       </TD>
                       <TD className="text-sm">{r.unitName ?? '—'}</TD>
-                      <TD>{r.status === 'erro' ? <span className="text-xs text-red-700">{r.errors.join('; ')}</span> : <Badge tone={r.status === 'nova' ? 'green' : 'blue'}>{r.status === 'nova' ? 'Nova' : 'Atualizar'}</Badge>}</TD>
+                      <TD>
+                        {r.status === 'erro' ? (
+                          <span className="text-xs text-red-700">{r.errors.join('; ')}</span>
+                        ) : (
+                          <Badge tone={r.status === 'nova' ? 'green' : 'blue'}>{r.status === 'nova' ? 'Nova' : 'Atualizar'}</Badge>
+                        )}
+                      </TD>
                     </TR>
                   ))}
                 </TBody>
@@ -429,6 +523,7 @@ function TeamsImport() {
                     <TH>Equipe</TH>
                     <TH>Unidade</TH>
                     <TH>Membros</TH>
+                    <TH>Modalidade (cofinanciamento)</TH>
                   </TR>
                 </THead>
                 <TBody>
@@ -444,6 +539,20 @@ function TeamsImport() {
                       </TD>
                       <TD className="text-sm">{t.unitName}</TD>
                       <TD>{t.members}</TD>
+                      <TD>
+                        {t.modalityOptions.length ? (
+                          <Select aria-label={`Modalidade de ${t.name}`} value={t.modality ?? ''} onChange={(e) => void setModality(t, e.target.value)} className="w-64">
+                            <option value="">Padrão ({t.modalityOptions[0]?.label})</option>
+                            {t.modalityOptions.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </Select>
+                        ) : (
+                          <span className="text-xs text-slate-500">não avaliada no componente de qualidade</span>
+                        )}
+                      </TD>
                     </TR>
                   ))}
                 </TBody>
@@ -614,8 +723,16 @@ function ProfessionalsImport() {
                 </div>
               </>
             )}
-            {result.warnings.length > 0 && <Alert tone="info" title="Avisos">{result.warnings.join(' · ')}</Alert>}
-            {result.errors.length > 0 && <Alert tone="error" title="Linhas não importadas">{result.errors.join(' · ')}</Alert>}
+            {result.warnings.length > 0 && (
+              <Alert tone="info" title="Avisos">
+                {result.warnings.join(' · ')}
+              </Alert>
+            )}
+            {result.errors.length > 0 && (
+              <Alert tone="error" title="Linhas não importadas">
+                {result.errors.join(' · ')}
+              </Alert>
+            )}
           </div>
         )}
       </Dialog>
@@ -643,9 +760,7 @@ function ImportsHistory() {
             {data.map((i) => (
               <TR key={i.id}>
                 <TD className="text-sm">{fmtDateTime(i.createdAt)}</TD>
-                <TD className="text-sm">
-                  {i.kind === 'ESTABELECIMENTOS' ? `Estabelecimentos (IBGE ${i.ibgeCode})` : i.kind === 'PROFISSIONAIS' ? 'Profissionais (planilha)' : 'Equipes (planilha)'}
-                </TD>
+                <TD className="text-sm">{i.kind === 'ESTABELECIMENTOS' ? `Estabelecimentos (IBGE ${i.ibgeCode})` : i.kind === 'PROFISSIONAIS' ? 'Profissionais (planilha)' : 'Equipes (planilha)'}</TD>
                 <TD>
                   <Badge tone={i.status === 'APLICADA' ? 'green' : 'slate'}>{i.status === 'APLICADA' ? 'Aplicada' : 'Prévia'}</Badge>
                 </TD>

@@ -19,10 +19,16 @@ export const patientSchema = z.object({
   rgIssuer: z.string().trim().max(20).nullish(),
   rgUf: z.enum(UFS).nullish(),
   nis: z.string().nullish(),
-  birthIbgeCode: z.string().regex(/^\d{6,7}$/).nullish(),
+  birthIbgeCode: z
+    .string()
+    .regex(/^\d{6,7}$/)
+    .nullish(),
   education: z.enum(codeIn(ESCOLARIDADE)).nullish(),
   workSituation: z.enum(codeIn(SITUACAO_TRABALHO)).nullish(),
-  occupationCbo: z.string().regex(/^\d{6}$/).nullish(),
+  occupationCbo: z
+    .string()
+    .regex(/^\d{6}$/)
+    .nullish(),
   homeless: z.boolean().nullish(),
   address: z
     .object({
@@ -49,4 +55,18 @@ export const conditionSchema = z.object({
   code: z.string().min(2),
   description: z.string().min(2),
   lineOfCare: z.enum(['HIPERTENSAO', 'DIABETES', 'GESTANTE', 'ONCOLOGIA', 'SAUDE_MENTAL', 'TUBERCULOSE', 'HANSENIASE']).optional(),
+  /** Início da condição (na gestação, a DUM), usado nos indicadores da APS. */
+  onsetAt: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Data no formato AAAA-MM-DD')
+    .optional(),
+});
+export const conditionUpdateSchema = z.object({
+  active: z.boolean().optional(),
+  /** Data do desfecho (fim da gestação, resolução); ao inativar sem informar, usa a data de hoje. */
+  resolvedAt: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Data no formato AAAA-MM-DD')
+    .nullable()
+    .optional(),
 });

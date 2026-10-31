@@ -1,4 +1,5 @@
 export * from './accr';
+export * from './aps-indicadores';
 export * from './cbo';
 export * from './clinical';
 export * from './cnes';

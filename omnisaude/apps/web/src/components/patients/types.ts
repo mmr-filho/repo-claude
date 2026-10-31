@@ -51,7 +51,7 @@ export interface PatientDetail extends PatientSummary {
   redirectedFromId: string | null;
   family: PatientFamily | null;
   allergies: { id: string; substance: string; reaction: string | null; severity: string | null }[];
-  conditions: { id: string; system: string; code: string; description: string; lineOfCare: string | null }[];
+  conditions: { id: string; system: string; code: string; description: string; lineOfCare: string | null; onsetAt: string | null }[];
 }
 
 export interface TimelineEvent {

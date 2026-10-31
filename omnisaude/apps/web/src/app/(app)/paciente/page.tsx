@@ -17,7 +17,7 @@ import { Field, Input, Select } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
-import { fmtDate, formatCns, formatCpf } from '@/lib/format';
+import { fmtDate, formatCns, formatCpf, todayIso } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useSession } from '@/lib/session';
 
@@ -77,7 +77,8 @@ function PatientRecord() {
   const [editing, setEditing] = useState<PatientFormValues | null>(null);
   const [saving, setSaving] = useState(false);
   const [allergy, setAllergy] = useState({ open: false, substance: '', reaction: '' });
-  const [condition, setCondition] = useState({ open: false, system: 'CID10', code: '', description: '', lineOfCare: '' });
+  const [condition, setCondition] = useState({ open: false, system: 'CID10', code: '', description: '', lineOfCare: '', onsetAt: '' });
+  const [resolve, setResolve] = useState<{ open: boolean; id: string; code: string; description: string; resolvedAt: string }>({ open: false, id: '', code: '', description: '', resolvedAt: todayIso() });
   const [band, setBand] = useState<Wristband | null>(null);
 
   if (!id) return <Alert tone="error">Paciente não informado.</Alert>;
@@ -181,8 +182,16 @@ function PatientRecord() {
                 <span className="text-slate-500">Nenhuma condição ativa</span>
               ) : (
                 p.conditions.map((c) => (
-                  <p key={c.id}>
-                    <b>{c.code}</b> {c.description} {c.lineOfCare && <Badge tone="violet">{LINES.find(([v]) => v === c.lineOfCare)?.[1] ?? c.lineOfCare}</Badge>}
+                  <p key={c.id} className="flex flex-wrap items-center gap-2">
+                    <span>
+                      <b>{c.code}</b> {c.description} {c.lineOfCare && <Badge tone="violet">{LINES.find(([v]) => v === c.lineOfCare)?.[1] ?? c.lineOfCare}</Badge>}
+                      {c.onsetAt && <span className="text-xs text-slate-500"> · desde {fmtDate(c.onsetAt)}</span>}
+                    </span>
+                    {session.can('prontuario.evoluir') && (
+                      <Button size="sm" variant="ghost" onClick={() => setResolve({ open: true, id: c.id, code: c.code, description: c.description, resolvedAt: todayIso() })}>
+                        Encerrar
+                      </Button>
+                    )}
                   </p>
                 ))
               )}
@@ -195,8 +204,16 @@ function PatientRecord() {
               <p>{p.phone ?? 'Sem telefone'}</p>
               <p>{p.email ?? ''}</p>
               <p>{[p.address.street, p.address.number, p.address.complement, p.address.district].filter(Boolean).join(', ') || 'Sem endereço'}</p>
-              {(p.address.city || p.address.cep) && <p className="text-slate-500">{[p.address.city && p.address.uf ? `${p.address.city}/${p.address.uf}` : p.address.city, p.address.cep ? `CEP ${p.address.cep.replace(/(\d{5})(\d{3})/, '$1-$2')}` : null].filter(Boolean).join(' · ')}</p>}
-              {p.homeless && <p className="mt-1"><Badge tone="amber">Situação de rua</Badge></p>}
+              {(p.address.city || p.address.cep) && (
+                <p className="text-slate-500">
+                  {[p.address.city && p.address.uf ? `${p.address.city}/${p.address.uf}` : p.address.city, p.address.cep ? `CEP ${p.address.cep.replace(/(\d{5})(\d{3})/, '$1-$2')}` : null].filter(Boolean).join(' · ')}
+                </p>
+              )}
+              {p.homeless && (
+                <p className="mt-1">
+                  <Badge tone="amber">Situação de rua</Badge>
+                </p>
+              )}
             </CardBody>
           </Card>
         </div>
@@ -263,6 +280,26 @@ function PatientRecord() {
         </div>
       </Dialog>
       <Dialog
+        open={resolve.open}
+        onOpenChange={(o) => setResolve((r) => ({ ...r, open: o }))}
+        title={`Encerrar condição ${resolve.code}`}
+        footer={
+          <Button
+            onClick={async () => {
+              await run(() => api.patch(`/patients/${p.id}/conditions/${resolve.id}`, { active: false, resolvedAt: resolve.resolvedAt }), 'Condição encerrada');
+              setResolve((r) => ({ ...r, open: false }));
+            }}
+          >
+            Encerrar
+          </Button>
+        }
+      >
+        <p className="mb-3 text-sm text-slate-600">{resolve.description}. Na gestação, informe a data do parto ou do desfecho: ela define o puerpério nos indicadores da APS.</p>
+        <Field label="Data do desfecho" htmlFor="rs-date">
+          <Input id="rs-date" type="date" value={resolve.resolvedAt} max={todayIso()} onChange={(e) => setResolve((r) => ({ ...r, resolvedAt: e.target.value }))} />
+        </Field>
+      </Dialog>
+      <Dialog
         open={condition.open}
         onOpenChange={(o) => setCondition((c) => ({ ...c, open: o }))}
         title="Registrar condição"
@@ -271,10 +308,17 @@ function PatientRecord() {
             disabled={condition.code.trim().length < 2 || condition.description.trim().length < 2}
             onClick={async () => {
               await run(
-                () => api.post(`/patients/${p.id}/conditions`, { system: condition.system, code: condition.code.trim(), description: condition.description.trim(), ...(condition.lineOfCare ? { lineOfCare: condition.lineOfCare } : {}) }),
+                () =>
+                  api.post(`/patients/${p.id}/conditions`, {
+                    system: condition.system,
+                    code: condition.code.trim(),
+                    description: condition.description.trim(),
+                    ...(condition.onsetAt ? { onsetAt: condition.onsetAt } : {}),
+                    ...(condition.lineOfCare ? { lineOfCare: condition.lineOfCare } : {}),
+                  }),
                 'Condição registrada',
               );
-              setCondition({ open: false, system: 'CID10', code: '', description: '', lineOfCare: '' });
+              setCondition({ open: false, system: 'CID10', code: '', description: '', lineOfCare: '', onsetAt: '' });
             }}
           >
             Registrar
@@ -293,6 +337,9 @@ function PatientRecord() {
           </Field>
           <Field label="Descrição" htmlFor="cd-desc" className="sm:col-span-2">
             <Input id="cd-desc" value={condition.description} onChange={(e) => setCondition((c) => ({ ...c, description: e.target.value }))} />
+          </Field>
+          <Field label="Início (na gestação, a DUM)" htmlFor="cd-onset" className="sm:col-span-2">
+            <Input id="cd-onset" type="date" value={condition.onsetAt} max={todayIso()} onChange={(e) => setCondition((c) => ({ ...c, onsetAt: e.target.value }))} />
           </Field>
           <Field label="Linha de cuidado (busca ativa)" htmlFor="cd-line" className="sm:col-span-2">
             <Select id="cd-line" value={condition.lineOfCare} onChange={(e) => setCondition((c) => ({ ...c, lineOfCare: e.target.value }))}>

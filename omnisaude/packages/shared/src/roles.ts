@@ -3,17 +3,7 @@
  * Tenant_ID + Unidade_Fisica_ID + Papel_Ativo. Um mesmo profissional pode ter papéis diferentes em cada unidade.
  */
 
-export const ROLES = [
-  'RECEPCAO',
-  'ENFERMAGEM',
-  'MEDICO',
-  'MULTIPROFISSIONAL',
-  'SERVICO_SOCIAL',
-  'NIR',
-  'FARMACIA',
-  'FATURAMENTO',
-  'GESTOR',
-] as const;
+export const ROLES = ['RECEPCAO', 'ENFERMAGEM', 'MEDICO', 'MULTIPROFISSIONAL', 'SERVICO_SOCIAL', 'NIR', 'FARMACIA', 'FATURAMENTO', 'GESTOR'] as const;
 export type Role = (typeof ROLES)[number];
 
 export const ROLE_LABELS: Record<Role, string> = {
@@ -75,25 +65,16 @@ export const PERMISSIONS = [
   'seguranca.gerir',
   'esus.ler',
   'esus.gerir',
+  'aps.indicadores',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
 const COMMON: Permission[] = ['paciente.ler', 'pop.consultar', 'libras.acionar'];
 
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
-  RECEPCAO: [
-    ...COMMON,
-    'paciente.cadastrar',
-    'paciente.ocr',
-    'paciente.unificar',
-    'cadsus.consultar',
-    'agenda.ler',
-    'agenda.marcar',
-    'fila.emitir',
-    'fila.chamar',
-    'pulseira.emitir',
-  ],
+  RECEPCAO: [...COMMON, 'paciente.cadastrar', 'paciente.ocr', 'paciente.unificar', 'cadsus.consultar', 'agenda.ler', 'agenda.marcar', 'fila.emitir', 'fila.chamar', 'pulseira.emitir'],
   ENFERMAGEM: [
+    'aps.indicadores',
     ...COMMON,
     'cadsus.consultar',
     'fila.chamar',
@@ -108,6 +89,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'esus.ler',
   ],
   MEDICO: [
+    'aps.indicadores',
     ...COMMON,
     'agenda.ler',
     'fila.chamar',
@@ -120,47 +102,13 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'regulacao.solicitar',
     'pop.executar',
   ],
-  MULTIPROFISSIONAL: [
-    ...COMMON,
-    'agenda.ler',
-    'fila.chamar',
-    'prontuario.ler',
-    'prontuario.evoluir',
-    'prontuario.encerrar',
-    'exame.solicitar',
-    'odontograma.registrar',
-  ],
-  SERVICO_SOCIAL: [
-    ...COMMON,
-    'agenda.ler',
-    'agenda.marcar',
-    'prontuario.ler',
-    'prontuario.evoluir',
-    'busca_ativa.gerir',
-  ],
+  MULTIPROFISSIONAL: [...COMMON, 'agenda.ler', 'fila.chamar', 'prontuario.ler', 'prontuario.evoluir', 'prontuario.encerrar', 'exame.solicitar', 'odontograma.registrar'],
+  SERVICO_SOCIAL: [...COMMON, 'agenda.ler', 'agenda.marcar', 'prontuario.ler', 'prontuario.evoluir', 'busca_ativa.gerir'],
   NIR: [...COMMON, 'prontuario.ler', 'leitos.ler', 'leitos.gerir', 'regulacao.solicitar'],
-  FARMACIA: [
-    ...COMMON,
-    'prontuario.ler',
-    'estoque.ler',
-    'estoque.movimentar',
-    'nfe.importar',
-    'unitarizacao.executar',
-    'dispensacao.registrar',
-    'controlados.relatorio',
-    'pop.executar',
-  ],
-  FATURAMENTO: [
-    ...COMMON,
-    'prontuario.ler',
-    'faturamento.ler',
-    'faturamento.criticar',
-    'faturamento.exportar',
-    'sigtap.sincronizar',
-    'auditoria.ler',
-    'esus.ler', 'esus.gerir',
-  ],
+  FARMACIA: [...COMMON, 'prontuario.ler', 'estoque.ler', 'estoque.movimentar', 'nfe.importar', 'unitarizacao.executar', 'dispensacao.registrar', 'controlados.relatorio', 'pop.executar'],
+  FATURAMENTO: ['aps.indicadores', ...COMMON, 'prontuario.ler', 'faturamento.ler', 'faturamento.criticar', 'faturamento.exportar', 'sigtap.sincronizar', 'auditoria.ler', 'esus.ler', 'esus.gerir'],
   GESTOR: [
+    'aps.indicadores',
     ...COMMON,
     'agenda.ler',
     'agenda.gerir',
@@ -178,7 +126,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'cadastros.unidades',
     'cadastros.profissionais',
     'seguranca.gerir',
-    'esus.ler', 'esus.gerir',
+    'esus.ler',
+    'esus.gerir',
   ],
 };
 

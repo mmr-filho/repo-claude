@@ -72,7 +72,8 @@ describe.runIf(enabled)('importação do CNES', () => {
     const res = await apply(prev.body.importId).expect(200);
     expect(res.body.created).toHaveLength(2);
     const teams = await t.http().get('/api/admin/teams').set(auth(gestora)).expect(200);
-    expect(teams.body.map((x: { ine: string }) => x.ine).sort()).toEqual(['0000123456', '0000123457']);
+    // A demonstração já traz equipes próprias (ESF Centro I, Saúde Bucal e eMulti); conferimos só as importadas.
+    expect(teams.body.map((x: { ine: string }) => x.ine).filter((ine: string) => ine.startsWith('00001234')).sort()).toEqual(['0000123456', '0000123457']);
     expect(teams.body.find((x: { ine: string }) => x.ine === '0000123456')).toMatchObject({ typeLabel: expect.stringContaining('eSF'), unitName: 'UPA Dra. Márcia Mucky', members: 0 });
   });
 

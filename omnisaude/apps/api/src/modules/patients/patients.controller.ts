@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from 
 import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
 import { zv } from '../../core/zod';
-import { allergySchema, conditionSchema, patientSchema, type PatientInput } from './patients.schemas';
+import { allergySchema, conditionSchema, conditionUpdateSchema, patientSchema, type PatientInput } from './patients.schemas';
 import { PatientsService } from './patients.service';
 
 @Controller('patients')
@@ -23,7 +23,10 @@ export class PatientsController {
 
   @Post('duplicates')
   @RequirePermission('paciente.cadastrar')
-  duplicates(@Ctx() ctx: RequestContext, @Body(zv(patientSchema.pick({ name: true, birthDate: true, cpf: true, cns: true, motherName: true }))) body: Pick<PatientInput, 'name' | 'birthDate' | 'cpf' | 'cns' | 'motherName'>) {
+  duplicates(
+    @Ctx() ctx: RequestContext,
+    @Body(zv(patientSchema.pick({ name: true, birthDate: true, cpf: true, cns: true, motherName: true }))) body: Pick<PatientInput, 'name' | 'birthDate' | 'cpf' | 'cns' | 'motherName'>,
+  ) {
     return this.patients.findDuplicates(ctx, body);
   }
 
@@ -79,5 +82,16 @@ export class PatientsController {
   @RequirePermission('prontuario.evoluir')
   condition(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(conditionSchema)) body: z.infer<typeof conditionSchema>) {
     return this.patients.addCondition(ctx, id, body);
+  }
+
+  @Patch(':id/conditions/:conditionId')
+  @RequirePermission('prontuario.evoluir')
+  updateCondition(
+    @Ctx() ctx: RequestContext,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('conditionId', ParseUUIDPipe) conditionId: string,
+    @Body(zv(conditionUpdateSchema)) body: z.infer<typeof conditionUpdateSchema>,
+  ) {
+    return this.patients.updateCondition(ctx, id, conditionId, body);
   }
 }

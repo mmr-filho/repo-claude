@@ -249,6 +249,8 @@ model Team {
   unitId    String   @map("unit_id") @db.Uuid
   /// Segmento territorial / área da equipe.
   area      String?
+  /// Modalidade para o cofinanciamento (ESF_40H, EAP_30H, EAP_20H, ESB_I, ESB_II, EMULTI_AMPLIADA...).
+  modality  String?
   active    Boolean  @default(true)
   source    String   @default("MANUAL")
   createdAt DateTime @default(now()) @map("created_at")
@@ -541,6 +543,8 @@ model PatientCondition {
   lineOfCare  LineOfCare? @map("line_of_care")
   onsetAt     DateTime?   @map("onset_at") @db.Date
   active      Boolean     @default(true)
+  /// Data do desfecho/resolução (ex.: fim da gestação), preenchida ao inativar a condição.
+  resolvedAt  DateTime?   @map("resolved_at") @db.Date
   recordedAt  DateTime    @default(now()) @map("recorded_at")
 
   patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)

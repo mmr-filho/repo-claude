@@ -139,6 +139,50 @@ export async function seedDemo(opts: SeedOptions) {
       patient[p.key] = row.id;
     }
 
+    // ── Equipes (INE) e domicílios vinculados: base dos indicadores do cofinanciamento da APS ──
+    const esf = await db.team.create({
+      data: {
+        ine: '0000000101',
+        name: 'ESF Centro I',
+        typeCode: '70',
+        unitId: unit.ubs,
+        area: '01',
+        modality: 'ESF_40H',
+        members: {
+          create: [
+            { userId: staff.enfermeiro!, cbo: '223505', microArea: '01' },
+            { userId: staff.medica!, cbo: '225125' },
+          ],
+        },
+      },
+    });
+    await db.team.create({ data: { ine: '0000000102', name: 'Saúde Bucal Centro', typeCode: '71', unitId: unit.ubs, modality: 'ESB_I', members: { create: [{ userId: staff.dentista!, cbo: '223208' }] } } });
+    await db.team.create({ data: { ine: '0000000103', name: 'eMulti Centro', typeCode: '72', unitId: unit.ubs, modality: 'EMULTI_ESTRATEGICA', members: { create: [{ userId: staff.social!, cbo: '251605' }] } } });
+    for (const p of PATIENTS) {
+      const household = await db.household.create({
+        data: {
+          cep: '01001000',
+          street: 'Rua Exemplo',
+          number: String(100 + PATIENTS.indexOf(p)),
+          district: p.district,
+          ibgeCode: DEMO_TENANT.ibgeCode,
+          dwellingType: '01',
+          tenure: '01',
+          waterSupply: '01',
+          sewage: '01',
+          garbage: '01',
+          electricity: true,
+          rooms: 4,
+          microArea: '01',
+          unitId: unit.ubs,
+          teamId: esf.id,
+          families: { create: { responsibleId: patient[p.key]!, incomeBracket: '02' } },
+        },
+        include: { families: true },
+      });
+      await db.patient.update({ where: { id: patient[p.key]! }, data: { familyId: household.families[0]!.id, kinship: '00' } });
+    }
+
     // ── Estoque ──
     const location = {
       alm: (await db.stockLocation.create({ data: { unitId: unit.alm, name: 'Almoxarifado Central', kind: 'ALMOXARIFADO_CENTRAL' } })).id,
@@ -538,7 +582,16 @@ export async function seedDemo(opts: SeedOptions) {
       data: { patientId: patient.fernanda!, lineOfCare: 'DIABETES', status: 'EM_CONTATO', assignedTo: staff.social!, lastVisitAt: daysAgo(260), openedAt: daysAgo(5) },
     });
     await db.activeSearchContact.create({
-      data: { caseId: sCase.id, channel: 'TELEFONE', outcome: 'Contato realizado', vulnerabilities: ['TRANSPORTE'], actions: [], notes: 'Paciente relata dificuldade de transporte até a UBS.', userId: staff.social!, at: daysAgo(4) },
+      data: {
+        caseId: sCase.id,
+        channel: 'TELEFONE',
+        outcome: 'Contato realizado',
+        vulnerabilities: ['TRANSPORTE'],
+        actions: [],
+        notes: 'Paciente relata dificuldade de transporte até a UBS.',
+        userId: staff.social!,
+        at: daysAgo(4),
+      },
     });
 
     return { tenantId, dbName, skipped: false };

@@ -8,6 +8,7 @@ import { BiModule } from './modules/bi/bi.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { ClinicalModule } from './modules/clinical/clinical.module';
 import { EsusModule } from './modules/esus/esus.module';
+import { IndicatorsModule } from './modules/indicators/indicators.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { ManagementModule } from './modules/management/management.module';
 import { PatientsModule } from './modules/patients/patients.module';
@@ -33,6 +34,7 @@ import { TriageModule } from './modules/triage/triage.module';
     ClinicalModule,
     SignaturesModule,
     EsusModule,
+    IndicatorsModule,
     PharmacyModule,
     BedsModule,
     PopsModule,
