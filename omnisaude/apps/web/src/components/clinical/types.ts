@@ -41,6 +41,7 @@ export interface PrescriptionItem {
 
 export interface Prescription {
   id: string;
+  prescriberId: string;
   kind: 'AMBULATORIAL' | 'HOSPITALAR';
   status: string;
   signedAt: string;

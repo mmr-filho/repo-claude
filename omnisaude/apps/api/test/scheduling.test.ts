@@ -37,7 +37,14 @@ describe.runIf(enabled)('agenda e confirmação por WhatsApp', () => {
     await mocks?.close();
   });
 
-  const patient = async (q: string) => (await t.http().get(`/api/patients?q=${encodeURIComponent(q)}`).set(auth(recepcao)).expect(200)).body[0];
+  const patient = async (q: string) =>
+    (
+      await t
+        .http()
+        .get(`/api/patients?q=${encodeURIComponent(q)}`)
+        .set(auth(recepcao))
+        .expect(200)
+    ).body[0];
 
   it('calcula os horários do dia a partir da grade', async () => {
     const date = nextWeekday(5);
@@ -49,7 +56,8 @@ describe.runIf(enabled)('agenda e confirmação por WhatsApp', () => {
 
   it('marca, respeita cotas e bloqueios', async () => {
     const date = nextWeekday(6);
-    const created = await t.http()
+    const created = await t
+      .http()
       .post('/api/scheduling/schedules')
       .set(auth(gestora))
       .send({
@@ -74,9 +82,18 @@ describe.runIf(enabled)('agenda e confirmação por WhatsApp', () => {
 
   it('agenda a confirmação 48h antes, envia fora da janela de silêncio e processa a resposta assinada', async () => {
     const maria = await patient('luana costa');
-    const date = nextWeekday(2);
-    const slots = (await t.http().get(`/api/scheduling/schedules/${scheduleId}/slots?date=${date}`).set(auth(recepcao))).body.slots;
-    const free = slots.find((s: { status: string }) => s.status === 'LIVRE');
+    // Primeiro dia útil, a partir de 48h, em que a agenda da carga de demonstração tem horário livre.
+    let free: { startsAt: string } | undefined;
+    for (let days = 2; days < 16 && !free; days++) {
+      const slots = (
+        await t
+          .http()
+          .get(`/api/scheduling/schedules/${scheduleId}/slots?date=${nextWeekday(days)}`)
+          .set(auth(recepcao))
+      ).body.slots as { status: string; startsAt: string }[];
+      free = slots.find((s) => s.status === 'LIVRE');
+    }
+    if (!free) throw new Error('Nenhum horário livre nas próximas duas semanas');
     const appt = await t.http().post('/api/scheduling/appointments').set(auth(recepcao)).send({ scheduleId, patientId: maria.id, startsAt: free.startsAt, kind: 'RETORNO' }).expect(201);
 
     const tenants = t.app.get(TenantsService);
@@ -94,7 +111,21 @@ describe.runIf(enabled)('agenda e confirmação por WhatsApp', () => {
 
     const webhook = {
       object: 'whatsapp_business_account',
-      entry: [{ id: 'waba', changes: [{ field: 'messages', value: { messaging_product: 'whatsapp', metadata: { phone_number_id: '1' }, messages: [{ from: '5511990000005', id: 'wamid.resp1', timestamp: String(Math.floor(Date.now() / 1000)), type: 'button', button: { payload: `APPT:CONFIRM:${appt.body.id}`, text: 'Confirmar' } }] } }] }],
+      entry: [
+        {
+          id: 'waba',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { phone_number_id: '1' },
+                messages: [{ from: '5511990000005', id: 'wamid.resp1', timestamp: String(Math.floor(Date.now() / 1000)), type: 'button', button: { payload: `APPT:CONFIRM:${appt.body.id}`, text: 'Confirmar' } }],
+              },
+            },
+          ],
+        },
+      ],
     };
     const raw = JSON.stringify(webhook);
     await t.http().post(`/api/webhooks/whatsapp/${t.slug}`).set('content-type', 'application/json').set('x-hub-signature-256', 'sha256=00').send(raw).expect(401);

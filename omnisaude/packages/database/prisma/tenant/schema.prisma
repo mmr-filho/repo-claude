@@ -101,8 +101,70 @@ model User {
   assignments UserAssignment[]
   teamMembers TeamMember[]
   cnesStaged  CnesProfessional[]
+  certificates SigningCertificate[]
+  signedDocuments SignedDocument[]
 
   @@map("users")
+}
+
+/// Certificado digital A1 (e-CPF ICP-Brasil) do profissional, guardado cifrado; a senha do arquivo é pedida a cada assinatura.
+model SigningCertificate {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  subject      String
+  cpf          String    @db.Char(11)
+  issuer       String
+  serial       String
+  notBefore    DateTime  @map("not_before")
+  notAfter     DateTime  @map("not_after")
+  /// Cadeia emitida por autoridade da ICP-Brasil (false em certificados de teste).
+  icpBrasil    Boolean   @map("icp_brasil")
+  fingerprint  String    @db.Char(64)
+  /// Arquivo PKCS#12 cifrado com AES-256-GCM (chave do servidor).
+  pfxEncrypted String    @map("pfx_encrypted")
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  revokedAt    DateTime? @map("revoked_at")
+
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents SignedDocument[]
+
+  @@index([userId, active])
+  @@map("signing_certificates")
+}
+
+enum SignedKind {
+  PRONTUARIO
+  RECEITA
+  ATESTADO
+  DOCUMENTO
+}
+
+/// Documento assinado digitalmente (PDF com assinatura PAdES/CMS), vinculado ao registro de origem.
+model SignedDocument {
+  id            String     @id @default(uuid(7)) @db.Uuid
+  kind          SignedKind
+  entityType    String     @map("entity_type")
+  entityId      String     @map("entity_id") @db.Uuid
+  patientId     String?    @map("patient_id") @db.Uuid
+  signerId      String     @map("signer_id") @db.Uuid
+  certificateId String?    @map("certificate_id") @db.Uuid
+  /// SHA-256 do PDF assinado (identifica o arquivo na validação).
+  sha256        String     @db.Char(64)
+  storageKey    String     @map("storage_key")
+  sizeBytes     Int        @map("size_bytes")
+  subject       String
+  cpf           String     @db.Char(11)
+  /// A1_SERVIDOR (certificado guardado no servidor) ou EXTERNA (assinatura feita no navegador/nuvem).
+  source        String
+  signedAt      DateTime   @default(now()) @map("signed_at")
+
+  signer      User                @relation(fields: [signerId], references: [id])
+  certificate SigningCertificate? @relation(fields: [certificateId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([sha256])
+  @@map("signed_documents")
 }
 
 /// Papel de um profissional em uma unidade (contexto Tenant + Unidade + Papel).

@@ -83,6 +83,13 @@ Este documento explica as decisões de arquitetura e onde cada parte da especifi
   (`@omnisaude/ai-engine`: interações, alergia cruzada, função renal por CKD-EPI 2021, potássio, gestação,
   duplicidade, dose máxima) e justificativa obrigatória para alerta GRAVE; linhas de cuidado por CID-10/
   CIAP-2 com exames SIGTAP; ditado estruturado em SOAP; comandos de voz; atestado.
+- **Assinatura ICP-Brasil** (`modules/signatures`): certificado A1 do profissional (PKCS#12) conferido
+  (CPF do campo 2.16.76.1.3.1 igual ao da conta, validade, uso de chave, cadeia até as raízes da ICP-Brasil
+  embarcadas) e guardado cifrado com a `DATA_KEY`; a senha é pedida a cada assinatura. O documento (registro
+  do prontuário, receita, atestado) vira PDF (pdf-lib) e recebe uma assinatura PAdES (CMS/CAdES-BES com
+  signing-certificate-v2, SHA-256/RSA) montada em ASN.1 puro; o PDF vai para o R2 e fica em `signed_documents`
+  (hash SHA-256). O validador lê qualquer PDF: resumo, assinatura, certificado declarado, cadeia e se a
+  assinatura cobre o arquivo todo; não consulta LCR/OCSP (revogação fica para o validador do ITI).
 - **Farmácia** (`modules/pharmacy`): NF-e com De-Para e bloco `<rastro>` obrigatório, transferências com
   dupla conferência, unitarização com Datamatrix GS1, dispensação FEFO e controlados da Portaria 344,
   administração beira-leito com os 5 certos (baixa definitiva do estoque no ato), logística reversa.

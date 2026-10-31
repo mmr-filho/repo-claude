@@ -1,24 +1,5 @@
 import type { Permission } from '@omnisaude/shared';
-import {
-  Activity,
-  BarChart3,
-  BedDouble,
-  BookOpenCheck,
-  Building2,
-  CalendarDays,
-  ClipboardList,
-  HeartPulse,
-  Home,
-  MessagesSquare,
-  Pill,
-  Receipt,
-  ScanLine,
-  Settings,
-  Stethoscope,
-  UserRoundSearch,
-  Users,
-  type LucideIcon,
-} from 'lucide-react';
+import { Activity, BarChart3, BedDouble, BookOpenCheck, Building2, CalendarDays, ClipboardList, FileSearch, HeartPulse, Home, MessagesSquare, Pill, Receipt, ScanLine, Settings, Stethoscope, type LucideIcon, UserRoundSearch, Users } from 'lucide-react';
 
 export interface NavItem {
   href: string;
@@ -45,5 +26,6 @@ export const NAV: NavItem[] = [
   { href: '/pops', label: 'POPs', icon: BookOpenCheck, any: ['pop.consultar'] },
   { href: '/auditoria', label: 'Auditoria', icon: ClipboardList, any: ['auditoria.ler'] },
   { href: '/administracao', label: 'Administração', icon: Building2, any: ['cadastros.unidades', 'cadastros.profissionais', 'seguranca.gerir'] },
+  { href: '/validar', label: 'Validar documento', icon: FileSearch, any: [] },
   { href: '/configuracoes', label: 'Minha conta', icon: Settings, any: [] },
 ];

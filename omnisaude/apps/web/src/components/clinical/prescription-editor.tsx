@@ -13,6 +13,8 @@ import { cn } from '@/lib/cn';
 import { fmtDateTime } from '@/lib/format';
 import { speak } from '@/lib/native';
 import { useSession } from '@/lib/session';
+import { SignWithCertificate } from '@/components/signatures/sign-button';
+import { useMyCertificate, useSignedDocuments } from '@/components/signatures/use-signatures';
 import type { ClinicalAlert, EncounterDetail, ItemDraft, Prescription, PrescriptionAnalysis } from './types';
 
 const ROUTE_LABEL: Record<string, string> = {
@@ -181,6 +183,8 @@ export function PrescriptionEditor({ encounter, items, setItems, onChanged }: { 
 
   const readable = patientInstructions(valid.map((i) => ({ ...i, frequencyHours: Number(i.frequencyHours) || null, durationDays: Number(i.durationDays) || null })));
   const activeRx = encounter.prescriptions;
+  const signedDocs = useSignedDocuments('Prescription', activeRx.map((p) => p.id));
+  const myCertificate = useMyCertificate();
 
   return (
     <div className="flex flex-col gap-5">
@@ -323,6 +327,9 @@ export function PrescriptionEditor({ encounter, items, setItems, onChanged }: { 
                 ))}
               </ul>
               {p.justification && <p className="mt-1 text-xs text-slate-600">Justificativa: {p.justification}</p>}
+              <div className="mt-2">
+                <SignWithCertificate entityType="Prescription" entityId={p.id} doc={signedDocs.byEntity.get(p.id)} canSign={!!myCertificate.certificate && p.prescriberId === session.me?.user.id} onSigned={() => void signedDocs.reload()} />
+              </div>
             </article>
           ))}
         </section>

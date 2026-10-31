@@ -69,7 +69,7 @@ function Segredo($bytes) { $b = New-Object byte[] $bytes; [Security.Cryptography
 "PLATFORM_ADMIN_PASSWORD = Op$((Segredo 18) -replace '[+/=]', '')7"
 ```
 
-Guarde esses valores num cofre de senhas. A `DATA_KEY` cifra segredos guardados no banco (como o 2FA dos
+Guarde esses valores num cofre de senhas. A `DATA_KEY` cifra segredos guardados no banco (os certificados A1 dos profissionais, o 2FA dos
 usuários): se ela mudar, quem ativou o 2FA precisa configurá-lo de novo. As senhas `APP_DB_PASSWORD` e
 `BI_DB_PASSWORD` são aplicadas aos papéis do banco a cada partida da API; trocá-las depois é seguro. A
 `PLATFORM_ADMIN_PASSWORD` é a senha da conta de operação da plataforma, que cria e suspende instituições: ela

@@ -62,7 +62,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | ACCR em 5 cores | ✅ | sugestão automática + justificativa para classificar abaixo |
 | POPs hard gate (checklist + dupla checagem) e soft gate (acesso auditado) | ✅ | |
 | Hash SHA-256 (conteúdo + UTC + IP + 2FA) encadeado e imutável | ✅ | gatilhos no banco; verificação da cadeia |
-| Assinatura ICP-Brasil (A1/A3/nuvem) | ⏳ | preferência por tenant já existe; falta o conector (assinatura CMS/PAdES e validação) |
+| Assinatura ICP-Brasil (A1/A3/nuvem) | 🟡 | A1 pronto: certificado do profissional guardado cifrado, PDF assinado em PAdES (CAdES-BES com signing-certificate-v2), validador interno com as raízes da ICP-Brasil; A3 (token/cartão) e nuvem ficam para uma próxima etapa, e falta conferir um documento no validador do ITI com um certificado real |
 
 ## 7. Medicamentos e suprimentos
 
@@ -96,6 +96,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | Login em etapas, troca de unidade/papel, menu por permissão | ✅ | |
 | Administração: unidades, profissionais e lotações, senha provisória, 2FA obrigatório por papel | ✅ | NUC-6 do roadmap; cadastro pela tela sem depender da carga de demonstração; desativar vale na hora |
 | Importação do CNES: estabelecimentos (API do DATASUS, conciliação e aplicação seletiva), equipes INE e profissionais por planilha, pré-cadastro e acessos em lote | 🟡 | NUC-2/3; falta o arquivo "XML e-SUS AB" do CNES (profissionais e equipes oficiais): layout não publicado, precisa de um exemplo do município |
+| Assinatura digital ICP-Brasil (A1 no servidor): certificado em Minha conta, "Assinar com certificado" no registro do prontuário, na receita e no atestado, PDF/PAdES para baixar, página "Validar documento" para qualquer usuário conferir um PDF | 🟡 | ATD-4; testado com certificado de teste no formato e-CPF (CPF no campo 2.16.76.1.3.1) e com o OpenSSL (`cms -verify -cades`); falta um A1 real para conferir no validador do ITI; A3/nuvem depois |
 | Cadastro completo do cidadão: documentos (RG, NIS), dados sociais (escolaridade, trabalho, ocupação, situação de rua), endereço com CEP automático, domicílio e família (cadastro domiciliar do e-SUS), unificação de cadastros duplicados | ✅ | NUC-1; o cadastro unificado redireciona para o que ficou e leva o histórico junto |
 | Recepção (OCR, CADSUS, duplicidade, senhas, acolhimento, pulseira) | ✅ | |
 | Painel de chamada (TV) com voz | ✅ | exige um clique para liberar o som (regra dos navegadores) |
@@ -112,13 +113,15 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 
 ## Verificação feita
 
-- 290 testes automatizados passando: 199 nas bibliotecas e no Worker da Cloudflare e 91 de integração da API
+- 298 testes automatizados passando: 199 nas bibliotecas e no Worker da Cloudflare e 99 da API (integração contra o Postgres e a criptografia da assinatura)
   contra PostgreSQL real.
 - Teste de fumaça com Playwright (`e2e/smoke.e2e.mjs`) percorrendo 13 telas com 8 papéis no build de produção.
 - Fluxo de administração no navegador: a gestora cadastra uma unidade e um profissional, recebe a senha
   provisória, o profissional entra, só vê "Minha conta" até trocar a senha e depois acessa a Recepção.
 - Importação do CNES no navegador contra a API real do DATASUS: os 293 estabelecimentos de Gurupi/TO
   (IBGE 1709500) listados e conciliados, as unidades públicas criadas com tipo, contato, horário e coordenadas.
+- Assinatura digital no navegador: certificado cadastrado em Minha conta, registro do prontuário assinado com
+  o certificado (PDF baixado), receita assinada e o PDF validado em "Validar documento" (adulteração detectada)
 - Cidadão no navegador: domicílio criado a partir do endereço, membro incluído com parentesco, condições de
   moradia editadas, CEP preenchendo logradouro, município, UF e IBGE, e dois cadastros duplicados unificados.
 - Imagem Docker da API construída e executada: migrações, login com contexto e consulta de BI na conexão

@@ -11,6 +11,8 @@ import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
 import { fmtDateTime } from '@/lib/format';
 import { useSession } from '@/lib/session';
+import { SignWithCertificate } from '@/components/signatures/sign-button';
+import { useMyCertificate, useSignedDocuments } from '@/components/signatures/use-signatures';
 import { CodesInput } from './codes-input';
 import { parseStoredCode, type ClinicalNote, type CodeRef, type EncounterDetail } from './types';
 import { useDictation } from './use-dictation';
@@ -44,6 +46,8 @@ export function SoapEditor({ encounter, onChanged }: { encounter: EncounterDetai
   const dictation = useDictation((m) => toast.error(m));
   const closed = encounter.status === 'ENCERRADO' || encounter.status === 'CANCELADO' || encounter.status === 'EVADIU';
   const signed = encounter.notes.filter((n) => n.status === 'ASSINADO' && n.kind !== 'ATESTADO');
+  const signedDocs = useSignedDocuments('ClinicalNote', signed.map((n) => n.id));
+  const myCertificate = useMyCertificate();
 
   useEffect(() => {
     if (!noteId && myDraft) setNoteId(myDraft.id);
@@ -217,6 +221,9 @@ export function SoapEditor({ encounter, onChanged }: { encounter: EncounterDetai
               {n.objective && <p><b>O:</b> {n.objective}</p>}
               {n.assessment && <p><b>A:</b> {n.assessment}</p>}
               {n.plan && <p><b>P:</b> {n.plan}</p>}
+              <div className="mt-2">
+                <SignWithCertificate entityType="ClinicalNote" entityId={n.id} doc={signedDocs.byEntity.get(n.id)} canSign={!!myCertificate.certificate && n.authorId === session.me?.user.id} onSigned={() => void signedDocs.reload()} />
+              </div>
             </article>
           ))}
         </section>

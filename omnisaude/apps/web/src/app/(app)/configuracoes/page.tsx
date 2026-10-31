@@ -1,6 +1,7 @@
 'use client';
 
 import { MfaSetup, PasswordForm } from '@/components/account/account-forms';
+import { CertificateCard } from '@/components/account/certificate-card';
 import { Card, CardBody, CardHeader, PageHeader } from '@/components/ui/card';
 import { Alert } from '@/components/ui/misc';
 import { formatCpf } from '@/lib/format';
@@ -20,6 +21,7 @@ export default function SettingsPage() {
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <MfaSetup />
         <PasswordForm />
+        <CertificateCard />
         <Card>
           <CardHeader title="Lotações" description="Unidades e papéis em que você atua." />
           <CardBody>

@@ -1,6 +1,6 @@
 'use client';
 
-import { Printer } from 'lucide-react';
+import { FileCheck2, Printer } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { PrintPortal, printSoon } from '@/components/patients/print-portal';
 import { Button } from '@/components/ui/button';
@@ -9,6 +9,8 @@ import { Field, Input, Textarea } from '@/components/ui/input';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
 import { fmtDateTime } from '@/lib/format';
+import { SignDialog } from '@/components/signatures/sign-button';
+import { useMyCertificate } from '@/components/signatures/use-signatures';
 
 interface Printable {
   title: string;
@@ -32,25 +34,32 @@ export function CertificateDialog({ encounterId, open, onOpenChange, defaultDays
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [printable, setPrintable] = useState<Printable | null>(null);
+  const myCertificate = useMyCertificate();
+  const [signNoteId, setSignNoteId] = useState<string | null>(null);
 
   useEffect(() => {
     if (open && defaultDays) setDays(String(defaultDays));
   }, [open, defaultDays]);
 
-  async function issue() {
+  async function issue(mode: 'print' | 'digital' = 'print') {
     setBusy(true);
     try {
-      const r = await api.post<{ printable: Printable }>(`/clinical/encounters/${encounterId}/certificate`, {
+      const r = await api.post<{ noteId: string; printable: Printable }>(`/clinical/encounters/${encounterId}/certificate`, {
         days: Number(days),
         includeCid,
         ...(cid.trim() ? { cid: cid.trim().toUpperCase().replace('.', '') } : {}),
         ...(text.trim() ? { text: text.trim() } : {}),
       });
-      setPrintable(r.printable);
       onOpenChange(false);
       onIssued();
-      toast.success('Atestado emitido e assinado');
-      printSoon();
+      if (mode === 'digital') {
+        toast.success('Atestado emitido; agora assine com o certificado');
+        setSignNoteId(r.noteId);
+      } else {
+        setPrintable(r.printable);
+        toast.success('Atestado emitido e assinado');
+        printSoon();
+      }
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
@@ -65,9 +74,16 @@ export function CertificateDialog({ encounterId, open, onOpenChange, defaultDays
         onOpenChange={onOpenChange}
         title="Emitir atestado"
         footer={
-          <Button onClick={issue} loading={busy} disabled={!(Number(days) >= 1)}>
-            <Printer className="h-4 w-4" /> Emitir e imprimir
-          </Button>
+          <>
+            {myCertificate.certificate && (
+              <Button variant="secondary" onClick={() => issue('digital')} loading={busy} disabled={!(Number(days) >= 1)}>
+                <FileCheck2 className="h-4 w-4" /> Emitir e assinar digitalmente
+              </Button>
+            )}
+            <Button onClick={() => issue('print')} loading={busy} disabled={!(Number(days) >= 1)}>
+              <Printer className="h-4 w-4" /> Emitir e imprimir
+            </Button>
+          </>
         }
       >
         <div className="grid gap-4 sm:grid-cols-2">
@@ -86,6 +102,7 @@ export function CertificateDialog({ encounterId, open, onOpenChange, defaultDays
           </Field>
         </div>
       </Dialog>
+      {signNoteId && <SignDialog open onOpenChange={(o) => !o && setSignNoteId(null)} entityType="ClinicalNote" entityId={signNoteId} onSigned={() => setSignNoteId(null)} />}
       {printable && (
         <PrintPortal>
           <article className="mx-auto max-w-[17cm] font-serif text-black">
