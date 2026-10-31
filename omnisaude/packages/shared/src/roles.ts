@@ -135,7 +135,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'odontograma.registrar',
   ],
   SERVICO_SOCIAL: ['regulacao.ler', 'vacinas.ler', 'aps.programas', ...COMMON, 'agenda.ler', 'agenda.marcar', 'prontuario.ler', 'prontuario.evoluir', 'busca_ativa.gerir'],
-  NIR: [...COMMON, 'prontuario.ler', 'leitos.ler', 'leitos.gerir', 'regulacao.solicitar', 'regulacao.ler', 'regulacao.regular'],
+  NIR: [...COMMON, 'prontuario.ler', 'leitos.ler', 'leitos.gerir', 'regulacao.solicitar', 'regulacao.ler', 'regulacao.regular', 'agenda.ler'],
   FARMACIA: ['vacinas.ler', ...COMMON, 'prontuario.ler', 'estoque.ler', 'estoque.movimentar', 'nfe.importar', 'unitarizacao.executar', 'dispensacao.registrar', 'controlados.relatorio', 'pop.executar'],
   FATURAMENTO: ['aps.indicadores', ...COMMON, 'prontuario.ler', 'faturamento.ler', 'faturamento.criticar', 'faturamento.exportar', 'sigtap.sincronizar', 'auditoria.ler', 'esus.ler', 'esus.gerir'],
   GESTOR: [

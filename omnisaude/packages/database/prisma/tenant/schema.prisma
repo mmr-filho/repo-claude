@@ -753,6 +753,61 @@ enum RegulationStatus {
   REALIZADA
 }
 
+enum ProviderKind {
+  PROPRIO
+  CONTRATADO
+  FILANTROPICO
+  CONSORCIADO
+}
+
+/// Prestador executante da regulação: unidade da rede própria ou serviço contratado, com contrato e tetos.
+model RegulationProvider {
+  id               String       @id @default(uuid(7)) @db.Uuid
+  name             String
+  kind             ProviderKind
+  /// Unidade da rede quando o prestador é próprio (agendas e atendimento acontecem nela).
+  unitId           String?      @map("unit_id") @db.Uuid
+  cnes             String?      @db.Char(7)
+  cnpj             String?      @db.Char(14)
+  contractNumber   String?      @map("contract_number")
+  contractStart    DateTime?    @map("contract_start") @db.Date
+  contractEnd      DateTime?    @map("contract_end") @db.Date
+  /// Teto físico (procedimentos por mês) e financeiro (R$ por mês) do contrato.
+  physicalCeiling  Int?         @map("physical_ceiling")
+  financialCeiling Decimal?     @map("financial_ceiling") @db.Decimal(14, 2)
+  phone            String?
+  address          String?
+  notes            String?
+  active           Boolean      @default(true)
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  quotas   RegulationQuota[]
+  requests RegulationRequest[]
+
+  @@map("regulation_providers")
+}
+
+/// PPI e cotas: quantidade pactuada por competência, tipo e especialidade/procedimento, opcionalmente reservada a uma unidade solicitante.
+model RegulationQuota {
+  id           String         @id @default(uuid(7)) @db.Uuid
+  providerId   String         @map("provider_id") @db.Uuid
+  competencia  String         @db.Char(7)
+  kind         RegulationKind
+  specialty    String
+  quantity     Int
+  unitValue    Decimal?       @map("unit_value") @db.Decimal(12, 2)
+  originUnitId String?        @map("origin_unit_id") @db.Uuid
+  notes        String?
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  provider RegulationProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([competencia, kind, specialty])
+  @@index([providerId, competencia])
+  @@map("regulation_quotas")
+}
+
 /// Solicitação de consulta especializada, exame ou procedimento feita a partir do atendimento e regulada na fila única.
 model RegulationRequest {
   id                    String             @id @default(uuid(7)) @db.Uuid
@@ -783,13 +838,20 @@ model RegulationRequest {
   decisionAt            DateTime?          @map("decision_at")
   decisionReason        String?            @map("decision_reason")
   providerUnitId        String?            @map("provider_unit_id") @db.Uuid
+  /// Prestador, cota consumida e competência da autorização (REG-3).
+  providerId            String?            @map("provider_id") @db.Uuid
+  quotaId               String?            @map("quota_id") @db.Uuid
+  competencia           String?            @db.Char(7)
   appointmentId         String?            @map("appointment_id") @db.Uuid
+  scheduledAt           DateTime?          @map("scheduled_at")
+  noShowCount           Int                @default(0) @map("no_show_count")
   returnedCount         Int                @default(0) @map("returned_count")
   createdAt             DateTime           @default(now()) @map("created_at")
   updatedAt             DateTime           @updatedAt @map("updated_at")
   closedAt              DateTime?          @map("closed_at")
 
   patient     Patient                @relation(fields: [patientId], references: [id])
+  provider    RegulationProvider?    @relation(fields: [providerId], references: [id])
   events      RegulationEvent[]
   attachments RegulationAttachment[]
 

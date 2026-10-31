@@ -1,5 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { diasEmFila, ESPECIALIDADES, numeroProtocolo, ordenarFila, prazoMeta, PRIORIDADES, prioridadeSugerida, PROCEDIMENTOS_REGULADOS, verificarProtocolo } from '../src/regulacao';
+import {
+  competenciaRegulacao,
+  consumirCotas,
+  diasEmFila,
+  escolherCota,
+  ESPECIALIDADES,
+  numeroProtocolo,
+  ordenarFila,
+  prazoMeta,
+  PRIORIDADES,
+  prioridadeSugerida,
+  PROCEDIMENTOS_REGULADOS,
+  tempoMedioDias,
+  verificarProtocolo,
+} from '../src/regulacao';
 import { roleHasPermission } from '../src/roles';
 
 const hoje = new Date('2026-10-31T12:00:00Z');
@@ -81,5 +95,29 @@ describe('regulação ambulatorial: protocolos, prioridade e fila única', () =>
     expect(roleHasPermission('GESTOR', 'regulacao.regular')).toBe(true);
     expect(roleHasPermission('RECEPCAO', 'regulacao.ler')).toBe(true);
     expect(roleHasPermission('RECEPCAO', 'regulacao.solicitar')).toBe(false);
+  });
+
+  it('cotas: consumo por solicitação autorizada, escolha da cota da unidade antes da geral e esgotamento', () => {
+    const cotas = [
+      { id: 'geral', providerId: 'p1', competencia: '2026-10', kind: 'CONSULTA' as const, specialty: 'CARDIOLOGIA', quantity: 2, unitValue: 10 },
+      { id: 'ubs', providerId: 'p1', competencia: '2026-10', kind: 'CONSULTA' as const, specialty: 'CARDIOLOGIA', quantity: 1, unitValue: 10, originUnitId: 'u1' },
+    ];
+    const consumo = consumirCotas(cotas, [{ quotaId: 'geral' }, { quotaId: null }, { quotaId: 'ubs' }]);
+    expect(consumo.map((c) => [c.id, c.used, c.available, c.valorUsado])).toEqual([
+      ['geral', 1, 1, 10],
+      ['ubs', 1, 0, 10],
+    ]);
+    expect(escolherCota(consumo, 'u1')?.id).toBe('geral');
+    expect(escolherCota(consumirCotas(cotas, []), 'u1')?.id).toBe('ubs');
+    expect(escolherCota(consumirCotas(cotas, []), 'u2')?.id).toBe('geral');
+    expect(escolherCota(consumirCotas(cotas, [{ quotaId: 'geral' }, { quotaId: 'geral' }, { quotaId: 'ubs' }]), 'u1')).toBeNull();
+    expect(competenciaRegulacao(new Date('2026-11-01T01:00:00Z'), 'America/Sao_Paulo')).toBe('2026-10');
+    expect(
+      tempoMedioDias([
+        { inicio: dias(10), fim: dias(2) },
+        { inicio: dias(5), fim: dias(0) },
+      ]),
+    ).toBe(6.5);
+    expect(tempoMedioDias([])).toBeNull();
   });
 });

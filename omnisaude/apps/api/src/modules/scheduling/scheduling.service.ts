@@ -43,7 +43,10 @@ export class SchedulingService implements OnModuleInit {
     });
   }
 
-  async createSchedule(ctx: RequestContext, input: { professionalId: string; name: string; cbo: string; slotMinutes: number; unitId?: string; rules: { weekday: number; startTime: string; endTime: string; firstVisitQuota: number; returnQuota: number }[] }) {
+  async createSchedule(
+    ctx: RequestContext,
+    input: { professionalId: string; name: string; cbo: string; slotMinutes: number; unitId?: string; rules: { weekday: number; startTime: string; endTime: string; firstVisitQuota: number; returnQuota: number }[] },
+  ) {
     const unitId = input.unitId ?? ctx.session.unitId;
     const assignment = await ctx.db.userAssignment.findFirst({ where: { userId: input.professionalId, unitId, active: true } });
     if (!assignment) throw new DomainError('PROFISSIONAL_SEM_LOTACAO', 'O profissional não está lotado nesta unidade');
@@ -122,8 +125,15 @@ export class SchedulingService implements OnModuleInit {
     const quota = day.quotas.find((q) => q.ruleId === slot.ruleId)!;
     const q = input.kind === 'PRIMEIRA_CONSULTA' ? quota.firstVisit : quota.return;
     if (q.used >= q.quota) throw new DomainError('COTA_ESGOTADA', `Cota de ${input.kind === 'PRIMEIRA_CONSULTA' ? 'primeira consulta' : 'retorno'} esgotada neste turno`);
+    // Na remarcação, o horário antigo (ainda ativo até a troca) não conta como outro horário no mesmo dia.
     const sameDay = await sys.db.appointment.count({
-      where: { scheduleId: s.id, patientId: input.patientId, status: { in: ['AGENDADO', 'CONFIRMADO'] }, startsAt: { gte: day.slots[0]?.startsAt ?? startsAt, lte: day.slots.at(-1)?.startsAt ?? startsAt } },
+      where: {
+        scheduleId: s.id,
+        patientId: input.patientId,
+        status: { in: ['AGENDADO', 'CONFIRMADO'] },
+        startsAt: { gte: day.slots[0]?.startsAt ?? startsAt, lte: day.slots.at(-1)?.startsAt ?? startsAt },
+        ...(input.rescheduledFromId ? { id: { not: input.rescheduledFromId } } : {}),
+      },
     });
     if (sameDay > 0) throw conflict('Paciente já tem horário nesta agenda neste dia');
     const appt = await sys.db.appointment.create({
@@ -254,9 +264,7 @@ export class SchedulingService implements OnModuleInit {
 
   async waitlist(ctx: RequestContext, status = 'AGUARDANDO') {
     const rows = await ctx.db.waitlistEntry.findMany({ where: { unitId: ctx.session.unitId, status: status as never }, orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }] });
-    const patients = new Map(
-      (await ctx.db.patient.findMany({ where: { id: { in: rows.map((r) => r.patientId) } }, select: { id: true, name: true, socialName: true, phone: true } })).map((p) => [p.id, p]),
-    );
+    const patients = new Map((await ctx.db.patient.findMany({ where: { id: { in: rows.map((r) => r.patientId) } }, select: { id: true, name: true, socialName: true, phone: true } })).map((p) => [p.id, p]));
     return rows.map((r) => {
       const p = patients.get(r.patientId);
       return { ...r, patient: p ? { id: p.id, name: p.socialName ?? p.name, phone: p.phone } : null };

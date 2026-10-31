@@ -24,6 +24,11 @@ export interface Solicitacao {
   requester: { id: string; name: string | null; cbo: string };
   regulator: { id: string; name: string | null } | null;
   providerUnit: { id: string; name: string | null } | null;
+  provider: { id: string; name: string; kind: string; kindLabel: string; unitId: string | null } | null;
+  quotaId: string | null;
+  competencia: string | null;
+  scheduledAt: string | null;
+  noShowCount: number;
   decisionAt: string | null;
   decisionReason: string | null;
   returnedCount: number;
@@ -39,6 +44,27 @@ export interface Solicitacao {
 export interface SolicitacaoDetalhe extends Solicitacao {
   eventos: { id: string; kind: string; fromStatus: string | null; toStatus: string | null; notes: string | null; at: string; usuario: string | null; role: string }[];
   anexos: { id: string; documentId: string; label: string | null; kind: string | null; mimeType: string | null; sizeBytes: number | null; createdAt: string | null }[];
+  agendamento: { id: string; startsAt: string; endsAt: string; status: string; confirmedAt: string | null; schedule: { id: string; name: string }; unit: { id: string; name: string | null } } | null;
+}
+
+export interface Oferta {
+  id: string;
+  name: string;
+  kind: string;
+  kindLabel: string;
+  unitId: string | null;
+  semCota: boolean;
+  disponivel: boolean;
+  cotas: { id: string; quantity: number; used: number; available: number; originUnitId: string | null }[];
+}
+
+export interface AgendaPrestador {
+  id: string;
+  name: string;
+  cbo: string;
+  slotMinutes: number;
+  profissional: string | null;
+  proximos: { id: string; startsAt: string; endsAt: string }[];
 }
 
 export interface Protocolos {
@@ -76,4 +102,7 @@ export const EVENTO_LABEL: Record<string, string> = {
   AGENDADA: 'Agendada',
   REALIZADA: 'Realizada',
   MENSAGEM: 'Mensagem',
+  REMARCADA: 'Remarcada',
+  AGENDAMENTO_CANCELADO: 'Agendamento desmarcado',
+  FALTOU: 'Não compareceu',
 };

@@ -1,10 +1,12 @@
-# Regulação ambulatorial (REG-1 e REG-2)
+# Regulação ambulatorial (REG-1 a REG-4)
 
 A tela **Regulação** (`/regulacao`) e a aba **Encaminhamentos** do atendimento cobrem o acesso regulado à
 atenção especializada: a solicitação nasce no atendimento, passa pelo protocolo de encaminhamento da
 especialidade, recebe uma classificação de prioridade e entra numa **fila única** por procedimento, onde o
 regulador autoriza, devolve com pendência ou nega, com **devolutiva** ao solicitante (na hora) e ao cidadão
-(WhatsApp). Agendamento regulado, cotas e prestadores chegam em REG-3/REG-4.
+(WhatsApp). Em REG-3/REG-4 entram os **prestadores** (rede própria e contratados, com tetos), a **PPI e as
+cotas** por competência, o **agendamento regulado** na agenda do executante (com a confirmação e a remarcação
+pelo WhatsApp já existentes), o registro de falta, a conclusão e os tempos médios de fila.
 
 ## Papéis e permissões
 
@@ -12,7 +14,8 @@ regulador autoriza, devolve com pendência ou nega, com **devolutiva** ao solici
 |---|---|---|
 | `regulacao.solicitar` | médico, enfermagem, equipe multiprofissional, NIR | cria solicitações, complementa devoluções, cancela as da própria unidade |
 | `regulacao.ler` | os anteriores, recepção, serviço social, gestão | acompanha as solicitações da unidade, o painel e os protocolos |
-| `regulacao.regular` | NIR e gestão | fila única, análise, autorização, devolução, negativa, mensagens |
+| `regulacao.regular` | NIR e gestão | fila única, análise, autorização (com prestador e cota), devolução, negativa, mensagens; prestadores e cotas; agendamento regulado |
+| `agenda.marcar` na unidade executante | recepção da unidade | agenda, remarca, desmarca, registra falta e conclui as solicitações autorizadas para a sua unidade |
 
 ## Protocolos de encaminhamento
 
@@ -63,22 +66,62 @@ justificativa nas duas primeiras) e **reclassificada pelo regulador** ao autoriz
    negativa, agendamento e cancelamento geram a mensagem `regulacao_atualizacao` (modelo UTILITY, enviado pelo
    job de mensagens, respeitando a janela de silêncio). A linha do tempo do paciente mostra a solicitação.
 
-Situações: `PENDENTE`, `EM_ANALISE`, `DEVOLVIDA`, `AUTORIZADA`, `AGENDADA`, `NEGADA`, `CANCELADA`, `REALIZADA`
-(as duas últimas de REG-4 ficam reservadas).
+Situações: `PENDENTE`, `EM_ANALISE`, `DEVOLVIDA`, `AUTORIZADA`, `AGENDADA`, `NEGADA`, `CANCELADA`, `REALIZADA`.
+
+## Prestadores, contratos, PPI e cotas (REG-3)
+
+Aba **Prestadores e cotas** da tela Regulação (`/api/regulacao/prestadores`). Um prestador é uma unidade da
+rede própria (ligado a uma unidade do sistema, onde ficam as agendas) ou um serviço contratado, filantrópico
+ou de consórcio, com CNES/CNPJ, contrato (número e vigência) e **tetos mensais** físico (procedimentos) e
+financeiro (R$). As **cotas** são definidas por competência (AAAA-MM), tipo e especialidade ou procedimento,
+com quantidade e valor unitário; uma cota pode ser **reservada a uma unidade solicitante** (PPI por origem).
+
+Na autorização o regulador escolhe o prestador (`GET /api/regulacao/ofertas` mostra, para a especialidade,
+quem tem vaga na competência e quem não tem cota configurada, caso em que não há limite). A autorização
+**consome a cota** (primeiro a reservada à unidade solicitante, depois a geral) e confere os tetos do
+contrato; cota esgotada ou teto atingido recusam com `COTA_ESGOTADA`, `TETO_FISICO` ou `TETO_FINANCEIRO`.
+Cancelamentos devolvem a vaga. Cotas com uso não podem ser removidas, só reduzidas.
+
+## Agendamento regulado, confirmação e remarcação (REG-4)
+
+Com a solicitação **autorizada** para um prestador da rede própria, a regulação (ou a recepção da unidade
+executante) escolhe a agenda (`GET /api/regulacao/prestadores/:id/agendas`, com os próximos horários livres)
+e o horário (grade da agenda, `GET /api/scheduling/schedules/:id/slots`) e **agenda**
+(`POST /api/regulacao/solicitacoes/:id/agendar`). O agendamento é o mesmo da agenda da unidade (cotas de
+primeira consulta, bloqueios, um horário por pessoa por dia) e dispara a **confirmação de presença pelo
+WhatsApp** 48 h antes, com os botões de confirmar, cancelar e remarcar. A solicitação passa a `AGENDADA`,
+guarda a data e avisa o cidadão.
+
+Depois disso: **remarcar** (`/remarcar`, novo horário na mesma agenda), **desmarcar** (`/desmarcar`, a vaga
+volta à agenda e a solicitação volta a autorizada), **falta** (`/falta`, só após o horário; conta o não
+comparecimento e volta a autorizada para reagendar) e **concluir** (`/realizar`). O que acontece na agenda
+sem passar pela regulação (chegada do paciente, falta registrada pela recepção, cancelamento ou remarcação
+pelo WhatsApp) é refletido na solicitação quando ela é lida (`AGENDADA` → `REALIZADA`, falta ou volta a
+autorizada; remarcação troca o agendamento vinculado).
+
+**Tempos médios** (últimos 90 dias) no painel da regulação: da solicitação à decisão e ao agendamento, no
+total e por prestador (autorizadas, agendadas, realizadas, faltas).
 
 ## Dados
 
 `regulation_requests` (solicitação, com prioridade pedida e vigente, critérios, pendências do protocolo,
-regulador, decisão, unidade executante), `regulation_events` (histórico: mudanças de situação e mensagens, com
-quem e quando) e `regulation_attachments` (documentos do paciente anexados). Tudo auditado
-(`regulacao.solicitar`, `regulacao.analisar`, `regulacao.autorizar`, `regulacao.devolver`, `regulacao.negar`,
-`regulacao.complementar`, `regulacao.cancelar`, `regulacao.mensagem`, `regulacao.visualizar`).
+regulador, decisão, prestador, cota e competência da autorização, agendamento vinculado e faltas),
+`regulation_events` (histórico: mudanças de situação e mensagens, com quem e quando),
+`regulation_attachments` (documentos do paciente anexados), `regulation_providers` (prestadores e contratos)
+e `regulation_quotas` (PPI e cotas). Tudo auditado (`regulacao.solicitar`, `regulacao.analisar`,
+`regulacao.autorizar`, `regulacao.devolver`, `regulacao.negar`, `regulacao.complementar`,
+`regulacao.cancelar`, `regulacao.mensagem`, `regulacao.visualizar`, `regulacao.agendar`,
+`regulacao.remarcar`, `regulacao.desmarcar`, `regulacao.falta`, `regulacao.realizar`,
+`regulacao.prestador.*`, `regulacao.cotas.definir`).
 
 ## Demonstração
 
 A carga tem quatro solicitações da UBS Centro (cardiologia pendente com pendência de exame, oftalmologia
-autorizada para a Policlínica, endocrinologia devolvida, mamografia eletiva há 40 dias) e o NIR Fábio Teixeira
-lotado também na Policlínica Municipal como regulador.
+autorizada para a Policlínica com cota consumida, endocrinologia devolvida, mamografia eletiva há 40 dias), o
+NIR Fábio Teixeira lotado também na Policlínica Municipal como regulador, dois prestadores (Policlínica
+Municipal, rede própria, com cotas de cardiologia, oftalmologia e endocrinologia e uma reserva de PPI para a
+UBS Centro; Clínica Conveniada Imagem, contratada, com tetos e cotas de mamografia, ultrassonografia e
+ecocardiograma) e as agendas de cardiologia e oftalmologia na Policlínica.
 
 ## Testes
 
@@ -88,9 +131,12 @@ lotado também na Policlínica Municipal como regulador.
 - `apps/api/test/regulation.test.ts`: verificação, solicitação com protocolo, duplicidade, fila única por
   prioridade, análise, devolução e complementação (volta à posição original), autorização com reclassificação
   e devolutiva por WhatsApp no simulador, negativa, cancelamento, painel e linha do tempo.
+- `apps/api/test/regulation-providers.test.ts`: prestadores e cotas (cadastro, PPI, consumo, cota esgotada,
+  teto financeiro, cota com uso), agendamento regulado na agenda do prestador (vaga ocupada recusada,
+  remarcação, desmarcação, falta antes da hora recusada, conclusão) e tempos médios por prestador.
 
-## Próximos passos (REG-3/REG-4)
+## Próximos passos
 
-PPI e cotas por prestador, contratos, **agendamento regulado** (o regulador agenda na agenda do executante,
-com confirmação e remarcação pelo WhatsApp já existentes), tempo médio de fila por prestador; depois TFD e
-transporte sanitário (REG-5/6) e a integração com a RNDS e o e-SUS Regulação (INT-5).
+TFD e transporte sanitário (REG-5/REG-6), regulação de leitos e AIH (REG-7) e a integração com a RNDS
+(Portaria 6.656/2025) e o e-SUS Regulação (INT-5). Prestadores externos sem agenda no sistema recebem a
+autorização e o agendamento é registrado manualmente (data informada ao cidadão pela unidade).

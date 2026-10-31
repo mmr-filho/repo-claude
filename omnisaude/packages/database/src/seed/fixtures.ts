@@ -148,6 +148,22 @@ export const STAFF: {
     ],
   },
   {
+    key: 'cardiologista',
+    name: 'Lúcio Andrade Cardiologista',
+    cpf: completeCpf('100000012'),
+    cns: cnsFromBase('10000000012'),
+    council: 'CRM-SP 100012',
+    assignments: [{ unit: 'poli', role: 'MEDICO', cbo: '225120' }],
+  },
+  {
+    key: 'oftalmologista',
+    name: 'Marina Lopes Oftalmologista',
+    cpf: completeCpf('100000013'),
+    cns: cnsFromBase('10000000013'),
+    council: 'CRM-SP 100013',
+    assignments: [{ unit: 'poli', role: 'MEDICO', cbo: '225265' }],
+  },
+  {
     key: 'acs',
     name: 'Joaquim Pereira Agente Comunitário',
     cpf: completeCpf('100000011'),

@@ -647,7 +647,62 @@ export async function seedDemo(opts: SeedOptions) {
       },
     });
 
-    // ── Regulação ambulatorial: fila única com solicitações em situações diferentes ──
+    // ── Regulação ambulatorial: agendas dos especialistas, prestadores com cotas e solicitações em situações diferentes ──
+    for (const [key, name, cbo] of [
+      ['cardiologista', 'Cardiologia - Dr. Lúcio', '225120'],
+      ['oftalmologista', 'Oftalmologia - Dra. Marina', '225265'],
+    ] as const) {
+      await db.schedule.create({
+        data: {
+          unitId: unit.poli,
+          professionalId: staff[key]!,
+          name,
+          cbo,
+          slotMinutes: 20,
+          rules: { create: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, startTime: '08:00', endTime: '12:00', firstVisitQuota: 8, returnQuota: 4 })) },
+        },
+      });
+    }
+    const competenciaAtual = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+    const poliProvider = await db.regulationProvider.create({
+      data: {
+        name: 'Policlínica Municipal',
+        kind: 'PROPRIO',
+        unitId: unit.poli,
+        cnes: '9000052',
+        physicalCeiling: 600,
+        quotas: {
+          create: [
+            { competencia: competenciaAtual, kind: 'CONSULTA', specialty: 'CARDIOLOGIA', quantity: 20, unitValue: 10 },
+            { competencia: competenciaAtual, kind: 'CONSULTA', specialty: 'OFTALMOLOGIA', quantity: 30, unitValue: 10 },
+            { competencia: competenciaAtual, kind: 'CONSULTA', specialty: 'ENDOCRINOLOGIA', quantity: 10, unitValue: 10 },
+            { competencia: competenciaAtual, kind: 'CONSULTA', specialty: 'CARDIOLOGIA', quantity: 5, unitValue: 10, originUnitId: unit.ubs, notes: 'PPI: reserva da UBS Centro' },
+          ],
+        },
+      },
+    });
+    await db.regulationProvider.create({
+      data: {
+        name: 'Clínica Conveniada Imagem',
+        kind: 'CONTRATADO',
+        cnpj: '12345678000190',
+        contractNumber: 'CT-2026-014',
+        contractStart: new Date(`${now.getUTCFullYear()}-01-01`),
+        contractEnd: new Date(`${now.getUTCFullYear()}-12-31`),
+        physicalCeiling: 300,
+        financialCeiling: 45000,
+        phone: '(63) 3312-0000',
+        address: 'Av. Goiás, 1200, Centro',
+        quotas: {
+          create: [
+            { competencia: competenciaAtual, kind: 'EXAME', specialty: 'MAMOGRAFIA', quantity: 150, unitValue: 45 },
+            { competencia: competenciaAtual, kind: 'EXAME', specialty: 'USG_ABDOME', quantity: 80, unitValue: 24.2 },
+            { competencia: competenciaAtual, kind: 'EXAME', specialty: 'ECOCARDIOGRAMA', quantity: 40, unitValue: 39.94 },
+          ],
+        },
+      },
+    });
+    const cotaOftalmo = await db.regulationQuota.findFirst({ where: { providerId: poliProvider.id, specialty: 'OFTALMOLOGIA' } });
     const ano = now.getUTCFullYear();
     type RegData = Omit<Prisma.RegulationRequestUncheckedCreateInput, 'protocol' | 'unitId' | 'requesterId' | 'requesterCbo' | 'procedureCode' | 'requestedPriority' | 'events'> & {
       events: { kind: string; toStatus?: 'PENDENTE' | 'EM_ANALISE' | 'DEVOLVIDA' | 'AUTORIZADA' | 'NEGADA'; userId: string; role: 'MEDICO' | 'NIR'; notes?: string; at: Date }[];
@@ -693,6 +748,9 @@ export async function seedDemo(opts: SeedOptions) {
       regulatorId: staff.nir!,
       decisionAt: daysAgo(3, 15),
       providerUnitId: unit.poli,
+      providerId: poliProvider.id,
+      quotaId: cotaOftalmo?.id ?? null,
+      competencia: competenciaAtual,
       createdAt: daysAgo(14, 9),
       events: [
         { kind: 'CRIADA', toStatus: 'PENDENTE', userId: medica, role: 'MEDICO', at: daysAgo(14, 9) },

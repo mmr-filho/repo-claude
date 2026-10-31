@@ -4,6 +4,7 @@ import { PRIORIDADES, STATUS_SOLICITACAO, type PrioridadeRegulacao, type StatusS
 import { RefreshCw, Scale } from 'lucide-react';
 import { useState } from 'react';
 import { DetailDialog } from '@/components/regulation/detail-dialog';
+import { ProvidersTab } from '@/components/regulation/providers-tab';
 import { PRIORIDADE_TONE, STATUS_TONE, type Protocolos, type Solicitacao } from '@/components/regulation/types';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -27,7 +28,15 @@ interface Fila {
 }
 interface Painel {
   unidade: { unitId: string; porStatus: Record<StatusSolicitacao, number>; atrasadas: number };
-  central: { porStatus: Record<StatusSolicitacao, number>; naFila: number } | null;
+  central: {
+    porStatus: Record<StatusSolicitacao, number>;
+    naFila: number;
+    tempoMedio: {
+      ateDecisaoDias: number | null;
+      ateAgendamentoDias: number | null;
+      porPrestador: { providerId: string; nome: string; autorizadas: number; agendadas: number; realizadas: number; faltas: number; tempoMedioAgendamentoDias: number | null }[];
+    };
+  } | null;
 }
 
 /** Regulação ambulatorial: fila única para quem regula, solicitações da unidade para quem solicita e acompanha. */
@@ -78,7 +87,36 @@ export default function RegulacaoPage() {
           {painel.data?.central && <Stat label="Fila única" value={painel.data.central.naFila} hint="todas as unidades" />}
         </div>
       )}
-      <Tabs value={tab} onValueChange={setTab} tabs={[...(regula ? [{ value: 'fila', label: 'Fila única' }] : []), { value: 'unidade', label: 'Solicitações da unidade' }, { value: 'protocolos', label: 'Protocolos' }]}>
+      {painel.data?.central && (
+        <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <Stat label="Tempo até a decisão" value={painel.data.central.tempoMedio.ateDecisaoDias !== null ? `${painel.data.central.tempoMedio.ateDecisaoDias} dia(s)` : '—'} hint="média, últimos 90 dias" />
+          <Stat label="Tempo até o agendamento" value={painel.data.central.tempoMedio.ateAgendamentoDias !== null ? `${painel.data.central.tempoMedio.ateAgendamentoDias} dia(s)` : '—'} hint="média, últimos 90 dias" />
+          <Stat label="Agendadas / realizadas" value={`${painel.data.central.porStatus.AGENDADA} / ${painel.data.central.porStatus.REALIZADA}`} hint="todas as unidades" />
+          <Stat
+            label="Prestadores com autorizações"
+            value={painel.data.central.tempoMedio.porPrestador.length}
+            hint={
+              painel.data.central.tempoMedio.porPrestador
+                .slice(0, 2)
+                .map((p) => `${p.nome}: ${p.autorizadas}`)
+                .join(' · ') || 'nenhuma nos últimos 90 dias'
+            }
+          />
+        </div>
+      )}
+      <Tabs
+        value={tab}
+        onValueChange={setTab}
+        tabs={[
+          ...(regula ? [{ value: 'fila', label: 'Fila única' }] : []),
+          { value: 'unidade', label: 'Solicitações da unidade' },
+          { value: 'prestadores', label: 'Prestadores e cotas' },
+          { value: 'protocolos', label: 'Protocolos' },
+        ]}
+      >
+        <TabPanel value="prestadores">
+          <ProvidersTab podeGerir={regula} />
+        </TabPanel>
         {regula && (
           <TabPanel value="fila">
             <Card>
@@ -242,7 +280,9 @@ export default function RegulacaoPage() {
                           {s.atrasada && <span className="block text-xs text-red-700">prazo-meta vencido</span>}
                         </TD>
                         <TD className="max-w-xs text-xs text-slate-600">
-                          {s.decisionReason ?? (s.providerUnit ? `Executante: ${s.providerUnit.name}` : '—')}
+                          {s.scheduledAt
+                            ? `Agendado para ${fmtDateTime(s.scheduledAt)}${s.provider ? ` · ${s.provider.name}` : s.providerUnit ? ` · ${s.providerUnit.name}` : ''}`
+                            : (s.decisionReason ?? (s.provider ? `Executante: ${s.provider.name}` : s.providerUnit ? `Executante: ${s.providerUnit.name}` : '—'))}
                           {s.decisionAt && <span className="block text-slate-400">{fmtDateTime(s.decisionAt)}</span>}
                         </TD>
                         <TD className="whitespace-nowrap text-xs">{fmtDate(s.createdAt)}</TD>

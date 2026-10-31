@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
 import { zv } from '../../core/zod';
@@ -35,7 +35,53 @@ const listarSchema = z.object({
 });
 const filaSchema = z.object({ specialty: codigo.optional(), priority: prioridade.optional(), kind: tipo.optional() });
 const motivoSchema = z.object({ reason: texto(2000).min(5, 'Informe o motivo') });
-const autorizarSchema = z.object({ priority: prioridade.optional(), providerUnitId: z.string().uuid().nullish(), notes: texto(2000).nullish() });
+const autorizarSchema = z.object({ priority: prioridade.optional(), providerId: z.string().uuid().nullish(), providerUnitId: z.string().uuid().nullish(), notes: texto(2000).nullish() });
+const competencia = z.string().regex(/^\d{4}-\d{2}$/, 'Competência no formato AAAA-MM');
+const prestadorSchema = z.object({
+  name: texto(160).min(3),
+  kind: z.enum(['PROPRIO', 'CONTRATADO', 'FILANTROPICO', 'CONSORCIADO']),
+  unitId: z.string().uuid().nullish(),
+  cnes: z
+    .string()
+    .regex(/^\d{7}$/)
+    .nullish(),
+  cnpj: z.string().max(18).nullish(),
+  contractNumber: texto(60).nullish(),
+  contractStart: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullish(),
+  contractEnd: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullish(),
+  physicalCeiling: z.number().int().min(0).nullish(),
+  financialCeiling: z.number().min(0).nullish(),
+  phone: texto(30).nullish(),
+  address: texto(200).nullish(),
+  notes: texto(1000).nullish(),
+  active: z.boolean().optional(),
+});
+const cotasSchema = z.object({
+  competencia,
+  cotas: z
+    .array(
+      z.object({
+        id: z.string().uuid().nullish(),
+        kind: tipo,
+        specialty: codigo,
+        quantity: z.number().int().min(0).max(100000),
+        unitValue: z.number().min(0).nullish(),
+        originUnitId: z.string().uuid().nullish(),
+        notes: texto(200).nullish(),
+      }),
+    )
+    .max(200),
+});
+const ofertasSchema = z.object({ kind: tipo, specialty: codigo, unitId: z.string().uuid().optional(), competencia: competencia.optional() });
+const agendarSchema = z.object({ scheduleId: z.string().uuid(), startsAt: z.string().datetime({ offset: true }) });
+const remarcarSchema = z.object({ startsAt: z.string().datetime({ offset: true }) });
+const realizarSchema = z.object({ notes: texto(1000).nullish() });
 const complementarSchema = z.object({
   notes: texto(2000).min(5, 'Descreva o que foi complementado'),
   priority: prioridade.optional(),
@@ -86,6 +132,87 @@ export class RegulationController {
   @RequirePermission('regulacao.ler')
   painel(@Ctx() ctx: RequestContext, @Query('unitId') unitId?: string) {
     return this.regulation.painel(ctx, unitId || undefined);
+  }
+
+  // ─── Prestadores, PPI e cotas (REG-3) ───
+
+  @Get('prestadores')
+  @RequirePermission('regulacao.ler')
+  prestadores(@Ctx() ctx: RequestContext, @Query('competencia') comp?: string) {
+    return this.regulation.listarPrestadores(ctx, comp && /^\d{4}-\d{2}$/.test(comp) ? comp : undefined);
+  }
+
+  @Post('prestadores')
+  @RequirePermission('regulacao.regular')
+  criarPrestador(@Ctx() ctx: RequestContext, @Body(zv(prestadorSchema)) body: z.infer<typeof prestadorSchema>) {
+    return this.regulation.criarPrestador(ctx, body);
+  }
+
+  @Patch('prestadores/:id')
+  @RequirePermission('regulacao.regular')
+  atualizarPrestador(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(prestadorSchema)) body: z.infer<typeof prestadorSchema>) {
+    return this.regulation.atualizarPrestador(ctx, id, body);
+  }
+
+  @Get('prestadores/:id/cotas')
+  @RequirePermission('regulacao.ler')
+  cotas(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Query('competencia') comp?: string) {
+    return this.regulation.cotasDoPrestador(ctx, id, comp && /^\d{4}-\d{2}$/.test(comp) ? comp : undefined);
+  }
+
+  @Put('prestadores/:id/cotas')
+  @RequirePermission('regulacao.regular')
+  definirCotas(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(cotasSchema)) body: z.infer<typeof cotasSchema>) {
+    return this.regulation.definirCotas(ctx, id, body.competencia, body.cotas);
+  }
+
+  @Get('prestadores/:id/agendas')
+  @RequirePermission('regulacao.regular', 'agenda.marcar')
+  agendas(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string) {
+    return this.regulation.agendasDoPrestador(ctx, id);
+  }
+
+  @Get('ofertas')
+  @RequirePermission('regulacao.regular')
+  ofertas(@Ctx() ctx: RequestContext, @Query(zv(ofertasSchema)) q: z.infer<typeof ofertasSchema>) {
+    return this.regulation.ofertas(ctx, q);
+  }
+
+  // ─── Agendamento regulado (REG-4) ───
+
+  @Post('solicitacoes/:id/agendar')
+  @HttpCode(200)
+  @RequirePermission('regulacao.regular', 'agenda.marcar')
+  agendar(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(agendarSchema)) body: z.infer<typeof agendarSchema>) {
+    return this.regulation.agendar(ctx, id, body);
+  }
+
+  @Post('solicitacoes/:id/remarcar')
+  @HttpCode(200)
+  @RequirePermission('regulacao.regular', 'agenda.marcar')
+  remarcar(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(remarcarSchema)) body: z.infer<typeof remarcarSchema>) {
+    return this.regulation.remarcar(ctx, id, body);
+  }
+
+  @Post('solicitacoes/:id/desmarcar')
+  @HttpCode(200)
+  @RequirePermission('regulacao.regular', 'agenda.marcar')
+  desmarcar(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(motivoSchema)) body: z.infer<typeof motivoSchema>) {
+    return this.regulation.desmarcar(ctx, id, body.reason);
+  }
+
+  @Post('solicitacoes/:id/falta')
+  @HttpCode(200)
+  @RequirePermission('regulacao.regular', 'agenda.marcar')
+  falta(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string) {
+    return this.regulation.falta(ctx, id);
+  }
+
+  @Post('solicitacoes/:id/realizar')
+  @HttpCode(200)
+  @RequirePermission('regulacao.regular', 'agenda.marcar')
+  realizar(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(realizarSchema)) body: z.infer<typeof realizarSchema>) {
+    return this.regulation.realizar(ctx, id, body.notes);
   }
 
   @Get('solicitacoes/:id')

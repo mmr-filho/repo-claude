@@ -36,7 +36,7 @@ Regras de trabalho:
 | Semana | Código | Entrega |
 |---|---|---|
 | 12 e 13 ✅ entregue em 31/10 | REG-1, REG-2 | Solicitações a partir do atendimento, protocolos por especialidade, classificação de prioridade, fila única, devolutiva (`docs/REGULACAO.md`) |
-| 14 | REG-3, REG-4 | PPI e cotas, contratos de prestadores, agendamento regulado, confirmação e remarcação |
+| 14 ✅ entregue em 31/10 | REG-3, REG-4 | PPI e cotas, contratos de prestadores, agendamento regulado, confirmação e remarcação (`docs/REGULACAO.md`) |
 | 15 | REG-5, REG-6 | TFD completo e transporte sanitário (frota, rotas, viagens) |
 | 16 e 17 | REG-7 | Regulação de leitos da rede e AIH |
 | 18 | INT-5 | Envio da regulação à RNDS (Portaria 6.656/2025) e integração com o e-SUS Regulação conforme a documentação do DATASUS |

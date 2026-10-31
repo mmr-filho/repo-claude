@@ -6,6 +6,8 @@
  * básica; são o apoio à decisão do solicitante e do regulador, não substituem a avaliação clínica.
  */
 
+import { localDateString } from './dates';
+
 export type PrioridadeRegulacao = 'VERMELHA' | 'AMARELA' | 'VERDE' | 'AZUL';
 export type TipoSolicitacao = 'CONSULTA' | 'EXAME' | 'PROCEDIMENTO';
 export type StatusSolicitacao = 'PENDENTE' | 'EM_ANALISE' | 'DEVOLVIDA' | 'AUTORIZADA' | 'AGENDADA' | 'NEGADA' | 'CANCELADA' | 'REALIZADA';
@@ -508,4 +510,59 @@ export function diasEmFila(createdAt: Date, hoje = new Date()): number {
 /** Número de protocolo legível: REG-AAAA-NNNNNN. */
 export function numeroProtocolo(ano: number, sequencia: number): string {
   return `REG-${ano}-${String(sequencia).padStart(6, '0')}`;
+}
+
+// ─── Prestadores, PPI e cotas (REG-3) e agendamento regulado (REG-4) ──────────
+
+export type TipoPrestador = 'PROPRIO' | 'CONTRATADO' | 'FILANTROPICO' | 'CONSORCIADO';
+export const TIPO_PRESTADOR: Record<TipoPrestador, string> = { PROPRIO: 'Rede própria', CONTRATADO: 'Contratado / conveniado', FILANTROPICO: 'Filantrópico', CONSORCIADO: 'Consórcio' };
+
+/** Competência da regulação (AAAA-MM) no fuso da instituição. */
+export function competenciaRegulacao(date: Date, timeZone: string): string {
+  return localDateString(date, timeZone).slice(0, 7);
+}
+
+/** Situações que consomem cota do prestador. */
+export const STATUS_CONSOME_COTA: StatusSolicitacao[] = ['AUTORIZADA', 'AGENDADA', 'REALIZADA'];
+
+export interface CotaDef {
+  id: string;
+  providerId: string;
+  competencia: string;
+  kind: TipoSolicitacao;
+  specialty: string;
+  quantity: number;
+  unitValue?: number | null;
+  /** PPI: cota reservada a uma unidade (ou município) solicitante; sem origem, vale para todos. */
+  originUnitId?: string | null;
+}
+
+export interface CotaConsumo extends CotaDef {
+  used: number;
+  available: number;
+  valorUsado: number;
+}
+
+/** Consumo de cada cota a partir das solicitações que a consumiram (quotaId gravado na autorização). */
+export function consumirCotas(cotas: CotaDef[], usos: { quotaId: string | null }[]): CotaConsumo[] {
+  const used = new Map<string, number>();
+  for (const u of usos) if (u.quotaId) used.set(u.quotaId, (used.get(u.quotaId) ?? 0) + 1);
+  return cotas.map((c) => {
+    const n = used.get(c.id) ?? 0;
+    return { ...c, used: n, available: Math.max(0, c.quantity - n), valorUsado: Math.round(n * (c.unitValue ?? 0) * 100) / 100 };
+  });
+}
+
+/** Cota a consumir na autorização: primeiro a reservada à unidade solicitante, depois a geral; null quando todas esgotaram. */
+export function escolherCota(cotas: CotaConsumo[], unitId: string): CotaConsumo | null {
+  const disponiveis = cotas.filter((c) => c.available > 0);
+  return disponiveis.find((c) => c.originUnitId === unitId) ?? disponiveis.find((c) => !c.originUnitId) ?? null;
+}
+
+/** Média em dias entre pares de datas (null sem dados), com uma casa decimal. */
+export function tempoMedioDias(pares: { inicio: Date; fim: Date }[]): number | null {
+  const validos = pares.filter((p) => p.fim.getTime() >= p.inicio.getTime());
+  if (!validos.length) return null;
+  const total = validos.reduce((s, p) => s + (p.fim.getTime() - p.inicio.getTime()) / 86_400_000, 0);
+  return Math.round((total / validos.length) * 10) / 10;
 }
