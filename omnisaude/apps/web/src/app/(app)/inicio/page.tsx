@@ -16,6 +16,7 @@ const DESCRIPTIONS: Record<string, string> = {
   '/farmacia': 'NF-e, estoque, transferências, unitarização e dispensação.',
   '/beira-leito': 'Administração com leitura da pulseira e da dose (5 certos).',
   '/leitos': 'Censo de leitos em tempo real, internações e altas.',
+  '/regulacao': 'Fila única de consultas especializadas, exames e procedimentos, com protocolos e devolutiva.',
   '/faturamento': 'SIGTAP, crítica pré-glosa e exportação BPA.',
   '/gestao': 'Produtividade, SLAs e pautas de reunião.',
   '/bi': 'Perguntas em linguagem natural sobre os dados da rede.',

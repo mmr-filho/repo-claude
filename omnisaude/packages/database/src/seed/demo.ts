@@ -1,6 +1,6 @@
 import { completeCpf, cnsFromBase, competencia, gs1HumanReadable, localDateString, personNameKey } from '@omnisaude/shared';
 import type { PrismaClient as MasterClient } from '../generated/master/client';
-import type { PrismaClient as TenantClient } from '../generated/tenant/client';
+import type { Prisma, PrismaClient as TenantClient } from '../generated/tenant/client';
 import { appendAudit } from '../audit';
 import { hashPassword } from '../passwords';
 import { provisionTenant } from '../provision';
@@ -645,6 +645,95 @@ export async function seedDemo(opts: SeedOptions) {
         userId: staff.social!,
         at: daysAgo(4),
       },
+    });
+
+    // ── Regulação ambulatorial: fila única com solicitações em situações diferentes ──
+    const ano = now.getUTCFullYear();
+    type RegData = Omit<Prisma.RegulationRequestUncheckedCreateInput, 'protocol' | 'unitId' | 'requesterId' | 'requesterCbo' | 'procedureCode' | 'requestedPriority' | 'events'> & {
+      events: { kind: string; toStatus?: 'PENDENTE' | 'EM_ANALISE' | 'DEVOLVIDA' | 'AUTORIZADA' | 'NEGADA'; userId: string; role: 'MEDICO' | 'NIR'; notes?: string; at: Date }[];
+    };
+    const reg = async (n: number, { events, ...data }: RegData) =>
+      db.regulationRequest.create({
+        data: {
+          ...data,
+          protocol: `REG-${ano}-${String(n).padStart(6, '0')}`,
+          unitId: unit.ubs,
+          requesterId: medica,
+          requesterCbo: '225125',
+          procedureCode: data.kind === 'CONSULTA' ? '0301010072' : '0204030188',
+          requestedPriority: data.priority,
+          events: { create: events.map((e) => ({ kind: e.kind, toStatus: e.toStatus ?? null, userId: e.userId, role: e.role, notes: e.notes ?? null, at: e.at })) },
+        },
+      });
+    await reg(1, {
+      kind: 'CONSULTA',
+      specialty: 'CARDIOLOGIA',
+      procedureName: 'Consulta com Cardiologia',
+      patientId: patient.maria!,
+      priority: 'VERDE',
+      clinicalSummary: 'Hipertensão arterial com PA acima da meta em uso de losartana, anlodipino e hidroclorotiazida em doses otimizadas há 6 meses. ECG com sobrecarga de VE.',
+      criteria: ['HAS_RESISTENTE'],
+      cid: 'I10',
+      protocolIssues: ['Sem Creatinina nos últimos 12 meses'],
+      status: 'PENDENTE',
+      createdAt: daysAgo(10, 10),
+      events: [{ kind: 'CRIADA', toStatus: 'PENDENTE', userId: medica, role: 'MEDICO', notes: 'Pendências do protocolo: Sem Creatinina nos últimos 12 meses', at: daysAgo(10, 10) }],
+    });
+    await reg(2, {
+      kind: 'CONSULTA',
+      specialty: 'OFTALMOLOGIA',
+      procedureName: 'Consulta com Oftalmologia',
+      patientId: patient.jose!,
+      priority: 'VERDE',
+      clinicalSummary: 'Diabetes há 8 anos sem fundoscopia registrada; queixa de visão embaçada progressiva.',
+      criteria: ['RETINOPATIA_DM'],
+      cid: 'E11',
+      protocolIssues: [],
+      status: 'AUTORIZADA',
+      regulatorId: staff.nir!,
+      decisionAt: daysAgo(3, 15),
+      providerUnitId: unit.poli,
+      createdAt: daysAgo(14, 9),
+      events: [
+        { kind: 'CRIADA', toStatus: 'PENDENTE', userId: medica, role: 'MEDICO', at: daysAgo(14, 9) },
+        { kind: 'EM_ANALISE', toStatus: 'EM_ANALISE', userId: staff.nir!, role: 'NIR', at: daysAgo(3, 14) },
+        { kind: 'AUTORIZADA', toStatus: 'AUTORIZADA', userId: staff.nir!, role: 'NIR', notes: 'Unidade executante: Policlínica Municipal', at: daysAgo(3, 15) },
+      ],
+    });
+    await reg(3, {
+      kind: 'CONSULTA',
+      specialty: 'ENDOCRINOLOGIA',
+      procedureName: 'Consulta com Endocrinologia',
+      patientId: patient.fernanda!,
+      priority: 'AMARELA',
+      priorityJustification: 'Hipoglicemias frequentes com insulina NPH, duas com necessidade de ajuda de terceiros no último mês.',
+      clinicalSummary: 'Diabetes tipo 2 insulinizada, hipoglicemias de repetição apesar de redução de dose.',
+      criteria: ['HIPOGLICEMIAS_GRAVES'],
+      cid: 'E11',
+      protocolIssues: ['Sem Hemoglobina glicada nos últimos 12 meses'],
+      status: 'DEVOLVIDA',
+      regulatorId: staff.nir!,
+      decisionAt: daysAgo(1, 11),
+      decisionReason: 'Anexar hemoglobina glicada e informar as doses atuais de insulina.',
+      returnedCount: 1,
+      createdAt: daysAgo(4, 16),
+      events: [
+        { kind: 'CRIADA', toStatus: 'PENDENTE', userId: medica, role: 'MEDICO', notes: 'Pendências do protocolo: Sem Hemoglobina glicada nos últimos 12 meses', at: daysAgo(4, 16) },
+        { kind: 'DEVOLVIDA', toStatus: 'DEVOLVIDA', userId: staff.nir!, role: 'NIR', notes: 'Anexar hemoglobina glicada e informar as doses atuais de insulina.', at: daysAgo(1, 11) },
+      ],
+    });
+    await reg(4, {
+      kind: 'EXAME',
+      specialty: 'MAMOGRAFIA',
+      procedureName: 'Mamografia bilateral',
+      patientId: patient.maria!,
+      priority: 'AZUL',
+      clinicalSummary: 'Rastreamento: 58 anos, sem mamografia há mais de 2 anos, sem queixas mamárias.',
+      criteria: ['RASTREIO_50_69'],
+      protocolIssues: [],
+      status: 'PENDENTE',
+      createdAt: daysAgo(40, 8),
+      events: [{ kind: 'CRIADA', toStatus: 'PENDENTE', userId: medica, role: 'MEDICO', at: daysAgo(40, 8) }],
     });
 
     return { tenantId, dbName, skipped: false };

@@ -1,5 +1,5 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
-import { ageInYears, isValidCns, isValidCpf, normalizePersonName, onlyDigits, personNameKey } from '@omnisaude/shared';
+import { ageInYears, isValidCns, isValidCpf, normalizePersonName, onlyDigits, personNameKey, STATUS_SOLICITACAO } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
@@ -296,7 +296,7 @@ export class PatientsService {
   async timeline(ctx: RequestContext, patientId: string) {
     await this.ensure(ctx, patientId);
     const db = ctx.db;
-    const [encounters, prescriptions, dispensations, exams, vaccinations, appointments] = await Promise.all([
+    const [encounters, prescriptions, dispensations, exams, vaccinations, appointments, regulations] = await Promise.all([
       db.encounter.findMany({
         where: { patientId },
         orderBy: { startedAt: 'desc' },
@@ -308,6 +308,7 @@ export class PatientsService {
       db.examRequest.findMany({ where: { patientId }, orderBy: { requestedAt: 'desc' }, take: 50 }),
       db.vaccination.findMany({ where: { patientId }, orderBy: { appliedAt: 'desc' } }),
       db.appointment.findMany({ where: { patientId }, orderBy: { startsAt: 'desc' }, take: 30, include: { schedule: true } }),
+      db.regulationRequest.findMany({ where: { patientId }, orderBy: { createdAt: 'desc' }, take: 30 }),
     ]);
     const units = new Map((await db.unit.findMany()).map((u) => [u.id, u.name]));
     const users = new Map((await db.user.findMany({ select: { id: true, name: true } })).map((u) => [u.id, u.name]));
@@ -375,6 +376,25 @@ export class PatientsService {
     }
     for (const a of appointments) {
       events.push({ at: a.startsAt, type: 'AGENDAMENTO', id: a.id, unit: units.get(a.unitId), title: `${a.schedule.name} – ${APPOINTMENT_STATUS[a.status] ?? a.status}`, detail: { kind: a.kind, status: a.status } });
+    }
+    for (const r of regulations) {
+      events.push({
+        at: r.createdAt,
+        type: 'REGULACAO',
+        id: r.id,
+        unit: units.get(r.unitId),
+        title: `${r.procedureName} – ${STATUS_SOLICITACAO[r.status] ?? r.status}`,
+        detail: {
+          protocol: r.protocol,
+          kind: r.kind,
+          specialty: r.specialty,
+          status: r.status,
+          priority: r.priority,
+          decisionAt: r.decisionAt,
+          decisionReason: r.decisionReason,
+          providerUnit: r.providerUnitId ? units.get(r.providerUnitId) : null,
+        },
+      });
     }
     events.sort((a, b) => b.at.getTime() - a.at.getTime());
     await this.audit.recordStandalone(ctx, { action: 'paciente.prontuario.visualizar', entityType: 'Patient', entityId: patientId, payload: { events: events.length } });

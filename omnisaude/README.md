@@ -41,7 +41,7 @@ apps/api               NestJS: REST, WebSockets (Socket.IO), filas BullMQ e work
 apps/web               Next.js 16: desktop, tablet e mobile web (também exportado para o app); tela do ACS funciona sem internet
 apps/mobile            Capacitor 8: app Android (smartphones e tablets)
 apps/cloudflare        publicação na Cloudflare: Worker (telas estáticas, rota da API, jobs) e container da API
-packages/shared        papéis/permissões, CPF/CNS, ACCR, GS1, datas, indicadores e programas da APS, calendário vacinal, campo do ACS
+packages/shared        papéis/permissões, CPF/CNS, ACCR, GS1, datas, indicadores e programas da APS, calendário vacinal, campo do ACS, protocolos de regulação
 packages/database      esquemas Prisma (master e tenant), migrações, roteamento, auditoria, carga demo
 packages/ai-engine     OCR, Speech-to-SOAP, copiloto clínico, protocolos, Text-to-SQL com validação AST
 packages/messaging     WhatsApp Business (Cloud API) com regras de horário

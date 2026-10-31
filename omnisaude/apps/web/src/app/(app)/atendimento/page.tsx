@@ -8,6 +8,7 @@ import { CertificateDialog } from '@/components/clinical/certificate-dialog';
 import { CloseEncounterDialog } from '@/components/clinical/close-dialog';
 import { ExamsPanel } from '@/components/clinical/exams-panel';
 import { emptyItem, PrescriptionEditor } from '@/components/clinical/prescription-editor';
+import { RegulationPanel } from '@/components/clinical/regulation-panel';
 import { SoapEditor } from '@/components/clinical/soap-editor';
 import { parseStoredCode, type EncounterDetail, type ItemDraft, type VoiceCommand } from '@/components/clinical/types';
 import { VoiceCommandButton } from '@/components/clinical/voice-command';
@@ -56,7 +57,12 @@ function Workspace() {
   if (!e) return <Spinner />;
   const triage = e.triages[0];
   const closed = e.status === 'ENCERRADO' || e.status === 'CANCELADO' || e.status === 'EVADIU';
-  const lastCid = e.mainCid ?? e.notes.flatMap((n) => n.codes).map(parseStoredCode).find((c) => c.system === 'CID10')?.code;
+  const lastCid =
+    e.mainCid ??
+    e.notes
+      .flatMap((n) => n.codes)
+      .map(parseStoredCode)
+      .find((c) => c.system === 'CID10')?.code;
   const reload = () => {
     void enc.reload();
     void timeline.reload();
@@ -203,6 +209,7 @@ function Workspace() {
                 { value: 'soap', label: 'Evolução (SOAP)' },
                 { value: 'prescricao', label: `Prescrição${e.prescriptions.length ? ` (${e.prescriptions.length})` : ''}` },
                 { value: 'exames', label: `Exames${e.examRequests.length ? ` (${e.examRequests.length})` : ''}` },
+                { value: 'encaminhamentos', label: 'Encaminhamentos' },
               ]}
             >
               <TabPanel value="soap">
@@ -213,6 +220,9 @@ function Workspace() {
               </TabPanel>
               <TabPanel value="exames">
                 <ExamsPanel encounter={e} onChanged={reload} prefill={examPrefill} />
+              </TabPanel>
+              <TabPanel value="encaminhamentos">
+                <RegulationPanel encounter={e} cid={lastCid ?? null} resumo={[e.notes.at(-1)?.assessment, e.notes.at(-1)?.plan].filter(Boolean).join('\n') || null} />
               </TabPanel>
             </Tabs>
           </CardBody>

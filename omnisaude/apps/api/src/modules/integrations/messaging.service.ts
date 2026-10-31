@@ -4,6 +4,7 @@ import {
   applyQuietHours,
   buildAdherenceReminderTemplate,
   buildAppointmentConfirmationTemplate,
+  buildRegulationUpdateTemplate,
   buildRescheduleOptions,
   handleVerificationChallenge,
   normalizeBrazilPhone,
@@ -118,6 +119,29 @@ export class MessagingService {
       }
     }
     return count;
+  }
+
+  /** Devolutiva da regulação ao cidadão (autorizada, negada, agendada, cancelada), respeitando a janela de silêncio. */
+  async scheduleRegulationUpdate(
+    sys: SystemContext,
+    input: { patientId: string; refId: string; protocol: string; procedureName: string; status: 'AUTORIZADA' | 'NEGADA' | 'DEVOLVIDA' | 'AGENDADA' | 'CANCELADA'; detail?: string | null },
+    now = new Date(),
+  ) {
+    if (!sys.tenant.settings.whatsappEnabled) return null;
+    const patient = await sys.db.patient.findUnique({ where: { id: input.patientId }, select: { id: true, name: true, socialName: true, phone: true, whatsappOptIn: true } });
+    const phone = patient?.phone ? normalizeBrazilPhone(patient.phone) : null;
+    if (!patient || !patient.whatsappOptIn || !phone) return null;
+    const template = buildRegulationUpdateTemplate({ patientName: patient.socialName ?? patient.name, procedureName: input.procedureName, protocol: input.protocol, status: input.status, detail: input.detail });
+    return sys.db.messageLog.create({
+      data: {
+        patientId: patient.id,
+        phone,
+        kind: 'AVISO',
+        refId: input.refId,
+        scheduledFor: applyQuietHours(now, { timeZone: sys.tenant.timeZone, priority: 'ROTINA' }),
+        payload: { type: 'template', template } satisfies StoredPayload as object,
+      },
+    });
   }
 
   /** Envia o que já venceu. Rotina: a janela de silêncio é reaplicada no momento do envio. */

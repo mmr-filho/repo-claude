@@ -439,6 +439,7 @@ model Patient {
   dispensations Dispensation[]
   activeSearchCases ActiveSearchCase[]
   homeVisits  HomeVisit[]
+  regulationRequests RegulationRequest[]
 
   @@index([nameKey, birthDate])
   @@index([familyId])
@@ -724,6 +725,111 @@ model WaitlistEntry {
 
   @@index([unitId, cbo, status])
   @@map("waitlist_entries")
+}
+
+// ───────────────────────────── Regulação ambulatorial (fila única) ─────────────────────────────
+
+enum RegulationKind {
+  CONSULTA
+  EXAME
+  PROCEDIMENTO
+}
+
+enum RegulationPriority {
+  VERMELHA
+  AMARELA
+  VERDE
+  AZUL
+}
+
+enum RegulationStatus {
+  PENDENTE
+  EM_ANALISE
+  DEVOLVIDA
+  AUTORIZADA
+  AGENDADA
+  NEGADA
+  CANCELADA
+  REALIZADA
+}
+
+/// Solicitação de consulta especializada, exame ou procedimento feita a partir do atendimento e regulada na fila única.
+model RegulationRequest {
+  id                    String             @id @default(uuid(7)) @db.Uuid
+  /// Número de protocolo legível (REG-AAAA-NNNNNN), único no tenant.
+  protocol              String             @unique
+  kind                  RegulationKind
+  /// Código da especialidade ou do procedimento regulado (tabela compartilhada) e o procedimento SIGTAP.
+  specialty             String
+  procedureCode         String             @map("procedure_code") @db.Char(10)
+  procedureName         String             @map("procedure_name")
+  patientId             String             @map("patient_id") @db.Uuid
+  encounterId           String?            @map("encounter_id") @db.Uuid
+  unitId                String             @map("unit_id") @db.Uuid
+  requesterId           String             @map("requester_id") @db.Uuid
+  requesterCbo          String             @map("requester_cbo") @db.Char(6)
+  priority              RegulationPriority
+  priorityJustification String?            @map("priority_justification")
+  clinicalSummary       String             @map("clinical_summary")
+  /// Critérios do protocolo marcados pelo solicitante.
+  criteria              String[]
+  cid                   String?            @db.VarChar(5)
+  /// Pendências apontadas pela verificação do protocolo na solicitação.
+  protocolIssues        String[]           @map("protocol_issues")
+  status                RegulationStatus   @default(PENDENTE)
+  /// Prioridade original quando o regulador reclassifica.
+  requestedPriority     RegulationPriority @map("requested_priority")
+  regulatorId           String?            @map("regulator_id") @db.Uuid
+  decisionAt            DateTime?          @map("decision_at")
+  decisionReason        String?            @map("decision_reason")
+  providerUnitId        String?            @map("provider_unit_id") @db.Uuid
+  appointmentId         String?            @map("appointment_id") @db.Uuid
+  returnedCount         Int                @default(0) @map("returned_count")
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @updatedAt @map("updated_at")
+  closedAt              DateTime?          @map("closed_at")
+
+  patient     Patient                @relation(fields: [patientId], references: [id])
+  events      RegulationEvent[]
+  attachments RegulationAttachment[]
+
+  @@index([status, priority, createdAt])
+  @@index([unitId, status])
+  @@index([patientId, createdAt])
+  @@index([specialty, status])
+  @@map("regulation_requests")
+}
+
+/// Histórico da solicitação: mudanças de situação e mensagens entre solicitante e regulador (devolutiva).
+model RegulationEvent {
+  id         String            @id @default(uuid(7)) @db.Uuid
+  requestId  String            @map("request_id") @db.Uuid
+  kind       String
+  fromStatus RegulationStatus? @map("from_status")
+  toStatus   RegulationStatus? @map("to_status")
+  userId     String            @map("user_id") @db.Uuid
+  role       Role
+  notes      String?
+  at         DateTime          @default(now())
+
+  request RegulationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@index([requestId, at])
+  @@map("regulation_events")
+}
+
+/// Anexos da solicitação: documentos do paciente (laudos, exames) já guardados no storage.
+model RegulationAttachment {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  requestId  String   @map("request_id") @db.Uuid
+  documentId String   @map("document_id") @db.Uuid
+  label      String?
+  at         DateTime @default(now())
+
+  request RegulationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+
+  @@unique([requestId, documentId])
+  @@map("regulation_attachments")
 }
 
 // ───────────────────────────── Recepção, senhas e atendimento ─────────────────────────────

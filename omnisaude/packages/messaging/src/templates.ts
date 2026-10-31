@@ -79,19 +79,22 @@ export const TEMPLATE_DEFINITIONS = [
     name: 'confirmacao_consulta',
     category: 'UTILITY',
     language: 'pt_BR',
-    body:
-      'Olá, {{1}}! Lembramos da sua consulta de {{2}} na {{3}}, às {{4}}, na unidade {{5}}. ' +
-      'Você confirma a presença? Se não puder ir, cancele ou remarque para liberarmos a vaga para outra pessoa.',
+    body: 'Olá, {{1}}! Lembramos da sua consulta de {{2}} na {{3}}, às {{4}}, na unidade {{5}}. ' + 'Você confirma a presença? Se não puder ir, cancele ou remarque para liberarmos a vaga para outra pessoa.',
     buttons: ['Confirmar', 'Cancelar', 'Remarcar'],
   },
   {
     name: 'lembrete_medicacao',
     category: 'UTILITY',
     language: 'pt_BR',
-    body:
-      'Olá, {{1}}! Lembrete do seu remédio: {{2}}. Horário da dose: {{3}}. ' +
-      'Siga a orientação da receita e, em caso de dúvida, procure sua unidade de saúde.',
+    body: 'Olá, {{1}}! Lembrete do seu remédio: {{2}}. Horário da dose: {{3}}. ' + 'Siga a orientação da receita e, em caso de dúvida, procure sua unidade de saúde.',
     buttons: ['Já tomei'],
+  },
+  {
+    name: 'regulacao_atualizacao',
+    category: 'UTILITY',
+    language: 'pt_BR',
+    body: 'Olá, {{1}}! Sobre o seu pedido de {{2}} (protocolo {{3}}): {{4}}. {{5}} Em caso de dúvida, procure a sua unidade de saúde.',
+    buttons: [],
   },
 ] as const;
 
@@ -112,13 +115,7 @@ export function buildAppointmentConfirmationTemplate(input: AppointmentConfirmat
   return {
     name: input.templateName ?? 'confirmacao_consulta',
     languageCode: input.languageCode ?? 'pt_BR',
-    bodyParams: [
-      firstName(input.patientName),
-      input.service,
-      formatDayLong(input.startsAt, tz),
-      formatTime(input.startsAt, tz),
-      input.unitName,
-    ].map(sanitizeTemplateParam),
+    bodyParams: [firstName(input.patientName), input.service, formatDayLong(input.startsAt, tz), formatTime(input.startsAt, tz), input.unitName].map(sanitizeTemplateParam),
     buttons: APPOINTMENT_ACTIONS.map((action, index) => ({
       subType: 'quick_reply' as const,
       index,
@@ -142,11 +139,7 @@ export interface AdherenceReminderInput {
 
 export function describeDoseTimes(doseTimes: Date[], reference: Date, timeZone: string = DEFAULT_TIME_ZONE): string {
   const refDay = localDateString(reference, timeZone);
-  const labels = doseTimes.map((d) =>
-    localDateString(d, timeZone) === refDay
-      ? formatTime(d, timeZone)
-      : `${formatTime(d, timeZone)} de ${fmt(d, timeZone, { day: '2-digit', month: '2-digit' })}`,
-  );
+  const labels = doseTimes.map((d) => (localDateString(d, timeZone) === refDay ? formatTime(d, timeZone) : `${formatTime(d, timeZone)} de ${fmt(d, timeZone, { day: '2-digit', month: '2-digit' })}`));
   if (labels.length <= 1) return labels.join('');
   return `${labels.slice(0, -1).join(', ')} e ${labels.at(-1)}`;
 }
@@ -158,14 +151,8 @@ export function buildAdherenceReminderTemplate(input: AdherenceReminderInput): T
   return {
     name: input.templateName ?? 'lembrete_medicacao',
     languageCode: input.languageCode ?? 'pt_BR',
-    bodyParams: [
-      firstName(input.patientName),
-      input.dose ? `${input.medication} (${input.dose})` : input.medication,
-      describeDoseTimes(input.doseTimes, reference, tz),
-    ].map(sanitizeTemplateParam),
-    buttons: input.reminderId
-      ? [{ subType: 'quick_reply', index: 0, payload: encodeAdherencePayload(input.reminderId) }]
-      : [],
+    bodyParams: [firstName(input.patientName), input.dose ? `${input.medication} (${input.dose})` : input.medication, describeDoseTimes(input.doseTimes, reference, tz)].map(sanitizeTemplateParam),
+    buttons: input.reminderId ? [{ subType: 'quick_reply', index: 0, payload: encodeAdherencePayload(input.reminderId) }] : [],
   };
 }
 
@@ -183,10 +170,42 @@ export function buildRescheduleOptions(input: RescheduleOptionsInput): Interacti
   if (slots.length === 0) throw new Error('Nenhum horário disponível para oferecer');
   return {
     header: 'Remarcar consulta',
-    body: input.unitName
-      ? `Escolha um novo horário na unidade ${input.unitName}:`
-      : 'Escolha um novo horário para a sua consulta:',
+    body: input.unitName ? `Escolha um novo horário na unidade ${input.unitName}:` : 'Escolha um novo horário para a sua consulta:',
     footer: 'Se nenhum servir, responda esta mensagem.',
     buttons: slots.map((s) => ({ id: encodeSlotPayload(input.appointmentId, s.id), title: formatSlotShort(s.startsAt, tz) })),
+  };
+}
+
+// ─── Regulação: devolutiva ao cidadão ───────────────────────────────────────
+
+export type RegulationUpdateStatus = 'AUTORIZADA' | 'NEGADA' | 'DEVOLVIDA' | 'AGENDADA' | 'CANCELADA';
+
+export interface RegulationUpdateInput {
+  patientName: string;
+  /** Nome do que foi pedido ("consulta com cardiologia", "mamografia"). */
+  procedureName: string;
+  protocol: string;
+  status: RegulationUpdateStatus;
+  /** Complemento (unidade autorizada, data agendada, orientação). */
+  detail?: string | null;
+  templateName?: string;
+  languageCode?: string;
+}
+
+const REGULATION_STATUS_TEXT: Record<RegulationUpdateStatus, string> = {
+  AUTORIZADA: 'foi autorizado pela regulação',
+  NEGADA: 'não foi autorizado pela regulação',
+  DEVOLVIDA: 'precisa de complementação pela sua unidade de saúde',
+  AGENDADA: 'foi agendado',
+  CANCELADA: 'foi cancelado',
+};
+
+/** Mensagem de devolutiva da regulação (modelo "regulacao_atualizacao", categoria UTILITY, sem botões). */
+export function buildRegulationUpdateTemplate(input: RegulationUpdateInput): TemplateMessage {
+  return {
+    name: input.templateName ?? 'regulacao_atualizacao',
+    languageCode: input.languageCode ?? 'pt_BR',
+    bodyParams: [firstName(input.patientName), input.procedureName, input.protocol, REGULATION_STATUS_TEXT[input.status], (input.detail ?? '').trim() || 'Acompanhe pela unidade.'].map(sanitizeTemplateParam),
+    buttons: [],
   };
 }

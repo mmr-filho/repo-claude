@@ -57,7 +57,7 @@ export interface PatientDetail extends PatientSummary {
 
 export interface TimelineEvent {
   at: string;
-  type: 'ATENDIMENTO' | 'PRESCRICAO' | 'DISPENSACAO' | 'EXAME' | 'VACINA' | 'AGENDAMENTO';
+  type: 'ATENDIMENTO' | 'PRESCRICAO' | 'DISPENSACAO' | 'EXAME' | 'VACINA' | 'AGENDAMENTO' | 'REGULACAO';
   id: string;
   unit?: string;
   title: string;

@@ -106,7 +106,10 @@ export const STAFF: {
     cpf: completeCpf('100000006'),
     cns: cnsFromBase('10000000006'),
     council: 'COREN-SP 100006',
-    assignments: [{ unit: 'hosp', role: 'NIR', cbo: '223505' }],
+    assignments: [
+      { unit: 'hosp', role: 'NIR', cbo: '223505' },
+      { unit: 'poli', role: 'NIR', cbo: '223505' },
+    ],
   },
   {
     key: 'farmaceutica',

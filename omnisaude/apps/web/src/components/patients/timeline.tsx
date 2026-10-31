@@ -1,6 +1,6 @@
 'use client';
 
-import { CalendarDays, FlaskConical, Pill, Stethoscope, Syringe, Truck } from 'lucide-react';
+import { CalendarDays, FlaskConical, Pill, Scale, Stethoscope, Syringe, Truck } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import type { RiskColor } from '@omnisaude/shared';
 import { Badge, RiskBadge } from '@/components/ui/badge';
@@ -16,6 +16,7 @@ const META: Record<TimelineEvent['type'], { label: string; icon: typeof Stethosc
   EXAME: { label: 'Exame', icon: FlaskConical, tone: 'amber' },
   VACINA: { label: 'Vacina', icon: Syringe, tone: 'green' },
   AGENDAMENTO: { label: 'Agendamento', icon: CalendarDays, tone: 'slate' },
+  REGULACAO: { label: 'Regulação', icon: Scale, tone: 'violet' },
 };
 
 interface NoteDetail {
@@ -101,10 +102,26 @@ function TimelineItem({ event, compact }: { event: TimelineEvent; compact?: bool
               <p className="text-xs text-slate-500">
                 {n.kind} · {n.author ?? n.role} · {fmtDateTime(n.signedAt)}
               </p>
-              {n.subjective && <p><b>S:</b> {n.subjective}</p>}
-              {n.objective && <p><b>O:</b> {n.objective}</p>}
-              {n.assessment && <p><b>A:</b> {n.assessment}</p>}
-              {n.plan && <p><b>P:</b> {n.plan}</p>}
+              {n.subjective && (
+                <p>
+                  <b>S:</b> {n.subjective}
+                </p>
+              )}
+              {n.objective && (
+                <p>
+                  <b>O:</b> {n.objective}
+                </p>
+              )}
+              {n.assessment && (
+                <p>
+                  <b>A:</b> {n.assessment}
+                </p>
+              )}
+              {n.plan && (
+                <p>
+                  <b>P:</b> {n.plan}
+                </p>
+              )}
             </div>
           ))}
           {items.map((i, idx) => (

@@ -19,6 +19,7 @@ import { PharmacyModule } from './modules/pharmacy/pharmacy.module';
 import { PlatformModule } from './modules/platform/platform.module';
 import { PopsModule } from './modules/pops/pops.module';
 import { ReceptionModule } from './modules/reception/reception.module';
+import { RegulationModule } from './modules/regulation/regulation.module';
 import { SchedulingModule } from './modules/scheduling/scheduling.module';
 import { SignaturesModule } from './modules/signatures/signatures.module';
 import { SocialModule } from './modules/social/social.module';
@@ -41,6 +42,7 @@ import { TriageModule } from './modules/triage/triage.module';
     ProgramsModule,
     VaccinesModule,
     AcsModule,
+    RegulationModule,
     PharmacyModule,
     BedsModule,
     PopsModule,

@@ -89,7 +89,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | e-SUS APS (LEDI/Thrift) e API do PEC | 🟡 | `packages/esus` + `modules/esus`; seis modelos de informação; visita domiciliar e atividade coletiva aguardam as fontes (APS-3, APS-7); homologação num PEC real pendente |
 | Indicadores do cofinanciamento da APS | 🟡 | `packages/shared/src/aps-indicadores.ts` + `modules/indicators`; apuração própria a partir dos registros (não substitui o Siaps) |
 | Consulta CADSUS | ✅ | |
-| Integração com a central de vagas (SISREG) | ⏳ | só o código de regulação na internação; o SISREG não tem API pública |
+| Integração com a central de vagas (SISREG) | ⏳ | a regulação ambulatorial própria está em REG-1/2; o envio à RNDS (Portaria 6.656/2025) e o e-SUS Regulação ficam para INT-5; o SISREG não tem API pública |
 
 ## Front-end (web e Android)
 
@@ -106,6 +106,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | Programas APS: pré-natal, puericultura, HAS/DM, idoso, preventivo e mamografia, Bolsa Família, SISVAN, tuberculose/hanseníase com lista de faltosos por ação programática, busca ativa a partir da lista e estratificações (risco gestacional, pé diabético, M-CHAT-R) | ✅ | APS-4/APS-5; visitas do ACS entram nas faltas desde APS-3; atividades coletivas com APS-7 (`docs/PROGRAMAS-APS.md`) |
 | Vacinas: sala de vacina com cartão e aprazamento pelo Calendário Nacional, aplicação com baixa do lote, transcrição da caderneta, RNDS (RIA) com códigos, certificado em PDF assinável, agenda de aprazamentos, faltosos e estoque por lote | ✅ | APS-8; aceitação pela RNDS de homologação depende do credenciamento (`docs/VACINAS.md`) |
 | App do ACS: papel ACS, território por microárea com prioridades e última visita, visitas domiciliares e territoriais, cadastro domiciliar e individual em campo, fila sem internet (IndexedDB) com sincronização idempotente, mapa (Leaflet/OSM), produtividade por agente; ficha de visita no e-SUS; visitas nos indicadores e programas | ✅ | APS-3; mesma tela no app Android (Capacitor); testado com a rede desligada no navegador (`docs/ACS.md`) |
+| Regulação ambulatorial: solicitação a partir do atendimento com protocolo de encaminhamento por especialidade (critérios, exames mínimos conferidos no prontuário), prioridade com prazo-meta e justificativa, fila única por prioridade e ordem de chegada, análise/autorização (com reclassificação e unidade executante)/devolução/negativa, complementação pela unidade, mensagens, devolutiva em tempo real e por WhatsApp, painel e linha do tempo | ✅ | REG-1/REG-2; agendamento regulado, cotas e prestadores em REG-3/REG-4 (`docs/REGULACAO.md`) |
 | Cadastro completo do cidadão: documentos (RG, NIS), dados sociais (escolaridade, trabalho, ocupação, situação de rua), endereço com CEP automático, domicílio e família (cadastro domiciliar do e-SUS), unificação de cadastros duplicados | ✅ | NUC-1; o cadastro unificado redireciona para o que ficou e leva o histórico junto |
 | Recepção (OCR, CADSUS, duplicidade, senhas, acolhimento, pulseira) | ✅ | |
 | Painel de chamada (TV) com voz | ✅ | exige um clique para liberar o som (regra dos navegadores) |
