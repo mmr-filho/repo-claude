@@ -7,7 +7,7 @@ import { provisionTenant } from '../provision';
 import { connectionUrl, type CredentialsResolver } from '../tenancy';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/tenant/client';
-import { DEMO_PASSWORD, DEMO_TENANT, PATIENTS, POPS, PRODUCTS, SIGTAP_SAMPLE, STAFF, UNITS, type UnitKey } from './fixtures';
+import { DEMO_PASSWORD, DEMO_TENANT, PATIENTS, POPS, PRODUCTS, SIGTAP_SAMPLE, STAFF, UNITS, VACCINES, type UnitKey } from './fixtures';
 
 export interface SeedOptions {
   master: MasterClient;
@@ -231,6 +231,15 @@ export async function seedDemo(opts: SeedOptions) {
           data: { kind: 'AJUSTE', locationId: loc, lotId: l.id, quantity: qty, refType: 'CARGA_INICIAL', userId: staff.farmaceutica! },
         });
       }
+    }
+
+    // ── Sala de vacina da UBS Centro: produtos (imunobiológicos), lotes e saldos ──
+    const salaVacina = (await db.stockLocation.create({ data: { unitId: unit.ubs, name: 'Sala de Vacina - UBS Centro', kind: 'SALA_DE_VACINA' } })).id;
+    for (const [i, v] of VACCINES.entries()) {
+      const row = await db.product.create({ data: { code: v.code, description: v.description, unit: v.unit, vaccineCode: v.vaccineCode, pharmaceuticalForm: 'Suspensão injetável' } });
+      const l = await db.stockLot.create({ data: { productId: row.id, lotNumber: `V26${String(i + 1).padStart(3, '0')}`, expiry: new Date(now.getTime() + (180 + i * 15) * DAY), manufacturer: v.manufacturer } });
+      await db.stockBalance.create({ data: { locationId: salaVacina, lotId: l.id, quantity: 50 } });
+      await db.stockMovement.create({ data: { kind: 'AJUSTE', locationId: salaVacina, lotId: l.id, quantity: 50, refType: 'CARGA_INICIAL', userId: staff.enfermeiro! } });
     }
 
     // ── Leitos ──

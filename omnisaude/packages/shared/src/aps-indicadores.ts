@@ -796,7 +796,25 @@ export const SIGTAP_APS = {
 } as const;
 
 /** Componentes vacinais por código de imunobiológico do e-SUS/RNDS. */
-export type ComponenteVacinal = 'DTP' | 'HEPB' | 'HIB' | 'VIP' | 'SCR' | 'PNEUMO' | 'INFLUENZA' | 'DTPA_ADULTO' | 'HPV' | 'BCG' | 'ROTA' | 'MENINGO_C' | 'FEBRE_AMARELA' | 'VARICELA' | 'HEPA';
+export type ComponenteVacinal =
+  | 'DTP'
+  | 'HEPB'
+  | 'HIB'
+  | 'VIP'
+  | 'SCR'
+  | 'PNEUMO'
+  | 'INFLUENZA'
+  | 'DTPA_ADULTO'
+  | 'HPV'
+  | 'BCG'
+  | 'ROTA'
+  | 'MENINGO_C'
+  | 'MENINGO_ACWY'
+  | 'FEBRE_AMARELA'
+  | 'VARICELA'
+  | 'HEPA'
+  | 'DT'
+  | 'COVID';
 export const COMPONENTES_POR_CODIGO: Record<string, ComponenteVacinal[]> = {
   '09': ['HEPB'],
   '14': ['FEBRE_AMARELA'],
@@ -804,6 +822,7 @@ export const COMPONENTES_POR_CODIGO: Record<string, ComponenteVacinal[]> = {
   '17': ['HIB'],
   '22': ['VIP'],
   '24': ['SCR'],
+  '25': ['DT'],
   '26': ['PNEUMO'],
   '29': ['DTP', 'VIP', 'HIB'],
   '33': ['INFLUENZA'],
@@ -826,16 +845,32 @@ export const COMPONENTES_POR_CODIGO: Record<string, ComponenteVacinal[]> = {
   '65': ['ROTA'],
   '67': ['HPV'],
   '73': ['SCR', 'VARICELA'],
-  '74': ['MENINGO_C'],
+  '74': ['MENINGO_C', 'MENINGO_ACWY'],
   '77': ['INFLUENZA'],
   '83': ['HEPA'],
   '84': ['FEBRE_AMARELA'],
+  '85': ['COVID'],
+  '86': ['COVID'],
+  '87': ['COVID'],
+  '88': ['COVID'],
+  '89': ['COVID'],
   '93': ['HPV'],
+  '97': ['COVID'],
+  '98': ['COVID'],
+  '99': ['COVID'],
+  '102': ['COVID'],
+  '103': ['COVID'],
+  '105': ['COVID'],
+  '112': ['COVID'],
+  '114': ['COVID'],
   '106': ['PNEUMO'],
   '107': ['PNEUMO'],
 };
 
 const NOME_PARA_CODIGO: [RegExp, string][] = [
+  [/covid|coronavac|comirnaty|spikevax|covishield/i, '87'],
+  [/acwy/i, '74'],
+  [/dupla\s*adulto|difteria e t[ée]tano adulto|\bdt\b/i, '25'],
   [/\bbcg\b/i, '15'],
   [/rotav/i, '45'],
   [/mening/i, '41'],

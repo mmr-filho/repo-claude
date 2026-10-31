@@ -24,7 +24,7 @@ export interface MyCertificate {
 export interface SignedDocument {
   id: string;
   kind: 'PRONTUARIO' | 'RECEITA' | 'ATESTADO' | 'DOCUMENTO';
-  entityType: 'ClinicalNote' | 'Prescription';
+  entityType: 'ClinicalNote' | 'Prescription' | 'VaccinationCertificate';
   entityId: string;
   patientId: string | null;
   signerId: string;

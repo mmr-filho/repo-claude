@@ -198,11 +198,12 @@ export class RndsService {
         establishment: { cnes: unit.cnes, name: unit.name },
         vaccine: { code: v.vaccineCode, display: v.vaccineName },
         lot: v.lot,
-        manufacturer: { code: v.manufacturer, display: v.manufacturer },
-        dose: { code: v.dose, display: v.dose },
+        ...(v.expiry ? { expirationDate: v.expiry.toISOString().slice(0, 10) } : {}),
+        manufacturer: { code: v.manufacturerCode ?? v.manufacturer, display: v.manufacturer },
+        dose: { code: v.doseCode ?? v.dose, display: v.dose },
         occurrence: v.appliedAt,
-        route: { code: v.route },
-        ...(v.site ? { site: { code: v.site } } : {}),
+        route: { code: v.routeCode ?? v.route, display: v.route },
+        ...(v.siteCode || v.site ? { site: { code: v.siteCode ?? (v.site as string), ...(v.site ? { display: v.site } : {}) } } : {}),
       });
     }
     if (kind === 'RNDS_SUMARIO_ALTA') {

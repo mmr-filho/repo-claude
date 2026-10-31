@@ -5,13 +5,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import { AuditService } from '../../core/audit.service';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
+import { certificadoVacinacaoModel } from '../vaccines/certificate';
 import { decryptSecret, encryptSecret } from '../../core/crypto';
 import { DomainError, forbidden, notFound } from '../../core/errors';
 import { StorageService } from '../../core/storage.service';
 import { describeCertificate, parsePfx, PfxError, verifyPdfSignatures, type ParsedPfx } from './cms';
 import { formatDateTime, maskCpf, renderDocument, signPdf, type DocumentModel } from './pdf';
 
-export type SignableEntity = 'ClinicalNote' | 'Prescription';
+export type SignableEntity = 'ClinicalNote' | 'Prescription' | 'VaccinationCertificate';
 export type SignedKind = 'PRONTUARIO' | 'RECEITA' | 'ATESTADO' | 'DOCUMENTO';
 
 type CertificateRow = NonNullable<Awaited<ReturnType<TenantClient['signingCertificate']['findFirst']>>>;
@@ -208,7 +209,8 @@ export class SignaturesService {
       },
       orderBy: { signedAt: 'desc' },
     });
-    if (existing) return { ...this.publicDocument(existing), alreadySigned: true };
+    // O certificado de vacinação pode ser assinado de novo a cada dose nova.
+    if (existing && input.entityType !== 'VaccinationCertificate') return { ...this.publicDocument(existing), alreadySigned: true };
 
     const signingTime = new Date();
     const user = await ctx.db.user.findUniqueOrThrow({
@@ -276,6 +278,10 @@ export class SignaturesService {
     issuedAt: Date,
   ): Promise<{ model: DocumentModel; kind: SignedKind; patientId: string }> {
     const tz = ctx.tenant.timeZone;
+    if (entityType === 'VaccinationCertificate') {
+      const model = await certificadoVacinacaoModel(ctx.db, { patientId: entityId, unitId: ctx.session.unitId, userId: ctx.session.userId, role: ctx.session.role, cbo: ctx.cbo, signer, issuedAt, timeZone: tz });
+      return { kind: 'DOCUMENTO', patientId: entityId, model };
+    }
     if (entityType === 'ClinicalNote') {
       const note = await ctx.db.clinicalNote.findUnique({
         where: { id: entityId },

@@ -11,3 +11,4 @@ export * from './gs1';
 export * from './roles';
 export * from './session';
 export * from './units';
+export * from './vacinas';

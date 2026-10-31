@@ -6,7 +6,7 @@ import { DomainError } from '../../core/errors';
 import { zv } from '../../core/zod';
 import { SignaturesService, type SignableEntity } from './signatures.service';
 
-const ENTITY_TYPES = ['ClinicalNote', 'Prescription'] as const;
+const ENTITY_TYPES = ['ClinicalNote', 'Prescription', 'VaccinationCertificate'] as const;
 const certificateSchema = z.object({
   pfxBase64: z.string().min(16).max(200_000),
   password: z.string().min(1).max(200),
@@ -51,7 +51,7 @@ export class SignaturesController {
   @Get()
   @RequirePermission('prontuario.ler')
   list(@Ctx() ctx: RequestContext, @Query('entityType') entityType?: string, @Query('entityIds') entityIds?: string) {
-    if (!ENTITY_TYPES.includes(entityType as SignableEntity)) throw new DomainError('VALIDACAO', 'entityType deve ser ClinicalNote ou Prescription', 400);
+    if (!ENTITY_TYPES.includes(entityType as SignableEntity)) throw new DomainError('VALIDACAO', 'entityType deve ser ClinicalNote, Prescription ou VaccinationCertificate', 400);
     const ids = (entityIds ?? '')
       .split(',')
       .map((s) => s.trim())

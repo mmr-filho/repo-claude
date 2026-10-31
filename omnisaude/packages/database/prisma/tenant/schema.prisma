@@ -991,18 +991,35 @@ model Vaccination {
   patientId      String   @map("patient_id") @db.Uuid
   unitId         String   @map("unit_id") @db.Uuid
   professionalId String   @map("professional_id") @db.Uuid
+  encounterId    String?  @map("encounter_id") @db.Uuid
+  /// Código do imunobiológico (tabela do e-SUS/RNDS).
   vaccineCode    String   @map("vaccine_code")
   vaccineName    String   @map("vaccine_name")
   lot            String
   manufacturer   String
+  /// Código do fabricante na RNDS, quando conhecido.
+  manufacturerCode String? @map("manufacturer_code")
+  expiry         DateTime? @db.Date
+  /// Lote e local de estoque de onde a dose saiu (null em transcrições de caderneta).
+  lotId          String?  @map("lot_id") @db.Uuid
+  locationId     String?  @map("location_id") @db.Uuid
   dose           String
+  doseCode       String?  @map("dose_code")
   route          String
+  routeCode      String?  @map("route_code")
   site           String?
+  siteCode       String?  @map("site_code")
+  strategyCode   String?  @map("strategy_code")
+  /// Dose registrada a partir da caderneta (aplicada em outro serviço): não sai do estoque nem vai à RNDS.
+  transcription  Boolean  @default(false)
+  /// Aprazamento da próxima dose registrado na aplicação.
+  nextDueAt      DateTime? @map("next_due_at") @db.Date
   appliedAt      DateTime @map("applied_at")
 
   patient Patient @relation(fields: [patientId], references: [id])
 
   @@index([patientId])
+  @@index([unitId, appliedAt])
   @@map("vaccinations")
 }
 
@@ -1121,6 +1138,8 @@ model Product {
   /// Unidade de dispensação/estoque (CP, AMP, FR, ML, UN...).
   unit              String
   gtin              String?
+  /// Imunobiológico (código do e-SUS/RNDS) quando o produto é uma vacina: aparece na sala de vacina.
+  vaccineCode       String?         @map("vaccine_code")
   /// Lista da Portaria SVS/MS 344/98 quando controlado.
   controlledList    ControlledList? @map("controlled_list")
   /// Medicamento de alta vigilância: administração exige POP com dupla checagem.
@@ -1156,6 +1175,7 @@ enum StockLocationKind {
   FARMACIA_CENTRAL
   FARMACIA_SETORIAL
   POSTO_ENFERMAGEM
+  SALA_DE_VACINA
 }
 
 model StockLocation {

@@ -1,5 +1,29 @@
 import type { Permission } from '@omnisaude/shared';
-import { Activity, BarChart3, BedDouble, BookOpenCheck, Building2, CalendarDays, ClipboardList, FileOutput, FileSearch, HeartPulse, Home, ListChecks, type LucideIcon, MessagesSquare, Pill, Receipt, ScanLine, Settings, Stethoscope, Target, UserRoundSearch, Users } from 'lucide-react';
+import {
+  Activity,
+  BarChart3,
+  BedDouble,
+  BookOpenCheck,
+  Building2,
+  CalendarDays,
+  ClipboardList,
+  FileOutput,
+  FileSearch,
+  HeartPulse,
+  Home,
+  ListChecks,
+  type LucideIcon,
+  MessagesSquare,
+  Pill,
+  Receipt,
+  ScanLine,
+  Settings,
+  Stethoscope,
+  Syringe,
+  Target,
+  UserRoundSearch,
+  Users,
+} from 'lucide-react';
 
 export interface NavItem {
   href: string;
@@ -23,6 +47,7 @@ export const NAV: NavItem[] = [
   { href: '/esus', label: 'e-SUS APS', icon: FileOutput, any: ['esus.ler'] },
   { href: '/indicadores', label: 'Indicadores APS', icon: Target, any: ['aps.indicadores'] },
   { href: '/programas', label: 'Programas APS', icon: ListChecks, any: ['aps.programas'] },
+  { href: '/vacinas', label: 'Vacinas', icon: Syringe, any: ['vacinas.ler'] },
   { href: '/gestao', label: 'Gestão', icon: Activity, any: ['gestao.paineis'] },
   { href: '/bi', label: 'BI conversacional', icon: BarChart3, any: ['bi.consultar'] },
   { href: '/servico-social', label: 'Busca ativa', icon: MessagesSquare, any: ['busca_ativa.gerir'] },

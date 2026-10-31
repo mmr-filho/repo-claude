@@ -455,8 +455,7 @@ export const POPS = [
     kind: 'HARD',
     trigger: 'administracao.alta_vigilancia',
     requiresDoubleCheck: true,
-    content:
-      'Medicamentos potencialmente perigosos (anticoagulantes, insulinas, opioides, eletrólitos concentrados) exigem conferência independente por um segundo profissional antes da administração.',
+    content: 'Medicamentos potencialmente perigosos (anticoagulantes, insulinas, opioides, eletrólitos concentrados) exigem conferência independente por um segundo profissional antes da administração.',
     checklist: [
       { id: 'identificacao', text: 'Paciente identificado por dois identificadores (nome completo e data de nascimento)', required: true },
       { id: 'prescricao', text: 'Prescrição conferida: medicamento, dose, via e horário', required: true },
@@ -517,4 +516,25 @@ export const POPS = [
     content: 'Avalie o risco de queda na admissão e diariamente; mantenha grades elevadas e campainha ao alcance.',
     checklist: [],
   },
+] as const;
+
+/** Vacinas da sala de vacina da demonstração (código do imunobiológico do e-SUS/RNDS). */
+export const VACCINES = [
+  { code: 'VAC015', vaccineCode: '15', description: 'Vacina BCG', manufacturer: 'FUNDACAO ATAULPHO DE PAIVA', unit: 'DS' },
+  { code: 'VAC009', vaccineCode: '09', description: 'Vacina hepatite B (recombinante)', manufacturer: 'INSTITUTO BUTANTAN', unit: 'DS' },
+  { code: 'VAC042', vaccineCode: '42', description: 'Vacina penta (DTP/HepB/Hib)', manufacturer: 'INSTITUTO BUTANTAN', unit: 'DS' },
+  { code: 'VAC022', vaccineCode: '22', description: 'Vacina poliomielite inativada (VIP)', manufacturer: 'SANOFI PASTEUR', unit: 'DS' },
+  { code: 'VAC026', vaccineCode: '26', description: 'Vacina pneumocócica 10-valente', manufacturer: 'GLAXOSMITHKLINE', unit: 'DS' },
+  { code: 'VAC045', vaccineCode: '45', description: 'Vacina rotavírus humano', manufacturer: 'GLAXOSMITHKLINE', unit: 'DS' },
+  { code: 'VAC041', vaccineCode: '41', description: 'Vacina meningocócica C (conjugada)', manufacturer: 'FUNDACAO EZEQUIEL DIAS', unit: 'DS' },
+  { code: 'VAC014', vaccineCode: '14', description: 'Vacina febre amarela', manufacturer: 'BIO-MANGUINHOS/FIOCRUZ', unit: 'DS' },
+  { code: 'VAC024', vaccineCode: '24', description: 'Vacina tríplice viral (SCR)', manufacturer: 'BIO-MANGUINHOS/FIOCRUZ', unit: 'DS' },
+  { code: 'VAC046', vaccineCode: '46', description: 'Vacina DTP', manufacturer: 'INSTITUTO BUTANTAN', unit: 'DS' },
+  { code: 'VAC055', vaccineCode: '55', description: 'Vacina hepatite A (infantil)', manufacturer: 'INSTITUTO BUTANTAN', unit: 'DS' },
+  { code: 'VAC034', vaccineCode: '34', description: 'Vacina varicela', manufacturer: 'GLAXOSMITHKLINE', unit: 'DS' },
+  { code: 'VAC067', vaccineCode: '67', description: 'Vacina HPV quadrivalente', manufacturer: 'INSTITUTO BUTANTAN', unit: 'DS' },
+  { code: 'VAC025', vaccineCode: '25', description: 'Vacina difteria e tétano adulto (dT)', manufacturer: 'INSTITUTO BUTANTAN', unit: 'DS' },
+  { code: 'VAC057', vaccineCode: '57', description: 'Vacina dTpa adulto', manufacturer: 'GLAXOSMITHKLINE', unit: 'DS' },
+  { code: 'VAC033', vaccineCode: '33', description: 'Vacina influenza trivalente', manufacturer: 'INSTITUTO BUTANTAN', unit: 'DS' },
+  { code: 'VAC087', vaccineCode: '87', description: 'Vacina covid-19 RNAm (Comirnaty)', manufacturer: 'PFIZER', unit: 'DS' },
 ] as const;
