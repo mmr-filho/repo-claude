@@ -9,7 +9,7 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
 /** Quando a pessoa tem vários papéis, a categoria da produtividade segue esta ordem. */
-const CATEGORY_PRIORITY: Role[] = ['MEDICO', 'MULTIPROFISSIONAL', 'ENFERMAGEM', 'SERVICO_SOCIAL', 'FARMACIA', 'NIR', 'RECEPCAO', 'FATURAMENTO', 'GESTOR'];
+const CATEGORY_PRIORITY: Role[] = ['MEDICO', 'MULTIPROFISSIONAL', 'ENFERMAGEM', 'SERVICO_SOCIAL', 'ACS', 'FARMACIA', 'NIR', 'RECEPCAO', 'FATURAMENTO', 'GESTOR'];
 
 type Severity = 'ALTA' | 'MEDIA' | 'BAIXA';
 
@@ -129,9 +129,7 @@ export class ManagementService {
     const unitNames = new Map(units.map((u) => [u.id, u]));
     return {
       period: { from: period.from, to: period.to },
-      professionals: professionals
-        .map(({ counters: _c, ...rest }) => rest)
-        .sort((a, b) => b.encountersClosed - a.encountersClosed || b.signedNotes - a.signedNotes),
+      professionals: professionals.map(({ counters: _c, ...rest }) => rest).sort((a, b) => b.encountersClosed - a.encountersClosed || b.signedNotes - a.signedNotes),
       categories: [...categories.entries()].map(([role, c]) => ({ category: role, label: ROLE_LABELS[role], ...finish(c) })),
       units: [...byUnit.entries()].map(([id, c]) => ({ unitId: id, unit: unitNames.get(id)?.name ?? null, unitType: unitNames.get(id)?.type ?? null, ...finish(c) })),
     };
@@ -177,9 +175,7 @@ export class ManagementService {
         if (!t) return null;
         const color = t.riskColor as RiskColor;
         const waited = Math.floor((now - t.classifiedAt.getTime()) / 60_000);
-        return waited > maxWait(color)
-          ? { encounterId: e.id, patient: e.patient.name, unit: unitName.get(e.unitId), color, waitedMinutes: waited, maxWaitMinutes: maxWait(color) }
-          : null;
+        return waited > maxWait(color) ? { encounterId: e.id, patient: e.patient.name, unit: unitName.get(e.unitId), color, waitedMinutes: waited, maxWaitMinutes: maxWait(color) } : null;
       })
       .filter((x): x is NonNullable<typeof x> => x !== null);
 
@@ -189,7 +185,14 @@ export class ManagementService {
         label: 'Atendimentos abertos há mais de 12 horas (sem encerramento formal)',
         severity: 'ALTA',
         count: openEncounters.length,
-        records: openEncounters.map((e) => ({ encounterId: e.id, patient: e.patient.name, unit: unitName.get(e.unitId), status: e.status, startedAt: e.startedAt, responsible: e.responsibleId ? userName.get(e.responsibleId) : null })),
+        records: openEncounters.map((e) => ({
+          encounterId: e.id,
+          patient: e.patient.name,
+          unit: unitName.get(e.unitId),
+          status: e.status,
+          startedAt: e.startedAt,
+          responsible: e.responsibleId ? userName.get(e.responsibleId) : null,
+        })),
       },
       {
         key: 'prontuarios_rascunho',
@@ -305,7 +308,10 @@ export class ManagementService {
       where: { status: 'SOLICITADO', requestedAt: { lt: new Date(now - 30 * DAY) } },
       _count: { _all: true },
     });
-    const exames = pendingExams.map((e) => ({ exam: e.name, pending: e._count._all })).sort((a, b) => b.pending - a.pending).slice(0, 5);
+    const exames = pendingExams
+      .map((e) => ({ exam: e.name, pending: e._count._all }))
+      .sort((a, b) => b.pending - a.pending)
+      .slice(0, 5);
 
     // 5. Classificação de risco no período
     const triages = await db.triage.findMany({
@@ -417,7 +423,9 @@ export function renderAgendaMarkdown(c: AgendaContent): string {
   out.push('');
 
   out.push('## 5. Classificação de risco', '');
-  const colors = Object.entries(c.accr.byColor).map(([k, v]) => `${k.toLowerCase()} ${v}`).join(', ');
+  const colors = Object.entries(c.accr.byColor)
+    .map(([k, v]) => `${k.toLowerCase()} ${v}`)
+    .join(', ');
   out.push(`- Classificações no período: ${colors || 'nenhuma'}.`);
   out.push(`- Pacientes aguardando além do tempo-alvo agora: ${c.accr.overdueNow}.`);
   out.push('');

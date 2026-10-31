@@ -15,8 +15,9 @@ Interface) em Apache Thrift (TBinaryProtocol), que é o formato aceito pelo PEC 
 | Procedimentos (7) | classificações de risco / acolhimento | medições (PA, glicemia, temperatura, peso, altura) e totais consolidados por profissional e dia |
 | Vacinação (14) | vacinas registradas pela API | imunobiológico, dose, lote, fabricante (código RNDS), via e local de aplicação; a tela de sala de vacina chega em APS-8 |
 
-Visita domiciliar (8) e atividade coletiva (6) ficam para o app do ACS (APS-3) e os grupos (APS-7), que são as
-fontes desses registros.
+| Visita domiciliar e territorial (8) | visitas registradas no app do ACS | uma ficha por agente e dia (até 99 visitas) com a lotação do próprio agente; pessoa (CNS/CPF ou justificativa), desfecho, motivos, microárea ou fora de área, tipo de imóvel, medições, posição (`docs/ACS.md`) |
+
+Atividade coletiva (6) fica para os grupos (APS-7), que são a fonte desse registro.
 
 ## Fluxo na tela e-SUS APS
 

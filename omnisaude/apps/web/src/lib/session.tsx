@@ -2,8 +2,8 @@
 
 import type { Permission, Role } from '@omnisaude/shared';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { api, setUnauthorizedHandler } from './api';
-import { tokenStore } from './storage';
+import { api, ApiError, setUnauthorizedHandler } from './api';
+import { meStore, tokenStore } from './storage';
 import type { Assignment, Me } from './types';
 
 /** Token intermediário (etapas "mfa" e "context" do login), guardado só em memória. */
@@ -48,10 +48,18 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     try {
-      setMe(await api.get<Me>('/auth/me'));
-    } catch {
-      tokenStore.clear();
-      setMe(null);
+      const me = await api.get<Me>('/auth/me');
+      meStore.set(me);
+      setMe(me);
+    } catch (err) {
+      // Sem rede (app do ACS em campo): segue com a cópia da sessão; só a recusa do servidor encerra.
+      const cached = err instanceof ApiError && err.status === 0 ? meStore.get<Me>() : null;
+      if (cached) setMe(cached);
+      else {
+        tokenStore.clear();
+        meStore.clear();
+        setMe(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -60,6 +68,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setUnauthorizedHandler(() => {
       tokenStore.clear();
+      meStore.clear();
       setMe(null);
     });
     void refresh();
@@ -89,7 +98,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         tokenStore.set(res.token);
         pendingToken = null;
         pendingAssignments = [];
-        setMe(await api.get<Me>('/auth/me'));
+        const me = await api.get<Me>('/auth/me');
+        meStore.set(me);
+        setMe(me);
       },
       pendingMfaSetup: () => api.post<MfaSetupData>('/auth/pending/mfa/setup', {}, { token: pendingToken ?? tokenStore.get() }),
       async pendingMfaEnable(code, setupToken) {
@@ -98,6 +109,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       },
       logout() {
         tokenStore.clear();
+        meStore.clear();
         pendingToken = null;
         setMe(null);
       },

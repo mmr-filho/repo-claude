@@ -75,6 +75,7 @@ enum Role {
   FARMACIA
   FATURAMENTO
   GESTOR
+  ACS
 }
 
 /// Profissionais e colaboradores do tenant. O login é por CPF dentro do tenant.
@@ -437,6 +438,7 @@ model Patient {
   vaccinations Vaccination[]
   dispensations Dispensation[]
   activeSearchCases ActiveSearchCase[]
+  homeVisits  HomeVisit[]
 
   @@index([nameKey, birthDate])
   @@index([familyId])
@@ -479,6 +481,7 @@ model Household {
   unit     Unit?    @relation(fields: [unitId], references: [id])
   team     Team?    @relation(fields: [teamId], references: [id])
   families Family[]
+  visits   HomeVisit[]
 
   @@index([cep])
   @@index([ibgeCode, district])
@@ -1021,6 +1024,68 @@ model Vaccination {
   @@index([patientId])
   @@index([unitId, appliedAt])
   @@map("vaccinations")
+}
+
+/// Visita domiciliar e territorial do ACS/TACS (ficha de visita do e-SUS), registrada no app, também sem internet.
+model HomeVisit {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  /// Identificador gerado no aparelho: a sincronização repetida da mesma visita não duplica o registro.
+  clientId       String?   @unique @map("client_id")
+  unitId         String    @map("unit_id") @db.Uuid
+  teamId         String?   @map("team_id") @db.Uuid
+  professionalId String    @map("professional_id") @db.Uuid
+  cbo            String    @db.Char(6)
+  householdId    String?   @map("household_id") @db.Uuid
+  patientId      String?   @map("patient_id") @db.Uuid
+  visitedAt      DateTime  @map("visited_at")
+  turno          Int
+  /// Desfecho (1 realizada, 2 recusada, 3 ausente) e motivos nos códigos da ficha do e-SUS.
+  outcome        String    @db.Char(1)
+  reasons        String[]
+  shared         Boolean   @default(false)
+  outOfArea      Boolean   @default(false) @map("out_of_area")
+  microArea      String?   @map("micro_area")
+  propertyType   String    @default("01") @map("property_type") @db.Char(2)
+  weightKg       Decimal?  @map("weight_kg") @db.Decimal(5, 2)
+  heightCm       Int?      @map("height_cm")
+  systolic       Int?
+  diastolic      Int?
+  temperature    Decimal?  @db.Decimal(4, 1)
+  glucose        Int?
+  glucoseType    Int?      @map("glucose_type")
+  latitude       Float?
+  longitude      Float?
+  notes          String?
+  /// Momento do registro no aparelho (pode ser bem anterior à sincronização).
+  recordedAt     DateTime  @map("recorded_at")
+  syncedAt       DateTime  @default(now()) @map("synced_at")
+
+  household Household? @relation(fields: [householdId], references: [id])
+  patient   Patient?   @relation(fields: [patientId], references: [id])
+
+  @@index([unitId, visitedAt])
+  @@index([patientId, visitedAt])
+  @@index([householdId, visitedAt])
+  @@index([professionalId, visitedAt])
+  @@map("home_visits")
+}
+
+/// Operações sincronizadas do app de campo: idempotência por clientId e rastreio do que cada agente enviou.
+model FieldSyncOp {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  clientId   String   @unique @map("client_id")
+  kind       String
+  userId     String   @map("user_id") @db.Uuid
+  unitId     String   @map("unit_id") @db.Uuid
+  status     String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id") @db.Uuid
+  error      String?
+  recordedAt DateTime @map("recorded_at")
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@index([userId, receivedAt])
+  @@map("field_sync_ops")
 }
 
 // ───────────────────────────── Leitos e NIR ─────────────────────────────

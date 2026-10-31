@@ -73,7 +73,12 @@ describe.runIf(enabled)('importação do CNES', () => {
     expect(res.body.created).toHaveLength(2);
     const teams = await t.http().get('/api/admin/teams').set(auth(gestora)).expect(200);
     // A demonstração já traz equipes próprias (ESF Centro I, Saúde Bucal e eMulti); conferimos só as importadas.
-    expect(teams.body.map((x: { ine: string }) => x.ine).filter((ine: string) => ine.startsWith('00001234')).sort()).toEqual(['0000123456', '0000123457']);
+    expect(
+      teams.body
+        .map((x: { ine: string }) => x.ine)
+        .filter((ine: string) => ine.startsWith('00001234'))
+        .sort(),
+    ).toEqual(['0000123456', '0000123457']);
     expect(teams.body.find((x: { ine: string }) => x.ine === '0000123456')).toMatchObject({ typeLabel: expect.stringContaining('eSF'), unitName: 'UPA Dra. Márcia Mucky', members: 0 });
   });
 
@@ -90,7 +95,7 @@ describe.runIf(enabled)('importação do CNES', () => {
     const prev = await t.http().post('/api/admin/cnes/profissionais/previa').set(auth(gestora)).send({ csv }).expect(200);
     expect(prev.body.summary).toMatchObject({ linhas: 4, acessos: 1, existentes: 1, preCadastro: 1, erros: 1 });
     expect(prev.body.rows[0]).toMatchObject({ role: 'ENFERMAGEM', unitName: 'UPA Dra. Márcia Mucky', teamFound: true, status: 'acesso', email: 'helena@gurupi.to.gov.br' });
-    expect(prev.body.rows[2]).toMatchObject({ role: 'MULTIPROFISSIONAL', status: 'pre_cadastro', cboLabel: 'Agente comunitário de saúde' });
+    expect(prev.body.rows[2]).toMatchObject({ role: 'ACS', status: 'pre_cadastro', cboLabel: 'Agente comunitário de saúde' });
     expect(prev.body.rows[3].errors).toContain('CPF inválido');
 
     const res = await apply(prev.body.importId, { createAccess: true }).expect(200);
@@ -109,7 +114,7 @@ describe.runIf(enabled)('importação do CNES', () => {
     expect(teams.body.find((x: { ine: string }) => x.ine === '0000123457').members).toBe(1);
     const staged = await t.http().get('/api/admin/cnes/pre-cadastro').set(auth(gestora)).expect(200);
     expect(staged.body).toHaveLength(1);
-    expect(staged.body[0]).toMatchObject({ name: 'Pedro Alves Agente', suggestedRole: 'MULTIPROFISSIONAL', unitName: 'UBS Centro', ine: '0000123457' });
+    expect(staged.body[0]).toMatchObject({ name: 'Pedro Alves Agente', suggestedRole: 'ACS', unitName: 'UBS Centro', ine: '0000123457' });
     stagedId = staged.body[0].id;
   });
 
@@ -120,7 +125,7 @@ describe.runIf(enabled)('importação do CNES', () => {
       .http()
       .post('/api/admin/users')
       .set(auth(gestora))
-      .send({ cpf: completeCpf('300000002'), name: 'Pedro Alves Agente', stagedId, assignments: [{ unitId: ubs.id, role: 'MULTIPROFISSIONAL', cbo: '515105' }] })
+      .send({ cpf: completeCpf('300000002'), name: 'Pedro Alves Agente', stagedId, assignments: [{ unitId: ubs.id, role: 'ACS', cbo: '515105' }] })
       .expect(201);
     expect((await t.http().get('/api/admin/cnes/pre-cadastro').set(auth(gestora)).expect(200)).body).toHaveLength(0);
     const teams = await t.http().get('/api/admin/teams').set(auth(gestora)).expect(200);

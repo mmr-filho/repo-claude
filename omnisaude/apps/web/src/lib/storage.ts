@@ -37,3 +37,30 @@ export const tokenStore = {
     }
   },
 };
+
+/** Cópia da sessão (/auth/me) para abrir as telas de campo sem rede; some no logout. */
+const ME_KEY = 'omni.me';
+export const meStore = {
+  get<T>(): T | null {
+    try {
+      const raw = store()?.getItem(ME_KEY);
+      return raw ? (JSON.parse(raw) as T) : null;
+    } catch {
+      return null;
+    }
+  },
+  set(me: unknown) {
+    try {
+      store()?.setItem(ME_KEY, JSON.stringify(me));
+    } catch {
+      // sem armazenamento: só online
+    }
+  },
+  clear() {
+    try {
+      store()?.removeItem(ME_KEY);
+    } catch {
+      // idem
+    }
+  },
+};

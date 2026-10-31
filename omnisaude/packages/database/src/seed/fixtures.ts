@@ -29,7 +29,7 @@ export const UNITS = [
 ] as const;
 export type UnitKey = (typeof UNITS)[number]['key'];
 
-type RoleName = 'RECEPCAO' | 'ENFERMAGEM' | 'MEDICO' | 'MULTIPROFISSIONAL' | 'SERVICO_SOCIAL' | 'NIR' | 'FARMACIA' | 'FATURAMENTO' | 'GESTOR';
+type RoleName = 'RECEPCAO' | 'ENFERMAGEM' | 'MEDICO' | 'MULTIPROFISSIONAL' | 'SERVICO_SOCIAL' | 'NIR' | 'FARMACIA' | 'FATURAMENTO' | 'GESTOR' | 'ACS';
 
 export const STAFF: {
   key: string;
@@ -143,6 +143,13 @@ export const STAFF: {
       { unit: 'hosp', role: 'GESTOR', cbo: '131205' },
       { unit: 'fc', role: 'GESTOR', cbo: '131205' },
     ],
+  },
+  {
+    key: 'acs',
+    name: 'Joaquim Pereira Agente Comunitário',
+    cpf: completeCpf('100000011'),
+    cns: cnsFromBase('10000000011'),
+    assignments: [{ unit: 'ubs', role: 'ACS', cbo: '515105' }],
   },
 ];
 

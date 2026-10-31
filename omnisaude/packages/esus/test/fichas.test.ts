@@ -3,7 +3,16 @@ import type { AddressInfo } from 'node:net';
 import { cnsFromBase } from '@omnisaude/shared';
 import { afterEach, describe, expect, it } from 'vitest';
 import { TIPO_DADO } from '../src/codes';
-import { buildAtendimentoIndividual, buildCadastroDomiciliar, buildCadastroIndividual, buildProcedimentos, buildVacinacao, type AtendimentoIndividualInput, type CadastroIndividualInput } from '../src/fichas';
+import {
+  buildAtendimentoIndividual,
+  buildCadastroDomiciliar,
+  buildCadastroIndividual,
+  buildProcedimentos,
+  buildVacinacao,
+  buildVisitaDomiciliar,
+  type AtendimentoIndividualInput,
+  type CadastroIndividualInput,
+} from '../src/fichas';
 import { buildDadoTransporte, ibge7, lediUuid, normalizeName, splitLogradouro, structForTipo, turnoFromDate } from '../src/ledi';
 import { PecClient, PecError } from '../src/pec-client';
 import { decodeLedi, encodeLedi, type LediObject } from '../src/thrift';
@@ -277,5 +286,40 @@ describe('cliente da API do PEC', () => {
     expect(again.ok).toBe(true);
     expect(seen.filter((s) => s.url === '/api/recebimento/login')).toHaveLength(2);
     await expect(new PecClient({ url, usuario: 'errado', senha: 'x' }).sendFicha('u', Buffer.from('x'))).rejects.toThrow(PecError);
+  });
+});
+
+describe('ficha de visita domiciliar e territorial (ACS)', () => {
+  const headerAcs = { ...header, cbo: '515105' };
+  it('monta a ficha com pessoa identificada e visita ao imóvel, valida e serializa em Thrift', () => {
+    const ficha = buildVisitaDomiciliar({
+      uuid: lediUuid('9000011'),
+      header: headerAcs,
+      visitas: [
+        { turno: 1, cidadao, motivos: [29, 11, 29], desfecho: 1, microArea: '01', compartilhada: false, sistolica: 130, diastolica: 85, pesoKg: 72.5, latitude: -11.7292, longitude: -49.0686 },
+        { turno: 2, motivos: [35], desfecho: 1, microArea: '01', tipoImovel: '03' },
+        { turno: 2, cidadao: { ...cidadao, cpf: null, justificativaSemCpf: 8 }, motivos: [5], desfecho: 3, foraDaArea: true },
+      ],
+    });
+    expect(validateFicha(TIPO_DADO.VISITA_DOMICILIAR, ficha, new Date('2026-10-31T12:00:00Z'))).toEqual([]);
+    const visitas = ficha.visitasDomiciliares as LediObject[];
+    expect(visitas[0]).toMatchObject({ turno: 1, cpfCidadao: '52998224725', stCidadaoNaoPossuiCpf: false, motivosVisita: [29, 11], desfecho: 1, microArea: '01', tipoDeImovel: 1, pressaoSistolica: 130 });
+    expect(visitas[1]).toMatchObject({ tipoDeImovel: 3, desfecho: 1 });
+    expect(visitas[1]!.cnsCidadao).toBeUndefined();
+    expect(visitas[2]).toMatchObject({ stCidadaoNaoPossuiCpf: true, justificativaCidadaoNaoPossuiCpf: 8, stForaArea: true });
+    expect(visitas[2]!.microArea).toBeUndefined();
+    const bytes = encodeLedi(structForTipo(TIPO_DADO.VISITA_DOMICILIAR), ficha);
+    const back = decodeLedi(structForTipo(TIPO_DADO.VISITA_DOMICILIAR), bytes);
+    expect((back.visitasDomiciliares as LediObject[])[0]).toMatchObject({ desfecho: 1, latitude: -11.7292, motivosVisita: [29, 11] });
+  });
+
+  it('aponta o que o PEC recusaria: sem motivo, sem microárea, pessoa não identificada em visita realizada e CBO fora do modelo', () => {
+    const ficha = buildVisitaDomiciliar({
+      uuid: lediUuid('9000011'),
+      header: { ...header, cbo: '411010' },
+      visitas: [{ turno: 1, motivos: [], desfecho: 1 }],
+    });
+    const issues = validateFicha(TIPO_DADO.VISITA_DOMICILIAR, ficha, new Date('2026-10-31T12:00:00Z')).map((i) => i.path);
+    expect(issues).toEqual(expect.arrayContaining(['$.headerTransport.cboCodigo_2002', '$.visitasDomiciliares[0].motivosVisita', '$.visitasDomiciliares[0].microArea', '$.visitasDomiciliares[0].cnsCidadao']));
   });
 });

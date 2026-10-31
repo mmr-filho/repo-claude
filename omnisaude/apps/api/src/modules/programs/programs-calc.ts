@@ -132,6 +132,12 @@ function preNatal(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaPrograma[]
     } else {
       const diasPuerperio = Math.floor((asOf.getTime() - g.fimGestacao.getTime()) / DIA);
       if (!ix.consultasMedEnf(p.id, g.fimGestacao, g.fimPuerperio, asOf).length && diasPuerperio > 10) faltas.push({ codigo: 'PUERPERIO', descricao: `Sem consulta puerperal (${diasPuerperio} dias após o desfecho)` });
+      if (!ix.visitasEm(p.id, g.fimGestacao, g.fimPuerperio, asOf).length && diasPuerperio > 10) faltas.push({ codigo: 'VISITA', descricao: 'Sem visita do ACS no puerpério' });
+    }
+    // Visitas do ACS na gestação: 3 após a 1ª consulta (boa prática E do C3); cobra-se a partir da 20ª semana.
+    if (!puerperio && consultas.length && semanas > 20) {
+      const visitas = ix.visitasEm(p.id, new Date(consultas[0]!), g.fimGestacao, asOf).length;
+      if (visitas < 3) faltas.push({ codigo: 'VISITA', descricao: `${visitas} de 3 visitas do ACS desde a 1ª consulta de pré-natal` });
     }
     const proximaAcao = puerperio
       ? faltas.length
@@ -170,6 +176,10 @@ function puericultura(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaProgra
     const antropometria = ix.pesoAltura(p.id, addMeses(asOf, -6), asOf, asOf);
     if (idadeMeses >= 1 && !antropometria.length) faltas.push({ codigo: 'ANTROPOMETRIA', descricao: 'Sem peso e altura nos últimos 6 meses' });
     faltas.push(...vacinasEmAtraso(ix, p, asOf));
+    // Visitas do ACS: a 1ª até 30 dias e a 2ª até 6 meses de vida (boa prática D do C2).
+    const visitas = ix.visitasEm(p.id, p.birthDate, asOf, asOf);
+    if (idadeMeses >= 1 && !visitas.some((d) => d.getTime() <= addDias(p.birthDate, 30).getTime())) faltas.push({ codigo: 'VISITA', descricao: 'Sem visita do ACS no 1º mês de vida' });
+    else if (idadeMeses >= 7 && visitas.filter((d) => d.getTime() <= addMeses(p.birthDate, 6).getTime()).length < 2) faltas.push({ codigo: 'VISITA', descricao: 'Menos de 2 visitas do ACS até os 6 meses' });
     const mchat = ultimaEstratificacao(dados, p.id, 'MCHAT');
     if (idadeMeses >= 16 && idadeMeses <= 30 && !mchat) faltas.push({ codigo: 'MCHAT', descricao: 'M-CHAT-R não aplicado (16 a 30 meses)' });
     const proxima = CONSULTAS_PUERICULTURA_MESES.find((m) => m > idadeMeses);

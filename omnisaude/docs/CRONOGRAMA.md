@@ -42,7 +42,9 @@ Regras de trabalho:
 | 18 | INT-5 | Envio da regulação à RNDS (Portaria 6.656/2025) e integração com o e-SUS Regulação conforme a documentação do DATASUS |
 
 Em paralelo, na semana 12: **APS-3, app do ACS** (cadastro domiciliar, visitas, mapa, trabalho sem internet),
-porque reaproveita o app Android já existente e é insumo dos indicadores.
+porque reaproveita o app Android já existente e é insumo dos indicadores. ✅ entregue em 31/10: tela
+*Agente de saúde* com território, visitas, cadastros em campo, fila sem internet, mapa e produtividade; ficha
+de visita no e-SUS; visitas nos indicadores e programas (`docs/ACS.md`).
 
 ## Fase 4 (semanas 19 a 22): onda 3, cidadão
 

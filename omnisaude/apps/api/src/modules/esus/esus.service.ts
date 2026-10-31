@@ -6,7 +6,7 @@ import type { RequestContext } from '../../core/context';
 import { TenantsService } from '../../core/database';
 import { DomainError, notFound } from '../../core/errors';
 import { IntegrationConfigService } from '../integrations/integration-config.service';
-import { fichasAtendimento, fichasCadastroDomiciliar, fichasCadastroIndividual, fichasProcedimentos, fichasVacinacao, localDate, type FichaGerada, type FonteContexto } from './esus-fontes';
+import { fichasAtendimento, fichasCadastroDomiciliar, fichasCadastroIndividual, fichasProcedimentos, fichasVacinacao, fichasVisitaDomiciliar, localDate, type FichaGerada, type FonteContexto } from './esus-fontes';
 
 const APP_VERSION = '0.1';
 type Db = TenantClient;
@@ -95,7 +95,14 @@ export class EsusService {
   }
 
   private async gerarFichas(c: FonteContexto): Promise<FichaGerada[]> {
-    return [...(await fichasCadastroIndividual(c)), ...(await fichasCadastroDomiciliar(c)), ...(await fichasAtendimento(c)), ...(await fichasProcedimentos(c)), ...(await fichasVacinacao(c))];
+    return [
+      ...(await fichasCadastroIndividual(c)),
+      ...(await fichasCadastroDomiciliar(c)),
+      ...(await fichasAtendimento(c)),
+      ...(await fichasProcedimentos(c)),
+      ...(await fichasVacinacao(c)),
+      ...(await fichasVisitaDomiciliar(c)),
+    ];
   }
 
   private serializar(f: FichaGerada, cnes: string, codIbge: string, numLote: number, instalacao: Instalacao): { status: RecordStatus; issues: LediIssue[]; payload: Uint8Array<ArrayBuffer> | null } {

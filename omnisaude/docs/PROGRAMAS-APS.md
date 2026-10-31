@@ -19,8 +19,10 @@ risco** do programa.
 | SISVAN | crianças até 5 anos, gestantes, pessoas idosas e adultos com antropometria | antropometria no prazo (6 meses, 1 mês, 12 meses); estado nutricional pelo IMC (adultos e idosos) com alerta de baixo peso ou obesidade | — | SISVAN |
 | Tuberculose e hanseníase | condição ativa (CID A15–A19, A30) | consulta mensal; tratamento além da previsão de alta (TB 6 meses; hanseníase PB 6 meses, MB 12 meses) | — | TUBERCULOSE, HANSENIASE |
 
-As visitas domiciliares do ACS não entram nas faltas até o app do ACS (APS-3). As atividades coletivas
-(escovação, grupos) chegam com APS-7.
+As visitas domiciliares do ACS entram nas faltas desde o app do ACS (APS-3): no pré-natal (3 após a 1ª
+consulta, cobradas a partir da 20ª semana, e 1 no puerpério), na puericultura (1ª até 30 dias e 2ª até 6
+meses de vida) e, em HAS/DM e pessoa idosa, pela boa prática de visita do indicador (2 por ano com 30 dias de
+intervalo). As atividades coletivas (escovação, grupos) chegam com APS-7.
 
 ## Estratificações de risco
 

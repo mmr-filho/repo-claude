@@ -40,11 +40,14 @@ As fichas técnicas completas, com os links das notas metodológicas, estão na 
   *Administração › Equipes*), total do próximo quadrimestre (4 parcelas) e quanto aumenta se a equipe subir
   um nível.
 
+As **visitas domiciliares do ACS/TACS** (C2-D, C3-E e J, C4-D, C5-D, C6-C) são apuradas a partir das visitas
+com desfecho "realizada" e CBO 5151xx registradas no app do ACS (`docs/ACS.md`); para eAP a pontuação
+continua integral, como na nota.
+
 ## O que ainda não é apurado (e de onde virá)
 
 | Boa prática / indicador | Pontos em jogo | Fonte prevista |
 |---|---|---|
-| Visitas domiciliares do ACS/TACS (C2-D, C3-E e J, C4-D, C5-D, C6-C) | 20 a 25 por pessoa | app do ACS (APS-3). Para eAP a pontuação é integral, como na nota. |
 | Escovação supervisionada (B4), atividades coletivas (M1), ações coletivas compartilhadas e compartilhamento do cuidado (M2) | — | grupos e atividade coletiva (APS-7) |
 | Primeira consulta odontológica, tratamento concluído e procedimentos da eSB (B1 a B6) | — | a apuração lê a produção SIGTAP e o odontograma; a tela de atendimento odontológico chega depois |
 

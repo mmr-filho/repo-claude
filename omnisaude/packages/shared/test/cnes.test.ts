@@ -26,7 +26,8 @@ describe('CNES: códigos e sugestões', () => {
     expect(roleFromCbo('322205')).toBe('ENFERMAGEM');
     expect(roleFromCbo('223405')).toBe('FARMACIA');
     expect(roleFromCbo('251605')).toBe('SERVICO_SOCIAL');
-    expect(roleFromCbo('515105')).toBe('MULTIPROFISSIONAL');
+    expect(roleFromCbo('515105')).toBe('ACS');
+    expect(roleFromCbo('223905')).toBe('MULTIPROFISSIONAL');
     expect(teamTypeLabel('70')).toContain('eSF');
     expect(teamTypeLabel('72')).toContain('eMulti');
   });

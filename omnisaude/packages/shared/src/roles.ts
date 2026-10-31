@@ -3,7 +3,7 @@
  * Tenant_ID + Unidade_Fisica_ID + Papel_Ativo. Um mesmo profissional pode ter papéis diferentes em cada unidade.
  */
 
-export const ROLES = ['RECEPCAO', 'ENFERMAGEM', 'MEDICO', 'MULTIPROFISSIONAL', 'SERVICO_SOCIAL', 'NIR', 'FARMACIA', 'FATURAMENTO', 'GESTOR'] as const;
+export const ROLES = ['RECEPCAO', 'ENFERMAGEM', 'MEDICO', 'MULTIPROFISSIONAL', 'SERVICO_SOCIAL', 'NIR', 'FARMACIA', 'FATURAMENTO', 'GESTOR', 'ACS'] as const;
 export type Role = (typeof ROLES)[number];
 
 export const ROLE_LABELS: Record<Role, string> = {
@@ -16,6 +16,7 @@ export const ROLE_LABELS: Record<Role, string> = {
   FARMACIA: 'Farmácia',
   FATURAMENTO: 'Faturamento e Auditoria SUS',
   GESTOR: 'Gestor Executivo / Diretor Técnico',
+  ACS: 'Agente Comunitário de Saúde',
 };
 
 export const PERMISSIONS = [
@@ -69,6 +70,8 @@ export const PERMISSIONS = [
   'aps.programas',
   'vacinas.ler',
   'vacinas.aplicar',
+  'acs.campo',
+  'acs.territorio',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -77,6 +80,7 @@ const COMMON: Permission[] = ['paciente.ler', 'pop.consultar', 'libras.acionar']
 export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   RECEPCAO: ['vacinas.ler', ...COMMON, 'paciente.cadastrar', 'paciente.ocr', 'paciente.unificar', 'cadsus.consultar', 'agenda.ler', 'agenda.marcar', 'fila.emitir', 'fila.chamar', 'pulseira.emitir'],
   ENFERMAGEM: [
+    'acs.territorio',
     'vacinas.ler',
     'vacinas.aplicar',
     'aps.programas',
@@ -117,6 +121,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   FARMACIA: ['vacinas.ler', ...COMMON, 'prontuario.ler', 'estoque.ler', 'estoque.movimentar', 'nfe.importar', 'unitarizacao.executar', 'dispensacao.registrar', 'controlados.relatorio', 'pop.executar'],
   FATURAMENTO: ['aps.indicadores', ...COMMON, 'prontuario.ler', 'faturamento.ler', 'faturamento.criticar', 'faturamento.exportar', 'sigtap.sincronizar', 'auditoria.ler', 'esus.ler', 'esus.gerir'],
   GESTOR: [
+    'acs.territorio',
     'vacinas.ler',
     'aps.programas',
     'aps.indicadores',
@@ -140,6 +145,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'esus.ler',
     'esus.gerir',
   ],
+  ACS: ['acs.campo', 'acs.territorio', 'vacinas.ler', 'aps.programas', ...COMMON, 'paciente.cadastrar', 'cadsus.consultar'],
 };
 
 export function isRole(value: unknown): value is Role {

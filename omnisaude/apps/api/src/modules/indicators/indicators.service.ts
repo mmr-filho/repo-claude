@@ -238,7 +238,7 @@ async function carregarDados(db: TenantClient, team: { id: string; typeCode: str
   const membroIds = [...membros];
   const pessoas = await db.patient.findMany({ where: vinculo, select: { id: true, name: true, socialName: true, birthDate: true, sex: true, createdAt: true, bolsaFamilia: true }, orderBy: { name: 'asc' } });
   const ids = pessoas.map((p) => p.id);
-  const [notes, triages, exams, vaccinations, conditions] = await Promise.all([
+  const [notes, triages, exams, vaccinations, conditions, visitas] = await Promise.all([
     db.clinicalNote.findMany({
       where: {
         status: 'ASSINADO',
@@ -258,6 +258,8 @@ async function carregarDados(db: TenantClient, team: { id: string; typeCode: str
     }),
     db.vaccination.findMany({ where: { patient: vinculo }, select: { patientId: true, vaccineCode: true, vaccineName: true, appliedAt: true } }),
     db.patientCondition.findMany({ where: { patient: vinculo }, select: { patientId: true, system: true, code: true, lineOfCare: true, onsetAt: true, recordedAt: true, active: true, resolvedAt: true } }),
+    // Visitas domiciliares realizadas por ACS/TACS (CBO 5151) registradas no app do ACS.
+    db.homeVisit.findMany({ where: { outcome: '1', cbo: { startsWith: '5151' }, visitedAt: { gte: desde }, patient: vinculo }, select: { patientId: true, visitedAt: true } }),
   ]);
   const producao: DadosEquipe['procedimentos'] = [];
   const lotes = [...chunk(ids, 5000).map((c) => ({ patientId: { in: c } })), ...(membroIds.length ? [{ professionalId: { in: membroIds } }] : [])];
@@ -316,7 +318,7 @@ async function carregarDados(db: TenantClient, team: { id: string; typeCode: str
     vacinas: vaccinations.map((v) => ({ patientId: v.patientId, componentes: componentesDaVacina(v.vaccineCode, v.vaccineName), at: v.appliedAt })),
     procedimentos: producao,
     condicoes: conditions.map((c) => ({ patientId: c.patientId, system: c.system, code: c.code, lineOfCare: c.lineOfCare, onsetAt: c.onsetAt, recordedAt: c.recordedAt, active: c.active, resolvedAt: c.resolvedAt })),
-    visitas: [],
+    visitas: visitas.filter((v) => v.patientId !== null).map((v) => ({ patientId: v.patientId as string, at: v.visitedAt })),
     coautores,
     referencia,
   };

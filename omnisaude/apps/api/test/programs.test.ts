@@ -168,7 +168,8 @@ describe.runIf(enabled)('Programas da APS: faltosos, estratificações e busca a
     await t.http().post(`/api/patients/${diabetico}/conditions`).set(auth(medica)).send({ system: 'CID10', code: 'E11', description: 'Diabetes tipo 2', lineOfCare: 'DIABETES' }).expect(201);
     await consulta(diabetico, true);
     let l = await lista('HAS_DM');
-    expect(codigos(l, diabetico)).toEqual(['E', 'PE_RISCO']);
+    // D = visitas domiciliares do ACS (passaram a ser apuradas com o app do ACS, APS-3).
+    expect(codigos(l, diabetico)).toEqual(['D', 'E', 'PE_RISCO']);
     const pe = (
       await t
         .http()
@@ -180,7 +181,7 @@ describe.runIf(enabled)('Programas da APS: faltosos, estratificações e busca a
     expect(pe).toMatchObject({ kind: 'PE_DIABETICO', result: '1', score: 1 });
     expect([mais(hoje, 90), mais(hoje, 91), mais(hoje, 92)]).toContain(pe.nextDueAt);
     l = await lista('HAS_DM');
-    expect(codigos(l, diabetico)).toEqual(['E']);
+    expect(codigos(l, diabetico)).toEqual(['D', 'E']);
     expect(linhaDe(l, diabetico)?.situacao).toContain('pé grau 1');
     const pend = (await t.http().get(`/api/indicadores-aps/pendencias?teamId=${teamId}&codigo=C4`).set(auth(gestora)).expect(200)).body;
     const linha = pend.pessoas.find((p: { patientId: string }) => p.patientId === diabetico);
@@ -215,7 +216,7 @@ describe.runIf(enabled)('Programas da APS: faltosos, estratificações e busca a
     const l4 = await lista('SISVAN');
     expect(codigos(l4, crianca)).toEqual(['ANTROPOMETRIA']);
     const l5 = await lista('IDOSO');
-    expect(codigos(l5, idoso)).toEqual(['D']);
+    expect(codigos(l5, idoso)).toEqual(['C', 'D']); // C = visitas do ACS, D = influenza
 
     const resumo = (await t.http().get(`/api/programas/resumo?teamId=${teamId}`).set(auth(enfermeira)).expect(200)).body;
     expect(resumo.programas).toHaveLength(8);

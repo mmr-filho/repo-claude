@@ -1,5 +1,5 @@
 import { isValidCns, isValidCpf } from '@omnisaude/shared';
-import { CBO_POR_MODELO, CONDUTA, CONDUTA_ODONTO, JUSTIFICATIVA_SEM_CPF, LOCAL_ATENDIMENTO, TIPO_ATENDIMENTO, TIPO_DADO } from './codes';
+import { CBO_POR_MODELO, CONDUTA, CONDUTA_ODONTO, DESFECHO_VISITA, JUSTIFICATIVA_SEM_CPF, LOCAL_ATENDIMENTO, MOTIVO_VISITA, TIPO_ATENDIMENTO, TIPO_DADO, TIPO_IMOVEL_LEDI } from './codes';
 import { normalizeName } from './ledi';
 import { lediFields } from './thrift';
 import type { LediObject, LediValue } from './thrift';
@@ -294,7 +294,49 @@ function checkVacinacao(c: Checker, o: LediObject) {
   });
 }
 
+function checkVisitaDomiciliar(c: Checker, o: LediObject) {
+  c.required(o, '$', 'FichaVisitaDomiciliarMasterThrift');
+  const h = obj(o.headerTransport);
+  c.header(h, '$.headerTransport', false);
+  const list = arr(o.visitasDomiciliares) ?? [];
+  if (!list.length) c.add('$.visitasDomiciliares', 'a ficha precisa de ao menos uma visita');
+  if (list.length > 99) c.add('$.visitasDomiciliares', 'no máximo 99 visitas por ficha');
+  list.forEach((item, i) => {
+    const v = obj(item);
+    if (!v) return;
+    const p = `$.visitasDomiciliares[${i}]`;
+    for (const f of ['turno', 'desfecho', 'motivosVisita', 'tipoDeImovel']) if (v[f] === undefined) c.add(`${p}.${f}`, 'campo obrigatório ausente');
+    c.codeIn(v.turno, { '1': 'Manhã', '2': 'Tarde', '3': 'Noite' }, `${p}.turno`, 'turno');
+    c.codeIn(v.desfecho, DESFECHO_VISITA, `${p}.desfecho`, 'desfecho');
+    c.codeIn(v.tipoDeImovel, TIPO_IMOVEL_LEDI, `${p}.tipoDeImovel`, 'tipo de imóvel');
+    const motivos = arr(v.motivosVisita) ?? [];
+    if (!motivos.length) c.add(`${p}.motivosVisita`, 'informe ao menos um motivo da visita');
+    if (new Set(motivos.map((m) => String(m))).size !== motivos.length) c.add(`${p}.motivosVisita`, 'motivos repetidos');
+    for (const m of motivos) c.codeIn(m, MOTIVO_VISITA, `${p}.motivosVisita`, 'motivo da visita');
+    if (v.stForaArea !== true && !str(v.microArea)) c.add(`${p}.microArea`, 'informe a microárea ou marque fora de área');
+    if (str(v.microArea) && !/^\d{2}$/.test(str(v.microArea)!)) c.add(`${p}.microArea`, 'microárea deve ter 2 dígitos');
+    const identificado = str(v.cnsCidadao) || str(v.cpfCidadao) || v.dtNascimento !== undefined || v.sexo !== undefined;
+    if (identificado) {
+      c.cidadao(v, p, { cns: 'cnsCidadao', cpf: 'cpfCidadao', semCpf: 'stCidadaoNaoPossuiCpf', justificativa: 'justificativaCidadaoNaoPossuiCpf' });
+      if (v.dtNascimento === undefined) c.add(`${p}.dtNascimento`, 'data de nascimento obrigatória quando a pessoa é identificada');
+      if (v.sexo === undefined) c.add(`${p}.sexo`, 'sexo obrigatório quando a pessoa é identificada');
+      c.dateNotFuture(v.dtNascimento, `${p}.dtNascimento`);
+    } else if (num(v.tipoDeImovel) === 1 && num(v.desfecho) === 1) c.add(`${p}.cnsCidadao`, 'visita realizada a domicílio precisa identificar a pessoa visitada (CNS ou CPF)');
+    const lat = num(v.latitude);
+    const lng = num(v.longitude);
+    if ((lat === undefined) !== (lng === undefined)) c.add(`${p}.latitude`, 'latitude e longitude devem vir juntas');
+    if (lat !== undefined && (lat < -90 || lat > 90)) c.add(`${p}.latitude`, 'latitude fora do intervalo');
+    if (lng !== undefined && (lng < -180 || lng > 180)) c.add(`${p}.longitude`, 'longitude fora do intervalo');
+    if (num(v.glicemia) !== undefined && num(v.tipoGlicemia) === undefined) c.add(`${p}.tipoGlicemia`, 'informe o tipo da glicemia');
+    const peso = num(v.pesoAcompanhamentoNutricional);
+    if (peso !== undefined && (peso <= 0 || peso > 500)) c.add(`${p}.pesoAcompanhamentoNutricional`, 'peso fora do intervalo (kg)');
+    const altura = num(v.alturaAcompanhamentoNutricional);
+    if (altura !== undefined && (altura <= 0 || altura > 250)) c.add(`${p}.alturaAcompanhamentoNutricional`, 'altura fora do intervalo (cm)');
+  });
+}
+
 const CHECKERS: Record<number, (c: Checker, o: LediObject) => void> = {
+  [TIPO_DADO.VISITA_DOMICILIAR]: checkVisitaDomiciliar,
   [TIPO_DADO.CADASTRO_INDIVIDUAL]: checkCadastroIndividual,
   [TIPO_DADO.CADASTRO_DOMICILIAR]: checkCadastroDomiciliar,
   [TIPO_DADO.ATENDIMENTO_INDIVIDUAL]: checkAtendimentoIndividual,

@@ -9,6 +9,7 @@ As telas são as mesmas da versão web; no aparelho elas usam os recursos nativo
 | Câmera | `@capacitor/camera` | Recepção: foto do documento para OCR |
 | Reconhecimento de voz (pt-BR) | `@capacitor-community/speech-recognition` | Ditado clínico (Speech-to-SOAP) e comandos de voz |
 | Síntese de voz | `@capacitor-community/text-to-speech` | Resultado da administração beira-leito, chamadas e instruções |
+| Localização (GPS) | API do WebView (`navigator.geolocation`) | Agente de saúde: posição do domicílio e da visita no mapa |
 
 Sem o plugin (navegador), cada recurso cai para a API web equivalente: `BarcodeDetector` + câmera, upload de foto,
 Web Speech API e `speechSynthesis`. Leitores de código USB/Bluetooth que "digitam" o código também funcionam.
@@ -66,6 +67,7 @@ o build de produção, não.
 - `RECORD_AUDIO`: ditado e comandos de voz.
 - `VIBRATE`: confirmação tátil de aprovação/bloqueio na administração.
 - `INTERNET`: comunicação com a API.
+- `ACCESS_FINE_LOCATION` / `ACCESS_COARSE_LOCATION`: posição dos domicílios e visitas (tela do ACS).
 
 As permissões de câmera e microfone são pedidas no primeiro uso. O manifesto também declara a consulta ao
 serviço de reconhecimento de voz do Android (exigido a partir do Android 11) e pede ao Google Play Services o
@@ -79,6 +81,6 @@ layout denso em grade; em **smartphones** as telas operacionais (beira-leito, re
 
 ## Limitações conhecidas
 
-- O app depende da API: não há modo offline. Uma administração sem conexão **não** é registrada (o app avisa).
+- Só a tela **Agente de saúde** trabalha sem internet (fila no IndexedDB e sincronização ao voltar a rede); as demais dependem da API. Uma administração beira-leito sem conexão **não** é registrada (o app avisa).
 - A sessão fica no armazenamento do WebView do app até o logout ou a expiração do token (12 h por padrão).
 - O ícone e a tela de abertura são os padrões do Capacitor; substitua em `android/app/src/main/res/`.

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { CoreModule } from './core/core.module';
 import { AccessibilityModule } from './modules/accessibility/accessibility.module';
+import { AcsModule } from './modules/acs/acs.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { BedsModule } from './modules/beds/beds.module';
@@ -39,6 +40,7 @@ import { TriageModule } from './modules/triage/triage.module';
     IndicatorsModule,
     ProgramsModule,
     VaccinesModule,
+    AcsModule,
     PharmacyModule,
     BedsModule,
     PopsModule,

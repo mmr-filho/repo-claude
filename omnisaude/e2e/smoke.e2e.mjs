@@ -21,6 +21,7 @@ const journeys = [
   { cpf: '100.000.008-76', unit: 'UPA 24h Norte', role: 'Faturamento', pages: ['/faturamento'] },
   { cpf: '100.000.009-57', unit: 'UBS Centro', role: 'Gestor', pages: ['/gestao', '/bi', '/auditoria', '/administracao'] },
   { cpf: '100.000.005-23', unit: 'UBS Centro', role: 'Serviço Social', pages: ['/servico-social'] },
+  { cpf: '100.000.011-71', unit: 'UBS Centro', role: 'Agente', pages: ['/acs'] },
 ];
 
 const browser = await chromium.launch();

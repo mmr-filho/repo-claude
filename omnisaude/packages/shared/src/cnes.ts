@@ -121,6 +121,7 @@ export function roleFromCbo(cbo: string): Role {
   if (p4 === '1312') return 'GESTOR';
   if (p4 === '4221') return 'RECEPCAO';
   if (p4 === '4110') return 'FATURAMENTO';
+  if (p4 === '5151') return 'ACS';
   return 'MULTIPROFISSIONAL';
 }
 

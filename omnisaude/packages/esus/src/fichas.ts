@@ -546,6 +546,76 @@ export interface FichaVacinacaoInput {
   atendimentos: VacinacaoAtendimentoInput[];
 }
 
+// ─── Visita domiciliar e territorial (ACS/TACS) ─────────────────────────────
+
+export interface VisitaDomiciliarInput {
+  turno: 1 | 2 | 3;
+  /** Pessoa visitada; ausente nas visitas ao imóvel (terreno baldio, ponto estratégico...). */
+  cidadao?: Cidadao | null;
+  numeroProntuario?: string | null;
+  compartilhada?: boolean;
+  /** Códigos da tabela de motivos da ficha (ao menos um). */
+  motivos: number[];
+  /** 1 realizada, 2 recusada, 3 ausente. */
+  desfecho: 1 | 2 | 3;
+  microArea?: string | null;
+  foraDaArea?: boolean;
+  /** Tipo de imóvel no código do cadastro do OmniSaúde ('01' domicílio...). */
+  tipoImovel?: string | null;
+  pesoKg?: number | null;
+  alturaCm?: number | null;
+  sistolica?: number | null;
+  diastolica?: number | null;
+  temperatura?: number | null;
+  glicemia?: number | null;
+  tipoGlicemia?: number | null;
+  latitude?: number | null;
+  longitude?: number | null;
+}
+
+export interface FichaVisitaDomiciliarInput {
+  uuid: string;
+  header: HeaderUnico;
+  visitas: VisitaDomiciliarInput[];
+}
+
+export function buildVisitaDomiciliar(input: FichaVisitaDomiciliarInput): LediObject {
+  return {
+    uuidFicha: input.uuid,
+    tpCdsOrigem: TP_CDS_ORIGEM_TERCEIROS,
+    headerTransport: headerUnico(input.header),
+    visitasDomiciliares: input.visitas.map((v): LediObject => {
+      const c = v.cidadao;
+      const cpf = c ? cpfOf(c) : undefined;
+      return {
+        turno: v.turno,
+        numProntuario: v.numeroProntuario ?? undefined,
+        cnsCidadao: c ? cnsOf(c) : undefined,
+        cpfCidadao: cpf,
+        stCidadaoNaoPossuiCpf: c ? !cpf : undefined,
+        justificativaCidadaoNaoPossuiCpf: c && !cpf ? (c.justificativaSemCpf ?? undefined) : undefined,
+        dtNascimento: c ? epochDate(c.birthDate) : undefined,
+        sexo: c ? sexo(c.sex) : undefined,
+        statusVisitaCompartilhadaOutroProfissional: v.compartilhada ?? false,
+        motivosVisita: [...new Set(v.motivos)],
+        desfecho: v.desfecho,
+        microArea: v.foraDaArea ? undefined : (v.microArea ?? undefined),
+        stForaArea: v.foraDaArea ?? false,
+        tipoDeImovel: TIPO_IMOVEL_PARA_LEDI[v.tipoImovel ?? '01'] ?? 1,
+        pesoAcompanhamentoNutricional: v.pesoKg ?? undefined,
+        alturaAcompanhamentoNutricional: v.alturaCm ?? undefined,
+        pressaoSistolica: v.sistolica ?? undefined,
+        pressaoDiastolica: v.diastolica ?? undefined,
+        temperatura: v.temperatura ?? undefined,
+        tipoGlicemia: v.glicemia !== null && v.glicemia !== undefined ? (v.tipoGlicemia ?? 4) : undefined,
+        glicemia: v.glicemia ?? undefined,
+        latitude: v.latitude ?? undefined,
+        longitude: v.longitude ?? undefined,
+      };
+    }),
+  };
+}
+
 export function buildVacinacao(input: FichaVacinacaoInput): LediObject {
   return {
     uuidFicha: input.uuid,

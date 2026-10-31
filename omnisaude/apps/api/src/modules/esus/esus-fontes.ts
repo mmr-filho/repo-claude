@@ -6,6 +6,7 @@ import {
   buildCadastroIndividual,
   buildProcedimentos,
   buildVacinacao,
+  buildVisitaDomiciliar,
   CBO_POR_MODELO,
   DOSE_VACINA,
   FABRICANTE_RNDS,
@@ -20,6 +21,7 @@ import {
   type Medicoes,
   type ProcedimentoAtendimentoInput,
   type VacinacaoAtendimentoInput,
+  type VisitaDomiciliarInput,
 } from '@omnisaude/esus';
 
 /**
@@ -380,6 +382,53 @@ export async function fichasVacinacao(ctx: FonteContexto): Promise<FichaGerada[]
         ine: lot?.ine ?? null,
         ficha: buildVacinacao({ uuid, header: { cns: lot?.cns ?? '', cbo: lot?.cbo ?? '', cnes: unit.cnes, ine: lot?.ine, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge }, atendimentos }),
         summary: { profissional: lot?.name ?? g.userId, dia: g.day, atendimentos: part.length, registros: part.map((v) => v.id) },
+      });
+    }
+  }
+  return out;
+}
+
+// ─── Visita domiciliar e territorial (app do ACS) ───────────────────────────
+
+const dec = (x: unknown) => (x === null || x === undefined ? null : Number(x));
+
+export async function fichasVisitaDomiciliar(ctx: FonteContexto): Promise<FichaGerada[]> {
+  const { db, unit, timeZone } = ctx;
+  const rows = await db.homeVisit.findMany({ where: { unitId: unit.id, visitedAt: { gte: ctx.from, lte: ctx.to } }, include: { patient: true }, orderBy: { visitedAt: 'asc' } });
+  const lots = await lotacoes(db, unit.id, [...new Set(rows.map((v) => v.professionalId))]);
+  const out: FichaGerada[] = [];
+  for (const g of groupByProfessionalDay(rows, (v) => ({ userId: v.professionalId, at: v.visitedAt }), timeZone).values()) {
+    const lot = lots.get(g.userId);
+    for (const part of chunks(g.items, 99)) {
+      const visitas: VisitaDomiciliarInput[] = part.map((v) => ({
+        turno: (v.turno as 1 | 2 | 3) ?? turnoFromDate(v.visitedAt, timeZone),
+        cidadao: v.patient ? cidadao(v.patient) : null,
+        compartilhada: v.shared,
+        motivos: v.reasons.map(Number).filter((n) => Number.isFinite(n)),
+        desfecho: Number(v.outcome) as 1 | 2 | 3,
+        microArea: v.microArea,
+        foraDaArea: v.outOfArea,
+        tipoImovel: v.propertyType,
+        pesoKg: dec(v.weightKg),
+        alturaCm: v.heightCm,
+        sistolica: v.systolic,
+        diastolica: v.diastolic,
+        temperatura: dec(v.temperature),
+        glicemia: v.glucose,
+        tipoGlicemia: v.glucoseType,
+        latitude: v.latitude,
+        longitude: v.longitude,
+      }));
+      const uuid = lediUuid(unit.cnes);
+      out.push({
+        kind: TIPO_DADO.VISITA_DOMICILIAR,
+        uuid,
+        sourceType: 'HomeVisit',
+        sourceId: part[0]!.id,
+        patientId: part.length === 1 ? (part[0]!.patientId ?? null) : null,
+        ine: lot?.ine ?? null,
+        ficha: buildVisitaDomiciliar({ uuid, header: { cns: lot?.cns ?? '', cbo: lot?.cbo ?? '', cnes: unit.cnes, ine: lot?.ine, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge }, visitas }),
+        summary: { profissional: lot?.name ?? g.userId, dia: g.day, visitas: part.length, registros: part.map((v) => v.id) },
       });
     }
   }

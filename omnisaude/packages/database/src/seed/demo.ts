@@ -153,20 +153,26 @@ export async function seedDemo(opts: SeedOptions) {
           create: [
             { userId: staff.enfermeiro!, cbo: '223505', microArea: '01' },
             { userId: staff.medica!, cbo: '225125' },
+            { userId: staff.acs!, cbo: '515105', microArea: '01' },
           ],
         },
       },
     });
     await db.team.create({ data: { ine: '0000000102', name: 'Saúde Bucal Centro', typeCode: '71', unitId: unit.ubs, modality: 'ESB_I', members: { create: [{ userId: staff.dentista!, cbo: '223208' }] } } });
     await db.team.create({ data: { ine: '0000000103', name: 'eMulti Centro', typeCode: '72', unitId: unit.ubs, modality: 'EMULTI_ESTRATEGICA', members: { create: [{ userId: staff.social!, cbo: '251605' }] } } });
+    // Coordenadas em torno do centro de Gurupi/TO para o mapa do território do ACS.
+    const households: string[] = [];
     for (const p of PATIENTS) {
+      const i = PATIENTS.indexOf(p);
       const household = await db.household.create({
         data: {
           cep: '01001000',
           street: 'Rua Exemplo',
-          number: String(100 + PATIENTS.indexOf(p)),
+          number: String(100 + i),
           district: p.district,
           ibgeCode: DEMO_TENANT.ibgeCode,
+          latitude: -11.7292 + (i % 4) * 0.0012 - 0.002,
+          longitude: -49.0686 + Math.floor(i / 4) * 0.0015 - 0.002,
           dwellingType: '01',
           tenure: '01',
           waterSupply: '01',
@@ -182,7 +188,44 @@ export async function seedDemo(opts: SeedOptions) {
         include: { families: true },
       });
       await db.patient.update({ where: { id: patient[p.key]! }, data: { familyId: household.families[0]!.id, kinship: '00' } });
+      households.push(household.id);
     }
+    // Visitas do agente comunitário (microárea 01): uma realizada, uma com a pessoa ausente.
+    await db.homeVisit.create({
+      data: {
+        unitId: unit.ubs,
+        teamId: esf.id,
+        professionalId: staff.acs!,
+        cbo: '515105',
+        householdId: households[0]!,
+        patientId: patient[PATIENTS[0]!.key]!,
+        visitedAt: daysAgo(12, 9),
+        recordedAt: daysAgo(12, 9),
+        turno: 1,
+        outcome: '1',
+        reasons: ['29', '11'],
+        microArea: '01',
+        systolic: 138,
+        diastolic: 88,
+        latitude: -11.7312,
+        longitude: -49.0706,
+      },
+    });
+    await db.homeVisit.create({
+      data: {
+        unitId: unit.ubs,
+        teamId: esf.id,
+        professionalId: staff.acs!,
+        cbo: '515105',
+        householdId: households[1]!,
+        visitedAt: daysAgo(5, 15),
+        recordedAt: daysAgo(5, 15),
+        turno: 2,
+        outcome: '3',
+        reasons: ['29'],
+        microArea: '01',
+      },
+    });
 
     // ── Estoque ──
     const location = {
