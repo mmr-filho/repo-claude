@@ -1,28 +1,31 @@
 import * as http from 'node:http';
 import * as https from 'node:https';
-import { isValidCpf, onlyDigits } from '@omnisaude/shared';
-import type { Bundle, OperationOutcome } from 'fhir/r4';
+import { isValidCns, isValidCpf, onlyDigits } from '@omnisaude/shared';
+import { NAMING_SYSTEMS } from './rnds';
+import type { Bundle, OperationOutcome, Organization } from 'fhir/r4';
 
 /**
  * Cliente da RNDS com autenticação mútua (mTLS) pelo certificado ICP-Brasil do estabelecimento/ente.
  *
- * Premissas (confirmar no guia vigente da RNDS):
- * - token: GET {authUrl}/api/token com o certificado cliente; resposta { access_token, expires_in? } (30 min);
- * - chamadas EHR: cabeçalho "X-Authorization-Server: Bearer <token>" e "Authorization: <CPF do solicitante>";
+ * Conforme o guia e a coleção oficial de requisições da RNDS:
+ * - token: GET {authUrl}/api/token com o certificado cliente (e-CNPJ do estabelecimento); resposta
+ *   { access_token, token_type: "jwt", scope: "read write", expires_in } (30 minutos);
+ * - chamadas EHR: cabeçalho "X-Authorization-Server: Bearer <token>" e "Authorization: <CNS do profissional
+ *   em nome de quem a requisição é feita, lotado no estabelecimento>";
  * - envio de documentos: POST {ehrUrl}/api/fhir/r4/Bundle; o id do recurso criado volta no cabeçalho Location.
  */
 
-export type RndsTlsOptions =
-  | { pfx: Buffer | string; passphrase?: string; ca?: Buffer | string }
-  | { cert: Buffer | string; key: Buffer | string; passphrase?: string; ca?: Buffer | string };
+export type RndsTlsOptions = { pfx: Buffer | string; passphrase?: string; ca?: Buffer | string } | { cert: Buffer | string; key: Buffer | string; passphrase?: string; ca?: Buffer | string };
 
 export interface RndsClientOptions {
   authUrl: string;
   ehrUrl: string;
   /** Certificado cliente. Pode ser omitido apenas contra o servidor simulado (http). */
   tls?: RndsTlsOptions;
-  /** CPF do profissional/operador responsável pelas requisições. */
-  requesterCpf: string;
+  /** CNS do profissional em nome de quem as requisições são feitas (cabeçalho Authorization). */
+  requesterCns?: string;
+  /** Compatibilidade: CPF usado no cabeçalho Authorization quando não há CNS (ambientes antigos/simulados). */
+  requesterCpf?: string;
   timeoutMs?: number;
   /** Margem de renovação antecipada do token, em ms (padrão 60s). */
   tokenRenewMarginMs?: number;
@@ -55,7 +58,9 @@ export class RndsClient {
   private readonly now: () => number;
 
   constructor(private readonly opts: RndsClientOptions) {
-    if (!isValidCpf(opts.requesterCpf)) throw new Error('CPF do solicitante RNDS inválido');
+    if (opts.requesterCns) {
+      if (!isValidCns(opts.requesterCns)) throw new Error('CNS do solicitante RNDS inválido');
+    } else if (!opts.requesterCpf || !isValidCpf(opts.requesterCpf)) throw new Error('Informe o CNS (ou, na falta, o CPF) do solicitante RNDS');
     this.agent = opts.tls ? new https.Agent({ ...opts.tls, keepAlive: true }) : undefined;
     this.now = opts.now ?? Date.now;
   }
@@ -71,7 +76,9 @@ export class RndsClient {
       throw new RndsError('Resposta de token da RNDS não é JSON', res.status, undefined, res.body);
     }
     if (!parsed.access_token) throw new RndsError('Resposta de token da RNDS sem access_token', res.status, undefined, res.body);
-    const ttlMs = (parsed.expires_in ?? 1800) * 1000;
+    // A RNDS informa expires_in em milissegundos (1800000); tolera segundos quando o valor for pequeno.
+    const expires = parsed.expires_in ?? 1_800_000;
+    const ttlMs = expires > 100_000 ? expires : expires * 1000;
     this.token = { value: parsed.access_token, expiresAt: this.now() + ttlMs - (this.opts.tokenRenewMarginMs ?? 60_000) };
     return parsed.access_token;
   }
@@ -86,14 +93,25 @@ export class RndsClient {
     if (res.status !== 200 && res.status !== 201) throw toRndsError('Documento recusado pela RNDS', res);
     const location = headerValue(res.headers.location) ?? headerValue(res.headers['content-location']);
     if (!location) throw new RndsError('RNDS não devolveu o cabeçalho Location', res.status, undefined, res.body);
-    const id = location.replace(/\/_history\/.*$/, '').split('/').filter(Boolean).at(-1)!;
+    const id = location
+      .replace(/\/_history\/.*$/, '')
+      .split('/')
+      .filter(Boolean)
+      .at(-1)!;
     return { id, location };
+  }
+
+  /** Estabelecimento pelo CNES; serve como teste de conexão, certificado e credencial. */
+  async getOrganization(cnes: string): Promise<Organization> {
+    const res = await this.ehr('GET', `/api/fhir/r4/Organization/${onlyDigits(cnes)}`);
+    if (res.status !== 200) throw toRndsError('Falha ao consultar o estabelecimento na RNDS', res);
+    return JSON.parse(res.body) as Organization;
   }
 
   /** Consulta de cidadão (CADSUS via RNDS): devolve os Patient encontrados. */
   async searchPatient(query: { cpf: string } | { cns: string }): Promise<Bundle> {
     const [system, value] = 'cpf' in query ? ['cpf', onlyDigits(query.cpf)] : ['cns', onlyDigits(query.cns)];
-    const identifier = encodeURIComponent(`https://saude.gov.br/fhir/r4/NamingSystem/${system}|${value}`);
+    const identifier = encodeURIComponent(`${NAMING_SYSTEMS[system as 'cpf' | 'cns']}|${value}`);
     const res = await this.ehr('GET', `/api/fhir/r4/Patient?identifier=${identifier}`);
     if (res.status === 404) return { resourceType: 'Bundle', type: 'searchset', total: 0, entry: [] };
     if (res.status !== 200) throw toRndsError('Falha na consulta de cidadão na RNDS', res);
@@ -109,7 +127,7 @@ export class RndsClient {
         {
           Accept: FHIR_JSON,
           'X-Authorization-Server': `Bearer ${await this.getAccessToken()}`,
-          Authorization: onlyDigits(this.opts.requesterCpf),
+          Authorization: onlyDigits(this.opts.requesterCns ?? this.opts.requesterCpf ?? ''),
           ...(body ? { 'Content-Type': FHIR_JSON } : {}),
         },
         body,

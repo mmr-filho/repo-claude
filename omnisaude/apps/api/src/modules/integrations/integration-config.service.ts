@@ -3,6 +3,7 @@ import type { MasterClient } from '@omnisaude/database';
 import { readFileSync } from 'node:fs';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import { MASTER_DB } from '../../core/database';
+import { rndsEndpoints } from '@omnisaude/fhir';
 import { StorageService } from '../../core/storage.service';
 
 export interface WhatsAppConfig {
@@ -17,7 +18,13 @@ export interface WhatsAppConfig {
 export interface RndsConfig {
   authUrl: string;
   ehrUrl: string;
-  requesterCpf: string;
+  /** homologacao, producao ou simulado (servidor de mocks). */
+  environment: 'homologacao' | 'producao' | 'simulado' | 'personalizado';
+  uf?: string;
+  /** CNS do profissional em nome de quem as requisições são feitas (cabeçalho Authorization). */
+  requesterCns?: string;
+  /** Compatibilidade com o simulador e configurações antigas. */
+  requesterCpf?: string;
   /** Identificador do solicitante credenciado (compõe o identificador dos documentos). */
   requesterId: string;
   tls?: { pfx: Buffer; passphrase?: string };
@@ -77,16 +84,30 @@ export class IntegrationConfigService {
     if (row && !row.enabled) return null;
     const c = row?.config ?? {};
     const mocks = this.config.MOCKS_URL;
-    const authUrl = (c.authUrl as string) ?? this.config.RNDS_AUTH_URL ?? (mocks ? `${mocks}/rnds/auth` : undefined);
-    const ehrUrl = (c.ehrUrl as string) ?? this.config.RNDS_EHR_URL ?? (mocks ? `${mocks}/rnds/ehr` : undefined);
+    const environment = ((c.environment as string) ?? this.config.RNDS_ENVIRONMENT) as 'homologacao' | 'producao' | undefined;
+    const uf = ((c.uf as string) ?? this.config.RNDS_UF)?.toLowerCase();
+    const official = environment ? safeEndpoints(environment, uf) : null;
+    let authUrl = (c.authUrl as string) ?? this.config.RNDS_AUTH_URL ?? official?.authUrl;
+    let ehrUrl = (c.ehrUrl as string) ?? this.config.RNDS_EHR_URL ?? official?.ehrUrl;
+    let kind: RndsConfig['environment'] = environment ?? 'personalizado';
+    if (!authUrl || !ehrUrl) {
+      if (!mocks) return null;
+      authUrl = `${mocks}/rnds/auth`;
+      ehrUrl = `${mocks}/rnds/ehr`;
+      kind = 'simulado';
+    }
+    const requesterCns = (c.requesterCns as string) ?? this.config.RNDS_REQUESTER_CNS;
     const requesterCpf = (c.requesterCpf as string) ?? this.config.RNDS_REQUESTER_CPF;
-    if (!authUrl || !ehrUrl || !requesterCpf) return null;
+    if (!requesterCns && !requesterCpf) return null;
     const pfxPath = (c.certPfxPath as string) ?? this.config.RNDS_CERT_PFX;
     const pfx = pfxPath ? await this.certificate(pfxPath) : undefined;
     const passphrase = this.secret(c.certPassphraseRef as string) ?? this.config.RNDS_CERT_PASSPHRASE;
     return {
       authUrl,
       ehrUrl,
+      environment: kind,
+      uf,
+      requesterCns,
       requesterCpf,
       requesterId: (c.requesterId as string) ?? tenantId,
       tls: pfx ? { pfx, passphrase } : undefined,
@@ -105,5 +126,13 @@ export class IntegrationConfigService {
     const row = await this.row(tenantId, 'SEFAZ');
     if (row && !row.enabled) return null;
     return (row?.config.url as string) ?? this.config.SEFAZ_URL ?? (this.config.MOCKS_URL ? `${this.config.MOCKS_URL}/sefaz` : null);
+  }
+}
+
+function safeEndpoints(environment: 'homologacao' | 'producao', uf?: string): { authUrl: string; ehrUrl: string } | null {
+  try {
+    return rndsEndpoints(environment, uf);
+  } catch {
+    return null;
   }
 }

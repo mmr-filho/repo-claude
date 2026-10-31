@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import * as http from 'node:http';
 import { citizenToPatient, NAMING_SYSTEMS, validateRndsBundle, type CadsusCitizen } from '@omnisaude/fhir';
-import { isValidCpf, onlyDigits } from '@omnisaude/shared';
+import { isValidCns, isValidCpf, onlyDigits } from '@omnisaude/shared';
 import { DEFAULT_FIXTURES_DIR, loadNfeFixtures, MOCK_CITIZENS, type NfeFixture } from './fixtures';
 
 /**
@@ -49,14 +49,126 @@ const MAX_BODY = 5 * 1024 * 1024;
  * a conciliação; os demais são novos. Um está desativado.
  */
 const CNES_ESTABELECIMENTOS = [
-  { codigo_cnes: 9000011, nome_fantasia: 'UBS CENTRO', codigo_tipo_unidade: 2, nat: '1244', esfera: 'MUNICIPAL', tel: '63-3315-0100', email: 'ubs.centro@gurupi.to.gov.br', end: ['RUA 7', '120', 'CENTRO', '77405070'], turno: 'ATENDIMENTO NOS TURNOS DA MANHA, TARDE E NOITE', sus: 'SIM', lat: -11.7292, lon: -49.0686, motivo: null },
-  { codigo_cnes: 2546434, nome_fantasia: 'UNIDADE BASICA DE SAUDE ULISSES MOREIRA MILHOMEM', codigo_tipo_unidade: 2, nat: '1244', esfera: 'MUNICIPAL', tel: '(63) 3315-0114', email: null, end: ['RUA 12', 'S/N', 'VILA NOVA', '77410000'], turno: 'ATENDIMENTO NOS TURNOS DA MANHA, TARDE E NOITE', sus: 'SIM', lat: -11.73, lon: -49.07, motivo: null },
-  { codigo_cnes: 3331326, nome_fantasia: 'UPA DRA MARCIA MUCKY', codigo_tipo_unidade: 73, nat: '1244', esfera: 'MUNICIPAL', tel: '(63)3315-0027', email: null, end: ['AV GOIAS', '1500', 'CENTRO', '77403000'], turno: 'ATENDIMENTO CONTINUO DE 24 HORAS/DIA (PLANTAO:INCLUI SABADOS, DOMINGOS E FERIADOS)', sus: 'SIM', lat: -11.74, lon: -49.06, motivo: null },
-  { codigo_cnes: 2786109, nome_fantasia: 'HOSPITAL REGIONAL DE GURUPI', codigo_tipo_unidade: 5, nat: '1023', esfera: 'ESTADUAL', tel: '3027 5147', email: null, end: ['AV PARA', '1800', 'CENTRO', '77403010'], turno: 'ATENDIMENTO CONTINUO DE 24 HORAS/DIA (PLANTAO:INCLUI SABADOS, DOMINGOS E FERIADOS)', sus: 'SIM', lat: -11.735, lon: -49.065, motivo: null },
-  { codigo_cnes: 8395594, nome_fantasia: 'FARMACIA CENTRAL', codigo_tipo_unidade: 43, nat: '1244', esfera: 'MUNICIPAL', tel: null, email: null, end: ['RUA 3', '45', 'CENTRO', '77403050'], turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE', sus: 'NAO', lat: null, lon: null, motivo: null },
-  { codigo_cnes: 549126, nome_fantasia: 'COORDENADORIA DE VIGILANCIA EPIDEMIOLOGICA', codigo_tipo_unidade: 50, nat: '1244', esfera: 'MUNICIPAL', tel: '6333150088', email: null, end: ['PERNAMBUCO', '1345', 'CENTRO', '77403020'], turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE', sus: 'NAO', lat: null, lon: null, motivo: null },
-  { codigo_cnes: 9695214, nome_fantasia: 'REAVITTA CENTRO DE SAUDE E ESTETICA AVANCADA', codigo_tipo_unidade: 36, nat: '2135', esfera: 'MUNICIPAL', tel: null, email: null, end: ['RUA 20', '300', 'CENTRO', '77403100'], turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE', sus: 'NAO', lat: null, lon: null, motivo: null },
-  { codigo_cnes: 2546523, nome_fantasia: 'POSTO ANTIGO DESATIVADO', codigo_tipo_unidade: 1, nat: '1244', esfera: 'MUNICIPAL', tel: null, email: null, end: ['RUA 1', '1', 'CENTRO', '77403000'], turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE', sus: 'NAO', lat: null, lon: null, motivo: '08' },
+  {
+    codigo_cnes: 9000011,
+    nome_fantasia: 'UBS CENTRO',
+    codigo_tipo_unidade: 2,
+    nat: '1244',
+    esfera: 'MUNICIPAL',
+    tel: '63-3315-0100',
+    email: 'ubs.centro@gurupi.to.gov.br',
+    end: ['RUA 7', '120', 'CENTRO', '77405070'],
+    turno: 'ATENDIMENTO NOS TURNOS DA MANHA, TARDE E NOITE',
+    sus: 'SIM',
+    lat: -11.7292,
+    lon: -49.0686,
+    motivo: null,
+  },
+  {
+    codigo_cnes: 2546434,
+    nome_fantasia: 'UNIDADE BASICA DE SAUDE ULISSES MOREIRA MILHOMEM',
+    codigo_tipo_unidade: 2,
+    nat: '1244',
+    esfera: 'MUNICIPAL',
+    tel: '(63) 3315-0114',
+    email: null,
+    end: ['RUA 12', 'S/N', 'VILA NOVA', '77410000'],
+    turno: 'ATENDIMENTO NOS TURNOS DA MANHA, TARDE E NOITE',
+    sus: 'SIM',
+    lat: -11.73,
+    lon: -49.07,
+    motivo: null,
+  },
+  {
+    codigo_cnes: 3331326,
+    nome_fantasia: 'UPA DRA MARCIA MUCKY',
+    codigo_tipo_unidade: 73,
+    nat: '1244',
+    esfera: 'MUNICIPAL',
+    tel: '(63)3315-0027',
+    email: null,
+    end: ['AV GOIAS', '1500', 'CENTRO', '77403000'],
+    turno: 'ATENDIMENTO CONTINUO DE 24 HORAS/DIA (PLANTAO:INCLUI SABADOS, DOMINGOS E FERIADOS)',
+    sus: 'SIM',
+    lat: -11.74,
+    lon: -49.06,
+    motivo: null,
+  },
+  {
+    codigo_cnes: 2786109,
+    nome_fantasia: 'HOSPITAL REGIONAL DE GURUPI',
+    codigo_tipo_unidade: 5,
+    nat: '1023',
+    esfera: 'ESTADUAL',
+    tel: '3027 5147',
+    email: null,
+    end: ['AV PARA', '1800', 'CENTRO', '77403010'],
+    turno: 'ATENDIMENTO CONTINUO DE 24 HORAS/DIA (PLANTAO:INCLUI SABADOS, DOMINGOS E FERIADOS)',
+    sus: 'SIM',
+    lat: -11.735,
+    lon: -49.065,
+    motivo: null,
+  },
+  {
+    codigo_cnes: 8395594,
+    nome_fantasia: 'FARMACIA CENTRAL',
+    codigo_tipo_unidade: 43,
+    nat: '1244',
+    esfera: 'MUNICIPAL',
+    tel: null,
+    email: null,
+    end: ['RUA 3', '45', 'CENTRO', '77403050'],
+    turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE',
+    sus: 'NAO',
+    lat: null,
+    lon: null,
+    motivo: null,
+  },
+  {
+    codigo_cnes: 549126,
+    nome_fantasia: 'COORDENADORIA DE VIGILANCIA EPIDEMIOLOGICA',
+    codigo_tipo_unidade: 50,
+    nat: '1244',
+    esfera: 'MUNICIPAL',
+    tel: '6333150088',
+    email: null,
+    end: ['PERNAMBUCO', '1345', 'CENTRO', '77403020'],
+    turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE',
+    sus: 'NAO',
+    lat: null,
+    lon: null,
+    motivo: null,
+  },
+  {
+    codigo_cnes: 9695214,
+    nome_fantasia: 'REAVITTA CENTRO DE SAUDE E ESTETICA AVANCADA',
+    codigo_tipo_unidade: 36,
+    nat: '2135',
+    esfera: 'MUNICIPAL',
+    tel: null,
+    email: null,
+    end: ['RUA 20', '300', 'CENTRO', '77403100'],
+    turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE',
+    sus: 'NAO',
+    lat: null,
+    lon: null,
+    motivo: null,
+  },
+  {
+    codigo_cnes: 2546523,
+    nome_fantasia: 'POSTO ANTIGO DESATIVADO',
+    codigo_tipo_unidade: 1,
+    nat: '1244',
+    esfera: 'MUNICIPAL',
+    tel: null,
+    email: null,
+    end: ['RUA 1', '1', 'CENTRO', '77403000'],
+    turno: 'ATENDIMENTOS NOS TURNOS DA MANHA E A TARDE',
+    sus: 'NAO',
+    lat: null,
+    lon: null,
+    motivo: '08',
+  },
 ].map((e) => ({
   codigo_cnes: e.codigo_cnes,
   nome_razao_social: e.esfera === 'ESTADUAL' ? 'TOCANTINS SECRETARIA DE ESTADO DA SAUDE' : 'PREFEITURA MUNICIPAL DE GURUPI',
@@ -142,9 +254,10 @@ export function createMockServer(opts: MockServerOptions = {}): http.Server & { 
     const token = /^Bearer (.+)$/.exec(header)?.[1];
     const expiresAt = token ? state.tokens.get(token) : undefined;
     if (!expiresAt || expiresAt < Date.now()) throw new HttpError(401, outcome('error', 'login', 'Token de acesso ausente ou expirado'));
-    const cpf = onlyDigits(String(req.headers.authorization ?? ''));
-    if (!isValidCpf(cpf)) throw new HttpError(403, outcome('error', 'forbidden', 'Cabeçalho Authorization deve conter o CPF do solicitante'));
-    return cpf;
+    // A RNDS exige o CNS do profissional em nome de quem a requisição é feita; o simulador também aceita CPF.
+    const requester = onlyDigits(String(req.headers.authorization ?? ''));
+    if (!isValidCns(requester) && !isValidCpf(requester)) throw new HttpError(403, outcome('error', 'forbidden', 'Cabeçalho Authorization deve conter o CNS (ou CPF) do solicitante'));
+    return requester;
   };
 
   const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
@@ -194,9 +307,7 @@ export function createMockServer(opts: MockServerOptions = {}): http.Server & { 
           422,
           {
             resourceType: 'OperationOutcome',
-            issue: result.issues
-              .filter((i) => i.severity === 'error')
-              .map((i) => ({ severity: 'error', code: 'invalid', diagnostics: i.message, expression: [i.path] })),
+            issue: result.issues.filter((i) => i.severity === 'error').map((i) => ({ severity: 'error', code: 'invalid', diagnostics: i.message, expression: [i.path] })),
           },
           {},
           'application/fhir+json',
@@ -207,15 +318,31 @@ export function createMockServer(opts: MockServerOptions = {}): http.Server & { 
       return json(201, outcome('information', 'informational', 'Documento recebido'), { location: `/rnds/ehr/api/fhir/r4/Bundle/${id}` }, 'application/fhir+json');
     }
 
+    const organization = /^\/rnds\/ehr\/api\/fhir\/r4\/Organization\/(\d{7})$/.exec(path);
+    if (organization && method === 'GET') {
+      requireRndsAuth(req);
+      const cnes = organization[1]!;
+      return json(
+        200,
+        {
+          resourceType: 'Organization',
+          id: cnes,
+          meta: { profile: ['http://www.saude.gov.br/fhir/r4/StructureDefinition/BREstabelecimentoSaude-1.0'] },
+          identifier: [{ system: 'http://rnds.saude.gov.br/fhir/r4/NamingSystem/cnes', value: cnes }],
+          active: true,
+          name: `ESTABELECIMENTO SIMULADO ${cnes}`,
+        },
+        {},
+        'application/fhir+json',
+      );
+    }
     if (path === '/rnds/ehr/api/fhir/r4/Patient' && method === 'GET') {
       requireRndsAuth(req);
       const identifier = url.searchParams.get('identifier') ?? '';
       const [system, value] = identifier.split('|');
       if (!system || !value) throw new HttpError(400, outcome('error', 'required', 'Parâmetro identifier=<sistema>|<valor> obrigatório'));
       const digits = onlyDigits(value);
-      const found = state.citizens.filter((c) =>
-        system === NAMING_SYSTEMS.cpf ? c.cpf === digits : system === NAMING_SYSTEMS.cns ? c.cns.includes(digits) : false,
-      );
+      const found = state.citizens.filter((c) => (system === NAMING_SYSTEMS.cpf ? c.cpf === digits : system === NAMING_SYSTEMS.cns ? c.cns.includes(digits) : false));
       return json(
         200,
         {

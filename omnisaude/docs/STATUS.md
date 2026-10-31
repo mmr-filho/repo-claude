@@ -83,9 +83,9 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 |---|---|---|
 | Sincronização mensal da SIGTAP e contingência por zip | ✅ | mapeamento de instrumentos é premissa documentada |
 | Crítica pré-glosa (CBO, CID, sexo, idade, quantidade) | ✅ | |
-| BPA-I e BPA-C | 🟡 | layout reconstruído: validar com o documento oficial do DATASUS antes de enviar |
+| BPA-I e BPA-C | 🟡 | layout conferido campo a campo com o documento oficial do DATASUS (Layout de Exportação do BPA, com CPF do indivíduo e situação de rua, vigente desde 12/2024); numéricos opcionais em branco, CNS ou CPF (nunca os dois), INE da equipe; conferência automática do arquivo gerado e de arquivos externos; falta importar uma competência real no BPA Magnético |
 | Laudo APAC e lote AIH | ⏳ | há o espelho de AIH; geração dos arquivos pendente |
-| RNDS: RAC, imunização, dispensação, sumário de alta (FHIR + mTLS) | 🟡 | implementado e testado contra o mock; perfis e códigos precisam ser conferidos com o guia vigente da RNDS e com o credenciamento |
+| RNDS: RAC, imunização, dispensação, sumário de alta (FHIR + mTLS) | 🟡 | cabeçalhos, token e endereços conforme o guia e a coleção oficial (CNS do solicitante, ambientes de homologação/produção por UF); perfis do RAC conferidos com o pacote oficial; imunização, dispensação e sumário de alta a confirmar na homologação; teste de conexão em Administração > Integrações; falta o credenciamento (`docs/RNDS.md`) |
 | Consulta CADSUS | ✅ | |
 | Integração com a central de vagas (SISREG) | ⏳ | só o código de regulação na internação; o SISREG não tem API pública |
 
@@ -97,6 +97,8 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | Administração: unidades, profissionais e lotações, senha provisória, 2FA obrigatório por papel | ✅ | NUC-6 do roadmap; cadastro pela tela sem depender da carga de demonstração; desativar vale na hora |
 | Importação do CNES: estabelecimentos (API do DATASUS, conciliação e aplicação seletiva), equipes INE e profissionais por planilha, pré-cadastro e acessos em lote | 🟡 | NUC-2/3; falta o arquivo "XML e-SUS AB" do CNES (profissionais e equipes oficiais): layout não publicado, precisa de um exemplo do município |
 | Assinatura digital ICP-Brasil (A1 no servidor): certificado em Minha conta, "Assinar com certificado" no registro do prontuário, na receita e no atestado, PDF/PAdES para baixar, página "Validar documento" para qualquer usuário conferir um PDF | 🟡 | ATD-4; testado com certificado de teste no formato e-CPF (CPF no campo 2.16.76.1.3.1) e com o OpenSSL (`cms -verify -cades`); falta um A1 real para conferir no validador do ITI; A3/nuvem depois |
+| Faturamento: conferência de arquivos BPA (gerados aqui ou de fora) contra o layout oficial, com erros por linha e campo | ✅ | FAT-1; a tela de Arquivos BPA mostra o laudo da conferência |
+| Administração > Integrações: situação da RNDS (ambiente, endereços, solicitante, certificado, fila) e teste de conexão | ✅ | INT-1; o envio real depende do credenciamento |
 | Cadastro completo do cidadão: documentos (RG, NIS), dados sociais (escolaridade, trabalho, ocupação, situação de rua), endereço com CEP automático, domicílio e família (cadastro domiciliar do e-SUS), unificação de cadastros duplicados | ✅ | NUC-1; o cadastro unificado redireciona para o que ficou e leva o histórico junto |
 | Recepção (OCR, CADSUS, duplicidade, senhas, acolhimento, pulseira) | ✅ | |
 | Painel de chamada (TV) com voz | ✅ | exige um clique para liberar o som (regra dos navegadores) |
@@ -113,13 +115,16 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 
 ## Verificação feita
 
-- 298 testes automatizados passando: 199 nas bibliotecas e no Worker da Cloudflare e 99 da API (integração contra o Postgres e a criptografia da assinatura)
+- 304 testes automatizados passando: 201 nas bibliotecas, no simulador e no Worker da Cloudflare e 103 da API (integração contra o Postgres, criptografia da assinatura e layout do BPA)
   contra PostgreSQL real.
 - Teste de fumaça com Playwright (`e2e/smoke.e2e.mjs`) percorrendo 13 telas com 8 papéis no build de produção.
 - Fluxo de administração no navegador: a gestora cadastra uma unidade e um profissional, recebe a senha
   provisória, o profissional entra, só vê "Minha conta" até trocar a senha e depois acessa a Recepção.
 - Importação do CNES no navegador contra a API real do DATASUS: os 293 estabelecimentos de Gurupi/TO
   (IBGE 1709500) listados e conciliados, as unidades públicas criadas com tipo, contato, horário e coordenadas.
+- Faturamento no navegador: crítica, arquivo BPA-I gerado (cabeçalho 130, registro 350 posições) e conferido
+  na tela, inclusive com o campo de controle adulterado; Administração > Integrações com teste de conexão à RNDS
+  (simulador)
 - Assinatura digital no navegador: certificado cadastrado em Minha conta, registro do prontuário assinado com
   o certificado (PDF baixado), receita assinada e o PDF validado em "Validar documento" (adulteração detectada)
 - Cidadão no navegador: domicílio criado a partir do endereço, membro incluído com parentesco, condições de

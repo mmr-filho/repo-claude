@@ -6,7 +6,7 @@ import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
 import { TenantsService } from '../../core/database';
 import { DomainError, notFound } from '../../core/errors';
-import { BPA_C_LINE, BPA_I_LINE, controlField, renderHeader, renderLine, sheetPosition } from './bpa-layout';
+import { BPA_C_LINE, BPA_I_LINE, controlField, renderHeader, renderLine, sheetPosition, validateBpaFile, type BpaValidation } from './bpa-layout';
 import { competenciaRange } from './calendar';
 import { evaluateRecord, type ProcedureRules } from './pre-glosa';
 import { readSigtapTables } from './sigtap-parser';
@@ -224,9 +224,7 @@ export class BillingService {
         _sum: { quantity: true },
       }),
     ]);
-    const rules = new Map<string, ProcedureRules>(
-      procs.map((p) => [p.code, { ...p, cbos: new Set<string>(), cids: new Set<string>() }]),
-    );
+    const rules = new Map<string, ProcedureRules>(procs.map((p) => [p.code, { ...p, cbos: new Set<string>(), cids: new Set<string>() }]));
     for (const c of cbos) rules.get(c.procedureCode)?.cbos.add(c.cbo);
     for (const c of cids) rules.get(c.procedureCode)?.cids.add(c.cid);
     const patientById = new Map(patients.map((p) => [p.id, p]));
@@ -242,7 +240,7 @@ export class BillingService {
           cid: r.cid,
           instrument: r.instrument,
           performedAt: r.performedAt,
-          patient: patient ? { sex: patient.sex, birthDate: patient.birthDate, cns: patient.cns } : null,
+          patient: patient ? { sex: patient.sex, birthDate: patient.birthDate, cns: patient.cns, cpf: patient.cpf } : null,
           professionalCns: cnsByUser.get(r.professionalId) ?? null,
           patientQuantityInCompetencia: r.patientId ? (quantity.get(`${r.patientId}|${r.procedureCode}`) ?? r.quantity) : r.quantity,
         },
@@ -279,10 +277,7 @@ export class BillingService {
 
   // ───────────────────────────── Exportação BPA ─────────────────────────────
 
-  async exportBpa(
-    ctx: RequestContext,
-    input: { competencia: string; unitId: string; instrument: 'BPA_I' | 'BPA_C'; destinationName?: string; destinationType?: 'M' | 'E' },
-  ) {
+  async exportBpa(ctx: RequestContext, input: { competencia: string; unitId: string; instrument: 'BPA_I' | 'BPA_C'; destinationName?: string; destinationType?: 'M' | 'E' }) {
     const db = ctx.db;
     const tz = ctx.tenant.timeZone;
     const unit = await db.unit.findUnique({ where: { id: input.unitId } });
@@ -295,9 +290,7 @@ export class BillingService {
       throw new DomainError('SEM_PRODUCAO_VALIDADA', 'Não há produção validada pela crítica para exportar nesta competência e instrumento');
     }
     const tenant = await this.tenants.master.tenant.findUnique({ where: { id: ctx.tenant.id } });
-    const patients = new Map(
-      (await db.patient.findMany({ where: { id: { in: records.map((r) => r.patientId).filter((x): x is string => !!x) } } })).map((p) => [p.id, p]),
-    );
+    const patients = new Map((await db.patient.findMany({ where: { id: { in: records.map((r) => r.patientId).filter((x): x is string => !!x) } } })).map((p) => [p.id, p]));
     const users = new Map((await db.user.findMany({ where: { id: { in: [...new Set(records.map((r) => r.professionalId))] } } })).map((u) => [u.id, u]));
 
     const ageAt = (patientId: string | null, at: Date) => {
@@ -335,10 +328,21 @@ export class BillingService {
       });
     } else {
       const urgent = unit.type === 'UPA' || unit.type === 'SAMU';
+      // INE: equipe ativa do profissional nesta unidade (CNES), quando houver.
+      const teams = await db.team.findMany({ where: { unitId: unit.id, active: true }, include: { members: { where: { active: true, userId: { in: [...users.keys()] } } } } });
+      const ineByUser = new Map<string, string>();
+      for (const team of teams) for (const m of team.members) if (m.userId && !ineByUser.has(m.userId)) ineByUser.set(m.userId, team.ine);
+      const phoneDigits = (phone: string | null | undefined) => {
+        const d = (phone ?? '').replace(/\D/g, '');
+        return d.length > 11 && d.startsWith('55') ? d.slice(-11) : d.slice(0, 11);
+      };
       lines = records.map((r, i) => {
         const { sheet, seq } = sheetPosition(i);
         const p = r.patientId ? patients.get(r.patientId) : undefined;
         const prof = users.get(r.professionalId);
+        // O layout aceita um só documento do paciente: CNS quando houver, senão CPF.
+        const cns = p?.cns ?? '';
+        const cpf = cns ? '' : (p?.cpf ?? '');
         return {
           procedureCode: r.procedureCode,
           quantity: r.quantity,
@@ -351,7 +355,7 @@ export class BillingService {
             'prd-flh': sheet,
             'prd-seq': seq,
             'prd-pa': r.procedureCode,
-            'prd-cnspac': p?.cns ?? '',
+            'prd-cnspac': cns,
             'prd-sexo': p?.sex ?? '',
             'prd-ibge': (p?.ibgeCode ?? unit.ibgeCode).slice(0, 6),
             'prd-cid': r.cid ?? '',
@@ -362,15 +366,18 @@ export class BillingService {
             'prd-nmpac': p?.name ?? '',
             'prd-dtnasc': p ? p.birthDate.toISOString().slice(0, 10).replace(/-/g, '') : '',
             'prd-raca': p?.racaCor ?? '99',
-            'prd-etnia': p?.etnia ?? '',
+            'prd-etnia': p?.racaCor === '05' ? (p.etnia ?? '') : '',
             'prd-nac': p?.nationality ?? '010',
             'prd-cep-pcnte': p?.cep ?? '',
             'prd-end-pcnte': p?.street ?? '',
             'prd-compl-pcnte': p?.complement ?? '',
-            'prd-num-pcnte': p?.number ?? '',
+            'prd-num-pcnte': p?.number ?? (p?.street ? 'SN' : ''),
             'prd-bairro-pcnte': p?.district ?? '',
-            'prd-ddtel-pcnte': p?.phone ? p.phone.replace(/^55/, '') : '',
+            'prd-ddtel-pcnte': phoneDigits(p?.phone),
             'prd-email-pcnte': p?.email ?? '',
+            'prd-ine': ineByUser.get(r.professionalId) ?? '',
+            'prd-cpf-pcnte': cpf,
+            'prd-situacao-rua': p ? (p.homeless ? 'S' : 'N') : '',
           }),
         };
       });
@@ -380,6 +387,7 @@ export class BillingService {
     const header = renderHeader({
       competencia: input.competencia,
       lines: lines.length,
+      sheets: sheetPosition(lines.length - 1).sheet,
       originName: tenant?.name ?? ctx.tenant.name,
       originAcronym: ctx.tenant.slug.replace(/[^a-z0-9]/gi, '').slice(0, 6),
       originCnpj: tenant?.cnpj ?? '',
@@ -389,6 +397,9 @@ export class BillingService {
     });
     const content = [header, ...lines.map((l) => l.text)].join('\r\n') + '\r\n';
     const fileName = `BPA_${unit.cnes}_${input.competencia}_${input.instrument}.txt`;
+    // Conferência do arquivo contra o layout antes de guardar: um erro aqui é defeito do gerador, não do dado.
+    const validation = validateBpaFile(content);
+    if (!validation.ok) throw new DomainError('BPA_INVALIDO', 'O arquivo gerado não passou na conferência do layout', HttpStatus.INTERNAL_SERVER_ERROR, validation.issues);
 
     const exported = await db.$transaction(async (tx) => {
       const e = await tx.billingExport.create({
@@ -412,7 +423,18 @@ export class BillingService {
       });
       return e;
     });
-    return { id: exported.id, fileName, lines: lines.length, records: records.length, controlField: control };
+    return { id: exported.id, fileName, lines: lines.length, records: records.length, controlField: control, validation: summarize(validation) };
+  }
+
+  /** Confere um arquivo BPA (gerado aqui ou por outro sistema) contra o layout oficial. */
+  validateFile(content: string): BpaValidation {
+    if (!content.trim()) throw new DomainError('ARQUIVO_VAZIO', 'Envie o conteúdo do arquivo BPA (.txt)');
+    return validateBpaFile(content);
+  }
+
+  async validateExport(ctx: RequestContext, id: string): Promise<BpaValidation> {
+    const e = await this.getExport(ctx, id);
+    return validateBpaFile(e.content);
   }
 
   async listExports(ctx: RequestContext, competencia?: string) {
@@ -437,11 +459,7 @@ export class BillingService {
     const { start, end } = competenciaRange(competencia, ctx.tenant.timeZone);
     const admissions = await ctx.db.admission.findMany({
       where: {
-        OR: [
-          { admittedAt: { gte: start, lt: end } },
-          { dischargedAt: { gte: start, lt: end } },
-          { admittedAt: { lt: end }, dischargedAt: null },
-        ],
+        OR: [{ admittedAt: { gte: start, lt: end } }, { dischargedAt: { gte: start, lt: end } }, { admittedAt: { lt: end }, dischargedAt: null }],
       },
       include: { encounter: { include: { patient: true, unit: true } }, bed: { include: { ward: true } } },
       orderBy: { admittedAt: 'asc' },
@@ -449,9 +467,7 @@ export class BillingService {
     const procedures = await ctx.db.productionRecord.findMany({
       where: { encounterId: { in: admissions.map((a) => a.encounterId) } },
     });
-    const names = new Map(
-      (await ctx.db.sigtapProcedure.findMany({ where: { code: { in: [...new Set(procedures.map((p) => p.procedureCode))] } } })).map((p) => [p.code, p.name]),
-    );
+    const names = new Map((await ctx.db.sigtapProcedure.findMany({ where: { code: { in: [...new Set(procedures.map((p) => p.procedureCode))] } } })).map((p) => [p.code, p.name]));
     const DAY = 86_400_000;
     return {
       competencia,
@@ -472,11 +488,13 @@ export class BillingService {
           dischargedAt: a.dischargedAt,
           days: Math.max(0, Math.ceil((until.getTime() - a.admittedAt.getTime()) / DAY)),
           status: a.dischargedAt ? 'ALTA' : 'INTERNADO',
-          procedures: procedures
-            .filter((p) => p.encounterId === a.encounterId)
-            .map((p) => ({ code: p.procedureCode, name: names.get(p.procedureCode) ?? null, quantity: p.quantity, status: p.status })),
+          procedures: procedures.filter((p) => p.encounterId === a.encounterId).map((p) => ({ code: p.procedureCode, name: names.get(p.procedureCode) ?? null, quantity: p.quantity, status: p.status })),
         };
       }),
     };
   }
+}
+
+function summarize(v: BpaValidation) {
+  return { ok: v.ok, errors: v.errors, warnings: v.warnings, layout: v.layout, issues: v.issues.slice(0, 50) };
 }

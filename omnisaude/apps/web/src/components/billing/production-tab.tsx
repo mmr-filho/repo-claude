@@ -55,10 +55,14 @@ export function ProductionTab({ competencia, units }: { competencia: string; uni
     if (!target) return;
     setExporting(true);
     try {
-      const r = await api.post<{ id: string; fileName: string; lines: number; records: number; controlField: string }>('/billing/export/bpa', { competencia, unitId: target, instrument });
+      const r = await api.post<{ id: string; fileName: string; lines: number; records: number; controlField: string; validation: { ok: boolean; warnings: number } }>('/billing/export/bpa', {
+        competencia,
+        unitId: target,
+        instrument,
+      });
       const file = await api.download(`/billing/exports/${r.id}/download`);
       saveBlob(file.blob, file.fileName ?? r.fileName);
-      toast.success(`${r.fileName}: ${r.records} registro(s), ${r.lines} linha(s), campo de controle ${r.controlField}.`);
+      toast.success(`${r.fileName}: ${r.records} registro(s), ${r.lines} linha(s), campo de controle ${r.controlField}; layout conferido${r.validation.warnings ? ` com ${r.validation.warnings} aviso(s)` : ''}.`);
       void list.reload();
     } catch (err) {
       toast.error(errorMessage(err));

@@ -37,7 +37,7 @@ export interface RecordToCheck {
   cid: string | null;
   instrument: string;
   performedAt: Date;
-  patient: { sex: string; birthDate: Date; cns: string | null } | null;
+  patient: { sex: string; birthDate: Date; cns: string | null; cpf: string | null } | null;
   professionalCns: string | null;
   /** Soma das quantidades do mesmo procedimento para o mesmo paciente na competência. */
   patientQuantityInCompetencia: number;
@@ -99,7 +99,7 @@ export function evaluateRecord(record: RecordToCheck, proc: ProcedureRules | und
     }
   }
   if (record.instrument === 'BPA_I') {
-    if (!record.patient?.cns) issues.push({ rule: 'CNS_PACIENTE_AUSENTE', message: 'BPA-I exige o CNS do paciente' });
+    if (!record.patient?.cns && !record.patient?.cpf) issues.push({ rule: 'CNS_PACIENTE_AUSENTE', message: 'BPA-I exige o CNS ou o CPF do paciente' });
     if (!record.professionalCns) issues.push({ rule: 'CNS_PROFISSIONAL_AUSENTE', message: 'BPA-I exige o CNS do profissional' });
   }
   return issues;

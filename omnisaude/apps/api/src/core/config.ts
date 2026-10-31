@@ -56,6 +56,12 @@ const schema = z.object({
   RNDS_CERT_PFX: z.string().optional(),
   RNDS_CERT_PASSPHRASE: z.string().optional(),
   RNDS_REQUESTER_CPF: z.string().optional(),
+  /** CNS do profissional em nome de quem as requisições à RNDS são feitas (cabeçalho Authorization). */
+  RNDS_REQUESTER_CNS: z.string().optional(),
+  /** homologacao | producao: define os endereços oficiais quando RNDS_AUTH_URL/RNDS_EHR_URL não são informados. */
+  RNDS_ENVIRONMENT: z.enum(['homologacao', 'producao']).optional(),
+  /** UF do estabelecimento (produção usa um EHR por estado, ex.: to-ehr-services.saude.gov.br). */
+  RNDS_UF: z.string().length(2).optional(),
   SEFAZ_URL: z.string().optional(),
   SIGTAP_ZIP_URL: z.string().optional(),
   /** API de dados abertos do Ministério da Saúde (estabelecimentos do CNES); os testes apontam para o simulador. */

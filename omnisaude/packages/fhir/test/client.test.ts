@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { citizenToPatient, patientToCitizen, RndsCadsusClient, RndsClient, RndsError, type CadsusCitizen } from '@omnisaude/fhir';
+import { citizenToPatient, patientToCitizen, RndsCadsusClient, RndsClient, RndsError, rndsEndpoints, type CadsusCitizen } from '@omnisaude/fhir';
 
 type Handler = (req: http.IncomingMessage, body: string, res: http.ServerResponse) => void;
 
@@ -85,14 +85,12 @@ describe('RndsClient', () => {
         if (req.method === 'GET' && req.url!.startsWith('/api/fhir/r4/Patient?identifier=')) {
           const id = decodeURIComponent(req.url!.split('=')[1]!);
           const found = id.endsWith('|52998224725');
-          res.writeHead(200, { 'content-type': 'application/fhir+json' }).end(
-            JSON.stringify({ resourceType: 'Bundle', type: 'searchset', total: found ? 1 : 0, entry: found ? [{ resource: citizenToPatient(citizen) }] : [] }),
-          );
+          res
+            .writeHead(200, { 'content-type': 'application/fhir+json' })
+            .end(JSON.stringify({ resourceType: 'Bundle', type: 'searchset', total: found ? 1 : 0, entry: found ? [{ resource: citizenToPatient(citizen) }] : [] }));
           return;
         }
-        res.writeHead(400, { 'content-type': 'application/fhir+json' }).end(
-          JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'invalid', diagnostics: 'Bundle inválido' }] }),
-        );
+        res.writeHead(400, { 'content-type': 'application/fhir+json' }).end(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'invalid', diagnostics: 'Bundle inválido' }] }));
       }),
     );
     const base = `http://127.0.0.1:${port}`;
@@ -115,13 +113,36 @@ describe('RndsClient', () => {
     expect(tokens).toBe(2); // token reaproveitado
   });
 
+  it('envia o CNS do solicitante no cabeçalho Authorization e consulta o estabelecimento', async () => {
+    const seen: Record<string, string | string[] | undefined>[] = [];
+    const port = await listen(
+      handlerServer((req, _body, res) => {
+        if (req.url === '/api/token') return res.writeHead(200).end(JSON.stringify({ access_token: 'tok', token_type: 'jwt', scope: 'read write', expires_in: 1800000 }));
+        seen.push(req.headers);
+        if (req.url === '/api/fhir/r4/Organization/9000036') return res.writeHead(200, { 'content-type': 'application/fhir+json' }).end(JSON.stringify({ resourceType: 'Organization', id: '9000036', name: 'UPA NORTE' }));
+        res.writeHead(404).end();
+      }),
+    );
+    const base = `http://127.0.0.1:${port}`;
+    expect(() => new RndsClient({ authUrl: base, ehrUrl: base, requesterCns: '123' })).toThrow(/CNS/);
+    const client = new RndsClient({ authUrl: base, ehrUrl: base, requesterCns: '898001160660001' });
+    const org = await client.getOrganization('9000036');
+    expect(org.name).toBe('UPA NORTE');
+    expect(seen[0]!.authorization).toBe('898001160660001');
+    expect(seen[0]!['x-authorization-server']).toBe('Bearer tok');
+  });
+
+  it('resolve os endereços oficiais por ambiente e UF', () => {
+    expect(rndsEndpoints('homologacao')).toEqual({ authUrl: 'https://ehr-auth-hmg.saude.gov.br', ehrUrl: 'https://ehr-services.hmg.saude.gov.br' });
+    expect(rndsEndpoints('producao', 'TO')).toEqual({ authUrl: 'https://ehr-auth.saude.gov.br', ehrUrl: 'https://to-ehr-services.saude.gov.br' });
+    expect(() => rndsEndpoints('producao')).toThrow(/UF/);
+  });
+
   it('traduz OperationOutcome em RndsError', async () => {
     const port = await listen(
       handlerServer((req, _body, res) => {
         if (req.url === '/api/token') return res.writeHead(200).end(JSON.stringify({ access_token: 't' }));
-        res.writeHead(422, { 'content-type': 'application/fhir+json' }).end(
-          JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'invalid', diagnostics: 'CNES desconhecido' }] }),
-        );
+        res.writeHead(422, { 'content-type': 'application/fhir+json' }).end(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'invalid', diagnostics: 'CNES desconhecido' }] }));
       }),
     );
     const client = new RndsClient({ authUrl: `http://127.0.0.1:${port}`, ehrUrl: `http://127.0.0.1:${port}`, requesterCpf: '12345678909' });
@@ -163,6 +184,5 @@ describe('RndsClient', () => {
     expect(await client.getAccessToken()).toBe('mtls-ok');
     expect(clientCn).toBe('Cliente ICP Teste');
     rmSync(dir, { recursive: true, force: true });
-
   }, 30_000);
 });

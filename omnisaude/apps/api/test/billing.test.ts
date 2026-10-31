@@ -74,10 +74,7 @@ function sigtapZip(): Buffer {
   const proc = (code: string, name: string, sex: string, max: number, minAge: number, maxAge: number, sa: number) =>
     code + pad(name, 250) + '1' + sex + num(max, 4) + num(0, 4) + num(0, 4) + num(minAge, 4) + num(maxAge, 4) + num(0, 12) + num(Math.round(sa * 100), 12) + num(0, 12) + '202611';
   return makeZip({
-    'tb_procedimento.txt': [
-      proc('0301060061', 'ATENDIMENTO DE URGÊNCIA EM ATENÇÃO ESPECIALIZADA', 'I', 1, 0, 9999, 11),
-      proc('0211020036', 'ELETROCARDIOGRAMA', 'I', 1, 0, 9999, 5.15),
-    ].join('\r\n'),
+    'tb_procedimento.txt': [proc('0301060061', 'ATENDIMENTO DE URGÊNCIA EM ATENÇÃO ESPECIALIZADA', 'I', 1, 0, 9999, 11), proc('0211020036', 'ELETROCARDIOGRAMA', 'I', 1, 0, 9999, 5.15)].join('\r\n'),
     'tb_procedimento_layout.txt': layoutProc,
     'rl_procedimento_ocupacao.txt': ['0301060061225125', '0301060061225142', '0211020036225125'].join('\r\n'),
     'rl_procedimento_ocupacao_layout.txt': 'Coluna,Tamanho,Inicio,Fim,Tipo\r\nCO_PROCEDIMENTO,10,1,10,VARCHAR2\r\nCO_OCUPACAO,6,11,16,CHAR',
@@ -161,17 +158,35 @@ describe.runIf(enabled)('faturamento SUS', () => {
   it('exporta o BPA-I com layout de largura fixa e campo de controle', async () => {
     const res = await t.http().post('/api/billing/export/bpa').set(auth(faturamento)).send({ competencia: comp, unitId: upaId, instrument: 'BPA_I' }).expect(201);
     expect(res.body.lines).toBe(2);
-    expect(res.body.controlField).toBe(controlField([{ procedureCode: '0301060061', quantity: 1 }, { procedureCode: '0301060061', quantity: 1 }]));
+    expect(res.body.controlField).toBe(
+      controlField([
+        { procedureCode: '0301060061', quantity: 1 },
+        { procedureCode: '0301060061', quantity: 1 },
+      ]),
+    );
     const file = await t.http().get(`/api/billing/exports/${res.body.id}/download`).set(auth(faturamento)).buffer(true).expect(200);
     expect(file.headers['content-type']).toContain('ISO-8859-1');
     const lines = file.text.split('\r\n').filter(Boolean);
     expect(lines).toHaveLength(3);
     expect(lines[0]!.startsWith(`01#BPA#${comp}000002000001${res.body.controlField}`)).toBe(true);
     expect(lines[0]!.length).toBe(lineWidth(BPA_HEADER));
+    expect(res.body.validation).toMatchObject({ ok: true, errors: 0 });
     for (const l of lines.slice(1)) {
-      expect(l.length).toBe(lineWidth(BPA_I_LINE));
+      expect(l.length).toBe(350);
       expect(l.startsWith('039000036')).toBe(true);
+      // Um só documento do paciente (CNS ou CPF) e situação de rua S/N/branco na última posição.
+      const cns = l.slice(59, 74).trim();
+      const cpf = l.slice(338, 349).trim();
+      expect(cns && cpf).toBeFalsy();
+      expect([' ', 'N', 'S']).toContain(l[349]);
     }
+    const check = await t.http().get(`/api/billing/exports/${res.body.id}/validation`).set(auth(faturamento)).expect(200);
+    expect(check.body).toMatchObject({ ok: true, records: { bpaI: 2, bpaC: 0 } });
+    // Conferência de um arquivo externo: campo de controle adulterado.
+    const tampered = file.text.replace(res.body.controlField, '1234');
+    const bad = await t.http().post('/api/billing/bpa/validate').set(auth(faturamento)).set('content-type', 'text/plain').send(tampered).expect(200);
+    expect(bad.body.ok).toBe(false);
+    expect(bad.body.issues.some((i: { field?: string }) => i.field === 'cbc-smt-vrf')).toBe(true);
     // Já exportado: não sai de novo.
     await t.http().post('/api/billing/export/bpa').set(auth(faturamento)).send({ competencia: comp, unitId: upaId, instrument: 'BPA_I' }).expect(422);
     const exports = await t.http().get(`/api/billing/exports?competencia=${comp}`).set(auth(faturamento)).expect(200);
@@ -189,7 +204,11 @@ describe.runIf(enabled)('faturamento SUS', () => {
   });
 
   it('mostra o espelho das internações', async () => {
-    const res = await t.http().get(`/api/billing/aih-mirror?competencia=${competenciaOf(new Date(Date.now() - 2 * 86_400_000))}`).set(auth(faturamento)).expect(200);
+    const res = await t
+      .http()
+      .get(`/api/billing/aih-mirror?competencia=${competenciaOf(new Date(Date.now() - 2 * 86_400_000))}`)
+      .set(auth(faturamento))
+      .expect(200);
     expect(res.body.items.some((i: { patient: string; mainCid: string }) => i.patient === 'Francisco Souza Santos' && i.mainCid === 'J18')).toBe(true);
   });
 
@@ -199,7 +218,12 @@ describe.runIf(enabled)('faturamento SUS', () => {
     expect(up.body).toMatchObject({ competencia: '202611', procedures: 2, cboLinks: 3, cidLinks: 2 });
     const procs = await t.http().get('/api/billing/sigtap/procedures?q=0211').set(auth(faturamento)).expect(200);
     expect(procs.body[0]).toMatchObject({ code: '0211020036', name: 'ELETROCARDIOGRAMA', instruments: ['BPA_C', 'BPA_I'] });
-    const viaJson = await t.http().post('/api/billing/sigtap/import').set(auth(faturamento)).send({ fileBase64: zip.toString('base64') }).expect(201);
+    const viaJson = await t
+      .http()
+      .post('/api/billing/sigtap/import')
+      .set(auth(faturamento))
+      .send({ fileBase64: zip.toString('base64') })
+      .expect(201);
     expect(viaJson.body.procedures).toBe(2);
     const sync = await t.http().post('/api/billing/sigtap/sync').set(auth(faturamento)).send({ competencia: '202611' }).expect(201);
     expect(sync.body.procedures).toBe(2);

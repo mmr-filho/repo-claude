@@ -45,7 +45,7 @@ export const RULE_LABEL: Record<string, string> = {
   SEXO_INCOMPATIVEL: 'Sexo incompatível',
   IDADE_INCOMPATIVEL: 'Idade fora dos limites',
   QUANTIDADE_EXCEDIDA: 'Quantidade acima do máximo',
-  CNS_PACIENTE_AUSENTE: 'CNS do paciente ausente',
+  CNS_PACIENTE_AUSENTE: 'Paciente sem CNS nem CPF',
   CNS_PROFISSIONAL_AUSENTE: 'CNS do profissional ausente',
 };
 

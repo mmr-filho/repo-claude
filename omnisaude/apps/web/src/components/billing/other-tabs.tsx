@@ -1,10 +1,11 @@
 'use client';
 
-import { CloudDownload, Download, FileArchive } from 'lucide-react';
+import { CloudDownload, Download, FileArchive, FileSearch } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader, EmptyState } from '@/components/ui/card';
+import { Field, Input } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
@@ -25,63 +26,148 @@ interface ExportRow {
   createdAt: string;
 }
 
+interface BpaIssue {
+  line: number;
+  field?: string;
+  severity: 'erro' | 'aviso';
+  message: string;
+}
+interface BpaValidation {
+  ok: boolean;
+  layout: string;
+  competencia: string | null;
+  header: { lines: number; sheets: number; control: number; origin: string; destination: string; version: string } | null;
+  records: { total: number; bpaC: number; bpaI: number; sheets: number };
+  computedControl: number | null;
+  errors: number;
+  warnings: number;
+  issues: BpaIssue[];
+}
+
+/** Confere um arquivo BPA (.txt) contra o layout oficial: larguras, domínios, folhas, CNS/CPF e campo de controle. */
+export function BpaValidatorCard() {
+  const toast = useToast();
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<BpaValidation | null>(null);
+
+  async function validate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!file) return;
+    setBusy(true);
+    try {
+      const text = new TextDecoder('latin1').decode(await file.arrayBuffer());
+      setResult(await api.post<BpaValidation>('/billing/bpa/validate', text, { raw: true, headers: { 'Content-Type': 'text/plain; charset=ISO-8859-1' } }));
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="mb-4">
+      <CardHeader title="Conferir um arquivo BPA" description="Envie um arquivo BPA (gerado aqui ou por outro sistema) para conferir com o layout oficial do DATASUS antes de importar no BPA Magnético / SIA." />
+      <CardBody className="flex flex-col gap-3">
+        <form className="flex flex-wrap items-end gap-3" onSubmit={validate}>
+          <Field label="Arquivo BPA (.txt)" htmlFor="bpa-file" className="min-w-64 flex-1">
+            <Input id="bpa-file" type="file" accept=".txt,text/plain" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          </Field>
+          <Button type="submit" loading={busy} disabled={!file}>
+            <FileSearch className="h-4 w-4" /> Conferir
+          </Button>
+        </form>
+        {result && (
+          <div className="flex flex-col gap-2 text-sm">
+            <Alert tone={result.ok ? 'success' : 'error'} title={result.ok ? 'Arquivo de acordo com o layout' : `${result.errors} erro(s) no arquivo`}>
+              {result.header
+                ? `Competência ${result.competencia ?? '—'} · ${result.records.total} linha(s) (${result.records.bpaI} BPA-I, ${result.records.bpaC} BPA-C) em ${result.records.sheets} folha(s) · controle ${result.header.control}${result.computedControl !== null && result.computedControl !== result.header.control ? ` (calculado ${result.computedControl})` : ''} · origem ${result.header.origin || '—'} · destino ${result.header.destination || '—'} · versão ${result.header.version || '—'}`
+                : 'Cabeçalho não reconhecido.'}
+              {result.warnings > 0 ? ` · ${result.warnings} aviso(s)` : ''}
+            </Alert>
+            <p className="text-xs text-slate-500">{result.layout}</p>
+            {result.issues.length > 0 && (
+              <ul className="max-h-72 overflow-auto rounded-lg border border-slate-200 text-xs">
+                {result.issues.slice(0, 200).map((i, n) => (
+                  <li key={n} className="flex gap-2 border-b border-slate-100 px-3 py-1.5 last:border-b-0">
+                    <Badge tone={i.severity === 'erro' ? 'red' : 'amber'}>{i.severity}</Badge>
+                    <span className="font-mono text-slate-500">linha {i.line}</span>
+                    {i.field && <span className="font-mono">{i.field}</span>}
+                    <span>{i.message}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
 export function ExportsTab({ competencia, unitName }: { competencia: string; unitName: (id: string) => string }) {
   const toast = useToast();
   const session = useSession();
   const list = useApi<ExportRow[]>(`/billing/exports?competencia=${competencia}`, [competencia]);
   return (
-    <Card>
-      <CardHeader title="Arquivos BPA gerados" description="Arquivos magnéticos em latin1 para importação no BPA Magnético / SIA." />
-      {list.loading ? (
-        <Spinner />
-      ) : (list.data ?? []).length === 0 ? (
-        <EmptyState icon={<FileArchive className="h-8 w-8" />} title="Nenhum arquivo nesta competência" />
-      ) : (
-        <Table>
-          <THead>
-            <tr>
-              <TH>Arquivo</TH>
-              <TH>Unidade</TH>
-              <TH>Instrumento</TH>
-              <TH className="text-right">Linhas</TH>
-              <TH>Controle</TH>
-              <TH>Gerado em</TH>
-              <TH />
-            </tr>
-          </THead>
-          <TBody>
-            {(list.data ?? []).map((e) => (
-              <TR key={e.id}>
-                <TD className="font-mono text-xs">{e.fileName}</TD>
-                <TD>{unitName(e.unitId)}</TD>
-                <TD>{e.instrument.replace('_', '-')}</TD>
-                <TD className="text-right">{e.lines}</TD>
-                <TD className="font-mono">{e.controlField}</TD>
-                <TD>{fmtDateTime(e.createdAt)}</TD>
-                <TD className="text-right">
-                  {session.can('faturamento.exportar') && (
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={async () => {
-                        try {
-                          const f = await api.download(`/billing/exports/${e.id}/download`);
-                          saveBlob(f.blob, f.fileName ?? e.fileName);
-                        } catch (err) {
-                          toast.error(errorMessage(err));
-                        }
-                      }}
-                    >
-                      <Download className="h-4 w-4" /> Baixar
-                    </Button>
-                  )}
-                </TD>
-              </TR>
-            ))}
-          </TBody>
-        </Table>
-      )}
-    </Card>
+    <>
+      <BpaValidatorCard />
+      <Card>
+        <CardHeader
+          title="Arquivos BPA gerados"
+          description="Arquivos magnéticos em latin1 no layout oficial do BPA/SIA (com CPF do indivíduo e situação de rua), conferidos ao gerar; prontos para importar no BPA Magnético."
+        />
+        {list.loading ? (
+          <Spinner />
+        ) : (list.data ?? []).length === 0 ? (
+          <EmptyState icon={<FileArchive className="h-8 w-8" />} title="Nenhum arquivo nesta competência" />
+        ) : (
+          <Table>
+            <THead>
+              <tr>
+                <TH>Arquivo</TH>
+                <TH>Unidade</TH>
+                <TH>Instrumento</TH>
+                <TH className="text-right">Linhas</TH>
+                <TH>Controle</TH>
+                <TH>Gerado em</TH>
+                <TH />
+              </tr>
+            </THead>
+            <TBody>
+              {(list.data ?? []).map((e) => (
+                <TR key={e.id}>
+                  <TD className="font-mono text-xs">{e.fileName}</TD>
+                  <TD>{unitName(e.unitId)}</TD>
+                  <TD>{e.instrument.replace('_', '-')}</TD>
+                  <TD className="text-right">{e.lines}</TD>
+                  <TD className="font-mono">{e.controlField}</TD>
+                  <TD>{fmtDateTime(e.createdAt)}</TD>
+                  <TD className="text-right">
+                    {session.can('faturamento.exportar') && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={async () => {
+                          try {
+                            const f = await api.download(`/billing/exports/${e.id}/download`);
+                            saveBlob(f.blob, f.fileName ?? e.fileName);
+                          } catch (err) {
+                            toast.error(errorMessage(err));
+                          }
+                        }}
+                      >
+                        <Download className="h-4 w-4" /> Baixar
+                      </Button>
+                    )}
+                  </TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
+        )}
+      </Card>
+    </>
   );
 }
 
@@ -108,10 +194,7 @@ export function SigtapTab({ competencia }: { competencia: string }) {
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader
-          title="Tabela SIGTAP"
-          description="A sincronização automática roda no primeiro dia útil de cada competência. Em contingência, envie o pacote zip da Tabela Unificada baixado do DATASUS."
-        />
+        <CardHeader title="Tabela SIGTAP" description="A sincronização automática roda no primeiro dia útil de cada competência. Em contingência, envie o pacote zip da Tabela Unificada baixado do DATASUS." />
         {can && (
           <CardBody className="flex flex-wrap gap-2">
             <input
@@ -270,9 +353,7 @@ export function AihTab({ competencia }: { competencia: string }) {
                 <TD>{fmtDate(a.admittedAt)}</TD>
                 <TD>{a.dischargedAt ? fmtDate(a.dischargedAt) : <Badge tone="blue">Internado</Badge>}</TD>
                 <TD className="text-right">{a.days}</TD>
-                <TD className="text-xs">
-                  {a.procedures.length === 0 ? '—' : a.procedures.map((p) => `${fmtSigtap(p.code)} ×${p.quantity}`).join('; ')}
-                </TD>
+                <TD className="text-xs">{a.procedures.length === 0 ? '—' : a.procedures.map((p) => `${fmtSigtap(p.code)} ×${p.quantity}`).join('; ')}</TD>
               </TR>
             ))}
           </TBody>

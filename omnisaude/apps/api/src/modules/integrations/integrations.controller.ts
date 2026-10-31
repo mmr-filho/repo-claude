@@ -8,6 +8,7 @@ import { zv } from '../../core/zod';
 import { DocumentsService } from './documents.service';
 import { JobsService } from './jobs.service';
 import { MessagingService } from './messaging.service';
+import { RndsService } from './rnds.service';
 
 const ocrSchema = z.object({ image: z.string().max(12_000_000).optional(), mediaType: z.enum(['image/jpeg', 'image/png', 'image/webp']).optional(), text: z.string().max(20_000).optional() });
 const cadsusSchema = z.object({ cpf: z.string().optional(), cns: z.string().optional() });
@@ -17,7 +18,22 @@ export class IntegrationsController {
   constructor(
     private readonly documents: DocumentsService,
     private readonly jobs: JobsService,
+    private readonly rnds: RndsService,
   ) {}
+
+  @Get('rnds/status')
+  @RequirePermission('parametros.gerir', 'faturamento.ler')
+  rndsStatus(@Ctx() ctx: RequestContext) {
+    return this.rnds.status({ tenant: ctx.tenant, db: ctx.db });
+  }
+
+  /** Token novo + consulta do próprio CNES: confere certificado, credencial e endereços. */
+  @Post('rnds/test')
+  @HttpCode(200)
+  @RequirePermission('parametros.gerir')
+  rndsTest(@Ctx() ctx: RequestContext) {
+    return this.rnds.testConnection(ctx);
+  }
 
   @Get('cadsus')
   @RequirePermission('cadsus.consultar')

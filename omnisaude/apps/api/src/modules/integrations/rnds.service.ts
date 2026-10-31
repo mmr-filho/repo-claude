@@ -1,4 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type { RequestContext } from '../../core/context';
+import { DomainError } from '../../core/errors';
 import {
   buildDischargeSummaryBundle,
   buildDispensationBundle,
@@ -39,9 +41,45 @@ export class RndsService {
     if (hit) return hit;
     const cfg = await this.integrations.rnds(tenantId);
     if (!cfg) return null;
-    const entry = { client: new RndsClient({ authUrl: cfg.authUrl, ehrUrl: cfg.ehrUrl, requesterCpf: cfg.requesterCpf, tls: cfg.tls }), cfg };
+    const entry = { client: new RndsClient({ authUrl: cfg.authUrl, ehrUrl: cfg.ehrUrl, requesterCns: cfg.requesterCns, requesterCpf: cfg.requesterCpf, tls: cfg.tls }), cfg };
     this.clients.set(tenantId, entry);
     return entry;
+  }
+
+  /** Situação da configuração da RNDS da instituição, sem segredos, e a fila de envio. */
+  async status(sys: SystemContext) {
+    const cfg = await this.integrations.rnds(sys.tenant.id);
+    const groups = await sys.db.outboxMessage.groupBy({ by: ['status'], _count: { _all: true }, where: { kind: { in: ['RNDS_RAC', 'RNDS_IMUNIZACAO', 'RNDS_DISPENSACAO', 'RNDS_SUMARIO_ALTA'] } } });
+    const mask = (v: string) => `${v.slice(0, 3)}${'*'.repeat(Math.max(0, v.length - 5))}${v.slice(-2)}`;
+    return {
+      enabled: sys.tenant.settings.rndsEnabled,
+      configured: !!cfg,
+      environment: cfg?.environment ?? null,
+      uf: cfg?.uf?.toUpperCase() ?? null,
+      authUrl: cfg?.authUrl ?? null,
+      ehrUrl: cfg?.ehrUrl ?? null,
+      requester: cfg?.requesterCns ? { kind: 'CNS', value: mask(cfg.requesterCns) } : cfg?.requesterCpf ? { kind: 'CPF', value: mask(cfg.requesterCpf) } : null,
+      requesterId: cfg?.requesterId ?? null,
+      certificate: !!cfg?.tls,
+      outbox: Object.fromEntries(groups.map((g) => [g.status, g._count._all])) as Record<string, number>,
+    };
+  }
+
+  /** Obtém um token novo e consulta o próprio estabelecimento (CNES da unidade da sessão) na RNDS. */
+  async testConnection(ctx: RequestContext) {
+    this.clients.delete(ctx.tenant.id);
+    const rnds = await this.client(ctx.tenant.id);
+    if (!rnds) throw new DomainError('RNDS_NAO_CONFIGURADA', 'A RNDS não está configurada para esta instituição (ambiente, certificado e CNS do solicitante)');
+    const unit = await ctx.db.unit.findUniqueOrThrow({ where: { id: ctx.session.unitId }, select: { cnes: true, name: true } });
+    const started = Date.now();
+    try {
+      rnds.client.invalidateToken();
+      const org = await rnds.client.getOrganization(unit.cnes);
+      return { ok: true, environment: rnds.cfg.environment, cnes: unit.cnes, unit: unit.name, organization: org.name ?? null, elapsedMs: Date.now() - started };
+    } catch (err) {
+      const e = err as Partial<RndsError> & Error;
+      return { ok: false, environment: rnds.cfg.environment, cnes: unit.cnes, unit: unit.name, status: e.status ?? null, message: e.message, elapsedMs: Date.now() - started };
+    }
   }
 
   async cadsus(tenantId: string) {
@@ -182,10 +220,7 @@ export class RndsService {
         admission: a.admittedAt,
         discharge: a.dischargedAt,
         dischargeDisposition: (payload.disposition as string) ?? 'home',
-        diagnoses: [
-          { system: 'CID10', code: a.mainCid, role: 'principal' },
-          ...secondary.map((code) => ({ system: 'CID10' as const, code, role: 'secundario' as const })),
-        ],
+        diagnoses: [{ system: 'CID10', code: a.mainCid, role: 'principal' }, ...secondary.map((code) => ({ system: 'CID10' as const, code, role: 'secundario' as const }))],
         clinicalSummary: payload.summary as string | undefined,
         followUp: payload.followUp as string | undefined,
       });

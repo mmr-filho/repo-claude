@@ -127,7 +127,7 @@ Os testes da API criam bancos próprios por arquivo e exigem os papéis de `dock
 | `JOBS_SECRET` | disparo externo dos jobs (`POST /api/jobs/tick`), usado pelos Cron Triggers da Cloudflare |
 | `ANTHROPIC_API_KEY`, `OMNI_AI_MODEL` | IA (OCR, ditado estruturado, BI); padrão `claude-opus-5-5` |
 | `R2_*` | Cloudflare R2 (documentos); sem isso, pasta local |
-| `RNDS_*` | URLs, certificado ICP-Brasil (PFX: caminho ou `r2:<chave>`) e CPF do solicitante |
+| `RNDS_*` | ambiente (`homologacao`/`producao`) e UF, ou URLs manuais; certificado e-CNPJ (PFX: caminho ou `r2:<chave>`) e CNS do solicitante (`docs/RNDS.md`) |
 | `WHATSAPP_*` | Cloud API (número, token, segredo do app, token de verificação) |
 | `SIGTAP_ZIP_URL` | origem do pacote mensal da SIGTAP (`{competencia}` é substituído) |
 | `MOCKS_URL` | aponta RNDS, SEFAZ e WhatsApp para os mocks em desenvolvimento |

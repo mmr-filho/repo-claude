@@ -100,11 +100,11 @@ Este documento explica as decisões de arquitetura e onde cada parte da especifi
 
 | Integração | Onde | Como |
 |---|---|---|
-| RNDS (HL7 FHIR R4) | `packages/fhir`, `modules/integrations/rnds.service.ts` | Outbox transacional; o job monta o Bundle (RAC, imunização, dispensação, sumário de alta), valida e envia com mTLS (certificado ICP-Brasil do tenant), backoff exponencial e descarte de erros permanentes |
+| RNDS (HL7 FHIR R4) | `packages/fhir`, `modules/integrations/rnds.service.ts` | Outbox transacional; o job monta o Bundle (RAC, imunização, dispensação, sumário de alta), valida e envia com mTLS (certificado e-CNPJ do estabelecimento), backoff exponencial e descarte de erros permanentes. Token em `GET /api/token`, cabeçalhos `X-Authorization-Server` (token) e `Authorization` (CNS do solicitante), endereços oficiais por ambiente e UF (`rndsEndpoints`); teste de conexão e situação em Administração > Integrações (`docs/RNDS.md`) |
 | CADSUS | `packages/fhir/src/cadsus.ts` | Consulta `Patient` na RNDS por CPF/CNS |
 | WhatsApp Business (Cloud API) | `packages/messaging`, `modules/integrations/messaging.service.ts` | Confirmação 48h antes com botões; lembretes de adesão; janela de silêncio 22h–06h (adiado para 06h01); webhook com HMAC |
 | SEFAZ (NF-e) | `modules/pharmacy` | Consulta de notas destinadas (mock REST em desenvolvimento) e upload de XML como contingência |
-| DATASUS SIGTAP / BPA | `modules/billing` | Leitura do pacote oficial (zip + layouts), sincronização no primeiro dia útil, crítica pré-glosa, BPA-I/BPA-C |
+| DATASUS SIGTAP / BPA | `modules/billing` | Leitura do pacote oficial (zip + layouts), sincronização no primeiro dia útil, crítica pré-glosa, BPA-I/BPA-C no layout oficial de exportação (`bpa-layout.ts`, com CPF do indivíduo e situação de rua) e conferência de arquivos BPA (`validateBpaFile`) |
 | Claude (Anthropic) | `packages/ai-engine/src/llm` | Saídas estruturadas (zod), fallback em recusas, modelo configurável |
 | Cloudflare R2 | `apps/api/src/core/storage.service.ts` | API S3; SHA-256 conferido na leitura |
 | VLibras / WebRTC | `packages/accessibility`, `modules/accessibility` | Widget oficial; central de intérpretes e sinalização WebRTC por Socket.IO |

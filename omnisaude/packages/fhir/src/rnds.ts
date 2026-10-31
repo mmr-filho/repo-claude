@@ -7,13 +7,28 @@
  * Todos os valores estão concentrados neste arquivo de propósito.
  */
 
-export const RNDS_BASE = 'https://saude.gov.br/fhir/r4';
+/** Base canônica dos perfis, sistemas de código e conjuntos de valores da RNDS (pacote oficial no Simplifier). */
+export const RNDS_BASE = 'http://www.saude.gov.br/fhir/r4';
 
+/** NamingSystems usados nas buscas e identificadores (conforme a coleção oficial de requisições da RNDS). */
 export const NAMING_SYSTEMS = {
-  cpf: `${RNDS_BASE}/NamingSystem/cpf`,
-  cns: `${RNDS_BASE}/NamingSystem/cns`,
-  cnes: `${RNDS_BASE}/NamingSystem/cnes`,
+  cpf: 'http://rnds.saude.gov.br/fhir/r4/NamingSystem/cpf',
+  cns: 'http://rnds.saude.gov.br/fhir/r4/NamingSystem/cns',
+  cnes: 'http://rnds.saude.gov.br/fhir/r4/NamingSystem/cnes',
 } as const;
+
+export type RndsEnvironment = 'homologacao' | 'producao';
+
+/**
+ * Endereços da RNDS: autenticação única nacional; na produção, o EHR é por UF (ex.: to-ehr-services.saude.gov.br).
+ * Na homologação, um único EHR nacional.
+ */
+export function rndsEndpoints(environment: RndsEnvironment, uf?: string): { authUrl: string; ehrUrl: string } {
+  if (environment === 'homologacao') return { authUrl: 'https://ehr-auth-hmg.saude.gov.br', ehrUrl: 'https://ehr-services.hmg.saude.gov.br' };
+  const state = (uf ?? '').trim().toLowerCase();
+  if (!/^[a-z]{2}$/.test(state)) throw new Error('Informe a UF do estabelecimento para o ambiente de produção da RNDS');
+  return { authUrl: 'https://ehr-auth.saude.gov.br', ehrUrl: `https://${state}-ehr-services.saude.gov.br` };
+}
 
 /** Bundle.identifier.system = prefixo + identificador do solicitante credenciado na RNDS. */
 export const BUNDLE_IDENTIFIER_PREFIX = 'http://www.saude.gov.br/fhir/r4/NamingSystem/BRRNDS-';
@@ -44,18 +59,24 @@ export const CODE_SYSTEMS = {
 
 const sd = (name: string) => `${RNDS_BASE}/StructureDefinition/${name}`;
 
+/**
+ * Perfis conferidos com o pacote oficial da RNDS (br.ufg.cgis.rnds-lite 0.5.0, espelho do projeto
+ * "Rede Nacional de Dados em Saúde" no Simplifier): RAC, contato assistencial, problema/diagnóstico,
+ * procedimento, medida observada, lotação e medicamento. Imunização, dispensação e sumário de alta não
+ * constam do pacote público e ficam com os nomes do guia anterior até a homologação.
+ */
 export const PROFILES = {
-  racComposition: sd('BRRegistroAtendimentoClinico-3.2'),
-  racEncounter: sd('BRContatoAssistencial-3.2'),
-  problem: sd('BRProblemaDiagnosticoAvaliado-1.0'),
-  procedure: sd('BRProcedimentoRealizado-2.0'),
-  vitalSign: sd('BRSinaisVitais-1.0'),
+  racComposition: sd('BRRegistroAtendimentoClinico'),
+  racEncounter: sd('BRContatoAssistencial-1.0'),
+  problem: sd('BRProblemaDiagnostico'),
+  procedure: sd('BRProcedimentoRealizado-1.0'),
+  vitalSign: sd('BRMedidaObservada'),
   practitionerRole: sd('BRLotacaoProfissional-1.0'),
   immunizationComposition: sd('BRRegistroImunobiologicoAdministrado-2.0'),
   immunization: sd('BRImunobiologicoAdministrado-2.0'),
   dispensationComposition: sd('BRRegistroDispensacaoMedicamento-1.0'),
   dispensation: sd('BRDispensacaoMedicamento-1.0'),
-  medication: sd('BRMedicamento-1.0'),
+  medication: sd('BRMedicamento'),
   dischargeComposition: sd('BRSumarioAlta-1.0'),
   dischargeEncounter: sd('BRInternacao-1.0'),
   dischargeMedication: sd('BRPrescricaoAlta-1.0'),

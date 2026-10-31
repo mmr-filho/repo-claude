@@ -18,7 +18,10 @@ const productionSchema = z.object({
   unitId: z.string().uuid().optional(),
   patientId: z.string().uuid().optional(),
   professionalId: z.string().uuid().optional(),
-  cbo: z.string().regex(/^\w{6}$/).optional(),
+  cbo: z
+    .string()
+    .regex(/^\w{6}$/)
+    .optional(),
   procedureCode: z.string().regex(/^\d{2}\.?\d{2}\.?\d{2}\.?\d{3}-?\d$/, 'Código SIGTAP com 10 dígitos'),
   cid: z.string().max(5).optional(),
   quantity: z.number().int().min(1).max(9999).default(1),
@@ -109,6 +112,21 @@ export class BillingController {
   @RequirePermission('faturamento.exportar')
   exportBpa(@Ctx() ctx: RequestContext, @Body(zv(exportSchema)) body: z.infer<typeof exportSchema>) {
     return this.billing.exportBpa(ctx, body);
+  }
+
+  /** Conferência de um arquivo BPA contra o layout oficial (texto no corpo ou { content }). */
+  @Post('bpa/validate')
+  @HttpCode(200)
+  @RequirePermission('faturamento.ler')
+  validateBpa(@Body() body: unknown) {
+    const content = typeof body === 'string' ? body : ((body as { content?: unknown })?.content ?? '');
+    return this.billing.validateFile(typeof content === 'string' ? content : '');
+  }
+
+  @Get('exports/:id/validation')
+  @RequirePermission('faturamento.ler')
+  validateExport(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string) {
+    return this.billing.validateExport(ctx, id);
   }
 
   @Get('exports')
