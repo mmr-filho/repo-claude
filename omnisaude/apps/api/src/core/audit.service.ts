@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { appendAudit, type TenantPrisma } from '@omnisaude/database';
+import { appendAudit, appendAuditBatch, type TenantPrisma } from '@omnisaude/database';
 import type { RequestContext } from './context';
 
 type Tx = TenantPrisma.TransactionClient;
@@ -19,6 +19,15 @@ export class AuditService {
       mfa: ctx.session.mfa,
       ...entry,
     });
+  }
+
+  /** Várias entradas da mesma ação numa só gravação (mesma cadeia, mesmo operador). */
+  recordMany(ctx: RequestContext, tx: Tx, entries: { action: string; entityType: string; entityId?: string; payload: unknown }[]) {
+    const quem = { userId: ctx.session.userId, unitId: ctx.session.unitId, role: ctx.session.role, ip: ctx.ip, mfa: ctx.session.mfa };
+    return appendAuditBatch(
+      tx,
+      entries.map((e) => ({ ...quem, ...e })),
+    );
   }
 
   /** Para ações isoladas (ex.: visualização de prontuário, LGPD), abre a própria transação. */

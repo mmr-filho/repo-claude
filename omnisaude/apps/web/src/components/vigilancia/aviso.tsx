@@ -38,9 +38,13 @@ export function AvisoNotificacoes({ itens, onDismiss }: { itens: NotificacaoCria
             {n.sigiloso && <Badge tone="violet">Sigilosa</Badge>}
             {n.naoHomologado && <Badge tone="slate">Mapeamento do código não homologado</Badge>}
             {n.efeito && <Badge tone={n.efeito === 'CONFIRMADA' ? 'green' : 'amber'}>{EFEITO[n.efeito]}</Badge>}
-            <Link className="text-xs font-semibold text-brand-700 underline" href={`/vigilancia/notificacao?id=${n.id}`}>
-              {n.efeito ? `Abrir a ficha ${n.numero}` : `Completar e confirmar a ficha ${n.numero}`}
-            </Link>
+            {n.podeAbrir === false ? (
+              <span className="text-xs">Notificação {n.numero}: a vigilância foi avisada.</span>
+            ) : (
+              <Link className="text-xs font-semibold text-brand-700 underline" href={`/vigilancia/notificacao?id=${n.id}`}>
+                {n.efeito ? `Abrir a ficha ${n.numero}` : `Completar e confirmar a ficha ${n.numero}`}
+              </Link>
+            )}
           </li>
         ))}
       </ul>

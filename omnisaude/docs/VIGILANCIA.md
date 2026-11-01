@@ -191,10 +191,14 @@ dia anterior; vigências sobrepostas são recusadas), com o ato ou acordo que a 
   o 1º dígito é o tipo da ficha, 3 na Srag hospitalizada); Sinan Online até 12 dígitos e e-SUS Notifica de 8 a 15
   (em geral 12), com validação larga porque o formato não está em documento nacional. O número é sempre o que o
   sistema oficial devolve: o OmniSaúde nunca o gera.
-- **Número repetido**: recusado no mesmo sistema. No Sinan Net a chave é número + data da notificação + município
-  + agravo, então o mesmo NU_NOTIFIC é aceito em outro agravo, data ou município.
+- **Número repetido**: recusado no mesmo sistema (descartadas não contam). No Sinan Net a chave é número + data
+  da notificação + município + agravo do Sinan, então o mesmo NU_NOTIFIC é aceito em outro agravo, data ou
+  município. O agravo segue a divisão do Sinan: as violências são uma ficha só; sífilis adquirida, em gestante
+  (campo 12 ou CID) e congênita, tétano acidental e neonatal, toxoplasmose gestacional e congênita, sarampo e
+  rubéola são agravos distintos.
 - Só a vigilância municipal **desfaz** a digitação (com motivo, na linha do tempo); a notificação volta à fila.
-- **Descartada** sai da fila (o número já informado fica como histórico) e não recebe nem perde número.
+- **Descartada** sai da fila e não recebe nem perde número; o número já informado fica como histórico e não
+  impede outra notificação de recebê-lo (ex.: caso reclassificado e notificado de novo).
 - Notificações confirmadas antes desta entrega (sem sistema de destino) entram na fila pela rota da data da
   notificação na primeira vez que o catálogo é carregado depois da atualização.
 
@@ -209,7 +213,8 @@ dia anterior; vigências sobrepostas são recusadas), com o ato ou acordo que a 
 - **Exportação CSV** (só a vigilância municipal; lista nominal): colunas com os nomes das variáveis do dicionário
   de dados, num cabeçalho fixo (DT_ENCERRA do Sinan Net e DT_CONCLU do e-SUS Sinan em colunas separadas), separador
   `;`, UTF-8 com BOM, período em dias locais da instituição, filtros de sistema e da situação da fila; até 20.000
-  linhas por arquivo (acima disso, pede-se um período menor). Texto que a planilha leria como fórmula (começando
+  linhas por arquivo (acima disso, pede-se um período menor); sem filtro de situação, os lembretes de DNV/DO ficam
+  de fora. Texto que a planilha leria como fórmula (começando
   com `=`, `+`, `-` ou `@`) sai com apóstrofo. A exportação é auditada, e cada notificação sigilosa exportada ganha
   a própria entrada na trilha.
 
@@ -227,7 +232,8 @@ dia anterior; vigências sobrepostas são recusadas), com o ato ou acordo que a 
 - A data do óbito só é aceita com evolução para óbito (2 ou 3).
 - Encerrada, a ficha não é editada; a vigilância municipal **reabre** com motivo: a conclusão anterior fica no
   evento da linha do tempo, os campos voltam vazios e o critério da notificação volta ao de antes do encerramento.
-  Encerrar não cumpre prazo de comunicação nem repasse: a encerrada segue nas pendências enquanto faltarem.
+  Encerrar não cumpre prazo de comunicação nem repasse: a encerrada segue nas pendências enquanto faltarem, e a
+  SMS pode dar ciência nela.
 - Prazos de encerramento oportuno por agravo são configuráveis (referência na tela; não vêm ligados; linha mal
   escrita impede salvar) e o painel conta os vencidos.
 
@@ -240,14 +246,20 @@ dia anterior; vigências sobrepostas são recusadas), com o ato ou acordo que a 
   passa a contar do resultado. O aviso na tela do laudo mostra a notificação aberta ou confirmada. Negativo não abre
   nem descarta notificação.
 - Positivo de quem tem a notificação do agravo **encerrada sem confirmação** (ou descartada no mesmo atendimento):
-  não reabre sozinha; o resultado entra na linha do tempo, o aviso mostra a situação e o painel ganha o cartão
-  "Positivo após encerramento ou descarte" (30 dias) para a vigilância avaliar a reabertura.
-- Covid-19 de quem tem **Srag** notificada: o resultado confirma a Srag (Sivep-Gripe) e não abre a SG (e-SUS
-  Notifica). Na internação com Srag, o CID de covid-19 também não abre a SG.
+  não reabre sozinha; o resultado entra na linha do tempo (uma vez por exame, mesmo se a tarefa periódica
+  reprocessar), o aviso mostra a situação e o painel ganha o cartão "Positivo após encerramento ou descarte" (30
+  dias) para a vigilância avaliar a reabertura. Quem lançou o resultado só vê o link da ficha se puder abri-la.
+- Covid-19 de quem tem **Srag** em aberto: o resultado confirma a Srag (Sivep-Gripe) e não abre a SG (e-SUS
+  Notifica). Srag em aberto ou confirmada cobre a SG também na internação e numa evolução assinada depois; Srag
+  descartada ou encerrada sem confirmação não impede a SG.
+- Coleta até 5 minutos no futuro (relógio da estação adiantado) vale como a hora do servidor; além disso, é
+  recusada.
 - **Srag**: na internação, CID respiratório agudo **e** um sinal registrado na triagem (SpO2 ≤ 94%, dispneia ou
   desconforto respiratório, taquipneia para a idade) abrem o rascunho de Srag, que vai ao Sivep-Gripe. Só um dos
   dois vira **sugestão** no painel da vigilância (internações dos últimos 10 dias sem notificação de Srag); notificar
-  pela sugestão liga a notificação à internação e à unidade do atendimento, não à de quem clica. A NT não
+  pela sugestão liga a notificação à internação e à unidade do atendimento, não à de quem clica (na notificação
+  manual, a unidade do atendimento vale quando a vigilância municipal notifica; o núcleo só notifica pela própria
+  unidade). A NT não
   fixa a frequência da taquipneia: usamos os limites da OMS para crianças e 24 irpm para os demais.
 
 ### REL de covid-19 e mpox (INT-4a)
@@ -277,7 +289,8 @@ de saída) e é conferido pelo simulador. O REL v4 só está no Portal de Servi�
   registrada depois liga a exigência na notificação já aberta (evento na linha do tempo).
 - O **envio** é registrado como comunicação à "Autoridade policial" (quem atendeu também registra, mesmo em
   rascunho). Só a vigilância (municipal ou núcleo) **dispensa**, com justificativa (ex.: a vítima já comunicou, com
-  protocolo): quem tem o dever de comunicar não tira a exigência sozinho.
+  protocolo), inclusive em notificação encerrada: quem tem o dever de comunicar não tira a exigência sozinho, nem
+  descartando o rascunho (com a exigência ativa, o descarte é da vigilância).
 - O resumo da gestão conta à parte as comunicações policiais vencidas.
 - A comunicação pela SES quando a unidade não comunica (art. 14-B, § 1º) e o envio da ficha de comunicação à
   autoridade sanitária local (§ 2º) seguem os fluxos da vigilância municipal.

@@ -5,6 +5,7 @@ import { TenantsService } from '../src/core/database';
 import { AiService } from '../src/modules/integrations/ai.service';
 import { RndsService } from '../src/modules/integrations/rnds.service';
 import { CatalogoVigilanciaService } from '../src/modules/vigilancia/catalogo.service';
+import { NotificacaoService } from '../src/modules/vigilancia/notificacao.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 import { startMocks } from './mocks';
 
@@ -132,6 +133,7 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
     const bebe = await novoPaciente('Bebe Anomalia Saida', 'F', new Date(Date.now() - 3 * 24 * H).toISOString().slice(0, 10));
     const d = (await t.http().post('/api/vigilancia/notificacoes').set(auth(medica)).send({ patientId: bebe, conditionKey: 'anomalias-congenitas' }).expect(201)).body;
     const c = await confirmar(d.id);
+    ids.lembrete = c.numero;
     expect(c.saida).toMatchObject({ sistema: 'SINASC_SIM', digitacao: 'LEMBRETE' });
     expect(c.saida.rota.nota).toContain('Declaração de Nascido Vivo');
     const fila = (await t.http().get('/api/vigilancia/digitacao').set(auth(vig)).expect(200)).body;
@@ -501,8 +503,10 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
         .expect(201)
     ).body;
     expect(adm.notificacoes.map((n: Criada) => n.agravo)).toEqual([expect.stringMatching(/Srag|SRAG|respiratória aguda grave/i)]);
-    // O RT-PCR detectável confirma a Srag e não abre a SG.
+    // Evolução com U07.1 depois da internação também não abre a SG (a Srag cobre o caso).
     const enc = await abrir(p2);
+    expect(await assinar(enc, 'U07.1')).toEqual([]);
+    // O RT-PCR detectável confirma a Srag e não abre a SG.
     const [ex] = (
       await t
         .http()
@@ -519,10 +523,11 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
         .send({ examKey: 'covid-rtpcr', qualitative: 'DETECTAVEL', collectedAt: new Date(Date.now() - 3 * H).toISOString(), method: 'RT-PCR' })
         .expect(200)
     ).body;
-    expect(r.notificacoes).toEqual([expect.objectContaining({ id: adm.notificacoes[0].id, efeito: 'CONFIRMADA' })]);
+    // A Srag é do NIR: a médica recebe o aviso, mas sem link para uma ficha que não pode abrir.
+    expect(r.notificacoes).toEqual([expect.objectContaining({ id: adm.notificacoes[0].id, efeito: 'CONFIRMADA', podeAbrir: false })]);
     expect(await db.notification.count({ where: { patientId: p2, groupKey: 'covid' } })).toBe(0);
     expect(await db.notification.findUniqueOrThrow({ where: { id: adm.notificacoes[0].id } })).toMatchObject({ basis: 'CONFIRMADO' });
-    // Coleta no futuro é recusada (o REL recusaria resultado liberado antes da coleta).
+    // Coleta mais de 5 min no futuro é recusada (até isso, vale a hora do servidor).
     const [ex2] = (
       await t
         .http()
@@ -535,8 +540,43 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
       .http()
       .post(`/api/clinical/exams/${ex2.id}/result`)
       .set(auth(medica))
-      .send({ examKey: 'covid-rtpcr', qualitative: 'NAO_DETECTAVEL', collectedAt: new Date(Date.now() + 30_000).toISOString(), method: 'RT-PCR' })
+      .send({ examKey: 'covid-rtpcr', qualitative: 'NAO_DETECTAVEL', collectedAt: new Date(Date.now() + 10 * 60_000).toISOString(), method: 'RT-PCR' })
       .expect(400);
+    const grampeado = (
+      await t
+        .http()
+        .post(`/api/clinical/exams/${ex2.id}/result`)
+        .set(auth(medica))
+        .send({ examKey: 'covid-rtpcr', qualitative: 'NAO_DETECTAVEL', collectedAt: new Date(Date.now() + 60_000).toISOString(), method: 'RT-PCR' })
+        .expect(200)
+    ).body;
+    expect(Date.parse(grampeado.collectedAt)).toBeLessThanOrEqual(Date.parse(grampeado.resultAt));
+    // Srag descartada não impede a SG do covid-19 confirmado.
+    const p3 = await novoPaciente('Sonia Srag Descartada Saida', 'F', '1954-04-04');
+    const sragManual = (await t.http().post('/api/vigilancia/notificacoes').set(auth(vig)).send({ patientId: p3, conditionKey: 'srag-coronavirus' }).expect(201)).body;
+    await t.http().post(`/api/vigilancia/notificacoes/${sragManual.id}/descartar`).set(auth(vig)).send({ reason: 'Não preenche a definição de Srag.' }).expect(200);
+    const enc3 = await abrir(p3);
+    const [ex3] = (
+      await t
+        .http()
+        .post(`/api/clinical/encounters/${enc3}/exams`)
+        .set(auth(medica))
+        .send({ items: [{ sigtapCode: '0202020959', name: 'SARS-CoV-2 RT-PCR' }] })
+        .expect(201)
+    ).body;
+    const r3 = (
+      await t
+        .http()
+        .post(`/api/clinical/exams/${ex3.id}/result`)
+        .set(auth(medica))
+        .send({ examKey: 'covid-rtpcr', qualitative: 'DETECTAVEL', collectedAt: new Date(Date.now() - H).toISOString(), method: 'RT-PCR' })
+        .expect(200)
+    ).body;
+    expect(r3.notificacoes).toHaveLength(1);
+    expect(r3.notificacoes[0].efeito).toBeUndefined();
+    expect(await db.notification.count({ where: { patientId: p3, groupKey: 'covid' } })).toBe(1);
+    // O núcleo do hospital não notifica por atendimento de outra unidade.
+    await t.http().post('/api/vigilancia/notificacoes').set(auth(nucleo)).send({ patientId: p3, conditionKey: 'coqueluche', encounterId: enc3 }).expect(403);
   });
 
   it('violência: agressão na mesma nota da lesão autoprovocada, ou depois dela, exige a comunicação policial; só a vigilância dispensa', async () => {
@@ -579,6 +619,33 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
       .set(auth(vig))
       .send({ policial: { dispensa: 'Comunicada pela própria vítima, com protocolo.' } })
       .expect(200);
+    // Violência doméstica (semanal) com exigência policial: o autor também não a tira descartando o rascunho.
+    const dom = await notificarComCid('Dora Domestica Saida', 'F', '1990-09-09', 'T74.1');
+    await t.http().post(`/api/vigilancia/notificacoes/${dom.id}/descartar`).set(auth(medica)).send({ reason: 'Paciente pediu para não notificar.' }).expect(403);
+    // Encerrada sem exigência; agressão registrada depois liga a exigência, e a vigilância dispensa sem reabrir.
+    const p3 = await novoPaciente('Elisa Encerrada Saida', 'F', '1993-03-03');
+    const enc3 = await abrir(p3);
+    const [enc3n] = await nota(enc3, ['X64']);
+    await t
+      .http()
+      .patch(`/api/vigilancia/notificacoes/${enc3n!.id}`)
+      .set(auth(medica))
+      .send({ ficha: { CS_GESTANT: '5' } })
+      .expect(200);
+    await confirmar(enc3n!.id);
+    await t.http().post(`/api/vigilancia/notificacoes/${enc3n!.id}/encerrar`).set(auth(vig)).send({ investigadaEm: hoje(), classificacao: '1', criterio: '2', encerradaEm: hoje() }).expect(200);
+    expect(await nota(enc3, ['T74.2'])).toEqual([]);
+    const d3 = await detalhe(enc3n!.id);
+    expect(d3).toMatchObject({ status: 'ENCERRADA', policial: { dispensa: null }, permissoes: { dispensarPolicia: true } });
+    const dis = (
+      await t
+        .http()
+        .patch(`/api/vigilancia/notificacoes/${enc3n!.id}`)
+        .set(auth(vig))
+        .send({ policial: { dispensa: 'Comunicada pela própria vítima, com protocolo.' } })
+        .expect(200)
+    ).body;
+    expect(dis).toMatchObject({ status: 'ENCERRADA', policial: { dispensa: 'Comunicada pela própria vítima, com protocolo.' } });
   });
 
   it('descartada sai da fila e não recebe número; encerramento recusa óbito com cura; reabrir limpa a conclusão', async () => {
@@ -591,6 +658,15 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
     await t.http().post(`/api/vigilancia/notificacoes/${den.id}/numero-oficial`).set(auth(vig)).send({ numero: '2611111' }).expect(422);
     const fila = (await t.http().get('/api/vigilancia/digitacao?sistema=SINAN_ONLINE').set(auth(vig)).expect(200)).body;
     expect(fila.notificacoes.map((n: { id: string }) => n.id)).not.toContain(den.id);
+    // O número de uma descartada fica como histórico e não prende outra notificação.
+    const d1 = await notificarComCid('Diogo Digitado Saida', 'M', '1973-03-03', 'A90');
+    await confirmar(d1.id);
+    await t.http().post(`/api/vigilancia/notificacoes/${d1.id}/numero-oficial`).set(auth(vig)).send({ numero: '2622222' }).expect(200);
+    await t.http().post(`/api/vigilancia/notificacoes/${d1.id}/descartar`).set(auth(vig)).send({ reason: 'Reclassificado como chikungunya.' }).expect(200);
+    expect((await detalhe(d1.id)).saida).toMatchObject({ numero: '2622222' });
+    const d2 = await notificarComCid('Diana Digitada Saida', 'F', '1950-03-03', 'A90');
+    await confirmar(d2.id);
+    await t.http().post(`/api/vigilancia/notificacoes/${d2.id}/numero-oficial`).set(auth(vig)).send({ numero: '2622222' }).expect(200);
     // Reabrir a coqueluche (encerrada como descartada): conclusão some, o critério volta ao de antes.
     const re = (await t.http().post(`/api/vigilancia/notificacoes/${ids.coq}/reabrir`).set(auth(vig)).send({ reason: 'Novo resultado do LACEN.' }).expect(200)).body;
     expect(re.encerramento).toMatchObject({ classificacao: null, criterio: null, evolucao: null, investigadaEm: null, encerradaEm: null });
@@ -622,6 +698,13 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
     expect((await detalhe(den!.id)).eventos.map((e: { tipo: string }) => e.tipo)).toContain('RESULTADO_APOS_FECHAMENTO');
     const painel = (await t.http().get('/api/vigilancia/painel').set(auth(vig)).expect(200)).body;
     expect(painel.cartoes.positivoAposFechamento).toBeGreaterThanOrEqual(1);
+    // A tarefa periódica que reprocessa falhas não repete o registro do mesmo exame.
+    const svc = t.app.get(NotificacaoService) as unknown as { resultadoPositivo: (...a: unknown[]) => Promise<unknown[]> };
+    const medicaUser = await db.user.findFirstOrThrow({ where: { cpf: completeCpf('100000003') } });
+    const exame = await db.examRequest.findUniqueOrThrow({ where: { id: ex.id } });
+    const autor = { userId: medicaUser.id, role: 'MEDICO', cbo: null, unitId: (await db.encounter.findUniqueOrThrow({ where: { id: enc } })).unitId };
+    expect(await svc.resultadoPositivo(await sys(), { id: ex.id, patientId: p, encounterId: enc, examKey: 'dengue-igm', resultAt: exame.resultAt }, autor, 'VARREDURA')).toEqual([]);
+    expect(await db.notificationEvent.count({ where: { notificationId: den!.id, kind: 'RESULTADO_APOS_FECHAMENTO' } })).toBe(1);
   });
 
   it('exportação: texto que vira fórmula na planilha sai neutralizado, cabeçalho fixo com DT_CONCLU e cada sigilosa auditada', async () => {
@@ -649,6 +732,8 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
     expect(linhas.every((l) => l.split(';').length >= cab!.split(';').length)).toBe(true);
     expect(texto).toContain(`"'=HYPERLINK(""http://x"")"`);
     expect(texto).not.toMatch(/(^|;)=HYPERLINK/m);
+    // Sem filtro de situação, os lembretes de DNV/DO (sem ficha) ficam de fora.
+    expect(texto).not.toContain(ids.lembrete!);
     expect(await db.auditEntry.count({ where: { action: 'notificacao.exportar_sensivel' } })).toBeGreaterThan(antes);
   });
 

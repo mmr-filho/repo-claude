@@ -15,6 +15,8 @@ export interface NotificacaoCriada {
   naoHomologado: boolean;
   /** Efeito do resultado de exame sobre uma notificação que já existia (ausente: rascunho novo). */
   efeito?: 'CONFIRMADA' | 'ENCERRADA' | 'DESCARTADA';
+  /** Falso quando quem lançou o resultado não pode abrir a ficha (ausente: pode). */
+  podeAbrir?: boolean;
 }
 
 export interface NotificacaoResumo {

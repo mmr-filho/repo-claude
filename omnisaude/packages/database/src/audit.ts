@@ -7,7 +7,11 @@ export const GENESIS_HASH = '0'.repeat(64);
 export function canonicalJson(value: unknown): string {
   return JSON.stringify(value, (_key, v) => {
     if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Date)) {
-      return Object.fromEntries(Object.keys(v).sort().map((k) => [k, (v as Record<string, unknown>)[k]]));
+      return Object.fromEntries(
+        Object.keys(v)
+          .sort()
+          .map((k) => [k, (v as Record<string, unknown>)[k]]),
+      );
     }
     if (typeof v === 'bigint') return v.toString();
     return v;
@@ -46,9 +50,7 @@ interface ChainFields {
 
 /** hash = SHA-256(hash anterior | hash do conteúdo | instante UTC | IP | operador | 2FA | ação | entidade). */
 export function chainHash(f: ChainFields): string {
-  return sha256(
-    [f.prevHash, f.payloadHash, f.at.toISOString(), f.ip ?? '', f.userId ?? '', f.mfa ? '1' : '0', f.action, f.entityType, f.entityId ?? ''].join('|'),
-  );
+  return sha256([f.prevHash, f.payloadHash, f.at.toISOString(), f.ip ?? '', f.userId ?? '', f.mfa ? '1' : '0', f.action, f.entityType, f.entityId ?? ''].join('|'));
 }
 
 type Tx = Pick<TenantClient, '$executeRaw' | 'auditEntry'>;
@@ -82,6 +84,40 @@ export async function appendAudit(tx: Tx, input: AuditInput): Promise<{ hash: st
     select: { seq: true },
   });
   return { hash, seq: row.seq };
+}
+
+/**
+ * Várias entradas de uma vez (ex.: uma por registro exportado): trava a cadeia e lê o último hash uma vez só,
+ * encadeia em memória e grava num único INSERT, na ordem do array (a sequência segue essa ordem).
+ */
+export async function appendAuditBatch(tx: Tx, inputs: AuditInput[]): Promise<number> {
+  if (!inputs.length) return 0;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('omnisaude_audit_chain'))`;
+  const last = await tx.auditEntry.findFirst({ orderBy: { seq: 'desc' }, select: { hash: true } });
+  let prevHash = last?.hash ?? GENESIS_HASH;
+  const at = new Date();
+  const data = inputs.map((input) => {
+    const payloadHash = sha256(canonicalJson(input.payload));
+    const hash = chainHash({ ...input, prevHash, payloadHash, at });
+    const row = {
+      at,
+      userId: input.userId ?? null,
+      unitId: input.unitId ?? null,
+      role: input.role ?? null,
+      ip: input.ip ?? null,
+      mfa: input.mfa,
+      action: input.action,
+      entityType: input.entityType,
+      entityId: input.entityId ?? null,
+      payloadHash,
+      prevHash,
+      hash,
+    };
+    prevHash = hash;
+    return row;
+  });
+  const { count } = await tx.auditEntry.createMany({ data });
+  return count;
 }
 
 export interface ChainVerification {

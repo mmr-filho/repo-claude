@@ -209,8 +209,14 @@ export default function VigilanciaPage() {
                     <Field label="Até" htmlFor="exp-ate">
                       <Input id="exp-ate" type="date" value={periodo.ate} onChange={(e) => setPeriodo({ ...periodo, ate: e.target.value })} />
                     </Field>
-                    <Button variant="secondary" onClick={exportar} id="vig-exportar">
-                      <FileDown className="h-4 w-4" /> Exportar CSV (dicionário do Sinan)
+                    <Button
+                      variant="secondary"
+                      onClick={exportar}
+                      id="vig-exportar"
+                      disabled={situacaoFila === 'LEMBRETE'}
+                      title={situacaoFila === 'LEMBRETE' ? 'Lembretes de DNV/DO não têm ficha a exportar' : undefined}
+                    >
+                      <FileDown className="h-4 w-4" /> Exportar CSV ({situacaoFila === 'DIGITADA' ? 'digitadas' : situacaoFila === 'PENDENTE' ? 'pendentes' : 'dicionário do Sinan'})
                     </Button>
                   </div>
                 )}

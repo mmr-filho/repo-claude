@@ -119,16 +119,27 @@ export function rotaDoAgravo<R extends { groupKey: string; conditionKey: string;
 
 /**
  * Agravo do Sinan Net para a chave do NU_NOTIFIC (número + data + município + agravo). Difere do grupo do
- * OmniSaúde em dois casos: as violências (interpessoal, sexual e tentativa de suicídio) são uma ficha só no Sinan, e
- * a sífilis tem três (adquirida, em gestante e congênita).
+ * OmniSaúde onde o Sinan tem outra divisão: as violências (interpessoal, sexual e tentativa de suicídio) são uma
+ * ficha só; a sífilis tem três (adquirida, em gestante e congênita); tétano (acidental e neonatal), toxoplasmose
+ * (gestacional e congênita) e sarampo/rubéola são agravos distintos. Gestante pela ficha (campo 12) ou pelo CID.
  */
-export function agravoSinanDaChave(groupKey: string, code: string | null | undefined): string {
-  if (groupKey === 'violencia' || groupKey === 'violencia-sexual-suicidio') return 'violencia';
-  if (groupKey === 'sifilis') {
-    const c = (code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    return c.startsWith('A50') ? 'sifilis-congenita' : c.startsWith('O981') ? 'sifilis-gestante' : 'sifilis-adquirida';
+export function agravoSinanDaChave(groupKey: string, code: string | null | undefined, gestante = false): string {
+  const c = (code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  switch (groupKey) {
+    case 'violencia':
+    case 'violencia-sexual-suicidio':
+      return 'violencia';
+    case 'sifilis':
+      return c.startsWith('A50') ? 'sifilis-congenita' : gestante || c.startsWith('O981') ? 'sifilis-gestante' : 'sifilis-adquirida';
+    case 'tetano':
+      return c.startsWith('A33') ? 'tetano-neonatal' : 'tetano-acidental';
+    case 'toxoplasmose-gestacional-congenita':
+      return c.startsWith('P371') ? 'toxoplasmose-congenita' : 'toxoplasmose-gestacional';
+    case 'sarampo-rubeola':
+      return c.startsWith('B06') ? 'rubeola' : 'sarampo';
+    default:
+      return groupKey;
   }
-  return groupKey;
 }
 
 /** Número oficial informado pelo digitador: formato do sistema de destino. */

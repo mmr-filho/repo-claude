@@ -388,7 +388,7 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
             title={
               <span className="flex flex-wrap items-center gap-2">
                 Sistema oficial: {d.saida.sistemaLabel}
-                {d.saida.digitacao && <Badge tone={DIGITACAO[d.saida.digitacao]!.tone}>{DIGITACAO[d.saida.digitacao]!.label}</Badge>}
+                {d.saida.digitacao && (d.status !== 'DESCARTADA' || d.saida.numero) && <Badge tone={DIGITACAO[d.saida.digitacao]!.tone}>{DIGITACAO[d.saida.digitacao]!.label}</Badge>}
                 {d.saida.rota.situacao !== 'CONFIRMADO' && <Badge tone="amber">{d.saida.rota.situacaoLabel}</Badge>}
               </span>
             }

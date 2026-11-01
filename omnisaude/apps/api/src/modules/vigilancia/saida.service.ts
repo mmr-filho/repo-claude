@@ -231,7 +231,8 @@ export class SaidaOficialService {
       status: { in: ['NOTIFICADA' as const, 'ENCERRADA' as const] },
       notifiedAt: { gte: inicioDoDia(q.de), lt: inicioDoDia(diaSeguinte(q.ate)) },
       ...(q.sistema ? { officialSystem: q.sistema } : {}),
-      ...(q.situacao ? { entryStatus: q.situacao } : {}),
+      // Sem filtro de situação: tudo o que tem ficha (lembretes de DNV/DO não têm).
+      ...(q.situacao ? { entryStatus: q.situacao } : { OR: [{ entryStatus: null }, { entryStatus: { in: ['PENDENTE' as const, 'DIGITADA' as const] } }] }),
     };
     const total = await ctx.db.notification.count({ where });
     if (total > LIMITE_EXPORTACAO) throw new DomainError('EXPORTACAO_GRANDE', `O período tem ${total} notificações; exporte períodos menores (até ${LIMITE_EXPORTACAO} por arquivo)`, HttpStatus.UNPROCESSABLE_ENTITY);
@@ -256,14 +257,21 @@ export class SaidaOficialService {
     // A trilha guarda só o hash do conteúdo: cada notificação sigilosa exportada ganha a própria entrada (consultável
     // pela entidade), na mesma transação do registro da exportação.
     const sigilosas = rows.filter((r) => r.sensitive).map((r) => r.id);
-    await ctx.db.$transaction(async (tx) => {
-      await this.audit.record(ctx, tx, {
-        action: 'notificacao.exportar',
-        entityType: 'Notification',
-        payload: { sistema: q.sistema ?? null, situacao: q.situacao ?? null, de: q.de, ate: q.ate, linhas: rows.length, sigilosas: sigilosas.length },
-      });
-      for (const id of sigilosas) await this.audit.record(ctx, tx, { action: 'notificacao.exportar_sensivel', entityType: 'Notification', entityId: id, payload: { de: q.de, ate: q.ate } });
-    });
+    await ctx.db.$transaction(
+      async (tx) => {
+        await this.audit.record(ctx, tx, {
+          action: 'notificacao.exportar',
+          entityType: 'Notification',
+          payload: { sistema: q.sistema ?? null, situacao: q.situacao ?? null, de: q.de, ate: q.ate, linhas: rows.length, sigilosas: sigilosas.length },
+        });
+        await this.audit.recordMany(
+          ctx,
+          tx,
+          sigilosas.map((id) => ({ action: 'notificacao.exportar_sensivel', entityType: 'Notification', entityId: id, payload: { de: q.de, ate: q.ate } })),
+        );
+      },
+      { timeout: 60_000 },
+    );
     return { content: csv, fileName: `notificacoes-${q.sistema ?? 'todas'}-${q.de}-a-${q.ate}.csv`, linhas: rows.length };
   }
 }

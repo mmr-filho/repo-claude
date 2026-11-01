@@ -102,6 +102,8 @@ export interface RascunhoCriado {
    * confirmação / descartada (o resultado fica registrado e a vigilância decide se reabre). Ausente: rascunho novo.
    */
   efeito?: 'CONFIRMADA' | 'ENCERRADA' | 'DESCARTADA';
+  /** Falso quando quem lançou o resultado não pode abrir a ficha (a vigilância foi avisada). Ausente: pode. */
+  podeAbrir?: boolean;
 }
 
 /**
@@ -281,13 +283,20 @@ export class NotificacaoService implements OnModuleInit {
   ): Promise<RascunhoCriado[]> {
     const cat = exameVigilancia(exame.examKey)!;
     const resultado = exame.resultAt ?? new Date();
-    // Covid-19 de quem tem Srag notificada: o resultado confirma a Srag (Sivep-Gripe), sem abrir a SG (e-SUS Notifica).
+    // Covid-19 de quem tem Srag em aberto: o resultado confirma a Srag (Sivep-Gripe), sem abrir a SG (e-SUS Notifica).
     const grupos = cat.grupo === 'covid' ? ['srag-coronavirus', cat.grupo] : [cat.grupo];
     const janela = { createdAt: { gte: new Date(Date.now() - REPETICAO_DIAS * DIA) } };
-    const doCaso = { patientId: exame.patientId, groupKey: { in: grupos }, condition: { context: { not: 'OBITO' as const } } };
+    // O mesmo exame já tocou esta notificação (abriu, confirmou ou foi registrado depois do fechamento): a tarefa
+    // periódica que reprocessa falhas não repete o efeito.
+    const jaTocada = async (notificationId: string) => !!(await sys.db.notificationEvent.findFirst({ where: { notificationId, data: { path: ['examRequestId'], equals: exame.id } }, select: { id: true } }));
     const buscarAtiva = async () => {
-      const ativas = await sys.db.notification.findMany({ where: { ...doCaso, status: { in: ['RASCUNHO', 'NOTIFICADA'] }, ...janela }, include: { condition: true }, orderBy: { createdAt: 'desc' } });
-      return ativas.find((a) => a.groupKey === 'srag-coronavirus') ?? ativas[0] ?? null;
+      const ativas = await sys.db.notification.findMany({
+        where: { patientId: exame.patientId, groupKey: { in: grupos }, status: { in: ['RASCUNHO', 'NOTIFICADA'] }, ...janela },
+        include: { condition: true },
+        orderBy: { createdAt: 'desc' },
+      });
+      // Srag antes da SG; o caso antes da linha de óbito (que só é confirmada quando é a única aberta).
+      return ativas.find((a) => a.groupKey === 'srag-coronavirus') ?? ativas.find((a) => a.condition.context !== 'OBITO') ?? ativas[0] ?? null;
     };
     let ativa = await buscarAtiva();
     for (let tentativa = 0; ativa && tentativa < 3; tentativa++) {
@@ -302,27 +311,29 @@ export class NotificacaoService implements OnModuleInit {
       if (count === 1) {
         await sys.db.notificationEvent.create({ data: { notificationId: ativa.id, kind: 'RESULTADO_EXAME', userId: autor.userId, data: { exame: cat.key, examRequestId: exame.id } } });
         this.avisar(sys, ativa);
-        return [this.avisoExistente(ativa, muda ? prazo.vence : ativa.dueAt, 'CONFIRMADA')];
+        return [this.avisoExistente(ativa, muda ? prazo.vence : ativa.dueAt, 'CONFIRMADA', autor)];
       }
       // Mudou entre a leitura e a gravação (outra pessoa editou): relê e tenta de novo.
       ativa = await buscarAtiva();
     }
     if (ativa) throw new Error(`Notificação ${ativa.number} mudou durante a confirmação pelo resultado do exame`);
-    // Encerrada sem confirmação (ou descartada neste atendimento): não reabre sozinha. O resultado fica na linha do
-    // tempo, a vigilância é avisada (cartão do painel) e decide se reabre ou reclassifica.
+    // Encerrada sem confirmação (ou descartada neste atendimento), do grupo do próprio exame: não reabre sozinha. O
+    // resultado fica na linha do tempo, a vigilância é avisada (cartão do painel) e decide se reabre ou reclassifica.
+    // Uma Srag fechada não impede a SG do covid-19 confirmado.
     const fechada = await sys.db.notification.findFirst({
       where: {
-        ...doCaso,
+        patientId: exame.patientId,
+        groupKey: cat.grupo,
         OR: [{ status: 'ENCERRADA', ...janela }, ...(exame.encounterId ? [{ status: { in: ['ENCERRADA' as const, 'DESCARTADA' as const] }, encounterId: exame.encounterId }] : [])],
       },
       include: { condition: true },
       orderBy: { createdAt: 'desc' },
     });
     if (fechada) {
-      if (fechada.status === 'ENCERRADA' && fechada.finalClass === '1') return [];
+      if ((fechada.status === 'ENCERRADA' && fechada.finalClass === '1') || (await jaTocada(fechada.id))) return [];
       await sys.db.notificationEvent.create({ data: { notificationId: fechada.id, kind: 'RESULTADO_APOS_FECHAMENTO', userId: autor.userId, data: { exame: cat.key, examRequestId: exame.id, situacao: fechada.status } } });
       this.avisar(sys, fechada);
-      return [this.avisoExistente(fechada, null, fechada.status === 'ENCERRADA' ? 'ENCERRADA' : 'DESCARTADA')];
+      return [this.avisoExistente(fechada, null, fechada.status === 'ENCERRADA' ? 'ENCERRADA' : 'DESCARTADA', autor)];
     }
     const e = exame.encounterId ? await sys.db.encounter.findUnique({ where: { id: exame.encounterId }, include: { unit: true } }) : null;
     const catalogo = await this.catalogoDoDia(sys, localDateString(e?.startedAt ?? resultado, sys.tenant.timeZone), memo);
@@ -345,16 +356,24 @@ export class NotificacaoService implements OnModuleInit {
       internacao: e?.kind === 'INTERNACAO',
       confirmacao: resultado,
       gestante,
+      exameId: exame.id,
     });
     return r ? [r] : [];
   }
 
   private avisoExistente(
-    n: { id: string; number: string; deadlineKind: string; targets: string[]; sensitive: boolean; mapStatus: string | null; condition: { name: string } },
+    n: { id: string; number: string; deadlineKind: string; targets: string[]; sensitive: boolean; mapStatus: string | null; notifierId: string; unitId: string; condition: { name: string } },
     vence: Date | null,
     efeito: NonNullable<RascunhoCriado['efeito']>,
+    autor: Autor,
   ): RascunhoCriado {
+    // Mesma regra de alcance da ficha: quem lançou o resultado só ganha o link se puder abrir a notificação.
+    const podeAbrir =
+      autor.role === 'VIGILANCIA_EPIDEMIOLOGICA' ||
+      (autor.role === 'NUCLEO_VIGILANCIA' && n.unitId === autor.unitId && (!n.sensitive || roleHasPermission(autor.role, 'notificacao.sensivel'))) ||
+      n.notifierId === autor.userId;
     return {
+      podeAbrir,
       id: n.id,
       numero: n.number,
       agravo: n.condition.name,
@@ -513,6 +532,21 @@ export class NotificacaoService implements OnModuleInit {
    * hepatites, por agente).
    */
   private async jaNotificada(sys: SystemContext, c: CondicaoNoRetrato, p: { patientId: string; encounterId?: string | null; codigo: { code: string } | null }) {
+    // Srag em aberto (ou confirmada) da pessoa cobre a SG por covid-19: hospitalizado vai ao Sivep-Gripe, não ao
+    // e-SUS Notifica (NT nº 11/2026), também quando o U07.1 aparece numa evolução depois da internação.
+    if (
+      c.groupKey === 'covid' &&
+      (await sys.db.notification.findFirst({
+        where: {
+          patientId: p.patientId,
+          groupKey: 'srag-coronavirus',
+          OR: [{ status: { in: ['RASCUNHO', 'NOTIFICADA'] } }, { status: 'ENCERRADA', finalClass: '1' }],
+          createdAt: { gte: new Date(Date.now() - REPETICAO_DIAS * DIA) },
+        },
+        select: { id: true },
+      }))
+    )
+      return true;
     const classe = { groupKey: c.groupKey, condition: { context: c.context === 'OBITO' ? ('OBITO' as const) : { not: 'OBITO' as const } } };
     if (p.encounterId && (await sys.db.notification.findFirst({ where: { encounterId: p.encounterId, ...classe }, select: { id: true } }))) return true;
     const janela = c.once ? (JANELA_UNICA_DIAS[c.groupKey] ?? null) : REPETICAO_DIAS;
@@ -569,6 +603,8 @@ export class NotificacaoService implements OnModuleInit {
       relacionada?: string;
       sintomas?: string | null;
       manual?: boolean;
+      /** Exame que abriu a notificação (o reprocessamento não repete o efeito do mesmo exame). */
+      exameId?: string;
     },
   ): Promise<RascunhoCriado | null> {
     const c = p.condicao;
@@ -665,7 +701,7 @@ export class NotificacaoService implements OnModuleInit {
               create: {
                 kind: p.manual ? 'CRIADA_MANUAL' : 'GERADA_PELO_GATILHO',
                 userId: p.autor.userId,
-                data: { origem: p.origem, codigo: p.codigo ? `${p.codigo.system}:${p.codigo.code}` : null, mapeamento: p.mapStatus },
+                data: { origem: p.origem, codigo: p.codigo ? `${p.codigo.system}:${p.codigo.code}` : null, mapeamento: p.mapStatus, ...(p.exameId ? { examRequestId: p.exameId } : {}) },
               },
             },
           },
@@ -718,6 +754,8 @@ export class NotificacaoService implements OnModuleInit {
     // Internação do atendimento (ex.: Srag sugerida no painel): a notificação fica ligada a ela.
     const admissao = input.admissionId ? await ctx.db.admission.findUnique({ where: { id: input.admissionId }, select: { id: true, encounterId: true } }) : null;
     if (input.admissionId && (!admissao || !encontro || admissao.encounterId !== encontro.id)) throw notFound('Internação');
+    // O núcleo só notifica pela própria unidade (é o seu alcance).
+    if (encontro && ctx.session.role === 'NUCLEO_VIGILANCIA' && encontro.unitId !== ctx.session.unitId) throw forbidden('Atendimento de outra unidade: a notificação é do núcleo de lá ou da vigilância municipal');
     if (input.vaccinationId) {
       const vac = await ctx.db.vaccination.findUnique({ where: { id: input.vaccinationId } });
       if (!vac || vac.patientId !== input.patientId) throw notFound('Vacinação');
@@ -735,8 +773,9 @@ export class NotificacaoService implements OnModuleInit {
       encounterId: encontro?.id ?? null,
       vaccinationId: input.vaccinationId ?? undefined,
       admissionId: admissao?.id,
-      // Unidade notificadora: a do atendimento do caso (a vigilância pode notificar por um hospital, p. ex.).
-      unitId: encontro?.unitId ?? ctx.session.unitId,
+      // Unidade notificadora: a do atendimento quando a vigilância municipal notifica por ele ou pela internação (Srag
+      // sugerida); nos demais casos, a de quem notifica.
+      unitId: encontro && (admissao || ctx.session.role === 'VIGILANCIA_EPIDEMIOLOGICA') ? encontro.unitId : ctx.session.unitId,
       autor: this.autor(ctx),
       origem: input.vaccinationId ? 'VACINA' : 'MANUAL',
       codigo: null,
@@ -976,10 +1015,10 @@ export class NotificacaoService implements OnModuleInit {
         editar: n.status !== 'DESCARTADA' && n.status !== 'ENCERRADA' && (n.notifierId === ctx.session.userId || ctx.session.role === 'VIGILANCIA_EPIDEMIOLOGICA' || ctx.session.role === 'NUCLEO_VIGILANCIA'),
         confirmar: n.status === 'RASCUNHO',
         descartar: n.status !== 'DESCARTADA' && (this.pode(ctx, 'notificacao.descartar') || (n.status === 'RASCUNHO' && n.deadlineKind === 'SEMANAL' && n.notifierId === ctx.session.userId)),
-        ciencia: n.status === 'NOTIFICADA' && !n.smsReceivedAt && this.pode(ctx, 'vigilancia.ciencia'),
+        ciencia: (n.status === 'NOTIFICADA' || n.status === 'ENCERRADA') && !n.smsReceivedAt && this.pode(ctx, 'vigilancia.ciencia'),
         comunicar: (n.status === 'NOTIFICADA' || n.status === 'ENCERRADA') && this.pode(ctx, 'vigilancia.comunicar'),
         comunicarPolicia: n.status !== 'DESCARTADA' && n.policeRequired && !n.policeWaiver,
-        dispensarPolicia: n.status !== 'DESCARTADA' && n.status !== 'ENCERRADA' && n.policeRequired && this.dispensaPolicia(ctx),
+        dispensarPolicia: n.status !== 'DESCARTADA' && n.policeRequired && this.dispensaPolicia(ctx),
         digitar: (n.status === 'NOTIFICADA' || n.status === 'ENCERRADA') && n.entryStatus === 'PENDENTE' && this.pode(ctx, 'vigilancia.digitar'),
         desfazerDigitacao: (n.status === 'NOTIFICADA' || n.status === 'ENCERRADA') && n.entryStatus === 'DIGITADA' && ctx.session.role === 'VIGILANCIA_EPIDEMIOLOGICA',
         encerrar: n.status === 'NOTIFICADA' && this.pode(ctx, 'vigilancia.investigar'),
@@ -1015,6 +1054,20 @@ export class NotificacaoService implements OnModuleInit {
     if (dispensa && dispensa.length < 10) throw new DomainError('MOTIVO_CURTO', 'Explique a dispensa da comunicação policial (mínimo de 10 caracteres)', HttpStatus.BAD_REQUEST);
     if (dispensa !== undefined && !this.dispensaPolicia(ctx)) throw forbidden('A dispensa da comunicação policial é decisão da vigilância');
     if (n.status === 'DESCARTADA') throw new DomainError('DESCARTADA', 'Notificação descartada', HttpStatus.UNPROCESSABLE_ENTITY);
+    // Só a dispensa (ou a restauração) da comunicação policial: grava só ela, também na encerrada (uma agressão
+    // registrada depois do encerramento pode ligar a exigência, e a vigilância decide sem reabrir a investigação).
+    const soPolicial = dispensa !== undefined && Object.entries(input).every(([k, v]) => k === 'policial' || v === undefined);
+    if (soPolicial) {
+      await ctx.db.$transaction(async (tx) => {
+        const { count } = await tx.notification.updateMany({ where: { id, updatedAt: n.updatedAt, status: n.status }, data: { policeWaiver: dispensa } });
+        if (count !== 1) throw conflict('A notificação mudou enquanto você editava; abra de novo');
+        const mudanca = { antes: { dispensaPolicial: n.policeWaiver }, depois: { dispensaPolicial: dispensa } };
+        await tx.notificationEvent.create({ data: { notificationId: id, kind: 'EDITADA', userId: ctx.session.userId, data: mudanca } });
+        await this.audit.record(ctx, tx, { action: 'notificacao.editar', entityType: 'Notification', entityId: id, payload: mudanca });
+      });
+      this.avisar(ctx, n);
+      return this.detalhe(ctx, id);
+    }
     if (n.status === 'ENCERRADA') throw new DomainError('ENCERRADA', 'Notificação encerrada: a vigilância municipal reabre para editar', HttpStatus.UNPROCESSABLE_ENTITY);
     if (!(n.notifierId === ctx.session.userId || ctx.session.role === 'VIGILANCIA_EPIDEMIOLOGICA' || ctx.session.role === 'NUCLEO_VIGILANCIA')) throw forbidden('Só o autor ou a vigilância editam a ficha');
     const hoje = localDateString(new Date(), ctx.tenant.timeZone);
@@ -1121,14 +1174,15 @@ export class NotificacaoService implements OnModuleInit {
   async descartar(ctx: RequestContext, id: string, motivo: string) {
     const n = await this.carregar(ctx, id);
     if (n.status === 'DESCARTADA') throw new DomainError('JA_DESCARTADA', 'Notificação já descartada', HttpStatus.UNPROCESSABLE_ENTITY);
-    const exigeVigilancia = n.status !== 'RASCUNHO' || n.deadlineKind === 'IMEDIATA';
+    // Com comunicação policial exigida, o descarte também é da vigilância (quem tem o dever não o tira sozinho).
+    const exigeVigilancia = n.status !== 'RASCUNHO' || n.deadlineKind === 'IMEDIATA' || (n.policeRequired && !n.policeWaiver);
     if (exigeVigilancia && !this.pode(ctx, 'notificacao.descartar')) throw forbidden('Notificação imediata ou já confirmada só é descartada pela vigilância municipal');
     if (!exigeVigilancia && n.notifierId !== ctx.session.userId && !this.pode(ctx, 'notificacao.descartar')) throw forbidden('Só o autor descarta o próprio rascunho');
     await ctx.db.$transaction(async (tx) => {
       // Sai da fila de digitação (o número já informado fica como histórico).
       const foraDaFila = n.entryStatus === 'PENDENTE' || n.entryStatus === 'LEMBRETE' ? { entryStatus: null } : {};
       const { count } = await tx.notification.updateMany({
-        where: { id, status: n.status },
+        where: { id, status: n.status, entryStatus: n.entryStatus },
         data: { status: 'DESCARTADA', discardReason: motivo.trim(), discardedBy: ctx.session.userId, discardedAt: new Date(), ...foraDaFila },
       });
       if (count !== 1) throw conflict('A notificação mudou de situação; abra de novo');
@@ -1142,11 +1196,12 @@ export class NotificacaoService implements OnModuleInit {
   /** Ciência da SMS (vigilância municipal): cumpre a imediata perante a SMS e abre o prazo de 24 h do repasse. */
   async ciencia(ctx: RequestContext, id: string) {
     const n = await this.carregar(ctx, id);
-    if (n.status !== 'NOTIFICADA') throw new DomainError('NAO_NOTIFICADA', 'Confirme a notificação antes de dar ciência', HttpStatus.UNPROCESSABLE_ENTITY);
+    // Encerrar a investigação não cumpre o recebimento pela SMS: a encerrada também recebe ciência.
+    if (n.status !== 'NOTIFICADA' && n.status !== 'ENCERRADA') throw new DomainError('NAO_NOTIFICADA', 'Confirme a notificação antes de dar ciência', HttpStatus.UNPROCESSABLE_ENTITY);
     if (n.smsReceivedAt) throw new DomainError('JA_CIENTE', 'A vigilância já deu ciência', HttpStatus.UNPROCESSABLE_ENTITY);
     const agora = new Date();
     await ctx.db.$transaction(async (tx) => {
-      const { count } = await tx.notification.updateMany({ where: { id, status: 'NOTIFICADA', smsReceivedAt: null }, data: { smsReceivedAt: agora, smsReceivedBy: ctx.session.userId } });
+      const { count } = await tx.notification.updateMany({ where: { id, status: { in: ['NOTIFICADA', 'ENCERRADA'] }, smsReceivedAt: null }, data: { smsReceivedAt: agora, smsReceivedBy: ctx.session.userId } });
       if (count !== 1) throw conflict('A vigilância já deu ciência');
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'CIENCIA_SMS', userId: ctx.session.userId } });
       await this.audit.record(ctx, tx, { action: 'notificacao.ciencia', entityType: 'Notification', entityId: id, payload: { numero: n.number } });
@@ -1401,9 +1456,10 @@ export class NotificacaoService implements OnModuleInit {
       const e = await this.esferas(ctx.db, n, new Date(), comunicacoes);
       const sms = e.lista.find((x) => x.esfera === 'SMS')!;
       // Mesmo critério do painel: vencida perante a SMS ou no repasse; a comunicação policial é contada à parte.
-      if (e.lista.some((x) => x.esfera !== 'AUTORIDADE_POLICIAL' && x.situacao === 'VENCIDO')) vencidas++;
-      if (e.lista.some((x) => x.esfera === 'AUTORIDADE_POLICIAL' && x.situacao === 'VENCIDO')) policiaisVencidas++;
+      const vencida = e.lista.some((x) => x.esfera !== 'AUTORIDADE_POLICIAL' && x.situacao === 'VENCIDO');
+      if (vencida) vencidas++;
       else if (n.deadlineKind === 'IMEDIATA' && sms.situacao !== 'CUMPRIDO') noPrazo++;
+      if (e.lista.some((x) => x.esfera === 'AUTORIDADE_POLICIAL' && x.situacao === 'VENCIDO')) policiaisVencidas++;
       if (e.lista.some((x) => REPASSE(x) && x.situacao !== 'CUMPRIDO')) repasses++;
     }
     return { imediatasNoPrazo: noPrazo, vencidas, repassesPendentes: repasses, comunicacoesPoliciaisVencidas: policiaisVencidas, semana: semanaEpidemiologica(new Date(), ctx.tenant.timeZone).codigo };
@@ -1458,10 +1514,12 @@ export class NotificacaoService implements OnModuleInit {
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`sinan-net:${numero}`}))`;
           const chave = (x: { groupKey: string; code: string | null; form: unknown; notifiedAt: Date | null; knownAt: Date }) => {
             const f = (x.form ?? {}) as Partial<Ficha>;
-            return [agravoSinanDaChave(x.groupKey, x.code), f.DT_NOTIFIC ?? localDateString(x.notifiedAt ?? x.knownAt, ctx.tenant.timeZone), f.ID_MUNICIP ?? ''].join('|');
+            return [agravoSinanDaChave(x.groupKey, x.code, ['1', '2', '3', '4'].includes(f.CS_GESTANT ?? '')), f.DT_NOTIFIC ?? localDateString(x.notifiedAt ?? x.knownAt, ctx.tenant.timeZone), f.ID_MUNICIP ?? ''].join(
+              '|',
+            );
           };
           const mesmos = await tx.notification.findMany({
-            where: { officialSystem: 'SINAN_NET', officialNumber: numero, id: { not: id } },
+            where: { officialSystem: 'SINAN_NET', officialNumber: numero, id: { not: id }, status: { not: 'DESCARTADA' } },
             select: { groupKey: true, code: true, form: true, notifiedAt: true, knownAt: true, number: true },
           });
           const repetida = mesmos.find((x) => chave(x) === chave(n));
@@ -1735,7 +1793,7 @@ export class NotificacaoService implements OnModuleInit {
     // 2. Escalonamento: imediata confirmada sem recebimento pela SMS depois de ackMinutes.
     const ack = sys.tenant.settings.vigilancia.ackMinutes;
     const semCiencia = await sys.db.notification.findMany({
-      where: { status: 'NOTIFICADA', deadlineKind: 'IMEDIATA', smsReceivedAt: null, escalatedAt: null, notifiedAt: { lte: new Date(agora.getTime() - ack * 60_000) }, ...SEM_COMUNICACAO_SMS },
+      where: { status: { in: ['NOTIFICADA', 'ENCERRADA'] }, deadlineKind: 'IMEDIATA', smsReceivedAt: null, escalatedAt: null, notifiedAt: { lte: new Date(agora.getTime() - ack * 60_000) }, ...SEM_COMUNICACAO_SMS },
       select: { id: true, number: true, unitId: true, status: true, deadlineKind: true, targets: true, dueAt: true, notifiedAt: true, smsReceivedAt: true, sensitive: true, condition: { select: { name: true } } },
     });
     const comSemCiencia = await this.comunicacoesDe(
@@ -1759,7 +1817,7 @@ export class NotificacaoService implements OnModuleInit {
       where: {
         overdueAt: null,
         dueAt: { lt: agora },
-        OR: [{ status: 'RASCUNHO' }, { status: 'NOTIFICADA', deadlineKind: 'IMEDIATA', smsReceivedAt: null, ...SEM_COMUNICACAO_SMS }],
+        OR: [{ status: 'RASCUNHO' }, { status: { in: ['NOTIFICADA', 'ENCERRADA'] }, deadlineKind: 'IMEDIATA', smsReceivedAt: null, ...SEM_COMUNICACAO_SMS }],
       },
       select: { id: true, unitId: true, status: true, deadlineKind: true, targets: true, dueAt: true, notifiedAt: true, smsReceivedAt: true },
     });

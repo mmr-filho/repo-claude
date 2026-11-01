@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  agravoSinanDaChave,
+  exigeComunicacaoPolicial,
+  numeroOficialValido,
+  orientacaoViolencia,
+  validarEncerramento,
   calcularPrazo,
   escolherCondicao,
   esferasImediatas,
@@ -156,5 +161,37 @@ describe('Regras de notificação', () => {
     expect(idadeSinan(nasc, new Date('2026-04-20T08:00:00Z'))).toMatchObject({ unidade: 'D', valor: 14 });
     expect(idadeSinan(nasc, new Date('2026-09-10T08:00:00Z'))).toMatchObject({ unidade: 'M', valor: 5, codigo: '3005' });
     expect(idadeSinan(new Date('1980-05-20T12:00:00Z'), new Date('2027-04-06T12:00:00Z'))).toMatchObject({ unidade: 'A', valor: 46, codigo: '4046' });
+  });
+
+  it('chave do Sinan Net: violências num agravo, sífilis, tétano, toxoplasmose e sarampo/rubéola separados', () => {
+    expect(agravoSinanDaChave('violencia', 'T741')).toBe(agravoSinanDaChave('violencia-sexual-suicidio', 'X64'));
+    expect(agravoSinanDaChave('sifilis', 'A539')).toBe('sifilis-adquirida');
+    expect(agravoSinanDaChave('sifilis', 'A539', true)).toBe('sifilis-gestante');
+    expect(agravoSinanDaChave('sifilis', 'O98.1')).toBe('sifilis-gestante');
+    expect(agravoSinanDaChave('sifilis', 'A50.9')).toBe('sifilis-congenita');
+    expect(agravoSinanDaChave('tetano', 'A33')).not.toBe(agravoSinanDaChave('tetano', 'A35'));
+    expect(agravoSinanDaChave('toxoplasmose-gestacional-congenita', 'O98.6')).not.toBe(agravoSinanDaChave('toxoplasmose-gestacional-congenita', 'P37.1'));
+    expect(agravoSinanDaChave('sarampo-rubeola', 'B05')).not.toBe(agravoSinanDaChave('sarampo-rubeola', 'B06'));
+    expect(agravoSinanDaChave('dengue', 'A90')).toBe('dengue');
+  });
+
+  it('números oficiais, violência por idade e data do óbito no encerramento', () => {
+    expect(numeroOficialValido('SINAN_NET', '417')).toBe(true);
+    expect(numeroOficialValido('SINAN_NET', '12345678')).toBe(false);
+    expect(numeroOficialValido('ESUS_SINAN', '172600000123')).toBe(true);
+    expect(numeroOficialValido('ESUS_SINAN', '1726000123')).toBe(false);
+    expect(numeroOficialValido('SIVEP_GRIPE', '315638864347')).toBe(true);
+    expect(numeroOficialValido('SIVEP_GRIPE', '3156388643471')).toBe(false);
+    expect(numeroOficialValido('SIVEP_GRIPE', '31778250106779')).toBe(true);
+    const v = { groupKey: 'violencia', code: 'T741' };
+    expect(exigeComunicacaoPolicial(v, 'F', 30)).toBe(true);
+    expect(exigeComunicacaoPolicial(v, 'F', 17)).toBe(false);
+    expect(exigeComunicacaoPolicial(v, 'F', 60)).toBe(false);
+    expect(exigeComunicacaoPolicial({ groupKey: 'violencia-sexual-suicidio', code: 'X64' }, 'F', 30)).toBe(false);
+    expect(orientacaoViolencia(v, 12)).toContain('Conselho Tutelar');
+    expect(orientacaoViolencia(v, 70)).toContain('Estatuto da Pessoa Idosa');
+    const base = { investigadaEm: '2026-10-10', classificacao: '2', criterio: '1', evolucao: '1', obitoEm: '2026-10-11', encerradaEm: '2026-10-12' };
+    expect(validarEncerramento(base, { notificadaEm: '2026-10-01', sintomas: null, hoje: '2026-11-01' }).join(' ')).toContain('campo 42');
+    expect(validarEncerramento({ ...base, obitoEm: null }, { notificadaEm: '2026-10-01', sintomas: null, hoje: '2026-11-01' })).toEqual([]);
   });
 });
