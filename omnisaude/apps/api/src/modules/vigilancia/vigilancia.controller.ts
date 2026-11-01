@@ -16,6 +16,7 @@ const manualSchema = z.object({
   patientId: z.string().uuid(),
   conditionKey: z.string().trim().min(2).max(60),
   encounterId: z.string().uuid().nullish(),
+  admissionId: z.string().uuid().nullish(),
   vaccinationId: z.string().uuid().nullish(),
   knownAt: z.string().datetime({ offset: true }).nullish(),
   symptomsOnset: dia.nullish(),

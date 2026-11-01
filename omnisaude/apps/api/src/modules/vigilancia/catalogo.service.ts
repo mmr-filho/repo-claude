@@ -6,6 +6,7 @@ import {
   MAPEAMENTOS_INICIAIS,
   mapearCodigo,
   mesclarCatalogo,
+  localDateString,
   ROTAS_PADRAO,
   ROTAS_VIGENTES_DESDE,
   rotaDoAgravo,
@@ -160,6 +161,7 @@ export class CatalogoVigilanciaService {
       data: ROTAS_PADRAO.map((r) => ({ groupKey: r.grupo, conditionKey: r.chave ?? '', system: r.sistema, status: r.situacao, validFrom: comoData(ROTAS_VIGENTES_DESDE), source: r.fonte, notes: r.nota ?? null })),
       skipDuplicates: true,
     });
+    await this.filaRetroativa(sys);
     if ((await sys.db.surveillanceContact.count()) === 0) {
       await sys.db.surveillanceContact.create({
         data: {
@@ -218,7 +220,7 @@ export class CatalogoVigilanciaService {
   async versoes(ctx: RequestContext) {
     await this.garantir(ctx);
     const rows = await ctx.db.notifiableListVersion.findMany({ orderBy: [{ scope: 'asc' }, { validFrom: 'desc' }], include: { _count: { select: { conditions: true } } } });
-    const hoje = new Date().toISOString().slice(0, 10);
+    const hoje = localDateString(new Date(), ctx.tenant.timeZone);
     return rows.map((v) => ({
       id: v.id,
       escopo: v.scope,
@@ -360,6 +362,26 @@ export class CatalogoVigilanciaService {
 
   // ───────────────────────────── sistemas oficiais de destino ─────────────────────────────
 
+  /**
+   * Notificações confirmadas antes da saída para os sistemas oficiais (migração 0023) entram na fila pela rota da
+   * data da notificação (idempotente: só as que ainda não têm sistema).
+   */
+  private async filaRetroativa(sys: Sys) {
+    const antigas = await sys.db.notification.findMany({
+      where: { status: { in: ['NOTIFICADA', 'ENCERRADA'] }, officialSystem: null },
+      select: { id: true, conditionKey: true, groupKey: true, notifiedAt: true, knownAt: true },
+    });
+    if (!antigas.length) return;
+    const rotas = (await sys.db.officialSystemRoute.findMany()).map((r) => ({ ...r, validFrom: dataIso(r.validFrom)!, validTo: dataIso(r.validTo) }));
+    for (const n of antigas) {
+      const rota = rotaDoAgravo(rotas, { key: n.conditionKey, groupKey: n.groupKey }, localDateString(n.notifiedAt ?? n.knownAt, sys.tenant.timeZone));
+      await sys.db.notification.updateMany({
+        where: { id: n.id, officialSystem: null },
+        data: { officialSystem: rota.sistema, entryStatus: SISTEMA_INFO[rota.sistema].digitacao ? 'PENDENTE' : 'LEMBRETE' },
+      });
+    }
+  }
+
   /** Rota vigente na data para a linha do catálogo (a da linha prevalece sobre a do grupo; sem rota, Sinan Net). */
   async rotaNaData(sys: Sys, linha: { key: string; groupKey: string }, dia: string) {
     await this.garantir(sys);
@@ -374,7 +396,7 @@ export class CatalogoVigilanciaService {
   async rotas(ctx: RequestContext) {
     await this.garantir(ctx);
     const rows = await ctx.db.officialSystemRoute.findMany({ orderBy: [{ groupKey: 'asc' }, { conditionKey: 'asc' }, { validFrom: 'desc' }] });
-    const hoje = new Date().toISOString().slice(0, 10);
+    const hoje = localDateString(new Date(), ctx.tenant.timeZone);
     return rows.map((r) => ({
       id: r.id,
       grupo: r.groupKey,

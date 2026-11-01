@@ -54,7 +54,7 @@ function Linha({ n, ativa, onClick }: { n: NotificacaoResumo; ativa: boolean; on
               <ShieldAlert className="h-3 w-3" /> Autoridade policial
             </Badge>
           )}
-          {n.digitacao && <Badge tone={DIGITACAO[n.digitacao]!.tone}>{n.numeroOficial ? `Nº ${n.numeroOficial}` : DIGITACAO[n.digitacao]!.label}</Badge>}
+          {n.digitacao && (n.status !== 'DESCARTADA' || n.numeroOficial) && <Badge tone={DIGITACAO[n.digitacao]!.tone}>{n.numeroOficial ? `Nº ${n.numeroOficial}` : DIGITACAO[n.digitacao]!.label}</Badge>}
           {n.naoHomologado && <Badge tone="slate">Não homologado</Badge>}
         </p>
       </button>
@@ -82,12 +82,13 @@ export default function VigilanciaPage() {
   const painel = useApi<PainelVigilancia>(painelOk && tab === 'painel' ? `/vigilancia/painel?${new URLSearchParams({ ...(status ? { status } : {}), ...(situacao ? { situacao } : {}) })}` : null, [tab, status, situacao]);
   const minhas = useApi<NotificacaoResumo[]>(notifica && tab === 'minhas' ? '/vigilancia/notificacoes/minhas' : null, [tab]);
   const descartes = useApi<(NotificacaoResumo & { motivo: string | null; descartadaEm: string | null })[]>(painelOk && tab === 'descartes' ? '/vigilancia/descartes' : null, [tab]);
-  const resumo = useApi<{ imediatasNoPrazo: number; vencidas: number; repassesPendentes: number; semana: string }>(!painelOk && !notifica ? '/vigilancia/resumo' : null);
+  const resumo = useApi<{ imediatasNoPrazo: number; vencidas: number; repassesPendentes: number; comunicacoesPoliciaisVencidas: number; semana: string }>(!painelOk && !notifica ? '/vigilancia/resumo' : null);
   const fila = useApi<FilaDigitacao>(digita && tab === 'digitacao' ? `/vigilancia/digitacao?${new URLSearchParams({ ...(sistema ? { sistema } : {}), situacao: situacaoFila })}` : null, [tab, sistema, situacaoFila]);
   const srag = useApi<SugestaoSrag[]>(painelOk && tab === 'painel' ? '/vigilancia/srag/sugestoes' : null, [tab]);
   async function notificarSrag(s: SugestaoSrag) {
     try {
-      const n = await api.post<{ id: string }>('/vigilancia/notificacoes', { patientId: s.patientId, conditionKey: 'srag-coronavirus', encounterId: s.encounterId });
+      // Ligada à internação: a unidade notificadora é o hospital, não a de quem clica.
+      const n = await api.post<{ id: string }>('/vigilancia/notificacoes', { patientId: s.patientId, conditionKey: 'srag-coronavirus', encounterId: s.encounterId, admissionId: s.admissionId });
       toast.success('Notificação de Srag aberta.');
       setSel(n.id);
       await Promise.all([painel.reload(), srag.reload()]);
@@ -97,7 +98,10 @@ export default function VigilanciaPage() {
   }
   async function exportar() {
     try {
-      const r = await api.download(`/vigilancia/exportacao.csv?${new URLSearchParams({ ...(sistema ? { sistema } : {}), de: periodo.de, ate: periodo.ate })}`);
+      // Mesma situação da fila na tela (lembretes de DNV/DO não têm ficha a exportar).
+      const r = await api.download(
+        `/vigilancia/exportacao.csv?${new URLSearchParams({ ...(sistema ? { sistema } : {}), ...(situacaoFila === 'PENDENTE' || situacaoFila === 'DIGITADA' ? { situacao: situacaoFila } : {}), de: periodo.de, ate: periodo.ate })}`,
+      );
       saveBlob(r.blob, r.fileName ?? 'notificacoes.csv');
     } catch (err) {
       toast.error(errorMessage(err));
@@ -153,6 +157,7 @@ export default function VigilanciaPage() {
                 <Stat label="Comunicação policial pendente" value={c.comunicacoesPoliciais} tone={c.comunicacoesPoliciais ? 'bad' : 'good'} hint="Violência contra a mulher, 24 h" />
                 <Stat label="Pendentes de digitação" value={c.pendentesDigitacao} tone={c.pendentesDigitacao ? 'warn' : 'good'} hint="Sinan, e-SUS Sinan, Notifica, Sivep" />
                 {c.encerramentoVencido !== null && <Stat label="Encerramento vencido" value={c.encerramentoVencido} tone={c.encerramentoVencido ? 'bad' : 'good'} hint="Prazos definidos pela vigilância" />}
+                {c.positivoAposFechamento > 0 && <Stat label="Positivo após encerramento ou descarte" value={c.positivoAposFechamento} tone="bad" hint="Últimos 30 dias: avaliar reabrir" />}
               </div>
             )}
             {t === 'painel' && !!srag.data?.length && (
@@ -290,6 +295,7 @@ export default function VigilanciaPage() {
               <Stat label="Imediatas no prazo" value={resumo.data.imediatasNoPrazo} tone="good" />
               <Stat label="Vencidas" value={resumo.data.vencidas} tone={resumo.data.vencidas ? 'bad' : 'good'} />
               <Stat label="Repasses pendentes" value={resumo.data.repassesPendentes} />
+              <Stat label="Comunicações policiais vencidas" value={resumo.data.comunicacoesPoliciaisVencidas} tone={resumo.data.comunicacoesPoliciaisVencidas ? 'bad' : 'good'} />
               <Stat label="Semana epidemiológica" value={`${resumo.data.semana.slice(4)}/${resumo.data.semana.slice(0, 4)}`} />
             </div>
           )}

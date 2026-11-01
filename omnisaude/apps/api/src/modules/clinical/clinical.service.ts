@@ -358,7 +358,8 @@ export class ClinicalService {
     if (cat && input.qualitative && !RESULTADOS_DA_TECNICA[cat.tecnica].includes(input.qualitative)) throw new DomainError('RESULTADO_INVALIDO', `Resultado incompatível com o exame (${cat.nome})`, 400);
     const agora = new Date();
     const coleta = input.collectedAt ? new Date(input.collectedAt) : null;
-    if (coleta && coleta.getTime() > agora.getTime() + 60_000) throw new DomainError('DATA_FUTURA', 'A coleta não pode ter data futura', 400);
+    // Sem tolerância: o REL recusa resultado liberado antes da coleta.
+    if (coleta && coleta.getTime() > agora.getTime()) throw new DomainError('DATA_FUTURA', 'A coleta não pode ter data futura', 400);
     if (cat?.rel && input.qualitative && !coleta) throw new DomainError('COLETA_OBRIGATORIA', 'Informe a data e a hora da coleta (exigidas no envio à RNDS)', 400);
     const enviaRel = !!(cat?.rel && input.qualitative && ctx.tenant.settings.rndsEnabled && ctx.tenant.settings.vigilancia.relEnabled);
     const exame = await ctx.db.$transaction(async (tx) => {

@@ -57,8 +57,9 @@ export function ExamsPanel({ encounter, onChanged, prefill }: { encounter: Encou
       const r = await api.post<{ notificacoes?: NotificacaoCriada[] }>(`/clinical/exams/${resultado.id}/result`, {
         ...(resultado.examKey ? { examKey: resultado.examKey } : {}),
         ...(resultado.qualitative ? { qualitative: resultado.qualitative } : {}),
-        ...(resultado.collectedAt ? { collectedAt: new Date(resultado.collectedAt).toISOString() } : {}),
-        ...(resultado.method.trim() ? { method: resultado.method.trim() } : {}),
+        // Coleta e método só existem no exame de vigilância (os campos ficam escondidos nos demais).
+        ...(catSel && resultado.collectedAt ? { collectedAt: new Date(resultado.collectedAt).toISOString() } : {}),
+        ...(catSel && resultado.method.trim() ? { method: resultado.method.trim() } : {}),
         ...(resultado.text.trim() ? { text: resultado.text.trim() } : {}),
       });
       toast.success('Resultado registrado');
@@ -221,7 +222,7 @@ export function ExamsPanel({ encounter, onChanged, prefill }: { encounter: Encou
         open={!!resultado}
         onOpenChange={(o) => !o && setResultado(null)}
         title={`Resultado: ${resultado?.nome ?? ''}`}
-        description="Exame de vigilância com resultado positivo confirma ou abre a notificação compulsória; covid-19 e mpox vão também à RNDS (REL), qualquer resultado."
+        description="Exame de vigilância com resultado positivo confirma ou abre a notificação compulsória. Covid-19 e mpox (qualquer resultado) vão também à RNDS (REL) quando o envio estiver ligado na instituição."
         footer={
           <Button loading={busy} id="exame-resultado-salvar" disabled={!resultado || (!!resultado.examKey && !resultado.qualitative) || (!resultado.examKey && !resultado.text.trim())} onClick={registrarResultado}>
             Registrar
@@ -236,7 +237,7 @@ export function ExamsPanel({ encounter, onChanged, prefill }: { encounter: Encou
                 {EXAMES_VIGILANCIA.map((x) => (
                   <option key={x.key} value={x.key}>
                     {x.nome}
-                    {x.rel ? ' · RNDS' : ''}
+                    {x.rel ? ' · REL (RNDS)' : ''}
                   </option>
                 ))}
               </Select>

@@ -16,7 +16,7 @@ import { fmtDate, fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useRealtime } from '@/lib/realtime';
 import { useSession } from '@/lib/session';
-import { DIGITACAO, EVENTO, MEIO, ORIGEM, SITUACAO, STATUS, tempoAte, type Destino, type LinhaEspelho, type NotificacaoDetalhe } from './types';
+import { DIGITACAO, ESFERA_ROTULO, EVENTO, MEIO, ORIGEM, SITUACAO, STATUS, tempoAte, type Destino, type LinhaEspelho, type NotificacaoDetalhe } from './types';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 
 const paraLocal = (iso: string | null) => {
@@ -345,7 +345,7 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
                     <PhoneCall className="h-4 w-4" /> Registrar envio
                   </Button>
                 )}
-                {d.status !== 'DESCARTADA' && d.permissoes.editar && (d.policial.dispensa || !policia?.cumpridaEm) && (
+                {d.permissoes.dispensarPolicia && (d.policial.dispensa || !policia?.cumpridaEm) && (
                   <Button
                     size="sm"
                     variant="ghost"
@@ -517,7 +517,12 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
                   </Select>
                 </Field>
                 <Field label={`${num.evolucao}. Evolução do caso`} htmlFor="enc-evo">
-                  <Select id="enc-evo" value={encerra.evolucao} onChange={(e) => setEncerra({ ...encerra, evolucao: e.target.value })}>
+                  <Select
+                    id="enc-evo"
+                    value={encerra.evolucao}
+                    // A data do óbito só vale com evolução para óbito: some (e é limpa) nas demais.
+                    onChange={(e) => setEncerra({ ...encerra, evolucao: e.target.value, obitoEm: e.target.value === '2' || e.target.value === '3' ? encerra.obitoEm : '' })}
+                  >
                     <option value="">—</option>
                     <option value="1">1 - Cura</option>
                     <option value="2">2 - Óbito pelo agravo notificado</option>
@@ -562,7 +567,7 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
                             classificacao: encerra.classificacao,
                             criterio: encerra.criterio || null,
                             evolucao: encerra.evolucao || null,
-                            obitoEm: encerra.obitoEm || null,
+                            obitoEm: encerra.evolucao === '2' || encerra.evolucao === '3' ? encerra.obitoEm || null : null,
                             encerradaEm: encerra.encerradaEm,
                             conclusao: Object.keys(encerra.conclusao).length ? Object.fromEntries(Object.entries(encerra.conclusao).map(([k, v]) => [k, v || null])) : null,
                           }),
@@ -671,7 +676,7 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
             {d.comunicacoes.map((c) => (
               <div key={c.id} className="rounded border border-slate-200 p-2">
                 <p className="font-medium">
-                  {c.esfera} · {MEIO[c.meio] ?? c.meio} · {fmtDateTime(c.em)}
+                  {ESFERA_ROTULO[c.esfera] ?? c.esfera} · {MEIO[c.meio] ?? c.meio} · {fmtDateTime(c.em)}
                 </p>
                 <p className="text-xs text-slate-600">
                   {c.interlocutor}
@@ -730,11 +735,13 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
       <Dialog
         open={!!comunicacao}
         onOpenChange={(o) => !o && setComunicacao(null)}
-        title="Registrar comunicação"
+        title={comunicacao?.target === 'AUTORIDADE_POLICIAL' ? 'Registrar a comunicação à autoridade policial' : 'Registrar comunicação'}
         description={
-          nucleo
-            ? 'O núcleo do estabelecimento comunica à vigilância municipal; o repasse à SES e ao MS é da SMS.'
-            : 'Comunicação à vigilância municipal, à SES (CIEVS estadual) ou ao Ministério da Saúde (CIEVS Nacional).'
+          comunicacao?.target === 'AUTORIDADE_POLICIAL'
+            ? 'Envio à autoridade policial de referência definida pela SES, em até 24 horas da constatação (Anexo V da PRC GM/MS nº 4/2017, art. 14-A).'
+            : nucleo
+              ? 'O núcleo do estabelecimento comunica à vigilância municipal; o repasse à SES e ao MS é da SMS.'
+              : 'Comunicação à vigilância municipal, à SES (CIEVS estadual) ou ao Ministério da Saúde (CIEVS Nacional).'
         }
         footer={
           <Button
@@ -784,26 +791,28 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
                 ))}
               </Select>
             </Field>
-            <Field label="Contato da agenda" htmlFor="com-contato">
-              <Select
-                id="com-contato"
-                value={comunicacao.contactId}
-                onChange={(e) => {
-                  const c = d.contatos.find((x) => x.id === e.target.value);
-                  setComunicacao({ ...comunicacao, contactId: e.target.value, contactValue: c ? (comunicacao.channel === 'EMAIL' ? (c.email ?? '') : (c.telefone ?? c.email ?? '')) : '' });
-                }}
-              >
-                <option value="">—</option>
-                {d.contatos
-                  .filter((c) => c.esfera === comunicacao.target)
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.nome}
-                      {c.telefone ? ` · ${c.telefone}` : ''}
-                    </option>
-                  ))}
-              </Select>
-            </Field>
+            {comunicacao.target !== 'AUTORIDADE_POLICIAL' && (
+              <Field label="Contato da agenda" htmlFor="com-contato">
+                <Select
+                  id="com-contato"
+                  value={comunicacao.contactId}
+                  onChange={(e) => {
+                    const c = d.contatos.find((x) => x.id === e.target.value);
+                    setComunicacao({ ...comunicacao, contactId: e.target.value, contactValue: c ? (comunicacao.channel === 'EMAIL' ? (c.email ?? '') : (c.telefone ?? c.email ?? '')) : '' });
+                  }}
+                >
+                  <option value="">—</option>
+                  {d.contatos
+                    .filter((c) => c.esfera === comunicacao.target)
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.nome}
+                        {c.telefone ? ` · ${c.telefone}` : ''}
+                      </option>
+                    ))}
+                </Select>
+              </Field>
+            )}
             <Field label="Telefone / e-mail usado" htmlFor="com-valor">
               <Input id="com-valor" value={comunicacao.contactValue} onChange={(e) => setComunicacao({ ...comunicacao, contactValue: e.target.value })} />
             </Field>

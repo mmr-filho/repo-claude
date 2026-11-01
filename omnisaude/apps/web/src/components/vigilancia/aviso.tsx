@@ -6,6 +6,12 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { tempoAte, type NotificacaoCriada } from './types';
 
+const EFEITO: Record<NonNullable<NotificacaoCriada['efeito']>, string> = {
+  CONFIRMADA: 'Confirmada pelo resultado',
+  ENCERRADA: 'Encerrada sem confirmação: a vigilância avalia reabrir',
+  DESCARTADA: 'Descartada: a vigilância avalia reabrir',
+};
+
 /**
  * Aviso depois de assinar, encerrar ou internar: o sistema abriu o rascunho da notificação compulsória.
  * Não bloqueia o atendimento; a ficha pode ser completada agora ou depois em "Minhas notificações".
@@ -16,7 +22,8 @@ export function AvisoNotificacoes({ itens, onDismiss }: { itens: NotificacaoCria
     <div role="status" id="aviso-notificacao" className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
       <div className="flex items-start justify-between gap-3">
         <p className="flex items-center gap-2 font-semibold">
-          <BellRing className="h-4 w-4" /> Agravo de notificação compulsória: {itens.length === 1 ? 'rascunho aberto' : `${itens.length} rascunhos abertos`}
+          <BellRing className="h-4 w-4" /> Agravo de notificação compulsória:{' '}
+          {itens.every((n) => !n.efeito) ? (itens.length === 1 ? 'rascunho aberto' : `${itens.length} rascunhos abertos`) : 'resultado registrado na notificação'}
         </p>
         <Button size="sm" variant="ghost" onClick={onDismiss} aria-label="Fechar aviso">
           <X className="h-4 w-4" />
@@ -30,8 +37,9 @@ export function AvisoNotificacoes({ itens, onDismiss }: { itens: NotificacaoCria
             {n.venceEm && <span className="text-xs">{tempoAte(n.venceEm)}</span>}
             {n.sigiloso && <Badge tone="violet">Sigilosa</Badge>}
             {n.naoHomologado && <Badge tone="slate">Mapeamento do código não homologado</Badge>}
+            {n.efeito && <Badge tone={n.efeito === 'CONFIRMADA' ? 'green' : 'amber'}>{EFEITO[n.efeito]}</Badge>}
             <Link className="text-xs font-semibold text-brand-700 underline" href={`/vigilancia/notificacao?id=${n.id}`}>
-              Completar e confirmar a ficha {n.numero}
+              {n.efeito ? `Abrir a ficha ${n.numero}` : `Completar e confirmar a ficha ${n.numero}`}
             </Link>
           </li>
         ))}

@@ -13,6 +13,8 @@ export interface NotificacaoCriada {
   venceEm: string | null;
   sigiloso: boolean;
   naoHomologado: boolean;
+  /** Efeito do resultado de exame sobre uma notificação que já existia (ausente: rascunho novo). */
+  efeito?: 'CONFIRMADA' | 'ENCERRADA' | 'DESCARTADA';
 }
 
 export interface NotificacaoResumo {
@@ -55,6 +57,7 @@ export interface PainelVigilancia {
     comunicacoesPoliciais: number;
     pendentesDigitacao: number;
     encerramentoVencido: number | null;
+    positivoAposFechamento: number;
   };
   notificacoes: NotificacaoResumo[];
   semanaAtual: string;
@@ -164,6 +167,7 @@ export interface NotificacaoDetalhe {
     ciencia: boolean;
     comunicar: boolean;
     comunicarPolicia: boolean;
+    dispensarPolicia: boolean;
     digitar: boolean;
     desfazerDigitacao: boolean;
     encerrar: boolean;
@@ -296,6 +300,7 @@ export const ORIGEM: Record<string, string> = {
   VARREDURA: 'Recuperada pela varredura',
   EXAME: 'Resultado de exame',
 };
+export const ESFERA_ROTULO: Record<string, string> = { SMS: 'SMS', SES: 'SES', MS: 'MS', AUTORIDADE_POLICIAL: 'Autoridade policial' };
 export const MEIO: Record<string, string> = { SISTEMA: 'Painel do OmniSaúde', TELEFONE: 'Telefone', EMAIL: 'E-mail', FORMULARIO: 'Formulário eletrônico', PRESENCIAL: 'Presencial', OUTRO: 'Outro' };
 export const EVENTO: Record<string, string> = {
   GERADA_PELO_GATILHO: 'Rascunho aberto pelo sistema',
@@ -313,6 +318,8 @@ export const EVENTO: Record<string, string> = {
   ENCERRADA: 'Investigação encerrada',
   REABERTA: 'Investigação reaberta',
   RESULTADO_EXAME: 'Confirmada por resultado de exame',
+  RESULTADO_APOS_FECHAMENTO: 'Resultado positivo depois do encerramento ou do descarte',
+  POLICIAL_EXIGIDA: 'Comunicação policial passou a ser exigida (código de agressão)',
 };
 
 /** "vence em 3 h 20 min" ou "vencido há 2 h". */

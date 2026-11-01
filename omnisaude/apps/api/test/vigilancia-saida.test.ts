@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TenantsService } from '../src/core/database';
 import { AiService } from '../src/modules/integrations/ai.service';
 import { RndsService } from '../src/modules/integrations/rnds.service';
+import { CatalogoVigilanciaService } from '../src/modules/vigilancia/catalogo.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 import { startMocks } from './mocks';
 
@@ -461,5 +462,203 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
     expect(rotas.filter((x) => x.grupo === 'caxumba' && x.vigente).map((x) => x.sistema)).toEqual(['ESUS_SINAN']);
     const cax = await notificarComCid('Caio Caxumba Saida', 'M', '2010-03-03', 'B26');
     expect((await confirmar(cax.id)).saida.sistema).toBe('ESUS_SINAN');
+  });
+
+  // ───────────── correções da revisão adversarial ─────────────
+
+  it('Srag sugerida fica na unidade do atendimento; covid com Srag na internação não abre a SG, e o exame confirma a Srag', async () => {
+    const upa = await db.unit.findFirstOrThrow({ where: { name: 'UPA 24h Norte' } });
+    const vigUnitId = (await db.unit.findFirstOrThrow({ where: { name: 'Vigilância em Saúde' } })).id;
+    const enfermeiro = await db.user.findFirstOrThrow({ where: { cpf: completeCpf('100000002') } });
+    const vaga = () => db.bed.findFirstOrThrow({ where: { status: 'VAGO', ward: { unit: { name: 'Hospital Municipal São Lucas' }, kind: 'CLINICA_MEDICA' } }, orderBy: { code: 'asc' } });
+    // Sugestão (só o sinal na triagem): a vigilância municipal notifica pela internação, não pela própria unidade.
+    const p1 = await novoPaciente('Saulo Sugerido Saida', 'M', '1952-02-02');
+    const e1 = await db.encounter.create({ data: { unitId: upa.id, patientId: p1, kind: 'URGENCIA', status: 'TRIADO', createdBy: enfermeiro.id } });
+    await db.triage.create({ data: { encounterId: e1.id, nurseId: enfermeiro.id, complaint: 'Falta de ar', spo2: 90, flags: [], suggestedColor: 'LARANJA', riskColor: 'LARANJA' } });
+    await t
+      .http()
+      .post('/api/admissions')
+      .set(auth(nir))
+      .send({ patientId: p1, bedId: (await vaga()).id, mainCid: 'R060' })
+      .expect(201);
+    const sug = ((await t.http().get('/api/vigilancia/srag/sugestoes').set(auth(vig)).expect(200)).body as { patientId: string; encounterId: string; admissionId: string }[]).find((x) => x.patientId === p1)!;
+    const criada = (await t.http().post('/api/vigilancia/notificacoes').set(auth(vig)).send({ patientId: p1, conditionKey: 'srag-coronavirus', encounterId: sug.encounterId, admissionId: sug.admissionId }).expect(201))
+      .body;
+    const n1 = await db.notification.findUniqueOrThrow({ where: { id: criada.id } });
+    expect(n1.admissionId).toBe(sug.admissionId);
+    expect(n1.unitId).toBe((await db.encounter.findUniqueOrThrow({ where: { id: sug.encounterId } })).unitId);
+    expect(n1.unitId).not.toBe(vigUnitId);
+    // Covid-19 confirmada (U07.1) com SpO2 baixa na internação: só a Srag (Sivep-Gripe).
+    const p2 = await novoPaciente('Celso Covid Internado Saida', 'M', '1953-03-03');
+    const e2 = await db.encounter.create({ data: { unitId: upa.id, patientId: p2, kind: 'URGENCIA', status: 'TRIADO', createdBy: enfermeiro.id } });
+    await db.triage.create({ data: { encounterId: e2.id, nurseId: enfermeiro.id, complaint: 'Febre e dispneia', spo2: 89, flags: [], suggestedColor: 'LARANJA', riskColor: 'LARANJA' } });
+    const adm = (
+      await t
+        .http()
+        .post('/api/admissions')
+        .set(auth(nir))
+        .send({ patientId: p2, bedId: (await vaga()).id, mainCid: 'U071' })
+        .expect(201)
+    ).body;
+    expect(adm.notificacoes.map((n: Criada) => n.agravo)).toEqual([expect.stringMatching(/Srag|SRAG|respiratória aguda grave/i)]);
+    // O RT-PCR detectável confirma a Srag e não abre a SG.
+    const enc = await abrir(p2);
+    const [ex] = (
+      await t
+        .http()
+        .post(`/api/clinical/encounters/${enc}/exams`)
+        .set(auth(medica))
+        .send({ items: [{ sigtapCode: '0202020959', name: 'SARS-CoV-2 RT-PCR' }] })
+        .expect(201)
+    ).body;
+    const r = (
+      await t
+        .http()
+        .post(`/api/clinical/exams/${ex.id}/result`)
+        .set(auth(medica))
+        .send({ examKey: 'covid-rtpcr', qualitative: 'DETECTAVEL', collectedAt: new Date(Date.now() - 3 * H).toISOString(), method: 'RT-PCR' })
+        .expect(200)
+    ).body;
+    expect(r.notificacoes).toEqual([expect.objectContaining({ id: adm.notificacoes[0].id, efeito: 'CONFIRMADA' })]);
+    expect(await db.notification.count({ where: { patientId: p2, groupKey: 'covid' } })).toBe(0);
+    expect(await db.notification.findUniqueOrThrow({ where: { id: adm.notificacoes[0].id } })).toMatchObject({ basis: 'CONFIRMADO' });
+    // Coleta no futuro é recusada (o REL recusaria resultado liberado antes da coleta).
+    const [ex2] = (
+      await t
+        .http()
+        .post(`/api/clinical/encounters/${enc}/exams`)
+        .set(auth(medica))
+        .send({ items: [{ sigtapCode: '0202020959', name: 'SARS-CoV-2 RT-PCR' }] })
+        .expect(201)
+    ).body;
+    await t
+      .http()
+      .post(`/api/clinical/exams/${ex2.id}/result`)
+      .set(auth(medica))
+      .send({ examKey: 'covid-rtpcr', qualitative: 'NAO_DETECTAVEL', collectedAt: new Date(Date.now() + 30_000).toISOString(), method: 'RT-PCR' })
+      .expect(400);
+  });
+
+  it('violência: agressão na mesma nota da lesão autoprovocada, ou depois dela, exige a comunicação policial; só a vigilância dispensa', async () => {
+    const nota = async (encId: string, codes: string[]) => {
+      const n = (
+        await t
+          .http()
+          .post(`/api/clinical/encounters/${encId}/notes`)
+          .set(auth(medica))
+          .send({ kind: 'SOAP', subjective: 'Relato.', objective: 'Exame.', assessment: 'Hipótese.', plan: 'Conduta.', codes: codes.map((code) => ({ system: 'CID10', code })) })
+          .expect(201)
+      ).body;
+      return (await t.http().post(`/api/clinical/notes/${n.id}/sign`).set(auth(medica)).expect(200)).body.notificacoes as Criada[];
+    };
+    const p1 = await novoPaciente('Rita Mesma Nota Saida', 'F', '1994-04-04');
+    const [mesma] = await nota(await abrir(p1), ['X64', 'T74.2']);
+    const d1 = await detalhe(mesma!.id, medica);
+    expect(d1.codigo.codigo).toBe('T742');
+    expect(d1.policial).toMatchObject({ dispensa: null });
+    const p2 = await novoPaciente('Lara Depois Saida', 'F', '1995-05-05');
+    const enc2 = await abrir(p2);
+    const [auto] = await nota(enc2, ['X64']);
+    expect((await detalhe(auto!.id, medica)).policial).toBeNull();
+    expect(await nota(enc2, ['T74.2'])).toEqual([]);
+    const d2 = await detalhe(auto!.id, medica);
+    expect(d2.policial).toMatchObject({ dispensa: null });
+    expect(d2.eventos.map((e: { tipo: string }) => e.tipo)).toContain('POLICIAL_EXIGIDA');
+    // Quem atendeu não dispensa a própria obrigação; a vigilância sim.
+    expect(d2.permissoes.dispensarPolicia).toBe(false);
+    await t
+      .http()
+      .patch(`/api/vigilancia/notificacoes/${auto!.id}`)
+      .set(auth(medica))
+      .send({ policial: { dispensa: 'A paciente não quis registrar ocorrência.' } })
+      .expect(403);
+    expect((await detalhe(auto!.id, vig)).permissoes.dispensarPolicia).toBe(true);
+    await t
+      .http()
+      .patch(`/api/vigilancia/notificacoes/${auto!.id}`)
+      .set(auth(vig))
+      .send({ policial: { dispensa: 'Comunicada pela própria vítima, com protocolo.' } })
+      .expect(200);
+  });
+
+  it('descartada sai da fila e não recebe número; encerramento recusa óbito com cura; reabrir limpa a conclusão', async () => {
+    const den = await notificarComCid('Dario Descarte Saida', 'M', '1970-07-07', 'A90');
+    await confirmar(den.id);
+    await t.http().post(`/api/vigilancia/notificacoes/${den.id}/descartar`).set(auth(vig)).send({ reason: 'Outro diagnóstico confirmado.' }).expect(200);
+    const dd = await detalhe(den.id);
+    expect(dd.permissoes.digitar).toBe(false);
+    expect(dd.saida.digitacao).toBeNull();
+    await t.http().post(`/api/vigilancia/notificacoes/${den.id}/numero-oficial`).set(auth(vig)).send({ numero: '2611111' }).expect(422);
+    const fila = (await t.http().get('/api/vigilancia/digitacao?sistema=SINAN_ONLINE').set(auth(vig)).expect(200)).body;
+    expect(fila.notificacoes.map((n: { id: string }) => n.id)).not.toContain(den.id);
+    // Reabrir a coqueluche (encerrada como descartada): conclusão some, o critério volta ao de antes.
+    const re = (await t.http().post(`/api/vigilancia/notificacoes/${ids.coq}/reabrir`).set(auth(vig)).send({ reason: 'Novo resultado do LACEN.' }).expect(200)).body;
+    expect(re.encerramento).toMatchObject({ classificacao: null, criterio: null, evolucao: null, investigadaEm: null, encerradaEm: null });
+    expect(re.criterio).toBe('SUSPEITA');
+    const esp = (await t.http().get(`/api/vigilancia/notificacoes/${ids.coq}/espelho`).set(auth(vig)).expect(200)).body;
+    expect(esp.linhas.find((l: { variavel: string }) => l.variavel === 'CLASSI_FIN').exportado).toBe('');
+    const ruim = (
+      await t.http().post(`/api/vigilancia/notificacoes/${ids.coq}/encerrar`).set(auth(vig)).send({ investigadaEm: hoje(), classificacao: '2', evolucao: '1', obitoEm: hoje(), encerradaEm: hoje() }).expect(400)
+    ).body;
+    expect(ruim.message).toContain('campo 42');
+  });
+
+  it('resultado positivo depois do encerramento sem confirmação fica registrado e aparece no painel', async () => {
+    const p = await novoPaciente('Paulo Positivo Tarde Saida', 'M', '1971-01-01');
+    const enc = await abrir(p);
+    const [den] = await assinar(enc, 'A90');
+    await confirmar(den!.id);
+    await t.http().post(`/api/vigilancia/notificacoes/${den!.id}/encerrar`).set(auth(vig)).send({ investigadaEm: hoje(), classificacao: '2', criterio: '1', encerradaEm: hoje() }).expect(200);
+    const [ex] = (
+      await t
+        .http()
+        .post(`/api/clinical/encounters/${enc}/exams`)
+        .set(auth(medica))
+        .send({ items: [{ sigtapCode: '0202031144', name: 'Dengue IgM' }] })
+        .expect(201)
+    ).body;
+    const r = (await t.http().post(`/api/clinical/exams/${ex.id}/result`).set(auth(medica)).send({ examKey: 'dengue-igm', qualitative: 'REAGENTE' }).expect(200)).body;
+    expect(r.notificacoes).toEqual([expect.objectContaining({ id: den!.id, efeito: 'ENCERRADA' })]);
+    expect((await detalhe(den!.id)).eventos.map((e: { tipo: string }) => e.tipo)).toContain('RESULTADO_APOS_FECHAMENTO');
+    const painel = (await t.http().get('/api/vigilancia/painel').set(auth(vig)).expect(200)).body;
+    expect(painel.cartoes.positivoAposFechamento).toBeGreaterThanOrEqual(1);
+  });
+
+  it('exportação: texto que vira fórmula na planilha sai neutralizado, cabeçalho fixo com DT_CONCLU e cada sigilosa auditada', async () => {
+    await t
+      .http()
+      .patch(`/api/vigilancia/notificacoes/${ids.dengue}`)
+      .set(auth(vig))
+      .send({ ficha: { NM_REFEREN: '=HYPERLINK("http://x")' } })
+      .expect(200);
+    const antes = await db.auditEntry.count({ where: { action: 'notificacao.exportar_sensivel' } });
+    const res = await t
+      .http()
+      .get(`/api/vigilancia/exportacao.csv?de=${hoje()}&ate=${hoje()}`)
+      .set(auth(vig))
+      .buffer(true)
+      .parse((r, cb) => {
+        let d = '';
+        r.on('data', (c: Buffer) => (d += c.toString('utf8')));
+        r.on('end', () => cb(null, d));
+      });
+    expect(res.status).toBe(200);
+    const texto = String(res.body).replace(/^﻿/, '');
+    const [cab, ...linhas] = texto.split('\r\n');
+    expect(cab).toContain(';DT_ENCERRA;DT_CONCLU;');
+    expect(linhas.every((l) => l.split(';').length >= cab!.split(';').length)).toBe(true);
+    expect(texto).toContain(`"'=HYPERLINK(""http://x"")"`);
+    expect(texto).not.toMatch(/(^|;)=HYPERLINK/m);
+    expect(await db.auditEntry.count({ where: { action: 'notificacao.exportar_sensivel' } })).toBeGreaterThan(antes);
+  });
+
+  it('notificação confirmada antes da saída para os sistemas oficiais entra na fila pela rota da data', async () => {
+    const leg = await notificarComCid('Lucas Legado Saida', 'M', '1972-02-02', 'A90');
+    await confirmar(leg.id);
+    // Simula o dado da semana 23: confirmada sem sistema oficial.
+    await db.notification.update({ where: { id: leg.id }, data: { officialSystem: null, entryStatus: null } });
+    const catalogo = t.app.get(CatalogoVigilanciaService) as unknown as { filaRetroativa: (s: unknown) => Promise<void> };
+    await catalogo.filaRetroativa(await sys());
+    expect(await db.notification.findUniqueOrThrow({ where: { id: leg.id } })).toMatchObject({ officialSystem: 'SINAN_ONLINE', entryStatus: 'PENDENTE' });
   });
 });

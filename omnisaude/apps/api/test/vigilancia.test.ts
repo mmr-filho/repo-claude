@@ -363,7 +363,7 @@ describe.runIf(enabled)('Vigilância: notificação compulsória a partir do ate
     await t.http().get('/api/vigilancia/painel').set(auth(gestora)).expect(403);
     await t.http().get(`/api/vigilancia/notificacoes/${ids.coq}`).set(auth(gestora)).expect(403);
     const r = (await t.http().get('/api/vigilancia/resumo').set(auth(gestora)).expect(200)).body;
-    expect(Object.keys(r).sort()).toEqual(['imediatasNoPrazo', 'repassesPendentes', 'semana', 'vencidas']);
+    expect(Object.keys(r).sort()).toEqual(['comunicacoesPoliciaisVencidas', 'imediatasNoPrazo', 'repassesPendentes', 'semana', 'vencidas']);
     expect(r.vencidas).toBeGreaterThanOrEqual(1);
     // Quem notifica vê as suas, não as dos outros.
     await detalhe(ids.int, medica, 403);

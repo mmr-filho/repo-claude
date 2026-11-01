@@ -117,6 +117,20 @@ export function rotaDoAgravo<R extends { groupKey: string; conditionKey: string;
   return { sistema: r.system as SistemaOficial, situacao: r.status as SituacaoRota, fonte: r.source, nota: r.notes };
 }
 
+/**
+ * Agravo do Sinan Net para a chave do NU_NOTIFIC (número + data + município + agravo). Difere do grupo do
+ * OmniSaúde em dois casos: as violências (interpessoal, sexual e tentativa de suicídio) são uma ficha só no Sinan, e
+ * a sífilis tem três (adquirida, em gestante e congênita).
+ */
+export function agravoSinanDaChave(groupKey: string, code: string | null | undefined): string {
+  if (groupKey === 'violencia' || groupKey === 'violencia-sexual-suicidio') return 'violencia';
+  if (groupKey === 'sifilis') {
+    const c = (code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    return c.startsWith('A50') ? 'sifilis-congenita' : c.startsWith('O981') ? 'sifilis-gestante' : 'sifilis-adquirida';
+  }
+  return groupKey;
+}
+
 /** Número oficial informado pelo digitador: formato do sistema de destino. */
 export function numeroOficialValido(sistema: SistemaOficial, numero: string): boolean {
   return SISTEMA_INFO[sistema].numero.padrao.test(numero.trim());
@@ -157,6 +171,7 @@ export function validarEncerramento(e: Encerramento, ctx: { notificadaEm: string
   if (e.evolucao === '2' && e.classificacao !== '1') erros.push(`Óbito pelo agravo só em caso confirmado (campo ${num.evolucao})`);
   if (esus && e.classificacao === '2' && e.evolucao && !['3', '9'].includes(e.evolucao)) erros.push(`Caso descartado só aceita óbito por outras causas ou ignorado (campo ${num.evolucao})`);
   if ((e.evolucao === '2' || e.evolucao === '3') && !e.obitoEm) erros.push(`Informe a data do óbito (campo ${num.obito})`);
+  if (e.obitoEm && e.evolucao !== '2' && e.evolucao !== '3') erros.push(`A data do óbito só cabe com evolução para óbito (campo ${num.obito})`);
   if (e.obitoEm && ctx.sintomas && e.obitoEm < ctx.sintomas) erros.push(`A data do óbito não pode ser anterior aos primeiros sintomas (campo ${num.obito})`);
   if (e.obitoEm && e.obitoEm > ctx.hoje) erros.push('A data do óbito não pode ser futura');
   return erros;

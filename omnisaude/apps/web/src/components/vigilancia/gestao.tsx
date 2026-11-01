@@ -575,10 +575,22 @@ function EnvioEncerramento({ cfg, onSaved }: { cfg: Configuracoes | null; onSave
           <Button
             id="cfg-envio-salvar"
             onClick={async () => {
+              // Uma linha "grupo=dias" por agravo; linha mal escrita impede salvar (não some em silêncio).
               const prazos: Record<string, number> = {};
-              for (const l of f.prazos.split('\n')) {
-                const [g, d] = l.split('=').map((x) => x.trim());
-                if (g && d && Number.isInteger(Number(d))) prazos[g] = Number(d);
+              const recusadas: string[] = [];
+              for (const l of f.prazos
+                .split('\n')
+                .map((x) => x.trim())
+                .filter(Boolean)) {
+                const [g, d, ...resto] = l.split('=').map((x) => x.trim());
+                const grupo = (g ?? '').toLowerCase();
+                const dias = Number(d);
+                if (resto.length || !/^[a-z0-9-]{2,40}$/.test(grupo) || !Number.isInteger(dias) || dias < 1 || dias > 365) recusadas.push(l);
+                else prazos[grupo] = dias;
+              }
+              if (recusadas.length) {
+                toast.error(`Corrija as linhas de prazo (grupo=dias, de 1 a 365): ${recusadas.join('; ')}`);
+                return;
               }
               try {
                 await api.patch('/vigilancia/configuracoes', { relEnabled: f.rel, prazosEncerramento: prazos, modeloPolicial: f.modelo.trim() === MODELO_POLICIAL_PADRAO ? null : f.modelo });
