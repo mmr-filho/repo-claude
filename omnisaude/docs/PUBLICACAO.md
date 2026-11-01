@@ -8,7 +8,7 @@ navegador ──HTTPS──► Cloudflare: Worker "repo-claude" (rota mm.api.br/
                       └─ /omnisaude/api, /omnisaude/socket.io  → API NestJS no Cloudflare Containers
                                                                    ├──TLS──► PostgreSQL (PlanetScale)
                                                                    └───────► R2 (documentos)
-Cron Triggers do Worker (a cada 5 min e 1x por dia) → jobs de WhatsApp, RNDS e SIGTAP
+Cron Triggers do Worker (a cada 5 min e 1x por dia) → jobs de WhatsApp, RNDS, vigilância e SIGTAP
 ```
 
 A configuração está em `wrangler.jsonc` (na pasta `omnisaude`) e o código do Worker em `apps/cloudflare`. O restante de
@@ -165,8 +165,9 @@ configurar o banco; sem os segredos, só o login falha, com uma mensagem dizendo
   no ar e o erro fica no log do container.
 - **Troca de segredo:** salve no painel. Na próxima requisição o Worker percebe a mudança e reinicia a API com
   os valores novos.
-- **Jobs:** os Cron Triggers chamam a API a cada 5 minutos (confirmações do WhatsApp e envio à RNDS) e às
-  09:00 UTC (SIGTAP, que só sincroniza no primeiro dia útil do mês). Isso mantém a instância sempre ligada;
+- **Jobs:** os Cron Triggers chamam a API a cada 5 minutos (confirmações do WhatsApp, envio à RNDS e
+  vigilância: escalonamento ao plantão, prazo vencido e recuperação do gatilho) e às 09:00 UTC (SIGTAP, que
+  só sincroniza no primeiro dia útil do mês). Isso mantém a instância sempre ligada;
   conte com o custo de uma instância `basic` em tempo integral, além do PlanetScale e do R2 (preços atuais
   nas páginas de preço de cada produto).
 - **Mais fôlego:** em `wrangler.jsonc`, `instance_type` `"standard-1"` dobra a CPU e quadruplica a memória.

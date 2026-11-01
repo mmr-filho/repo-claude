@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CRON_JOBS,
   apiPath,
   basePath,
   branchSuffix,
@@ -111,5 +112,12 @@ describe('variáveis da API no container', () => {
     const a = await configFingerprint(containerEnv(vars), ['sh']);
     expect(await configFingerprint({ ...containerEnv(vars) }, ['sh'])).toBe(a);
     expect(await configFingerprint(containerEnv({ ...vars, JWT_SECRET: 'z'.repeat(48) }), ['sh'])).not.toBe(a);
+  });
+});
+
+describe('tarefas agendadas', () => {
+  it('a cada 5 minutos dispara WhatsApp, RNDS e vigilância (escalonamento ao plantão e prazo vencido)', () => {
+    expect(CRON_JOBS['*/5 * * * *']!.split(',')).toEqual(expect.arrayContaining(['whatsapp', 'rnds', 'vigilancia']));
+    expect(CRON_JOBS['0 9 * * *']).toBe('sigtap');
   });
 });

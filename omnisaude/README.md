@@ -43,7 +43,9 @@ e BI conversacional).
   **BI conversacional** com Text-to-SQL blindado, **gestão** (produtividade, SLAs, pautas) e **busca ativa**.
 - **Acessibilidade**: VLibras e chamada de intérprete de Libras por vídeo (WebRTC).
 
-O que está parcial ou pendente está listado em [`docs/STATUS.md`](docs/STATUS.md). A arquitetura está em
+O que está parcial ou pendente está listado em [`docs/STATUS.md`](docs/STATUS.md); o que depende da instituição
+(insumos, decisões, contas, certificados, credenciamentos e homologações), fase por fase, em
+[`docs/PENDENCIAS.md`](docs/PENDENCIAS.md). A arquitetura está em
 [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md). A publicação em `https://mm.api.br/omnisaude`, 100% na Cloudflare
 (Workers, Containers, PlanetScale e R2), está em [`docs/PUBLICACAO.md`](docs/PUBLICACAO.md); num servidor
 próprio com Docker Compose, em [`docs/PUBLICACAO-SERVIDOR.md`](docs/PUBLICACAO-SERVIDOR.md). A comparação com os

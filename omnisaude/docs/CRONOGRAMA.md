@@ -87,28 +87,7 @@ publicados: LIRAa/LIA, licenciamento sanitário e processo administrativo comple
 
 ## Insumos pendentes (lista viva)
 
-| Insumo | Para | Situação |
-|---|---|---|
-| Técnicos da vigilância municipal e dos núcleos hospitalares (CPF, CBO, unidade); a vigilância tem CNES tipo 50? | VIG-1a (semana 23) | aguardando |
-| Contatos do CIEVS municipal e estadual (SES-TO) e escala de plantão | VIG-1a (semana 23) | aguardando; o CIEVS Nacional já vem cadastrado |
-| Lista complementar de notificação estadual ou municipal | VIG-1a (semana 23) | aguardando, se houver |
-| Homologação do de-para CID-10/CIAP-2 → agravo por um técnico da vigilância | VIG-1a (semana 23) | aguardando; até lá os mapeamentos ficam "propostos" e geram rascunho com aviso |
-| Acordo com a SES sobre quem digita em cada sistema oficial e contas dos digitadores | VIG-1b (semana 24) | aguardando |
-| Destino da caxumba (Sinan Net ou outro) e periodicidade, pactuados com a SES | VIG-1b (semana 24) | aguardando; a rota está marcada "a definir" |
-| Fichas impressas (ou números reais) de cada sistema oficial, para ajustar a validação dos números | VIG-1b (semana 24) | aguardando; Sinan Online e e-SUS Notifica sem formato em documento nacional |
-| A rede faz testes de covid-19 e mpox? Quais métodos e laboratórios (CNES)? | INT-4a (semana 24) | aguardando; o envio do REL vem desligado |
-| Autoridade policial de referência (definida pela SES) e modelo da comunicação aprovado pela procuradoria | VIG-1b (semana 24) | aguardando; o modelo padrão não identifica a vítima |
-| Validar com a SES ou a assessoria jurídica que a lesão autoprovocada fica fora da comunicação policial | VIG-1b (semana 24) | aguardando; hoje fica fora (interpretação do art. 14-A) |
-| Malha de bairros e quarteirões (GeoJSON ou shapefile) | PLT-3 (semana 25) | aguardando |
-| ACE no CNES, larvicida e estoque, código de posturas | VIG-3a (semana 26) | aguardando |
-| Exportações do Sinan e do e-SUS Notifica (5 anos) e plano de contingência de arboviroses | VIG-1c (semana 27) | aguardando |
-| Convite e chave do Conta Ovos | VIG-3b (semana 28) | aguardando |
-| Nota estadual sobre profilaxia da raiva, médico-veterinário e laboratório de referência | VIG-4a (semana 29) | aguardando |
-| Código sanitário municipal, modelos de termo e auto, fiscais com certificado | VIG-2a (semana 30) | aguardando |
-| Papéis com 2FA obrigatório | NUC-6 (semana 1) | a gestão define em Administração > Segurança (padrão: nenhum, para não travar a demonstração) |
-| Código IBGE do município de teste | NUC-2/3 (semana 2) | recebido: 1709500 (Gurupi/TO) |
-| Arquivo "XML e-SUS AB" do CNES (área do gestor do CNES → Recebimento de Arquivos) | NUC-2/3: profissionais e equipes oficiais | aguardando um exemplo; até lá, planilha |
-| Certificado A1 de teste | ATD-4 (semana 4) | o fluxo foi validado com um certificado de teste gerado aqui (formato e-CPF); um A1 real serve para a conferência no validador do ITI |
-| Credenciamento na RNDS (homologação) | INT-1 (semana 5) | aguardando; o passo a passo está em `docs/RNDS.md` (certificado e-CNPJ A1, Portal de Serviços, identificador do solicitante) |
-| Competência real para importar no BPA Magnético | FAT-1 (semana 5) | o arquivo sai no layout oficial e passa na conferência interna; falta a importação no aplicativo do DATASUS |
-| Acesso a um PEC e-SUS APS (teste e produção) | APS-1 (semanas 6 e 7) | o PEC não tem imagem pública para subir aqui; o fluxo foi validado com um simulador fiel ao protocolo. Para homologar: URL do PEC do município + credencial de integração (`docs/ESUS.md`) |
+A lista completa das ações que dependem da instituição, por fase e por prioridade (publicação, insumos, decisões,
+contas, certificados, credenciamentos, homologações, aprovações e cadastros), com a fonte de cada item, está em
+[`PENDENCIAS.md`](PENDENCIAS.md). A coluna *Insumos* de cada semana acima resume o que aquela entrega pede; ao
+planejar uma semana nova, os insumos dela entram no `PENDENCIAS.md`.

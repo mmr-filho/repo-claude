@@ -202,8 +202,11 @@ export async function configFingerprint(env: Record<string, string>, entrypoint:
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** Cron Triggers do wrangler.jsonc e os jobs que cada um dispara. */
+/**
+ * Cron Triggers do wrangler.jsonc e os jobs que cada um dispara (os mesmos do temporizador local e do BullMQ:
+ * a vigilância escala ao plantão, marca prazo vencido e recupera falhas do gatilho a cada 5 minutos).
+ */
 export const CRON_JOBS: Record<string, string> = {
-  '*/5 * * * *': 'whatsapp,rnds',
+  '*/5 * * * *': 'whatsapp,rnds,vigilancia',
   '0 9 * * *': 'sigtap',
 };
