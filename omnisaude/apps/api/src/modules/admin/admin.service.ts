@@ -334,7 +334,8 @@ export class AdminService {
   async updateSecurity(ctx: RequestContext, input: { mfaRequiredRoles: Role[] }) {
     const t = await this.master.tenant.findUniqueOrThrow({ where: { id: ctx.tenant.id } });
     const settings = { ...tenantSettings(t.settings), mfaRequiredRoles: [...new Set(input.mfaRequiredRoles)] };
-    await this.master.tenant.update({ where: { id: ctx.tenant.id }, data: { settings: settings as object } });
+    // Só a chave da política de MFA, de forma atômica: não desfaz uma mudança simultânea de outra configuração.
+    await this.master.$executeRaw`UPDATE tenants SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{mfaRequiredRoles}', ${JSON.stringify(settings.mfaRequiredRoles)}::jsonb) WHERE id = ${ctx.tenant.id}::uuid`;
     this.tenants.connections.invalidate(ctx.tenant.slug);
     this.tenants.connections.invalidate(ctx.tenant.id);
     await ctx.db.$transaction((tx) => this.audit(tx, ctx, 'seguranca.atualizar', 'Tenant', ctx.tenant.id, input));

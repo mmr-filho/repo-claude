@@ -11,7 +11,7 @@ import { Dialog } from '@/components/ui/dialog';
 import { Field, Input, Select, Textarea } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { useToast } from '@/components/ui/toast';
-import { api, errorMessage } from '@/lib/api';
+import { api, ApiError, errorMessage } from '@/lib/api';
 import { fmtDate, fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useRealtime } from '@/lib/realtime';
@@ -94,7 +94,8 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
       return true;
     } catch (err) {
       const msg = errorMessage(err);
-      setErros(msg.split('; '));
+      // A lista de pendências da ficha só aparece quando a confirmação foi recusada por ela.
+      setErros(err instanceof ApiError && err.code === 'FICHA_INVALIDA' ? msg.split('; ') : []);
       toast.error(msg);
       return false;
     } finally {
@@ -441,7 +442,7 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
         footer={
           <Button
             loading={busy}
-            disabled={!comunicacao || comunicacao.counterpartName.trim().length < 2}
+            disabled={!comunicacao || comunicacao.counterpartName.trim().length < 2 || !comunicacao.communicatedAt || Number.isNaN(Date.parse(comunicacao.communicatedAt))}
             id="vig-comunicar-salvar"
             onClick={async () => {
               if (!comunicacao) return;

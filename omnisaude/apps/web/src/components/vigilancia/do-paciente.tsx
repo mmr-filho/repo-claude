@@ -39,7 +39,7 @@ export function NotificacoesDoPaciente({ paciente }: { paciente: { id: string; n
           <div key={n.id} className="flex flex-wrap items-center justify-between gap-2">
             <span className="flex items-center gap-1.5">
               {n.sigiloso && <Lock className="h-3.5 w-3.5 text-violet-600" />}
-              {n.paciente === null && n.sigiloso ? (
+              {!n.podeAbrir ? (
                 <span>{n.agravo}</span>
               ) : (
                 <Link className="text-brand-700 underline" href={`/vigilancia/notificacao?id=${n.id}`}>

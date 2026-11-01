@@ -80,11 +80,12 @@ export const MAPEAMENTOS_INICIAIS: MapeamentoInicial[] = [
   ...cid(['U109'], 'sim-p'),
   ...cid(['U071'], 'covid'),
   ...cid(['T880', 'T881', 'Y59'], 'esavi'),
-  ...cid(faixa('T', 36, 65), 'intoxicacao-exogena'),
+  // T63 (contato com animal venenoso) é acidente por animal peçonhento, não intoxicação exógena.
+  ...cid([...faixa('T', 36, 62), 'T64', 'T65'], 'intoxicacao-exogena'),
   ...cid(['T63'], 'acidente-animal-peconhento'),
   ...cid(faixa('X', 20, 29), 'acidente-animal-peconhento'),
   ...cid(['W46'], 'acidente-trabalho-biologico'),
-  ...cid(['T74', ...faixa('Y', 0, 4), ...faixa('Y', 6, 9)], 'violencia'),
+  ...cid(['T74', ...faixa('X', 85, 99), ...faixa('Y', 0, 4), ...faixa('Y', 6, 9)], 'violencia'),
   ...cid(['T742', 'Y05', ...faixa('X', 60, 84)], 'violencia-sexual-suicidio'),
   // CIAP-2 (atenção primária).
   ...(
@@ -101,3 +102,41 @@ export const MAPEAMENTOS_INICIAIS: MapeamentoInicial[] = [
     ] as const
   ).map(([codePrefix, group]): MapeamentoInicial => ({ system: 'CIAP2', codePrefix, group, status: 'PROPOSTO', source: CIAP })),
 ];
+
+/**
+ * Linhas próprias da gestação (itens 33, 35, 38 e 62) são grupos separados na lista: com a linha de cuidado de
+ * gestante ativa, o código do agravo abre também a linha da gestação. B58 (toxoplasmose) só é notificável na
+ * gestação; hepatite B pelo código do vírus B.
+ */
+export const LINHAS_DA_GESTACAO: { gestacao: string; grupos?: string[]; prefixos?: string[] }[] = [
+  { gestacao: 'hiv-gestacao', grupos: ['hiv', 'aids'] },
+  { gestacao: 'hepatite-b-gestacao', grupos: ['hepatites-virais'], prefixos: ['B16', 'B170', 'B180', 'B181'] },
+  { gestacao: 'htlv-gestacao', grupos: ['htlv'] },
+  { gestacao: 'toxoplasmose-gestacional-congenita', prefixos: ['B58'] },
+];
+
+/** Grupos de gestação que o código abre numa gestante, dados os grupos já mapeados para ele. */
+export function gruposDaGestacao(system: string, code: string, gruposMapeados: string[]): string[] {
+  if (system !== 'CID10') return [];
+  return LINHAS_DA_GESTACAO.filter((l) => {
+    const porGrupo = !l.grupos || l.grupos.some((g) => gruposMapeados.includes(g));
+    const porCodigo = !l.prefixos || l.prefixos.some((p) => code.startsWith(p));
+    return porGrupo && porCodigo;
+  }).map((l) => l.gestacao);
+}
+
+/** Agente da hepatite viral pelo código (notificação única por pessoa e por agente). */
+export function agenteHepatite(code: string | null | undefined): string {
+  if (!code) return '?';
+  if (code.startsWith('B15')) return 'A';
+  if (['B16', 'B170', 'B180', 'B181'].some((p) => code.startsWith(p))) return 'B';
+  if (['B171', 'B182'].some((p) => code.startsWith(p))) return 'C';
+  if (code.startsWith('B172')) return 'E';
+  return code.slice(0, 4);
+}
+
+/**
+ * Janela da notificação "uma vez por pessoa" quando a doença pode voltar como caso novo (recidiva e reingresso
+ * após abandono da tuberculose entram de novo no Sinan). Sem janela: vale para sempre.
+ */
+export const JANELA_UNICA_DIAS: Record<string, number> = { tuberculose: 180 };

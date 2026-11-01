@@ -1,6 +1,7 @@
 import { cnsFromBase, completeCpf, semanaEpidemiologica } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { TenantsService } from '../src/core/database';
+import { RealtimeService } from '../src/core/realtime.service';
 import { AiService } from '../src/modules/integrations/ai.service';
 import { CatalogoVigilanciaService } from '../src/modules/vigilancia/catalogo.service';
 import { NotificacaoService } from '../src/modules/vigilancia/notificacao.service';
@@ -452,5 +453,193 @@ describe.runIf(enabled)('Vigilância: notificação compulsória a partir do ate
     expect(r.condicoes).toHaveLength(82);
     const m = (await t.http().post('/api/vigilancia/notificacoes').set(auth(medica)).send({ patientId: p, conditionKey: 'toxoplasmose-adquirida' }).expect(201)).body;
     expect(m.prazo).toMatchObject({ tipo: 'SEMANAL', esferas: ['SMS'] });
+  });
+
+  // ───────────── correções da revisão da semana 23 ─────────────
+
+  it('editar a ficha de quem está internado mantém o prazo contado do conhecimento', async () => {
+    const p = await novoPaciente('Irene Internada Teste', 'F', '1993-01-01');
+    const leito = await db.bed.findFirstOrThrow({ where: { status: 'VAGO', ward: { unit: { name: 'Hospital Municipal São Lucas' }, kind: 'CLINICA_MEDICA' } }, orderBy: { code: 'asc' } });
+    const adm = (await t.http().post('/api/admissions').set(auth(nir)).send({ patientId: p, bedId: leito.id, mainCid: 'R509' }).expect(201)).body;
+    expect(adm.notificacoes).toEqual([]);
+    // Internada há três dias; a suspeita aparece hoje numa evolução assinada no hospital.
+    await db.encounter.update({ where: { id: adm.encounterId }, data: { startedAt: new Date(Date.now() - 72 * H) } });
+    const medicaHosp = await t.login('medica', 'Hospital Municipal São Lucas', 'MEDICO');
+    const nota = (
+      await t
+        .http()
+        .post(`/api/clinical/encounters/${adm.encounterId}/notes`)
+        .set(auth(medicaHosp))
+        .send({ kind: 'SOAP', subjective: 'Tosse paroxística.', objective: 'Sem febre.', assessment: 'Suspeita de coqueluche.', plan: 'Isolamento e coleta.', codes: [{ system: 'CID10', code: 'A37.9' }] })
+        .expect(201)
+    ).body;
+    const [c] = (await t.http().post(`/api/clinical/notes/${nota.id}/sign`).set(auth(medicaHosp)).expect(200)).body.notificacoes as Criada[];
+    const n = await db.notification.findUniqueOrThrow({ where: { id: c!.id } });
+    expect(n.deadlineStart).toBe('CONHECIMENTO');
+    const antes = n.dueAt!.getTime();
+    const e = (
+      await t
+        .http()
+        .patch(`/api/vigilancia/notificacoes/${n.id}`)
+        .set(auth(nucleo))
+        .send({ ficha: { CS_GESTANT: '5' } })
+        .expect(200)
+    ).body;
+    expect(e.prazo.marco).toBe('CONHECIMENTO');
+    expect(Date.parse(e.prazo.venceEm)).toBe(antes);
+    expect(e.prazo.porEsfera.find((x: { esfera: string }) => x.esfera === 'SMS').situacao).not.toBe('VENCIDO');
+  });
+
+  it('gestante com HIV abre também a linha da gestação; T63 é só peçonhento; agressão X99 é violência', async () => {
+    const g = await novoPaciente('Gabi Gestante HIV Teste', 'F', '1999-02-02');
+    await db.patientCondition.create({ data: { patientId: g, system: 'CID10', code: 'Z34', description: 'Gestação', lineOfCare: 'GESTANTE', active: true } });
+    const hiv = await assinar(await abrir(g), [{ system: 'CID10', code: 'Z21' }]);
+    const chaves = (await db.notification.findMany({ where: { id: { in: hiv.map((x) => x.id) } } })).map((x) => x.conditionKey).sort();
+    expect(chaves).toEqual(['hiv', 'hiv-gestacao']);
+    expect(hiv.every((x) => x.sigiloso)).toBe(true);
+    const c = await novoPaciente('Caio Cobra Teste', 'M', '1980-03-03');
+    const cobra = await assinar(await abrir(c), [{ system: 'CID10', code: 'T63.0' }]);
+    expect((await db.notification.findMany({ where: { patientId: c } })).map((x) => x.conditionKey)).toEqual(['acidente-animal-peconhento']);
+    expect(cobra).toHaveLength(1);
+    const v = await novoPaciente('Vania Violencia Teste', 'F', '1985-04-04');
+    const [viol] = await assinar(await abrir(v), [{ system: 'CID10', code: 'X99' }]);
+    expect(viol).toMatchObject({ sigiloso: true });
+    expect((await db.notification.findUniqueOrThrow({ where: { id: viol!.id } })).groupKey).toBe('violencia');
+  });
+
+  it('subitem: o autor não rebaixa imediata para semanal; trocar não duplica na varredura; o descartado não volta no mesmo atendimento', async () => {
+    const p = await novoPaciente('Chico Chikungunya Teste', 'M', '1977-05-05');
+    const encId = await abrir(p);
+    const [c] = await assinar(encId, [{ system: 'CID10', code: 'A92.0' }]);
+    expect(c).toMatchObject({ prazo: 'SEMANAL' });
+    // Município sem transmissão: o autor passa para a linha imediata (mais rigorosa) e não pode voltar sozinho.
+    const imediata = (await t.http().patch(`/api/vigilancia/notificacoes/${c!.id}`).set(auth(medica)).send({ conditionKey: 'chikungunya-sem-transmissao' }).expect(200)).body;
+    expect(imediata.prazo.tipo).toBe('IMEDIATA');
+    await t.http().patch(`/api/vigilancia/notificacoes/${c!.id}`).set(auth(medica)).send({ conditionKey: 'chikungunya' }).expect(403);
+    await t.http().post(`/api/vigilancia/notificacoes/${c!.id}/descartar`).set(auth(medica)).send({ reason: 'Tentativa de descarte pelo autor.' }).expect(403);
+    await tarefa();
+    expect(await db.notification.count({ where: { patientId: p, groupKey: 'chikungunya' } })).toBe(1);
+    await t.http().post(`/api/vigilancia/notificacoes/${c!.id}/descartar`).set(auth(vig)).send({ reason: 'Sorologia negativa para chikungunya.' }).expect(200);
+    expect(await assinar(encId, [{ system: 'CID10', code: 'A92.0' }])).toEqual([]);
+    await tarefa();
+    expect(await db.notification.count({ where: { patientId: p, groupKey: 'chikungunya' } })).toBe(1);
+  });
+
+  it('repasse à SES conta da comunicação por telefone à SMS, mesmo sem ciência no painel', async () => {
+    const p = await novoPaciente('Paula Repasse Teste', 'F', '1950-06-06');
+    const [c] = await assinar(await abrir(p), [{ system: 'CID10', code: 'A37.9' }]);
+    await t.http().post(`/api/vigilancia/notificacoes/${c!.id}/confirmar`).set(auth(medica)).expect(200);
+    const ligou = new Date(Date.now() - 60 * 60_000);
+    const d = (
+      await t
+        .http()
+        .post(`/api/vigilancia/notificacoes/${c!.id}/comunicacoes`)
+        .set(auth(vig))
+        .send({ target: 'SMS', channel: 'TELEFONE', communicatedAt: ligou.toISOString(), counterpartName: 'Plantão da vigilância municipal' })
+        .expect(201)
+    ).body;
+    const ses = d.prazo.porEsfera.find((e: { esfera: string }) => e.esfera === 'SES');
+    expect(ses.situacao).toBe('NO_PRAZO');
+    expect(Date.parse(ses.venceEm)).toBe(ligou.getTime() + 24 * H);
+  });
+
+  it('item 60 não é confirmado sem a data de confirmação; confirmações simultâneas valem uma vez', async () => {
+    const p = await novoPaciente('Caco Confirma Teste', 'M', '1960-07-07');
+    const d = (await t.http().post('/api/vigilancia/notificacoes').set(auth(medica)).send({ patientId: p, conditionKey: 'sg-covid-confirmada' }).expect(201)).body;
+    const erro = (await t.http().post(`/api/vigilancia/notificacoes/${d.id}/confirmar`).set(auth(medica)).expect(400)).body;
+    expect(erro.message).toContain('data de confirmação');
+    const e = (
+      await t
+        .http()
+        .patch(`/api/vigilancia/notificacoes/${d.id}`)
+        .set(auth(medica))
+        .send({ confirmedAt: new Date(Date.now() - H).toISOString() })
+        .expect(200)
+    ).body;
+    expect(e.criterio).toBe('CONFIRMADO');
+    const [a, b] = await Promise.all([t.http().post(`/api/vigilancia/notificacoes/${d.id}/confirmar`).set(auth(medica)), t.http().post(`/api/vigilancia/notificacoes/${d.id}/confirmar`).set(auth(medica))]);
+    expect([a.status, b.status].sort()).toEqual([200, 409]);
+    expect(await db.notificationEvent.count({ where: { notificationId: d.id, kind: 'CONFIRMADA' } })).toBe(1);
+    expect(await db.notificationCommunication.count({ where: { notificationId: d.id, channel: 'SISTEMA' } })).toBe(1);
+  });
+
+  it('falha do gatilho no encerramento é reprocessada a partir da auditoria', async () => {
+    const p = await novoPaciente('Elias Encerramento Teste', 'M', '1966-08-08');
+    const encId = await abrir(p);
+    await assinar(encId, [{ system: 'CID10', code: 'R50.9' }]);
+    const spy = vi.spyOn(t.app.get(CatalogoVigilanciaService), 'retrato').mockRejectedValueOnce(new Error('falha simulada no encerramento'));
+    const r = (await t.http().post(`/api/clinical/encounters/${encId}/close`).set(auth(medica)).send({ outcome: 'ALTA', mainCid: 'A379' }).expect(200)).body;
+    spy.mockRestore();
+    expect(r.notificacoes).toEqual([]);
+    expect(await db.notification.count({ where: { patientId: p } })).toBe(0);
+    expect((await tarefa()).recuperadas).toBeGreaterThanOrEqual(1);
+    expect(await db.notification.findFirstOrThrow({ where: { patientId: p } })).toMatchObject({ origin: 'VARREDURA', conditionKey: 'coqueluche', encounterId: encId });
+    await tarefa();
+    expect(await db.notification.count({ where: { patientId: p } })).toBe(1);
+  });
+
+  it('listas: a notificação sigilosa de acesso restrito não mostra prazo, origem nem unidade; listar sigilosas fica auditado; tempo real só leva o id', async () => {
+    const lista = (await t.http().get(`/api/vigilancia/pacientes/${pacientes.hiv}/notificacoes`).set(auth(cardio)).expect(200)).body;
+    expect(lista[0]).toMatchObject({ agravo: 'Agravo de acesso restrito', prazo: null, origem: null, unidade: null, situacaoSms: null, esferas: [], repasses: [], podeAbrir: false });
+    const antes = await db.auditEntry.count({ where: { action: 'notificacao.listar_sensivel' } });
+    await t.http().get('/api/vigilancia/painel').set(auth(vig)).expect(200);
+    expect(await db.auditEntry.count({ where: { action: 'notificacao.listar_sensivel' } })).toBeGreaterThan(antes);
+    const eventos = t.app.get(RealtimeService).recent.filter((e) => e.event.startsWith('vigilancia:'));
+    expect(eventos.length).toBeGreaterThan(0);
+    expect(eventos.every((e) => Object.keys(e.payload as object).join() === 'id')).toBe(true);
+  });
+
+  it('ESAVI: o prazo conta do conhecimento do evento, não da dose; a mesma dose não é notificada duas vezes', async () => {
+    const p = await novoPaciente('Valter Vacina Antiga Teste', 'M', '2024-05-05');
+    const encVac = await abrir(p, new Date(Date.now() - 10 * 24 * H));
+    const ubs = await db.unit.findFirstOrThrow({ where: { name: 'UBS Centro' } });
+    const prof = await db.user.findFirstOrThrow({ where: { assignments: { some: { unitId: ubs.id, role: 'ENFERMAGEM' } } } });
+    const vac = await db.vaccination.create({
+      data: {
+        patientId: p,
+        unitId: ubs.id,
+        professionalId: prof.id,
+        encounterId: encVac,
+        vaccineCode: '22',
+        vaccineName: 'Pentavalente',
+        lot: 'LOTE-T2',
+        manufacturer: 'Fabricante teste',
+        dose: 'D2',
+        route: 'IM',
+        appliedAt: new Date(Date.now() - 10 * 24 * H),
+      },
+    });
+    const d = (await t.http().post('/api/vigilancia/notificacoes').set(auth(medica)).send({ patientId: p, conditionKey: 'esavi', vaccinationId: vac.id }).expect(201)).body;
+    expect(d.prazo.marco).toBe('CONHECIMENTO');
+    expect(Date.parse(d.prazo.venceEm)).toBeGreaterThan(Date.now() + 23 * H);
+    expect((await db.notification.findUniqueOrThrow({ where: { id: d.id } })).encounterId).toBeNull();
+    const dup = (await t.http().post('/api/vigilancia/notificacoes').set(auth(medica)).send({ patientId: p, conditionKey: 'esavi', vaccinationId: vac.id }).expect(409)).body;
+    expect(dup.message).toContain(d.numero);
+  });
+
+  it('lista local não substitui nem entra num grupo nacional; a curadoria nacional é sincronizada quando muda', async () => {
+    const base = { scope: 'ESTADUAL', act: 'Portaria SES nº 9/2026 (teste)', validFrom: '2026-09-01' };
+    const sifilis = (
+      await t
+        .http()
+        .post('/api/vigilancia/catalogo/versoes')
+        .set(auth(vig))
+        .send({ ...base, conditions: [{ key: 'sifilis', item: 56, name: 'Sífilis (imediata no estado)', immediateMs: false, immediateSes: false, immediateSms: true, weekly: false }] })
+        .expect(400)
+    ).body;
+    expect(sifilis.code).toBe('AGRAVO_NACIONAL');
+    await t
+      .http()
+      .post('/api/vigilancia/catalogo/versoes')
+      .set(auth(vig))
+      .send({ ...base, conditions: [{ key: 'est-violencia-extra', groupKey: 'violencia', item: 99, name: 'Violência (linha estadual)', immediateMs: false, immediateSes: false, immediateSms: false, weekly: true }] })
+      .expect(400);
+    // Linha nacional alterada no banco (ou curadoria antiga): a próxima carga restaura a do código.
+    const versao = await db.notifiableListVersion.findFirstOrThrow({ where: { nationalId: 'PRT-GM-MS-11211-2026' } });
+    await db.notifiableCondition.updateMany({ where: { versionId: versao.id, key: 'caxumba' }, data: { weekly: false, immediateSms: true } });
+    await db.notifiableListVersion.update({ where: { id: versao.id }, data: { contentHash: null } });
+    t.app.get(CatalogoVigilanciaService).esquecer((await t.app.get(TenantsService).resolve(t.slug)).id);
+    const r = (await t.http().get('/api/vigilancia/catalogo/vigente').set(auth(medica)).expect(200)).body;
+    expect(r.condicoes.find((x: { key: string }) => x.key === 'caxumba')).toMatchObject({ weekly: true, immediateSms: false });
   });
 });

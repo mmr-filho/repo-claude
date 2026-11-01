@@ -121,13 +121,15 @@ export function CatalogoTab({ podeGerir }: { podeGerir: boolean }) {
               setBusy(true);
               try {
                 const imediata = form.periodicidade === 'IMEDIATA';
-                const key = form.name
+                // Prefixo local: a lista local só acrescenta agravos, nunca substitui uma chave nacional.
+                const slug = form.name
                   .normalize('NFD')
-                  .replace(/[̀-ͯ]/g, '')
+                  .replace(/[\u0300-\u036f]/g, '')
                   .toLowerCase()
                   .replace(/[^a-z0-9]+/g, '-')
                   .replace(/^-|-$/g, '')
-                  .slice(0, 60);
+                  .slice(0, 55);
+                const key = `${form.scope === 'MUNICIPAL' ? 'mun' : 'est'}-${slug}`;
                 await api.post('/vigilancia/catalogo/versoes', {
                   scope: form.scope,
                   act: form.act,

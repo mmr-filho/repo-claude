@@ -2,10 +2,13 @@ import { HttpStatus, Inject, Injectable, Logger, type OnModuleInit } from '@nest
 import { tenantSettings, type MasterClient, type TenantClient, type VigilanciaSettings } from '@omnisaude/database';
 import { buildSurveillanceAlertTemplate, normalizeBrazilPhone } from '@omnisaude/messaging';
 import {
+  agenteHepatite,
   calcularPrazo,
   CONTEXTO_LABEL,
   escolherCondicao,
   ESFERA_LABEL,
+  gruposDaGestacao,
+  JANELA_UNICA_DIAS,
   localDateString,
   MARCO_LABEL,
   mapearCodigo,
@@ -23,7 +26,7 @@ import {
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { MASTER_DB, TenantsService } from '../../core/database';
-import { DomainError, forbidden, notFound } from '../../core/errors';
+import { conflict, DomainError, forbidden, notFound } from '../../core/errors';
 import { RealtimeService } from '../../core/realtime.service';
 import { JobsService } from '../integrations/jobs.service';
 import { MessagingService, type SystemContext } from '../integrations/messaging.service';
@@ -32,9 +35,18 @@ import { CAMPOS_EDITAVEIS, montarFicha, semanasDaFicha, validarFicha, type Ficha
 
 const DIA = 86_400_000;
 const RESTRITO = 'Agravo de acesso restrito';
+/** Teto das notificações pendentes lidas de uma vez (cartões, filtro de prazo, resumo). */
+const LIMITE_PENDENTES = 2000;
+/** Sem comunicação à SMS por meio rápido (telefone, e-mail, formulário...): a do painel não conta. */
+const SEM_COMUNICACAO_SMS = { communications: { none: { target: 'SMS' as const, channel: { not: 'SISTEMA' as const } } } };
 
 type Comunicacao = Awaited<ReturnType<TenantClient['notificationCommunication']['findMany']>>[number];
 type Origem = 'ATENDIMENTO' | 'OBITO' | 'INTERNACAO' | 'MANUAL' | 'VACINA' | 'VARREDURA';
+/** Catálogo e de-para carregados uma vez por execução da tarefa periódica. */
+interface Memo {
+  retratos: Map<string, CondicaoNoRetrato[]>;
+  mapas?: { system: string; codePrefix: string; groupKey: string; context: string | null; status: string }[];
+}
 
 interface Autor {
   userId: string;
@@ -85,38 +97,48 @@ export class NotificacaoService implements OnModuleInit {
 
   /** Depois da assinatura de um registro clínico: um rascunho por agravo notificável encontrado nos códigos. */
   async aoAssinarRegistro(ctx: RequestContext, nota: { id: string; encounterId: string; codes: string[]; signedAt: Date | null }): Promise<RascunhoCriado[]> {
-    return this.protegido(ctx, nota.encounterId, () =>
+    return this.protegido(ctx, { entityType: 'Encounter', id: nota.encounterId }, () =>
       this.processarCodigos(ctx, { encounterId: nota.encounterId, noteId: nota.id, codes: nota.codes, conhecimento: nota.signedAt ?? new Date(), origem: 'ATENDIMENTO', autor: this.autor(ctx) }),
     );
   }
 
   /** Encerramento do atendimento: CID principal e, se óbito, as linhas de óbito dos agravos já notificados. */
   async aoEncerrarAtendimento(ctx: RequestContext, encontro: { id: string; mainCid: string | null; outcome: string | null }): Promise<RascunhoCriado[]> {
-    return this.protegido(ctx, encontro.id, async () => {
-      const autor = this.autor(ctx);
-      // Primeiro o óbito ligado aos casos já notificados (guarda a relação); depois o CID principal, que não repete.
-      const criados = encontro.outcome === 'OBITO' ? await this.obitosLigados(ctx, encontro.id, autor) : [];
-      if (encontro.mainCid)
-        criados.push(...(await this.processarCodigos(ctx, { encounterId: encontro.id, codes: [encontro.mainCid], conhecimento: new Date(), origem: encontro.outcome === 'OBITO' ? 'OBITO' : 'ATENDIMENTO', autor })));
-      return criados;
-    });
+    return this.protegido(ctx, { entityType: 'Encounter', id: encontro.id }, () => this.encerramento(ctx, encontro, this.autor(ctx), new Date(), 'ATENDIMENTO'));
+  }
+
+  private async encerramento(sys: SystemContext, encontro: { id: string; mainCid: string | null; outcome: string | null }, autor: Autor, quando: Date, origem: Origem, memo?: Memo) {
+    // Primeiro o óbito ligado aos casos já notificados (guarda a relação); depois o CID principal, que não repete.
+    const criados = encontro.outcome === 'OBITO' ? await this.obitosLigados(sys, encontro.id, autor, memo) : [];
+    if (encontro.mainCid)
+      criados.push(
+        ...(await this.processarCodigos(
+          sys,
+          { encounterId: encontro.id, codes: [encontro.mainCid], conhecimento: quando, origem: encontro.outcome === 'OBITO' && origem !== 'VARREDURA' ? 'OBITO' : origem, autor },
+          memo,
+        )),
+      );
+    return criados;
   }
 
   /** Internação: CID principal, com o prazo contado do conhecimento (a suspeita pode surgir dias depois). */
   async aoInternar(ctx: RequestContext, internacao: { id: string; encounterId: string; mainCid: string }): Promise<RascunhoCriado[]> {
-    return this.protegido(ctx, internacao.encounterId, () =>
+    return this.protegido(ctx, { entityType: 'Admission', id: internacao.id }, () =>
       this.processarCodigos(ctx, { encounterId: internacao.encounterId, admissionId: internacao.id, codes: [internacao.mainCid], conhecimento: new Date(), origem: 'INTERNACAO', autor: this.autor(ctx) }),
     );
   }
 
-  /** O gatilho nunca impede o atendimento: a falha fica registrada e a varredura da tarefa periódica recupera. */
-  private async protegido(ctx: RequestContext, encounterId: string, fn: () => Promise<RascunhoCriado[]>): Promise<RascunhoCriado[]> {
+  /**
+   * O gatilho nunca impede o atendimento: a falha fica na trilha de auditoria (atendimento ou internação) e a tarefa
+   * periódica reprocessa a partir dela por 48 h; os registros assinados também são varridos.
+   */
+  private async protegido(ctx: RequestContext, alvo: { entityType: 'Encounter' | 'Admission'; id: string }, fn: () => Promise<RascunhoCriado[]>): Promise<RascunhoCriado[]> {
     try {
       return await fn();
     } catch (err) {
       const erro = (err as Error).message;
-      this.logger.error(`Gatilho de notificação falhou no atendimento ${encounterId}: ${erro}`);
-      await this.audit.recordStandalone(ctx, { action: 'vigilancia.erro_gatilho', entityType: 'Encounter', entityId: encounterId, payload: { erro: erro.slice(0, 500) } }).catch(() => undefined);
+      this.logger.error(`Gatilho de notificação falhou (${alvo.entityType} ${alvo.id}): ${erro}`);
+      await this.audit.recordStandalone(ctx, { action: 'vigilancia.erro_gatilho', entityType: alvo.entityType, entityId: alvo.id, payload: { erro: erro.slice(0, 500) } }).catch(() => undefined);
       return [];
     }
   }
@@ -125,24 +147,51 @@ export class NotificacaoService implements OnModuleInit {
     return { userId: ctx.session.userId, role: ctx.session.role, cbo: ctx.cbo ?? null, unitId: ctx.session.unitId };
   }
 
-  private async processarCodigos(sys: SystemContext, p: { encounterId: string; noteId?: string; admissionId?: string; codes: string[]; conhecimento: Date; origem: Origem; autor: Autor }): Promise<RascunhoCriado[]> {
+  /** Catálogo e de-para reaproveitados dentro de uma execução da tarefa periódica. */
+  private async catalogoDoDia(sys: SystemContext, dia: string, memo?: Memo) {
+    const pronto = memo?.retratos.get(dia);
+    if (pronto) return pronto;
+    const { catalogo } = await this.catalogo.retrato(sys, dia);
+    memo?.retratos.set(dia, catalogo);
+    return catalogo;
+  }
+
+  private async mapasDoCodigo(sys: SystemContext, system: 'CID10' | 'CIAP2', code: string, memo?: Memo) {
+    if (!memo) return this.catalogo.gruposDoCodigo(sys, system, code);
+    memo.mapas ??= await sys.db.notifiableCodeMap.findMany({ where: { status: { not: 'INATIVO' } } });
+    return mapearCodigo(memo.mapas, system, code);
+  }
+
+  private async processarCodigos(
+    sys: SystemContext,
+    p: { encounterId: string; noteId?: string; admissionId?: string; codes: string[]; conhecimento: Date; origem: Origem; autor: Autor },
+    memo?: Memo,
+  ): Promise<RascunhoCriado[]> {
     const e = await sys.db.encounter.findUnique({ where: { id: p.encounterId }, include: { unit: true, patient: { select: { id: true, deceasedAt: true } } } });
     if (!e) return [];
-    const dia = localDateString(e.startedAt, sys.tenant.timeZone);
-    const { catalogo } = await this.catalogo.retrato(sys, dia);
+    const catalogo = await this.catalogoDoDia(sys, localDateString(e.startedAt, sys.tenant.timeZone), memo);
     const gestante = (await sys.db.patientCondition.count({ where: { patientId: e.patientId, active: true, lineOfCare: 'GESTANTE' } })) > 0;
     const criados: RascunhoCriado[] = [];
     const vistos = new Set<string>();
     for (const bruto of p.codes) {
       const cod = normalizarCodigo(bruto);
       if (!cod) continue;
-      const mapas = await this.catalogo.gruposDoCodigo(sys, cod.system, cod.code);
-      for (const m of mapas) {
+      const mapas = await this.mapasDoCodigo(sys, cod.system, cod.code, memo);
+      const candidatos = mapas.map((m) => ({ groupKey: m.groupKey, context: m.context as ContextoAgravo | null, status: m.status as 'PROPOSTO' | 'HOMOLOGADO' }));
+      // Gestante: o mesmo código abre também a linha própria da gestação (HIV, hepatite B, HTLV, toxoplasmose).
+      if (gestante)
+        for (const g of gruposDaGestacao(
+          cod.system,
+          cod.code,
+          mapas.map((m) => m.groupKey),
+        ))
+          candidatos.push({ groupKey: g, context: null, status: (mapas[0]?.status as 'PROPOSTO' | 'HOMOLOGADO' | undefined) ?? 'PROPOSTO' });
+      for (const m of candidatos) {
         const condicao = escolherCondicao(catalogo, m.groupKey, {
           obito: p.origem === 'OBITO' || e.outcome === 'OBITO' || !!e.patient.deceasedAt,
           gestante,
           amazoniaLegal: UF_AMAZONIA_LEGAL.has(e.unit.ibgeCode.slice(0, 2)),
-          dica: (m.context as ContextoAgravo | null) ?? null,
+          dica: m.context,
         });
         if (!condicao || vistos.has(condicao.key)) continue;
         vistos.add(condicao.key);
@@ -156,10 +205,10 @@ export class NotificacaoService implements OnModuleInit {
           autor: p.autor,
           origem: p.origem,
           codigo: { system: cod.system, code: cod.code },
-          mapStatus: m.status as 'PROPOSTO' | 'HOMOLOGADO',
+          mapStatus: m.status,
           primeiroAtendimento: e.startedAt,
           conhecimento: p.conhecimento,
-          internacao: e.kind === 'INTERNACAO' || p.origem === 'INTERNACAO',
+          internacao: e.kind === 'INTERNACAO' || p.origem === 'INTERNACAO' || !!p.admissionId,
           // U07.1 já é covid-19 confirmada por laboratório: o prazo do item 60 conta da confirmação.
           confirmacao: condicao.notifyOn === 'CONFIRMACAO' && cod.code === 'U071' ? p.conhecimento : null,
           gestante,
@@ -170,14 +219,27 @@ export class NotificacaoService implements OnModuleInit {
     return criados;
   }
 
-  /** Óbito: para cada agravo notificado no atendimento cujo grupo tem linha de óbito, cria a notificação do óbito ligada. */
-  private async obitosLigados(sys: SystemContext, encounterId: string, autor: Autor): Promise<RascunhoCriado[]> {
+  /**
+   * Óbito: para cada caso ativo da pessoa (neste atendimento ou nos últimos 30 dias, inclusive em outra unidade) cujo
+   * grupo tem linha de óbito, abre a notificação do óbito neste atendimento, ligada ao caso.
+   */
+  private async obitosLigados(sys: SystemContext, encounterId: string, autor: Autor, memo?: Memo): Promise<RascunhoCriado[]> {
     const e = await sys.db.encounter.findUniqueOrThrow({ where: { id: encounterId }, include: { unit: true } });
-    const casos = await sys.db.notification.findMany({ where: { encounterId, status: { not: 'DESCARTADA' } }, include: { condition: true } });
-    const { catalogo } = await this.catalogo.retrato(sys, localDateString(e.startedAt, sys.tenant.timeZone));
+    const casos = await sys.db.notification.findMany({
+      where: {
+        patientId: e.patientId,
+        status: { not: 'DESCARTADA' },
+        condition: { context: { not: 'OBITO' } },
+        OR: [{ encounterId }, { createdAt: { gte: new Date(Date.now() - REPETICAO_DIAS * DIA) } }],
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    const catalogo = await this.catalogoDoDia(sys, localDateString(e.startedAt, sys.tenant.timeZone), memo);
     const criados: RascunhoCriado[] = [];
+    const grupos = new Set<string>();
     for (const caso of casos) {
-      if (caso.condition.context === 'OBITO') continue;
+      if (grupos.has(caso.groupKey)) continue;
+      grupos.add(caso.groupKey);
       const obito = catalogo.find((c) => c.groupKey === caso.groupKey && c.context === 'OBITO');
       if (!obito) continue;
       const r = await this.criarRascunho(sys, {
@@ -199,6 +261,24 @@ export class NotificacaoService implements OnModuleInit {
       if (r) criados.push(r);
     }
     return criados;
+  }
+
+  /**
+   * Já existe notificação deste agravo para o caso? Compara pelo grupo (trocar o subitem não abre outra), separando
+   * a linha de óbito. No mesmo atendimento vale qualquer situação: o que a vigilância descartou não é reaberto pelo
+   * próximo registro (só à mão). Na mesma pessoa, 30 dias; "uma vez por pessoa" sem prazo (tuberculose, 180 dias;
+   * hepatites, por agente).
+   */
+  private async jaNotificada(sys: SystemContext, c: CondicaoNoRetrato, p: { patientId: string; encounterId?: string | null; codigo: { code: string } | null }) {
+    const classe = { groupKey: c.groupKey, condition: { context: c.context === 'OBITO' ? ('OBITO' as const) : { not: 'OBITO' as const } } };
+    if (p.encounterId && (await sys.db.notification.findFirst({ where: { encounterId: p.encounterId, ...classe }, select: { id: true } }))) return true;
+    const janela = c.once ? (JANELA_UNICA_DIAS[c.groupKey] ?? null) : REPETICAO_DIAS;
+    const anteriores = await sys.db.notification.findMany({
+      where: { patientId: p.patientId, status: { not: 'DESCARTADA' }, ...classe, ...(janela ? { createdAt: { gte: new Date(Date.now() - janela * DIA) } } : {}) },
+      select: { code: true },
+    });
+    if (c.groupKey === 'hepatites-virais') return anteriores.some((a) => agenteHepatite(a.code) === agenteHepatite(p.codigo?.code));
+    return anteriores.length > 0;
   }
 
   private async criarRascunho(
@@ -226,15 +306,7 @@ export class NotificacaoService implements OnModuleInit {
     },
   ): Promise<RascunhoCriado | null> {
     const c = p.condicao;
-    // A varredura só recupera o que o gatilho deixou de criar: não recria o que a vigilância já descartou.
-    if (p.origem === 'VARREDURA' && p.encounterId && (await sys.db.notification.findFirst({ where: { encounterId: p.encounterId, conditionKey: c.key } }))) return null;
-    if (!p.manual) {
-      // Mesmo episódio: não repete a mesma notificação da mesma pessoa (uma vez por pessoa nos agravos crônicos).
-      const anterior = await sys.db.notification.findFirst({
-        where: { patientId: p.patientId, conditionKey: c.key, status: { not: 'DESCARTADA' }, ...(c.once ? {} : { createdAt: { gte: new Date(Date.now() - REPETICAO_DIAS * DIA) } }) },
-      });
-      if (anterior) return null;
-    }
+    if (!p.manual && (await this.jaNotificada(sys, c, p))) return null;
     const [patient, unit, autor, household] = await Promise.all([
       sys.db.patient.findUniqueOrThrow({ where: { id: p.patientId } }),
       sys.db.unit.findUniqueOrThrow({ where: { id: p.unitId } }),
@@ -267,6 +339,9 @@ export class NotificacaoService implements OnModuleInit {
       notificador: { nome: autor.socialName ?? autor.name, cbo: p.autor.cbo, funcao: p.autor.role },
       referencia: p.conhecimento,
     });
+    if (p.sintomas) ficha.DT_SIN_PRI = p.sintomas;
+    // Município de residência só com o código IBGE de 7 dígitos (o cadastro aceita outros formatos).
+    const ibgeResidencia = patient.ibgeCode && /^\d{7}$/.test(patient.ibgeCode) ? patient.ibgeCode : null;
     const ano = Number(localDateString(new Date(), sys.tenant.timeZone).slice(0, 4));
     for (let tentativa = 0; tentativa < 6; tentativa++) {
       const ultimo = await sys.db.notification.findFirst({ where: { year: ano }, orderBy: { seq: 'desc' }, select: { seq: true } });
@@ -307,10 +382,10 @@ export class NotificacaoService implements OnModuleInit {
             epiWeekOnset: p.sintomas ? semanasDaFicha(null, p.sintomas).SEM_PRI : null,
             sensitive: c.sensitive,
             form: ficha as object,
-            residenceIbge: patient.ibgeCode,
+            residenceIbge: ibgeResidencia,
             residenceLat: ficha.ID_GEO1,
             residenceLng: ficha.ID_GEO2,
-            outOfMunicipality: !!patient.ibgeCode && patient.ibgeCode !== unit.ibgeCode,
+            outOfMunicipality: !!ibgeResidencia && ibgeResidencia !== unit.ibgeCode,
             createdBy: p.autor.userId,
             events: {
               create: {
@@ -333,7 +408,7 @@ export class NotificacaoService implements OnModuleInit {
           naoHomologado: p.mapStatus === 'PROPOSTO',
         };
       } catch (err) {
-        const code = (err as { code?: string; meta?: { target?: unknown } }).code;
+        const code = (err as { code?: string }).code;
         if (code !== 'P2002') throw err;
         // Mesmo atendimento e agravo já tem rascunho ativo (índice único): idempotência do gatilho.
         if (p.encounterId && (await sys.db.notification.findFirst({ where: { encounterId: p.encounterId, conditionKey: c.key, status: { not: 'DESCARTADA' } } }))) return null;
@@ -342,11 +417,13 @@ export class NotificacaoService implements OnModuleInit {
     throw new DomainError('NUMERACAO_INDISPONIVEL', 'Não foi possível numerar a notificação; tente de novo');
   }
 
-  /** Evento em tempo real sem dado pessoal (número, agravo ou "restrito", unidade). */
-  private avisar(sys: { tenant: { id: string } }, n: { id: string; number: string; unitId: string; status: string; deadlineKind: string; sensitive: boolean }) {
-    const payload = { id: n.id, numero: n.number, status: n.status, prazo: n.deadlineKind, sigiloso: n.sensitive };
-    this.realtime.emitToTenant(sys.tenant.id, 'vigilancia:notificacao', payload);
-    this.realtime.emitToUnit(sys.tenant.id, n.unitId, 'vigilancia:notificacao', payload);
+  /**
+   * Evento em tempo real só com o id: as salas do tenant e da unidade incluem a recepção e os painéis de TV, então
+   * nada que indique o agravo (nem "sigiloso" ou o prazo) vai no evento; a tela recarrega pela API, que aplica o alcance.
+   */
+  private avisar(sys: { tenant: { id: string } }, n: { id: string; unitId: string }) {
+    this.realtime.emitToTenant(sys.tenant.id, 'vigilancia:notificacao', { id: n.id });
+    this.realtime.emitToUnit(sys.tenant.id, n.unitId, 'vigilancia:notificacao', { id: n.id });
   }
 
   // ───────────────────────────── notificação manual ─────────────────────────────
@@ -355,16 +432,20 @@ export class NotificacaoService implements OnModuleInit {
     const agora = new Date();
     const conhecimento = input.knownAt ? new Date(input.knownAt) : agora;
     if (conhecimento.getTime() > agora.getTime() + 60_000) throw new DomainError('DATA_FUTURA', 'A data de conhecimento não pode ser futura', HttpStatus.BAD_REQUEST);
+    if (input.symptomsOnset && input.symptomsOnset > localDateString(agora, ctx.tenant.timeZone)) throw new DomainError('DATA_FUTURA', 'A data dos primeiros sintomas não pode ser futura', HttpStatus.BAD_REQUEST);
     const paciente = await ctx.db.patient.findUnique({ where: { id: input.patientId } });
     if (!paciente || paciente.mergedIntoId) throw notFound('Paciente');
-    let encontro = input.encounterId ? await ctx.db.encounter.findUnique({ where: { id: input.encounterId } }) : null;
+    // O atendimento é o do caso (para o ESAVI, o do evento adverso, não o da aplicação da dose).
+    const encontro = input.encounterId ? await ctx.db.encounter.findUnique({ where: { id: input.encounterId } }) : null;
     if (input.encounterId && (!encontro || encontro.patientId !== input.patientId)) throw notFound('Atendimento');
     if (input.vaccinationId) {
       const vac = await ctx.db.vaccination.findUnique({ where: { id: input.vaccinationId } });
       if (!vac || vac.patientId !== input.patientId) throw notFound('Vacinação');
-      if (!encontro && vac.encounterId) encontro = await ctx.db.encounter.findUnique({ where: { id: vac.encounterId } });
+      const ativa = await ctx.db.notification.findFirst({ where: { vaccinationId: vac.id, status: { not: 'DESCARTADA' } }, select: { number: true } });
+      if (ativa) throw new DomainError('JA_NOTIFICADA', `Esta dose já tem a notificação ${ativa.number}`, HttpStatus.CONFLICT);
     }
-    const { catalogo } = await this.catalogo.retrato(ctx, localDateString(conhecimento, ctx.tenant.timeZone));
+    // Lista vigente na data do primeiro atendimento; sem atendimento, na do conhecimento.
+    const catalogo = await this.catalogoDoDia(ctx, localDateString(encontro?.startedAt ?? conhecimento, ctx.tenant.timeZone));
     const condicao = catalogo.find((c) => c.key === input.conditionKey);
     if (!condicao) throw new DomainError('AGRAVO_FORA_DA_LISTA', 'Agravo não consta da lista vigente na data', HttpStatus.BAD_REQUEST);
     const gestante = (await ctx.db.patientCondition.count({ where: { patientId: input.patientId, active: true, lineOfCare: 'GESTANTE' } })) > 0;
@@ -442,14 +523,16 @@ export class NotificacaoService implements OnModuleInit {
     const lista = (n.targets.length ? n.targets : ['SMS']).map((alvo) => {
       if (alvo === 'SMS')
         return { esfera: 'SMS' as const, rotulo: ESFERA_LABEL.SMS, venceEm: n.dueAt?.toISOString() ?? null, cumpridaEm: smsCumprida?.toISOString() ?? null, situacao: situacaoDoPrazo(n.dueAt, smsCumprida, agora) };
-      const vence = n.smsReceivedAt ? prazoRepasse(n.smsReceivedAt) : null;
+      // A SMS recebeu na ciência ou na primeira comunicação por meio rápido, o que veio antes (art. 4º, parágrafo único).
+      const recebida = n.deadlineKind === 'IMEDIATA' ? smsCumprida : null;
+      const vence = recebida ? prazoRepasse(recebida) : null;
       const feita = primeiraFora(alvo);
       return {
         esfera: alvo as Esfera,
         rotulo: ESFERA_LABEL[alvo as Esfera],
         venceEm: vence?.toISOString() ?? null,
         cumpridaEm: feita?.toISOString() ?? null,
-        situacao: n.smsReceivedAt ? situacaoDoPrazo(vence, feita, agora) : feita ? 'CUMPRIDO' : 'SEM_PRAZO',
+        situacao: recebida ? situacaoDoPrazo(vence, feita, agora) : feita ? 'CUMPRIDO' : 'SEM_PRAZO',
       };
     });
     return { lista, comunicacoes };
@@ -562,7 +645,11 @@ export class NotificacaoService implements OnModuleInit {
     };
   }
 
-  /** Edita a ficha (rascunho ou notificada): subitem do mesmo grupo, critério, datas e os campos editáveis da FIN. */
+  /**
+   * Edita a ficha (rascunho ou notificada): subitem do mesmo grupo, critério, datas e os campos editáveis da FIN.
+   * Trocar o subitem não pode afrouxar a notificação (de imediata para semanal, menos esferas ou sem sigilo) sem a
+   * vigilância municipal. A gravação só vale se ninguém mudou a notificação desde a leitura.
+   */
   async editar(
     ctx: RequestContext,
     id: string,
@@ -576,40 +663,54 @@ export class NotificacaoService implements OnModuleInit {
     if (input.confirmedAt && new Date(input.confirmedAt).getTime() > Date.now() + 60_000) throw new DomainError('DATA_FUTURA', 'A data de confirmação não pode ser futura', HttpStatus.BAD_REQUEST);
     let condicao = { ...n.condition, group: n.condition.groupKey } as CondicaoNoRetrato;
     if (input.conditionKey && input.conditionKey !== n.conditionKey) {
-      const { catalogo } = await this.catalogo.retrato(ctx, localDateString(n.deadlineStartAt ?? n.knownAt, ctx.tenant.timeZone));
+      const catalogo = await this.catalogoDoDia(ctx, localDateString(n.firstCareAt ?? n.knownAt, ctx.tenant.timeZone));
       const nova = catalogo.find((c) => c.key === input.conditionKey && c.groupKey === n.groupKey);
       if (!nova) throw new DomainError('SUBITEM_INVALIDO', 'Escolha um subitem do mesmo agravo', HttpStatus.BAD_REQUEST);
+      if (n.sensitive && !nova.sensitive) throw new DomainError('SIGILO', 'Não é possível tirar o sigilo da notificação trocando o subitem', HttpStatus.BAD_REQUEST);
       condicao = nova;
     }
     const confirmedAt = input.confirmedAt !== undefined ? (input.confirmedAt ? new Date(input.confirmedAt) : null) : n.confirmedAt;
-    const prazo = calcularPrazo(condicao, { atendimento: n.firstCareAt, conhecimento: n.knownAt, confirmacao: confirmedAt, internacao: n.origin === 'INTERNACAO' });
+    // Mesmo critério da abertura: atendimento de internação conta o prazo do conhecimento.
+    const encontro = n.encounterId ? await ctx.db.encounter.findUnique({ where: { id: n.encounterId }, select: { kind: true } }) : null;
+    const internacao = n.origin === 'INTERNACAO' || !!n.admissionId || encontro?.kind === 'INTERNACAO';
+    const prazo = calcularPrazo(condicao, { atendimento: n.firstCareAt, conhecimento: n.knownAt, confirmacao: confirmedAt, internacao });
+    const afrouxa = (n.deadlineKind === 'IMEDIATA' && prazo.tipo === 'SEMANAL') || n.targets.some((t) => !prazo.esferas.includes(t as Esfera));
+    if (afrouxa && !this.pode(ctx, 'notificacao.descartar')) throw forbidden('Trocar para um subitem com prazo ou esferas menores é decisão da vigilância municipal');
     const ficha = { ...(n.form as unknown as Ficha) };
     for (const campo of CAMPOS_EDITAVEIS) if (input.ficha && campo in input.ficha) (ficha as unknown as Record<string, unknown>)[campo] = input.ficha[campo] ?? null;
     ficha.ID_AGRAVO = { ...ficha.ID_AGRAVO, nome: condicao.name, item: condicao.item, subitem: condicao.subitem };
     const sintomas = input.symptomsOnset !== undefined ? input.symptomsOnset : (n.symptomsOnset?.toISOString().slice(0, 10) ?? null);
-    if (sintomas) ficha.DT_SIN_PRI = sintomas;
+    ficha.DT_SIN_PRI = sintomas ?? null;
+    // Data de confirmação informada: o caso é confirmado.
+    const basis = input.basis ?? (input.confirmedAt ? 'CONFIRMADO' : n.basis);
     const antes = { condicao: n.conditionKey, criterio: n.basis, confirmacao: n.confirmedAt?.toISOString() ?? null, sintomas: n.symptomsOnset?.toISOString().slice(0, 10) ?? null };
-    const depois = { condicao: condicao.key, criterio: input.basis ?? n.basis, confirmacao: confirmedAt?.toISOString() ?? null, sintomas };
-    await ctx.db.notification.update({
-      where: { id },
-      data: {
-        conditionId: condicao.id,
-        conditionKey: condicao.key,
-        sensitive: condicao.sensitive,
-        basis: input.basis ?? n.basis,
-        confirmedAt,
-        deadlineStart: prazo.marco,
-        deadlineKind: prazo.tipo,
-        targets: prazo.esferas,
-        deadlineStartAt: prazo.inicio,
-        dueAt: prazo.vence,
-        symptomsOnset: sintomas ? new Date(`${sintomas}T00:00:00Z`) : null,
-        epiWeekOnset: sintomas ? semanasDaFicha(null, sintomas).SEM_PRI : null,
-        form: ficha as object,
-        events: { create: { kind: condicao.key !== n.conditionKey ? 'SUBITEM_ALTERADO' : 'EDITADA', userId: ctx.session.userId, data: { antes, depois, ficha: input.ficha ?? null } } },
-      },
+    const depois = { condicao: condicao.key, criterio: basis, confirmacao: confirmedAt?.toISOString() ?? null, sintomas };
+    await ctx.db.$transaction(async (tx) => {
+      const { count } = await tx.notification.updateMany({
+        where: { id, updatedAt: n.updatedAt, status: n.status },
+        data: {
+          conditionId: condicao.id,
+          conditionKey: condicao.key,
+          sensitive: condicao.sensitive,
+          basis,
+          confirmedAt,
+          deadlineStart: prazo.marco,
+          deadlineKind: prazo.tipo,
+          targets: prazo.esferas,
+          deadlineStartAt: prazo.inicio,
+          dueAt: prazo.vence,
+          symptomsOnset: sintomas ? new Date(`${sintomas}T00:00:00Z`) : null,
+          epiWeekOnset: sintomas ? semanasDaFicha(null, sintomas).SEM_PRI : null,
+          form: ficha as object,
+        },
+      });
+      if (count !== 1) throw conflict('A notificação mudou enquanto você editava; abra de novo');
+      await tx.notificationEvent.create({
+        data: { notificationId: id, kind: condicao.key !== n.conditionKey ? 'SUBITEM_ALTERADO' : 'EDITADA', userId: ctx.session.userId, data: { antes, depois, ficha: input.ficha ?? null } },
+      });
+      if (n.status === 'NOTIFICADA' || afrouxa) await this.audit.record(ctx, tx, { action: 'notificacao.editar', entityType: 'Notification', entityId: id, payload: { antes, depois } });
     });
-    if (n.status === 'NOTIFICADA') await this.audit.recordStandalone(ctx, { action: 'notificacao.editar', entityType: 'Notification', entityId: id, payload: { antes, depois } });
+    this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -620,20 +721,26 @@ export class NotificacaoService implements OnModuleInit {
     if (!(n.notifierId === ctx.session.userId || ctx.session.role === 'VIGILANCIA_EPIDEMIOLOGICA' || ctx.session.role === 'NUCLEO_VIGILANCIA')) throw forbidden('Só o autor ou a vigilância confirmam');
     const agora = new Date();
     const hoje = localDateString(agora, ctx.tenant.timeZone);
-    const ficha = { ...(n.form as unknown as Ficha), DT_NOTIFIC: hoje };
     const sintomas = n.symptomsOnset?.toISOString().slice(0, 10) ?? null;
+    const ficha = { ...(n.form as unknown as Ficha), DT_NOTIFIC: hoje, DT_SIN_PRI: sintomas };
     const erros = validarFicha(ficha, { notificadaEm: agora, sintomas, hoje });
+    // Agravo notificado só na confirmação (item 60): sem a data, não há caso a notificar nem prazo.
+    if (n.deadlineStart === 'CONFIRMACAO' && !n.confirmedAt) erros.push('Este agravo é notificado na confirmação do caso: informe a data de confirmação');
     if (erros.length) throw new DomainError('FICHA_INVALIDA', erros.join('; '), HttpStatus.BAD_REQUEST, { erros });
     const semanas = semanasDaFicha(hoje, sintomas);
     await ctx.db.$transaction(async (tx) => {
-      await tx.notification.update({ where: { id }, data: { status: 'NOTIFICADA', notifiedAt: agora, epiWeekNotified: semanas.SEM_NOT, epiWeekOnset: semanas.SEM_PRI, form: ficha as object } });
+      const { count } = await tx.notification.updateMany({
+        where: { id, status: 'RASCUNHO' },
+        data: { status: 'NOTIFICADA', notifiedAt: agora, epiWeekNotified: semanas.SEM_NOT, epiWeekOnset: semanas.SEM_PRI, form: ficha as object },
+      });
+      if (count !== 1) throw conflict('A notificação já foi confirmada ou descartada');
       await tx.notificationCommunication.create({
         data: { notificationId: id, target: 'SMS', channel: 'SISTEMA', communicatedAt: agora, counterpartName: 'Vigilância epidemiológica municipal (painel do OmniSaúde)', userId: ctx.session.userId },
       });
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'CONFIRMADA', userId: ctx.session.userId, data: { semana: semanas.SEM_NOT } } });
       await this.audit.record(ctx, tx, { action: 'notificacao.confirmar', entityType: 'Notification', entityId: id, payload: { numero: n.number, agravo: n.conditionKey } });
     });
-    this.avisar(ctx, { ...n, status: 'NOTIFICADA' });
+    this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -645,11 +752,12 @@ export class NotificacaoService implements OnModuleInit {
     if (exigeVigilancia && !this.pode(ctx, 'notificacao.descartar')) throw forbidden('Notificação imediata ou já confirmada só é descartada pela vigilância municipal');
     if (!exigeVigilancia && n.notifierId !== ctx.session.userId && !this.pode(ctx, 'notificacao.descartar')) throw forbidden('Só o autor descarta o próprio rascunho');
     await ctx.db.$transaction(async (tx) => {
-      await tx.notification.update({ where: { id }, data: { status: 'DESCARTADA', discardReason: motivo.trim(), discardedBy: ctx.session.userId, discardedAt: new Date() } });
+      const { count } = await tx.notification.updateMany({ where: { id, status: n.status }, data: { status: 'DESCARTADA', discardReason: motivo.trim(), discardedBy: ctx.session.userId, discardedAt: new Date() } });
+      if (count !== 1) throw conflict('A notificação mudou de situação; abra de novo');
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'DESCARTADA', userId: ctx.session.userId, notes: motivo.trim() } });
       await this.audit.record(ctx, tx, { action: 'notificacao.descartar', entityType: 'Notification', entityId: id, payload: { numero: n.number, motivo } });
     });
-    this.avisar(ctx, { ...n, status: 'DESCARTADA' });
+    this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -660,10 +768,9 @@ export class NotificacaoService implements OnModuleInit {
     if (n.smsReceivedAt) throw new DomainError('JA_CIENTE', 'A vigilância já deu ciência', HttpStatus.UNPROCESSABLE_ENTITY);
     const agora = new Date();
     await ctx.db.$transaction(async (tx) => {
-      await tx.notification.update({ where: { id }, data: { smsReceivedAt: agora, smsReceivedBy: ctx.session.userId } });
-      await tx.notificationEvent.create({
-        data: { notificationId: id, kind: 'CIENCIA_SMS', userId: ctx.session.userId, data: { repasseAte: n.targets.some((t) => t !== 'SMS') ? prazoRepasse(agora).toISOString() : null } },
-      });
+      const { count } = await tx.notification.updateMany({ where: { id, status: 'NOTIFICADA', smsReceivedAt: null }, data: { smsReceivedAt: agora, smsReceivedBy: ctx.session.userId } });
+      if (count !== 1) throw conflict('A vigilância já deu ciência');
+      await tx.notificationEvent.create({ data: { notificationId: id, kind: 'CIENCIA_SMS', userId: ctx.session.userId } });
       await this.audit.record(ctx, tx, { action: 'notificacao.ciencia', entityType: 'Notification', entityId: id, payload: { numero: n.number } });
     });
     this.avisar(ctx, n);
@@ -716,6 +823,10 @@ export class NotificacaoService implements OnModuleInit {
     return this.detalhe(ctx, id);
   }
 
+  /**
+   * Linhas das listas. Quem não abre a notificação (fora do alcance ou sem acesso ao sigilo) não vê nada que indique
+   * o agravo sigiloso: nem nome, nem prazo, esferas, origem ou unidade. Listar agravos sigilosos abertos fica auditado.
+   */
   private async linhas(ctx: RequestContext, rows: Awaited<ReturnType<typeof this.buscar>>) {
     const agora = new Date();
     const unidades = new Map((await ctx.db.unit.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.unitId))] } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
@@ -726,9 +837,39 @@ export class NotificacaoService implements OnModuleInit {
       ctx.db,
       rows.map((r) => r.id),
     );
+    const prontuario = this.pode(ctx, 'prontuario.ler');
+    const sigilosasAbertas: string[] = [];
     const saida = [];
     for (const n of rows) {
-      const aberto = !n.sensitive || this.abreSigiloso(ctx, n);
+      const podeAbrir = this.alcance(ctx, n) && (!n.sensitive || this.abreSigiloso(ctx, n));
+      // Fora do alcance, quem cuida do paciente (prontuário) vê o agravo não sigiloso, para não notificar de novo.
+      const mostra = podeAbrir || (!n.sensitive && prontuario);
+      if (podeAbrir && n.sensitive && n.notifierId !== ctx.session.userId) sigilosasAbertas.push(n.id);
+      if (!mostra) {
+        saida.push({
+          id: n.id,
+          numero: n.number,
+          status: n.status,
+          origem: null,
+          agravo: RESTRITO,
+          grupo: null,
+          sigiloso: true,
+          naoHomologado: false,
+          paciente: null,
+          unidade: null,
+          prazo: null,
+          esferas: [],
+          venceEm: null,
+          situacaoSms: null,
+          repasses: [],
+          ciencia: false,
+          escalada: false,
+          semana: null,
+          criadaEm: n.createdAt.toISOString(),
+          podeAbrir: false,
+        });
+        continue;
+      }
       const esferas = await this.esferas(ctx.db, n, agora, comunicacoes);
       const sms = esferas.lista.find((e) => e.esfera === 'SMS')!;
       const repasses = esferas.lista.filter((e) => e.esfera !== 'SMS');
@@ -737,24 +878,43 @@ export class NotificacaoService implements OnModuleInit {
         numero: n.number,
         status: n.status,
         origem: n.origin,
-        agravo: aberto ? n.condition.name : RESTRITO,
-        grupo: aberto ? n.groupKey : null,
+        agravo: n.condition.name,
+        grupo: n.groupKey,
         sigiloso: n.sensitive,
         naoHomologado: n.mapStatus === 'PROPOSTO',
-        paciente: aberto ? (pacientes.get(n.patientId) ?? null) : null,
+        paciente: pacientes.get(n.patientId) ?? null,
         unidade: unidades.get(n.unitId) ?? null,
         prazo: n.deadlineKind,
         esferas: n.targets,
         venceEm: n.dueAt?.toISOString() ?? null,
         situacaoSms: n.status === 'DESCARTADA' ? 'SEM_PRAZO' : sms.situacao,
-        repasses: repasses.map((r) => ({ esfera: r.esfera, situacao: r.situacao, venceEm: r.venceEm })),
+        repasses: n.status === 'DESCARTADA' ? [] : repasses.map((r) => ({ esfera: r.esfera, situacao: r.situacao, venceEm: r.venceEm })),
         ciencia: !!n.smsReceivedAt,
         escalada: !!n.escalatedAt,
         semana: n.epiWeekNotified,
         criadaEm: n.createdAt.toISOString(),
+        podeAbrir,
       });
     }
+    if (sigilosasAbertas.length) await this.audit.recordStandalone(ctx, { action: 'notificacao.listar_sensivel', entityType: 'Notification', payload: { ids: sigilosasAbertas } });
     return saida;
+  }
+
+  /**
+   * Notificações com alguma pendência: rascunho, imediata sem recebimento pela SMS ou repasse à SES ou ao MS sem
+   * comunicação. Os cartões e o filtro de prazo olham este conjunto inteiro (não só as mais recentes).
+   */
+  private pendentes(escopo: object) {
+    const semComunicacao = (alvo: Esfera) => ({ communications: { none: { target: alvo, channel: { not: 'SISTEMA' as const } } } });
+    return {
+      ...escopo,
+      OR: [
+        { status: 'RASCUNHO' as const },
+        { status: 'NOTIFICADA' as const, deadlineKind: 'IMEDIATA' as const, smsReceivedAt: null, ...semComunicacao('SMS') },
+        { status: 'NOTIFICADA' as const, targets: { has: 'SES' as const }, ...semComunicacao('SES') },
+        { status: 'NOTIFICADA' as const, targets: { has: 'MS' as const }, ...semComunicacao('MS') },
+      ],
+    };
   }
 
   private buscar(ctx: RequestContext, where: object, take = 200) {
@@ -778,28 +938,32 @@ export class NotificacaoService implements OnModuleInit {
 
   /** Painel da vigilância: municipal vê todas; núcleo vê a unidade. */
   async painel(ctx: RequestContext, q: { status?: string; grupo?: string; unitId?: string; situacao?: string; semana?: string }) {
-    const where = {
+    const filtros = {
       ...this.where(ctx),
       ...(q.status ? { status: q.status as 'RASCUNHO' } : { status: { not: 'DESCARTADA' as const } }),
       ...(q.grupo ? { groupKey: q.grupo } : {}),
       ...(q.unitId && ctx.session.role === 'VIGILANCIA_EPIDEMIOLOGICA' ? { unitId: q.unitId } : {}),
       ...(q.semana ? { epiWeekNotified: q.semana } : {}),
     };
-    const linhas = (await this.linhas(ctx, await this.buscar(ctx, where, 300))).filter((l) => {
-      if (!q.situacao) return true;
-      if (q.situacao === 'VENCIDO') return l.situacaoSms === 'VENCIDO' || l.repasses.some((r) => r.situacao === 'VENCIDO');
-      if (q.situacao === 'REPASSE') return l.repasses.some((r) => r.situacao !== 'CUMPRIDO');
-      return l.situacaoSms === q.situacao;
-    });
-    const abertas = await this.linhas(ctx, await this.buscar(ctx, { ...this.where(ctx), status: { in: ['RASCUNHO', 'NOTIFICADA'] } }, 500));
+    // Filtro de prazo: sobre todas as pendentes (as vencidas antigas não podem sumir atrás das recentes).
+    const linhas = q.situacao
+      ? (await this.linhas(ctx, await this.buscar(ctx, this.pendentes(filtros), LIMITE_PENDENTES))).filter((l) => {
+          if (q.situacao === 'VENCIDO') return l.situacaoSms === 'VENCIDO' || l.repasses.some((r) => r.situacao === 'VENCIDO');
+          if (q.situacao === 'REPASSE') return l.repasses.some((r) => r.situacao !== 'CUMPRIDO');
+          return l.situacaoSms === q.situacao;
+        })
+      : await this.linhas(ctx, await this.buscar(ctx, filtros, 300));
+    const abertas = await this.buscar(ctx, this.pendentes(this.where(ctx)), LIMITE_PENDENTES);
+    if (abertas.length === LIMITE_PENDENTES) this.logger.warn(`Painel da vigilância: mais de ${LIMITE_PENDENTES} notificações pendentes; os cartões mostram as ${LIMITE_PENDENTES} mais recentes`);
+    const pend = await this.linhas(ctx, abertas);
     const descartes = await ctx.db.notification.count({ where: { ...this.where(ctx), status: 'DESCARTADA', discardedAt: { gte: new Date(Date.now() - 30 * DIA) } } });
     return {
       cartoes: {
-        imediatasAguardandoCiencia: abertas.filter((l) => l.status === 'NOTIFICADA' && l.prazo === 'IMEDIATA' && !l.ciencia).length,
-        rascunhosImediatos: abertas.filter((l) => l.status === 'RASCUNHO' && l.prazo === 'IMEDIATA').length,
-        repassesPendentes: abertas.filter((l) => l.repasses.some((r) => r.situacao !== 'CUMPRIDO')).length,
-        vencidas: abertas.filter((l) => l.situacaoSms === 'VENCIDO' || l.repasses.some((r) => r.situacao === 'VENCIDO')).length,
-        semanaisAVencer: abertas.filter((l) => l.prazo === 'SEMANAL' && (l.situacaoSms === 'A_VENCER' || l.situacaoSms === 'NO_PRAZO') && l.status === 'RASCUNHO').length,
+        imediatasAguardandoCiencia: pend.filter((l) => l.status === 'NOTIFICADA' && l.prazo === 'IMEDIATA' && !l.ciencia && l.situacaoSms !== 'CUMPRIDO').length,
+        rascunhosImediatos: pend.filter((l) => l.status === 'RASCUNHO' && l.prazo === 'IMEDIATA').length,
+        repassesPendentes: pend.filter((l) => l.repasses.some((r) => r.situacao !== 'CUMPRIDO')).length,
+        vencidas: pend.filter((l) => l.situacaoSms === 'VENCIDO' || l.repasses.some((r) => r.situacao === 'VENCIDO')).length,
+        semanaisAVencer: pend.filter((l) => l.prazo === 'SEMANAL' && l.status === 'RASCUNHO').length,
         descartes30d: descartes,
       },
       notificacoes: linhas,
@@ -813,11 +977,13 @@ export class NotificacaoService implements OnModuleInit {
     return linhas.map((l, i) => ({ ...l, motivo: rows[i]!.sensitive && !this.abreSigiloso(ctx, rows[i]!) ? null : rows[i]!.discardReason, descartadaEm: rows[i]!.discardedAt?.toISOString() ?? null }));
   }
 
-  /** Gestão: só contagens, sem lista nominal. */
+  /** Gestão: só contagens, sem lista nominal (sobre as notificações com pendência). */
   async resumo(ctx: RequestContext) {
     const abertas = await ctx.db.notification.findMany({
-      where: { status: { in: ['RASCUNHO', 'NOTIFICADA'] } },
+      where: this.pendentes({}),
       select: { id: true, status: true, deadlineKind: true, targets: true, dueAt: true, notifiedAt: true, smsReceivedAt: true },
+      orderBy: { createdAt: 'desc' },
+      take: LIMITE_PENDENTES,
     });
     let noPrazo = 0;
     let vencidas = 0;
@@ -829,8 +995,8 @@ export class NotificacaoService implements OnModuleInit {
     for (const n of abertas) {
       const e = await this.esferas(ctx.db, n, new Date(), comunicacoes);
       const sms = e.lista.find((x) => x.esfera === 'SMS')!;
-      if (sms.situacao === 'VENCIDO' || e.lista.some((x) => x.situacao === 'VENCIDO')) vencidas++;
-      else if (n.deadlineKind === 'IMEDIATA') noPrazo++;
+      if (e.lista.some((x) => x.situacao === 'VENCIDO')) vencidas++;
+      else if (n.deadlineKind === 'IMEDIATA' && sms.situacao !== 'CUMPRIDO') noPrazo++;
       if (e.lista.some((x) => x.esfera !== 'SMS' && x.situacao !== 'CUMPRIDO')) repasses++;
     }
     return { imediatasNoPrazo: noPrazo, vencidas, repassesPendentes: repasses, semana: semanaEpidemiologica(new Date(), ctx.tenant.timeZone).codigo };
@@ -879,7 +1045,8 @@ export class NotificacaoService implements OnModuleInit {
       onCallPhones: telefones ? [...new Set(telefones as string[])] : atual.vigilancia.onCallPhones,
       whatsappAlerts: input.whatsappAlerts ?? atual.vigilancia.whatsappAlerts,
     };
-    await this.master.tenant.update({ where: { id: ctx.tenant.id }, data: { settings: { ...atual, vigilancia } as object } });
+    // Só a chave "vigilancia", de forma atômica: não desfaz uma mudança simultânea da política de MFA.
+    await this.master.$executeRaw`UPDATE tenants SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{vigilancia}', ${JSON.stringify(vigilancia)}::jsonb) WHERE id = ${ctx.tenant.id}::uuid`;
     this.tenants.connections.invalidate(ctx.tenant.slug);
     this.tenants.connections.invalidate(ctx.tenant.id);
     await this.audit.recordStandalone(ctx, {
@@ -893,62 +1060,115 @@ export class NotificacaoService implements OnModuleInit {
 
   // ───────────────────────────── tarefa periódica ─────────────────────────────
 
-  /** A cada 5 minutos: varredura de recuperação do gatilho, escalonamento ao plantão e prazos vencidos. */
+  /** Autor de uma ação recuperada: a lotação na unidade (ou qualquer lotação do usuário) dá o papel e o CBO. */
+  private async autorRecuperado(sys: SystemContext, userId: string, unitId: string, papel?: string | null): Promise<Autor | null> {
+    const lotacao =
+      (await sys.db.userAssignment.findFirst({ where: { userId, unitId, ...(papel ? { role: papel as Role } : {}) }, select: { role: true, cbo: true } })) ??
+      (await sys.db.userAssignment.findFirst({ where: { userId }, select: { role: true, cbo: true } }));
+    return lotacao ? { userId, role: lotacao.role as Role, cbo: lotacao.cbo, unitId } : null;
+  }
+
+  /**
+   * A cada 5 minutos: recupera o que o gatilho deixou de abrir, escala ao plantão e marca prazos vencidos.
+   * Tudo idempotente (execuções sobrepostas não duplicam rascunho, alerta nem evento).
+   */
   async tarefa(sys: SystemContext, agora = new Date()) {
     const resultado = { recuperadas: 0, escaladas: 0, vencidas: 0 };
-    // 1. Varredura: registros assinados nas últimas 48 h com códigos (o gatilho é idempotente).
-    const notas = await sys.db.clinicalNote.findMany({
-      where: { status: 'ASSINADO', signedAt: { gte: new Date(agora.getTime() - 2 * DIA) }, NOT: { codes: { isEmpty: true } } },
-      take: 500,
-      orderBy: { signedAt: 'desc' },
-    });
+    const desde = new Date(agora.getTime() - 2 * DIA);
     await this.catalogo.garantir(sys);
-    const mapas = await sys.db.notifiableCodeMap.findMany({ where: { status: { not: 'INATIVO' } }, select: { system: true, codePrefix: true } });
-    const notificavel = (bruto: string) => {
-      const cod = normalizarCodigo(bruto);
-      return !!cod && mapearCodigo(mapas, cod.system, cod.code).length > 0;
-    };
-    for (const nota of notas.filter((x) => x.codes.some(notificavel))) {
+    const memo: Memo = { retratos: new Map() };
+    memo.mapas = await sys.db.notifiableCodeMap.findMany({ where: { status: { not: 'INATIVO' } } });
+
+    // 1a. Registros assinados nas últimas 48 h com código notificável (filtrado no banco, antes do limite).
+    const cid = memo.mapas.filter((m) => m.system === 'CID10').map((m) => m.codePrefix);
+    const ciap = memo.mapas.filter((m) => m.system === 'CIAP2').map((m) => m.codePrefix);
+    const padrao = `^(?:(?:CID10:|CID:)?(?:${cid.join('|') || '$^'})|(?:CIAP2:|CIAP:)(?:${ciap.join('|') || '$^'}))`;
+    const ids = await sys.db.$queryRaw<{ id: string }[]>`
+      SELECT n.id FROM clinical_notes n
+      WHERE n.status = 'ASSINADO' AND n.signed_at >= ${desde}
+        AND EXISTS (SELECT 1 FROM unnest(n.codes) AS c WHERE upper(replace(c, '.', '')) ~ ${padrao})
+      ORDER BY n.signed_at DESC LIMIT ${LIMITE_PENDENTES}`;
+    if (ids.length === LIMITE_PENDENTES) this.logger.warn(`Varredura da vigilância: mais de ${LIMITE_PENDENTES} registros notificáveis em 48 h; ficam para a próxima execução os mais antigos`);
+    const notas = ids.length ? await sys.db.clinicalNote.findMany({ where: { id: { in: ids.map((r) => r.id) } } }) : [];
+    for (const nota of notas) {
       try {
         const e = await sys.db.encounter.findUnique({ where: { id: nota.encounterId }, select: { unitId: true } });
-        if (!e) continue;
-        const autor =
-          (await sys.db.userAssignment.findFirst({ where: { userId: nota.authorId, unitId: e.unitId }, select: { role: true, cbo: true } })) ??
-          (await sys.db.userAssignment.findFirst({ where: { userId: nota.authorId }, select: { role: true, cbo: true } }));
+        const autor = e ? await this.autorRecuperado(sys, nota.authorId, e.unitId) : null;
         if (!autor) continue;
-        const criados = await this.processarCodigos(sys, {
-          encounterId: nota.encounterId,
-          noteId: nota.id,
-          codes: nota.codes,
-          conhecimento: nota.signedAt ?? agora,
-          origem: 'VARREDURA',
-          autor: { userId: nota.authorId, role: autor.role as Role, cbo: nota.cbo ?? autor.cbo, unitId: e.unitId },
-        });
+        const criados = await this.processarCodigos(
+          sys,
+          { encounterId: nota.encounterId, noteId: nota.id, codes: nota.codes, conhecimento: nota.signedAt ?? agora, origem: 'VARREDURA', autor: { ...autor, cbo: nota.cbo ?? autor.cbo } },
+          memo,
+        );
         resultado.recuperadas += criados.length;
       } catch (err) {
         this.logger.warn(`Varredura da nota ${nota.id}: ${(err as Error).message}`);
       }
     }
-    // 2. Escalonamento: imediata confirmada sem ciência depois de ackMinutes.
+
+    // 1b. Falhas do gatilho no encerramento (CID principal e óbito) e na internação, registradas na auditoria.
+    const falhas = await sys.db.auditEntry.findMany({ where: { action: 'vigilancia.erro_gatilho', at: { gte: desde } }, orderBy: { seq: 'asc' }, take: 500 });
+    for (const f of falhas) {
+      if (!f.entityId || !f.userId) continue;
+      try {
+        if (f.entityType === 'Admission') {
+          const adm = await sys.db.admission.findUnique({ where: { id: f.entityId }, include: { encounter: { select: { unitId: true } } } });
+          const autor = adm ? await this.autorRecuperado(sys, f.userId, f.unitId ?? adm.encounter.unitId, f.role) : null;
+          if (!adm || !autor) continue;
+          resultado.recuperadas += (await this.processarCodigos(sys, { encounterId: adm.encounterId, admissionId: adm.id, codes: [adm.mainCid], conhecimento: f.at, origem: 'VARREDURA', autor }, memo)).length;
+        } else if (f.entityType === 'Encounter') {
+          const e = await sys.db.encounter.findUnique({ where: { id: f.entityId }, select: { id: true, unitId: true, status: true, mainCid: true, outcome: true } });
+          if (!e || (e.status !== 'ENCERRADO' && e.status !== 'EVADIU') || (!e.mainCid && e.outcome !== 'OBITO')) continue;
+          const autor = await this.autorRecuperado(sys, f.userId, f.unitId ?? e.unitId, f.role);
+          if (!autor) continue;
+          resultado.recuperadas += (await this.encerramento(sys, e, autor, f.at, 'VARREDURA', memo)).length;
+        }
+      } catch (err) {
+        this.logger.warn(`Reprocessamento de ${f.entityType} ${f.entityId}: ${(err as Error).message}`);
+      }
+    }
+
+    // 2. Escalonamento: imediata confirmada sem recebimento pela SMS depois de ackMinutes.
     const ack = sys.tenant.settings.vigilancia.ackMinutes;
     const semCiencia = await sys.db.notification.findMany({
-      where: { status: 'NOTIFICADA', deadlineKind: 'IMEDIATA', smsReceivedAt: null, escalatedAt: null, notifiedAt: { lte: new Date(agora.getTime() - ack * 60_000) } },
-      include: { condition: true },
+      where: { status: 'NOTIFICADA', deadlineKind: 'IMEDIATA', smsReceivedAt: null, escalatedAt: null, notifiedAt: { lte: new Date(agora.getTime() - ack * 60_000) }, ...SEM_COMUNICACAO_SMS },
+      select: { id: true, number: true, unitId: true, status: true, deadlineKind: true, targets: true, dueAt: true, notifiedAt: true, smsReceivedAt: true, sensitive: true, condition: { select: { name: true } } },
     });
+    const comSemCiencia = await this.comunicacoesDe(
+      sys.db,
+      semCiencia.map((n) => n.id),
+    );
     for (const n of semCiencia) {
-      const esf = await this.esferas(sys.db, n, agora);
+      const esf = await this.esferas(sys.db, n, agora, comSemCiencia);
       if (esf.lista.find((x) => x.esfera === 'SMS')?.cumpridaEm) continue;
-      await sys.db.notification.update({ where: { id: n.id }, data: { escalatedAt: agora, events: { create: { kind: 'ESCALADA', data: { minutos: ack } } } } });
-      this.realtime.emitToTenant(sys.tenant.id, 'vigilancia:escalada', { id: n.id, numero: n.number, sigiloso: n.sensitive });
+      const { count } = await sys.db.notification.updateMany({ where: { id: n.id, escalatedAt: null }, data: { escalatedAt: agora } });
+      if (count !== 1) continue;
+      await sys.db.notificationEvent.create({ data: { notificationId: n.id, kind: 'ESCALADA', data: { minutos: ack } } });
+      this.realtime.emitToTenant(sys.tenant.id, 'vigilancia:escalada', { id: n.id });
       await this.alertarPlantao(sys, n);
       resultado.escaladas++;
     }
-    // 3. Prazo vencido sem cumprimento perante a SMS.
-    const abertas = await sys.db.notification.findMany({ where: { status: { in: ['RASCUNHO', 'NOTIFICADA'] }, overdueAt: null, dueAt: { lt: agora } } });
-    for (const n of abertas) {
-      const esf = await this.esferas(sys.db, n, agora);
+
+    // 3. Prazo vencido perante a SMS: só o que ainda não cumpriu (rascunho, ou imediata sem ciência nem comunicação
+    // por meio rápido); cada linha lida é marcada uma vez e não volta.
+    const vencendo = await sys.db.notification.findMany({
+      where: {
+        overdueAt: null,
+        dueAt: { lt: agora },
+        OR: [{ status: 'RASCUNHO' }, { status: 'NOTIFICADA', deadlineKind: 'IMEDIATA', smsReceivedAt: null, ...SEM_COMUNICACAO_SMS }],
+      },
+      select: { id: true, unitId: true, status: true, deadlineKind: true, targets: true, dueAt: true, notifiedAt: true, smsReceivedAt: true },
+    });
+    const comVencendo = await this.comunicacoesDe(
+      sys.db,
+      vencendo.map((n) => n.id),
+    );
+    for (const n of vencendo) {
+      const esf = await this.esferas(sys.db, n, agora, comVencendo);
       if (esf.lista.find((x) => x.esfera === 'SMS')?.situacao !== 'VENCIDO') continue;
-      await sys.db.notification.update({ where: { id: n.id }, data: { overdueAt: agora, events: { create: { kind: 'PRAZO_VENCIDO' } } } });
+      const { count } = await sys.db.notification.updateMany({ where: { id: n.id, overdueAt: null }, data: { overdueAt: agora } });
+      if (count !== 1) continue;
+      await sys.db.notificationEvent.create({ data: { notificationId: n.id, kind: 'PRAZO_VENCIDO' } });
       this.avisar(sys, n);
       resultado.vencidas++;
     }

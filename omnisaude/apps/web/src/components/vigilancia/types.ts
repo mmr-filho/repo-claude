@@ -17,22 +17,25 @@ export interface NotificacaoResumo {
   id: string;
   numero: string;
   status: 'RASCUNHO' | 'NOTIFICADA' | 'DESCARTADA';
-  origem: string;
+  /** null quando a notificação é de acesso restrito para quem consulta. */
+  origem: string | null;
   agravo: string;
   grupo: string | null;
   sigiloso: boolean;
   naoHomologado: boolean;
   paciente: string | null;
   unidade: string | null;
-  prazo: 'IMEDIATA' | 'SEMANAL';
+  prazo: 'IMEDIATA' | 'SEMANAL' | null;
   esferas: Esfera[];
   venceEm: string | null;
-  situacaoSms: SituacaoPrazo;
+  situacaoSms: SituacaoPrazo | null;
   repasses: { esfera: Esfera; situacao: SituacaoPrazo; venceEm: string | null }[];
   ciencia: boolean;
   escalada: boolean;
   semana: string | null;
   criadaEm: string;
+  /** A pessoa pode abrir a ficha (alcance e sigilo). */
+  podeAbrir: boolean;
 }
 
 export interface PainelVigilancia {

@@ -113,6 +113,8 @@ const agora = () => {
 
 export default function VacinasPage() {
   const router = useRouter();
+  // Dose cuja notificação de ESAVI está sendo aberta (evita clique duplo).
+  const [esavi, setEsavi] = useState<string | null>(null);
   const session = useSession();
   const toast = useToast();
   const [tab, setTab] = useState('sala');
@@ -469,12 +471,17 @@ export default function VacinasPage() {
                                       size="sm"
                                       variant="ghost"
                                       title="Evento supostamente atribuível à vacinação ou imunização (item 23 da lista, imediata)"
+                                      loading={esavi === d.id}
+                                      disabled={!!esavi}
                                       onClick={async () => {
+                                        setEsavi(d.id);
                                         try {
                                           const n = await api.post<NotificacaoDetalhe>('/vigilancia/notificacoes', { patientId: cartao.data!.patient.id, conditionKey: 'esavi', vaccinationId: d.id });
                                           router.push(`/vigilancia/notificacao?id=${n.id}`);
                                         } catch (err) {
                                           toast.error(errorMessage(err));
+                                        } finally {
+                                          setEsavi(null);
                                         }
                                       }}
                                     >

@@ -1511,6 +1511,7 @@ model ClinicalNote {
 
   @@index([encounterId])
   @@index([status, createdAt])
+  @@index([status, signedAt])
   @@map("clinical_notes")
 }
 
@@ -2693,6 +2694,8 @@ model NotifiableListVersion {
   actUrl       String?   @map("act_url")
   sourceUrl    String?   @map("source_url")
   sourceSha256 String?   @map("source_sha256") @db.Char(64)
+  /// SHA-256 do conteúdo da versão nacional no código: muda quando a curadoria muda e dispara a sincronização.
+  contentHash  String?   @map("content_hash") @db.Char(64)
   consultedAt  DateTime? @map("consulted_at") @db.Date
   validFrom    DateTime  @map("valid_from") @db.Date
   validTo      DateTime? @map("valid_to") @db.Date
@@ -2825,6 +2828,8 @@ model Notification {
   @@index([patientId, groupKey, createdAt])
   @@index([unitId, status])
   @@index([notifierId, createdAt])
+  @@index([encounterId, groupKey])
+  @@index([vaccinationId])
   @@map("notifications")
 }
 

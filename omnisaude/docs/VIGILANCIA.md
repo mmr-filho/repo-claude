@@ -27,9 +27,11 @@ mpox, também na semana 24.
   congênita), critério (suspeita ou confirmação), marco do prazo, sigilo, notificação única por pessoa e notas.
   Teste: 81 linhas e 66 itens na redação vigente, 77 na anterior, e a conferência de linhas sensíveis.
 - **No banco**: na primeira vez em cada instituição, as duas versões nacionais, o de-para inicial e o contato do
-  CIEVS Nacional (0800-644-6645, notifica@saude.gov.br) são gravados. A vigilância municipal cadastra **listas
-  estaduais ou municipais** (ato, vigência, sem sobreposição no mesmo escopo); a linha local de mesma chave
-  substitui a nacional.
+  CIEVS Nacional (0800-644-6645, notifica@saude.gov.br) são gravados. Quando a curadoria do catálogo gerado muda
+  (hash do conteúdo), as linhas nacionais são atualizadas por chave e as que saíram ficam inativas. A vigilância
+  municipal cadastra **listas estaduais ou municipais** (ato, vigência, sem sobreposição no mesmo escopo), que só
+  **acrescentam** agravos: uma linha local não pode usar a chave nem o grupo de um agravo nacional (não afrouxa
+  prazo nem sigilo da regra federal).
 - **Versão pela data**: a notificação usa a lista vigente na data do primeiro atendimento (um atendimento de
   10/05/2026 usa a PRT 10.175/2026).
 - **Notas normativas**:
@@ -46,7 +48,12 @@ mpox, também na semana 24.
 Código CID-10 ou CIAP-2 (por prefixo; vale o mais longo) → grupo do agravo. Homologados de saída: A37.9
 (coqueluche), A93.0 (oropouche), B42 (esporotricose) e W64 (atendimento antirrábico). Os demais entram como
 **propostos**: abrem o rascunho, mas com o aviso "mapeamento não homologado" até um técnico da vigilância
-homologar (em lote, na aba *Códigos*). Um código pode indicar o contexto (P35.4 → zika congênita).
+homologar (em lote, na aba *Códigos*). Um código pode indicar o contexto (P35.4 → zika congênita). T63 (contato
+com animal venenoso) vai só para acidente por animal peçonhento; as agressões X85–Y09 e T74 abrem violência.
+
+**Gestação**: HIV/aids, hepatite B, HTLV e toxoplasmose têm linhas próprias na gestação (itens 35, 33, 38 e 62),
+que são grupos separados na lista. Com a linha de cuidado de gestante ativa, o mesmo código abre também a linha
+da gestação (B58, toxoplasmose, só é notificável na gestação).
 
 ## Gatilho: quando o rascunho é aberto
 
@@ -55,15 +62,19 @@ homologar (em lote, na aba *Códigos*). Um código pode indicar o contexto (P35.
 | Assinatura do registro clínico com código | um rascunho por agravo encontrado; prazo da imediata a partir do início do atendimento |
 | Encerramento do atendimento | CID principal; no **óbito**, a linha de óbito do grupo (dengue, zika, chikungunya, oropouche) ligada à notificação do caso |
 | Internação | CID da admissão; o prazo conta do conhecimento (a suspeita pode surgir dias depois; decisão a validar com a vigilância) |
-| Manual | quem atende escolhe o agravo na lista vigente (tela *Vigilância* ou ficha do paciente) |
-| ESAVI | botão *Notificar ESAVI* na dose registrada da sala de vacina (item 23, imediata) |
-| Varredura (a cada 5 minutos) | recupera registros assinados nas últimas 48 horas cujo gatilho falhou; não recria o que a vigilância descartou |
+| Manual | quem atende escolhe o agravo na lista vigente na data do atendimento (tela *Vigilância* ou ficha do paciente) |
+| ESAVI | botão *Notificar ESAVI* na dose registrada da sala de vacina (item 23, imediata); o prazo conta do conhecimento do evento adverso, não da aplicação; uma notificação ativa por dose |
+| Varredura (a cada 5 minutos) | recupera registros assinados nas últimas 48 horas com código notificável (filtrados no banco) e reprocessa as falhas do encerramento e da internação registradas na auditoria; não recria o que a vigilância descartou |
 
 - O gatilho **nunca bloqueia** a assinatura, o encerramento nem a internação: a falha fica na trilha de auditoria
   (`vigilancia.erro_gatilho`) e a varredura recupera.
-- **Sem duplicatas**: o mesmo atendimento não gera duas notificações ativas do mesmo agravo (índice único no
-  banco); a mesma pessoa não recebe outra do mesmo agravo em 30 dias; agravos crônicos (hanseníase, tuberculose,
-  HIV/aids, hepatites virais, doenças relacionadas ao trabalho...) são notificados uma vez por pessoa.
+- **Sem duplicatas**, comparando pelo **grupo** do agravo (trocar o subitem não abre outra) e separando a linha de
+  óbito: o mesmo atendimento não gera outra notificação do agravo, nem reabre a que a vigilância **descartou**
+  (um novo registro com o mesmo código não a recria; reabrir é manual); a mesma pessoa não recebe outra em 30 dias;
+  agravos crônicos (hanseníase, HIV/aids, doenças relacionadas ao trabalho...) são notificados uma vez por pessoa;
+  tuberculose, uma vez a cada 180 dias (recidiva e reingresso voltam ao Sinan); hepatites virais, uma vez por agente.
+- **Óbito**: a linha de óbito liga-se ao caso ativo da pessoa no mesmo atendimento ou nos últimos 30 dias, inclusive
+  notificado em outra unidade (UPA que transferiu para o hospital).
 - **Linha do grupo**: óbito > anomalia indicada pelo código > gestante (linha de cuidado de gestante ativa no
   cadastro) > caso. Malária: região amazônica ou extra-amazônica pela UF da unidade.
 - Aviso na tela: depois de assinar, um quadro mostra o agravo, a periodicidade, a contagem regressiva e o link
@@ -84,13 +95,18 @@ semana epidemiológica da notificação e dos sintomas e a comunicação à vigi
 
 Numeração interna `AAAA/NNNNNN` (não é o número do Sinan, que chega na semana 24).
 
+Trocar o subitem não pode **afrouxar** a notificação (de imediata para semanal ou com menos esferas) sem a
+vigilância municipal, nem tirar o sigilo. Agravo notificado na confirmação (item 60) só é confirmado com a data de
+confirmação. Confirmar, descartar, dar ciência e editar só valem se a notificação não mudou desde a leitura (duas
+pessoas ao mesmo tempo não se sobrescrevem; a segunda recebe aviso de conflito).
+
 ## Prazos por esfera
 
 | Esfera | Quando conta como cumprido |
 |---|---|
 | SMS, notificação imediata | ciência da vigilância municipal no painel ou comunicação registrada por meio rápido (telefone, e-mail, formulário, presencial). Confirmar no sistema não basta sozinho: a norma pede o meio mais rápido |
 | SMS, notificação semanal | confirmação da notificação |
-| SES e MS | comunicação registrada em até 24 horas da ciência da SMS |
+| SES e MS | comunicação registrada em até 24 horas do recebimento pela SMS: a ciência no painel ou a primeira comunicação à SMS por meio rápido, o que vier antes |
 
 Situação mostrada: cumprido, no prazo, vence em até 6 horas, vencido, sem prazo. A tarefa periódica marca o
 **prazo vencido** (linha do tempo) e **escala** a imediata confirmada sem ciência depois do tempo configurado
@@ -108,13 +124,17 @@ vai como "agravo de acesso restrito").
 | Gestor (`vigilancia.resumo`) | só contagens (no prazo, vencidas, repasses pendentes), sem lista nominal |
 
 **Sigilo**: notificação de agravo sigiloso abre só para o autor, a vigilância municipal e o núcleo da mesma
-unidade; cada leitura da ficha é auditada (`notificacao.ler_sensivel`). Para os demais, aparece como "agravo de
-acesso restrito", sem nome. Os eventos em tempo real levam só número, situação e prazo.
+unidade; cada leitura da ficha é auditada (`notificacao.ler_sensivel`), e também cada lista que mostra agravos
+sigilosos de outros autores (`notificacao.listar_sensivel`). Para os demais, aparece como "agravo de acesso
+restrito", sem nome, prazo, esferas, origem nem unidade (que bastariam para deduzir o agravo). Os eventos em tempo
+real levam só o id (as salas incluem a recepção e os painéis de TV); a tela recarrega pela API, que aplica o
+alcance. Na ficha do paciente, quem não pode abrir uma notificação a vê sem link.
 
 ## Telas
 
 - **Vigilância** (`/vigilancia`): *Painel da vigilância* (cartões de imediatas aguardando ciência, rascunhos
-  imediatos, repasses pendentes, vencidas, semanais em rascunho e descartes; lista com filtros e a ficha ao lado),
+  imediatos, repasses pendentes, vencidas, semanais em rascunho e descartes, calculados sobre todas as notificações
+  com pendência, não só as mais recentes; lista com filtros e a ficha ao lado),
   *Minhas notificações*, *Descartes*, *Lista (LNNC)* (versões, linhas e lista local), *Códigos* (de-para e
   homologação em lote) e *Plantão e contatos*; o gestor vê a aba *Resumo*.
 - **Ficha** (`/vigilancia/notificacao?id=`): prazo por esfera com contagem regressiva, campos da FIN, editar,

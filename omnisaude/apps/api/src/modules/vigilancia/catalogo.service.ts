@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { TenantClient } from '@omnisaude/database';
 import { LNNC_NACIONAL, MAPEAMENTOS_INICIAIS, mapearCodigo, mesclarCatalogo, versaoNaData, type ContextoAgravo } from '@omnisaude/shared';
@@ -58,44 +59,53 @@ export interface NovaCondicaoLocal {
  * vigilância. O retrato numa data junta a nacional vigente com as complementares vigentes; a linha local de mesma
  * chave substitui a nacional.
  */
+/** Chaves e grupos de todas as versões nacionais gravadas. */
+async function chavesNacionais(sys: Sys) {
+  const linhas = await sys.db.notifiableCondition.findMany({ where: { version: { scope: 'NACIONAL' } }, select: { key: true, groupKey: true } });
+  return { chaves: new Set(linhas.map((l) => l.key)), grupos: new Set(linhas.map((l) => l.groupKey)) };
+}
+
 @Injectable()
 export class CatalogoVigilanciaService {
   private readonly prontos = new Set<string>();
 
   constructor(private readonly audit: AuditService) {}
 
-  /** Carrega as versões nacionais, o de-para inicial e o CIEVS Nacional (idempotente). */
+  /**
+   * Carrega as versões nacionais, o de-para inicial e o CIEVS Nacional (idempotente). Quando a curadoria do catálogo
+   * gerado muda (hash do conteúdo), as linhas nacionais são atualizadas por chave e as que saíram ficam inativas
+   * (nunca apagadas: notificações apontam para elas).
+   */
   async garantir(sys: Sys) {
     if (this.prontos.has(sys.tenant.id)) return;
     for (const v of LNNC_NACIONAL) {
+      const hash = createHash('sha256').update(JSON.stringify(v)).digest('hex');
       let row = await sys.db.notifiableListVersion.findUnique({ where: { nationalId: v.id } });
+      if (row?.contentHash === hash) continue;
+      const meta = {
+        act: v.act,
+        publishedIn: v.publishedIn,
+        actUrl: v.actUrl,
+        sourceUrl: v.sourceUrl,
+        sourceSha256: v.sourceSha256,
+        consultedAt: comoData(v.consultedAt),
+        validFrom: comoData(v.validFrom),
+        validTo: v.validTo ? comoData(v.validTo) : null,
+        notes: v.notes,
+      };
       if (!row) {
         try {
-          row = await sys.db.notifiableListVersion.create({
-            data: {
-              scope: 'NACIONAL',
-              scopeKey: 'NACIONAL',
-              nationalId: v.id,
-              act: v.act,
-              publishedIn: v.publishedIn,
-              actUrl: v.actUrl,
-              sourceUrl: v.sourceUrl,
-              sourceSha256: v.sourceSha256,
-              consultedAt: comoData(v.consultedAt),
-              validFrom: comoData(v.validFrom),
-              validTo: v.validTo ? comoData(v.validTo) : null,
-              notes: v.notes,
-            },
-          });
+          row = await sys.db.notifiableListVersion.create({ data: { scope: 'NACIONAL', scopeKey: 'NACIONAL', nationalId: v.id, ...meta } });
         } catch (err) {
           if ((err as { code?: string }).code !== 'P2002') throw err;
           row = await sys.db.notifiableListVersion.findUniqueOrThrow({ where: { nationalId: v.id } });
         }
+      } else {
+        await sys.db.notifiableListVersion.update({ where: { id: row.id }, data: meta });
       }
-      await sys.db.notifiableCondition.createMany({
-        data: v.conditions.map((c) => ({
-          versionId: row!.id,
-          key: c.key,
+      const versionId = row.id;
+      for (const c of v.conditions) {
+        const dados = {
           groupKey: c.group,
           item: c.item,
           subitem: c.subitem,
@@ -112,9 +122,12 @@ export class CatalogoVigilanciaService {
           normativeStatus: c.normativeStatus,
           normativeNote: c.normativeNote,
           sinanCode: c.sinanCode,
-        })),
-        skipDuplicates: true,
-      });
+          active: true,
+        };
+        await sys.db.notifiableCondition.upsert({ where: { versionId_key: { versionId, key: c.key } }, create: { versionId, key: c.key, ...dados }, update: dados });
+      }
+      await sys.db.notifiableCondition.updateMany({ where: { versionId, key: { notIn: v.conditions.map((c) => c.key) } }, data: { active: false } });
+      await sys.db.notifiableListVersion.update({ where: { id: versionId }, data: { contentHash: hash } });
     }
     await sys.db.notifiableCodeMap.createMany({
       data: MAPEAMENTOS_INICIAIS.map((m) => ({
@@ -229,9 +242,14 @@ export class CatalogoVigilanciaService {
     const ibge = unidade.ibgeCode;
     const uf = ibge.slice(0, 2);
     const scopeKey = input.scope === 'ESTADUAL' ? `ESTADUAL:${uf}` : `MUNICIPAL:${ibge}`;
+    // Lista local acrescenta agravos (art. 2º do Anexo V): não substitui nem afrouxa uma linha nacional, nem entra
+    // num grupo nacional (onde a troca de subitem poderia tirar o prazo ou o sigilo).
+    const nacionais = await chavesNacionais(ctx);
     for (const c of input.conditions) {
       const imediata = c.immediateMs || c.immediateSes || c.immediateSms;
       if (c.weekly === imediata) throw new DomainError('PERIODICIDADE_INVALIDA', `"${c.name}": marque semanal ou ao menos uma esfera imediata, não os dois`, HttpStatus.BAD_REQUEST);
+      if (nacionais.chaves.has(c.key) || nacionais.grupos.has(c.groupKey ?? c.key))
+        throw new DomainError('AGRAVO_NACIONAL', `"${c.name}" já está na lista nacional: a lista local só acrescenta agravos`, HttpStatus.BAD_REQUEST);
     }
     const sobrepostas = await ctx.db.notifiableListVersion.findMany({
       where: { scopeKey, OR: [{ validTo: null }, { validTo: { gte: comoData(input.validFrom) } }], ...(input.validTo ? { validFrom: { lte: comoData(input.validTo) } } : {}) },
