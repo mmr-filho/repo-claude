@@ -17,7 +17,7 @@ import {
   type Intencao,
 } from '@omnisaude/ai-engine';
 import { encodeAssistantPayload, normalizeBrazilPhone, type InteractiveButtonsMessage } from '@omnisaude/messaging';
-import { mascararTelefone, UNIT_TYPE_LABELS } from '@omnisaude/shared';
+import { ESCALA_SATISFACAO, inferirAssuntoManifestacao, inferirTipoManifestacao, mascararTelefone, TIPO_MANIFESTACAO, UNIT_TYPE_LABELS } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { CitizenContext, RequestContext } from '../../core/context';
 import { DomainError, notFound } from '../../core/errors';
@@ -25,6 +25,8 @@ import { RealtimeService } from '../../core/realtime.service';
 import { CitizenService } from '../citizen/citizen.service';
 import { AiService } from '../integrations/ai.service';
 import { MessagingService, type AssistantEvent, type SystemContext } from '../integrations/messaging.service';
+import { OmbudsmanService } from '../ombudsman/ombudsman.service';
+import { SatisfactionService } from '../ombudsman/satisfaction.service';
 import { SchedulingService } from '../scheduling/scheduling.service';
 
 const DIA = 86_400_000;
@@ -37,6 +39,8 @@ interface Contexto {
   patientId?: string;
   chosenAt?: string;
   ofertas?: { scheduleId: string; startsAt: string }[];
+  /** Pesquisa respondida por botão: a próxima mensagem livre vira comentário. */
+  pesquisaComentario?: string;
 }
 
 interface Pessoa {
@@ -65,6 +69,8 @@ export class AssistantService implements OnModuleInit {
     private readonly ai: AiService,
     private readonly realtime: RealtimeService,
     private readonly audit: AuditService,
+    private readonly ombudsman: OmbudsmanService,
+    private readonly satisfaction: SatisfactionService,
   ) {}
 
   onModuleInit() {
@@ -134,6 +140,16 @@ export class AssistantService implements OnModuleInit {
 
   private async texto(sys: SystemContext, conversationId: string, ctx: Contexto, pessoa: Pessoa | null, candidatos: Pessoa[], texto: string): Promise<Resposta> {
     const regras = interpretarPorRegras(texto);
+    if (ctx.pesquisaComentario && (regras.intencao === 'OUTRO' || regras.intencao === 'DESPEDIDA' || regras.intencao === 'OUVIDORIA')) {
+      const id = ctx.pesquisaComentario;
+      await this.salvarContexto(sys, conversationId, ctx, { pesquisaComentario: undefined });
+      await this.satisfaction.comentar(sys, id, texto);
+      return {
+        texto: 'Obrigado! Seu comentário foi registrado junto com a avaliação e vai para a gestão da unidade. Se precisar de algo mais, responda 0 para ver o menu.',
+        intent: 'PESQUISA_COMENTARIO',
+        extra: { surveyId: id },
+      };
+    }
     let intencao: Intencao = regras.intencao;
     let gravidade: Gravidade | null = regras.gravidade;
     let modelo: AssistantOutput | null = null;
@@ -188,6 +204,8 @@ export class AssistantService implements OnModuleInit {
         const unidade = pessoa ? (await this.citizen.eu(this.cctx(sys, pessoa.id))).unidadeReferencia?.name : null;
         return { texto: TEXTO_ATENDENTE(unidade), intent: 'ATENDENTE' };
       }
+      case 'OUVIDORIA':
+        return this.ouvidoria(sys, conversationId, pessoa, o.texto);
       case 'TRIAGEM':
         return this.triagem(sys, conversationId, pessoa, o.texto, o.gravidade, o.modelo);
       case 'UNIDADES':
@@ -253,6 +271,8 @@ export class AssistantService implements OnModuleInit {
       case 'RESCHED':
         if (!pessoa) return { texto: TEXTO_NAO_IDENTIFICADO, intent: 'NAO_IDENTIFICADO' };
         return this.remarcar(sys, conversationId, pessoa, ev.arg);
+      case 'SURVEY':
+        return this.pesquisa(sys, conversationId, ctx, ev.arg);
       default:
         return { texto: textoMenu(sys.tenant.settings.assistantName, nome), intent: 'MENU' };
     }
@@ -506,6 +526,55 @@ export class AssistantService implements OnModuleInit {
   private async pedirAtendente(sys: SystemContext, conversationId: string, motivo: string) {
     await sys.db.assistantConversation.update({ where: { id: conversationId }, data: { status: 'AGUARDANDO_ATENDENTE', handoffReason: motivo } });
     this.realtime.emitToTenant(sys.tenant.id, 'assistente.atendente', { id: conversationId, motivo });
+  }
+
+  // ───────────────────────────── ouvidoria e pesquisa ─────────────────────────────
+
+  /** Registra a manifestação com o texto da mensagem (tipo e assunto inferidos) e devolve o protocolo. */
+  private async ouvidoria(sys: SystemContext, conversationId: string, pessoa: Pessoa | null, texto: string): Promise<Resposta> {
+    if (texto.trim().length < 10)
+      return { texto: 'Conte com suas palavras o que aconteceu (ou o elogio/sugestão), com unidade e data se souber, que eu registro na ouvidoria com protocolo.', intent: 'OUVIDORIA_PEDIR_TEXTO' };
+    const conv = await sys.db.assistantConversation.findUniqueOrThrow({ where: { id: conversationId }, select: { phone: true } });
+    const unidade = pessoa ? (await this.citizen.eu(this.cctx(sys, pessoa.id))).unidadeReferencia : null;
+    const kind = inferirTipoManifestacao(texto);
+    const c = await this.ombudsman.registrar(sys, {
+      kind,
+      channel: 'WHATSAPP',
+      subject: inferirAssuntoManifestacao(texto),
+      text: texto,
+      unitId: unidade?.id ?? null,
+      patientId: pessoa?.id ?? null,
+      anonymous: !pessoa,
+      contactPhone: conv.phone,
+    });
+    return {
+      texto: `Registrei sua ${TIPO_MANIFESTACAO[kind].toLowerCase()} na ouvidoria. Protocolo ${c.protocol}. A resposta chega por aqui${pessoa ? ' e no app do cidadão' : ''} em até 30 dias (prazo da Lei 13.460/2017). Se quiser falar com alguém agora, responda 9.`,
+      intent: 'OUVIDORIA',
+      extra: { protocolo: c.protocol, tipo: kind },
+    };
+  }
+
+  /** Botão da pesquisa de satisfação (Ótimo, Regular, Ruim) enviada depois do atendimento. */
+  private async pesquisa(sys: SystemContext, conversationId: string, ctx: Contexto, arg: string): Promise<Resposta> {
+    const m = /^([0-9a-f-]{36})_([1-5])$/.exec(arg);
+    if (!m) return { texto: 'Não reconheci a avaliação. Responda com uma nota de 1 a 5.', intent: 'PESQUISA_INVALIDA' };
+    try {
+      await this.satisfaction.responder(sys, m[1]!, { score: Number(m[2]), channel: 'WHATSAPP' });
+    } catch (err) {
+      return {
+        texto:
+          err instanceof DomainError && err.code === 'JA_RESPONDIDA'
+            ? 'Já recebemos sua avaliação. Obrigado!'
+            : 'Esta pesquisa não está mais disponível, mas sua opinião continua valendo: responda 9 para falar com a equipe.',
+        intent: 'PESQUISA_INDISPONIVEL',
+      };
+    }
+    await this.salvarContexto(sys, conversationId, ctx, { pesquisaComentario: m[1]! });
+    return {
+      texto: `Obrigado pela avaliação (${ESCALA_SATISFACAO[Number(m[2])]?.toLowerCase()})! Se quiser contar mais sobre o atendimento, é só responder com sua mensagem.`,
+      intent: 'PESQUISA_RESPONDIDA',
+      extra: { surveyId: m[1], nota: Number(m[2]) },
+    };
   }
 
   // ───────────────────────────── modelo ─────────────────────────────

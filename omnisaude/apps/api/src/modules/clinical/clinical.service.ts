@@ -1,14 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import {
-  analyzePrescription,
-  parseVoiceCommand,
-  structureSoap,
-  suggestCarePathway,
-  WhisperAsrProvider,
-  type MedicationItem,
-} from '@omnisaude/ai-engine';
+import { analyzePrescription, parseVoiceCommand, structureSoap, suggestCarePathway, WhisperAsrProvider, type MedicationItem } from '@omnisaude/ai-engine';
 import { ageInYears, roleHasPermission } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
+import { SatisfactionService } from '../ombudsman/satisfaction.service';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
 import { DomainError, forbidden, notFound } from '../../core/errors';
@@ -55,6 +49,7 @@ export class ClinicalService {
     private readonly ai: AiService,
     private readonly messaging: MessagingService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    private readonly satisfaction: SatisfactionService,
   ) {}
 
   private async encounter(ctx: RequestContext, id: string) {
@@ -168,12 +163,7 @@ export class ClinicalService {
       const signed = await tx.clinicalNote.update({ where: { id }, data: { status: 'ASSINADO', signedAt: new Date(), auditHash: hash } });
       // Produção da atenção especializada/urgência vai para o BPA; a da atenção básica segue pelo e-SUS APS.
       if (n.kind === 'SOAP' && e.unit.type !== 'UBS') {
-        const procedureCode =
-          ctx.session.role === 'MEDICO'
-            ? e.kind === 'URGENCIA'
-              ? SIGTAP.ATENDIMENTO_URGENCIA
-              : SIGTAP.CONSULTA_ESPECIALIZADA
-            : SIGTAP.CONSULTA_NIVEL_SUPERIOR_ESPECIALIZADA;
+        const procedureCode = ctx.session.role === 'MEDICO' ? (e.kind === 'URGENCIA' ? SIGTAP.ATENDIMENTO_URGENCIA : SIGTAP.CONSULTA_ESPECIALIZADA) : SIGTAP.CONSULTA_NIVEL_SUPERIOR_ESPECIALIZADA;
         const cid = n.codes.find((c) => !c.startsWith('CIAP2:'));
         await recordProduction(tx, ctx, { procedureCode, instrument: 'BPA_I', encounterId: e.id, patientId: e.patientId, cid });
       }
@@ -189,14 +179,17 @@ export class ClinicalService {
     if (drafts > 0) throw new DomainError('RASCUNHOS_PENDENTES', 'Assine ou descarte os registros em rascunho antes de encerrar');
     const signed = await ctx.db.clinicalNote.count({ where: { encounterId: id, status: 'ASSINADO' } });
     if (signed === 0 && input.outcome !== 'EVASAO') throw new DomainError('SEM_REGISTRO', 'Não há registro clínico assinado neste atendimento');
-    return ctx.db.$transaction(async (tx) => {
-      const updated = await tx.encounter.update({
+    const updated = await ctx.db.$transaction(async (tx) => {
+      const row = await tx.encounter.update({
         where: { id },
         data: { status: input.outcome === 'EVASAO' ? 'EVADIU' : 'ENCERRADO', outcome: input.outcome, endedAt: new Date(), mainCid: input.mainCid ?? e.mainCid },
       });
       await this.audit.record(ctx, tx, { action: 'atendimento.encerrar', entityType: 'Encounter', entityId: id, payload: input });
-      return updated;
+      return row;
     });
+    // Pesquisa de satisfação (CID-3): depois de alta ou encaminhamento; não em óbito, evasão ou internação.
+    if (input.outcome === 'ALTA' || input.outcome === 'ENCAMINHAMENTO') await this.satisfaction.afterEncounterClosed({ tenant: ctx.tenant, db: ctx.db }, id);
+    return updated;
   }
 
   async deleteDraft(ctx: RequestContext, id: string) {
@@ -355,7 +348,11 @@ export class ClinicalService {
   /** Solicita de uma vez os exames recomendados pelo protocolo da condição. */
   async requestPathwayExams(ctx: RequestContext, encounterId: string, code: string, system: 'CID10' | 'CIAP2') {
     const p = this.carePathway(code, system);
-    return this.requestExams(ctx, encounterId, p.exams.map((x) => ({ sigtapCode: x.sigtapCode, name: x.name })));
+    return this.requestExams(
+      ctx,
+      encounterId,
+      p.exams.map((x) => ({ sigtapCode: x.sigtapCode, name: x.name })),
+    );
   }
 
   // ───────────── Voz e IA ─────────────
@@ -406,7 +403,7 @@ export class ClinicalService {
         title: 'ATESTADO',
         patient: patient.socialName ?? patient.name,
         days: input.days,
-        cid: input.includeCid ? input.cid ?? null : null,
+        cid: input.includeCid ? (input.cid ?? null) : null,
         text: input.text ?? `Atesto, para os devidos fins, que ${patient.socialName ?? patient.name} esteve sob meus cuidados e necessita de ${input.days} dia(s) de afastamento de suas atividades.`,
         professional: author.name,
         council: author.assignments[0]?.council ?? null,

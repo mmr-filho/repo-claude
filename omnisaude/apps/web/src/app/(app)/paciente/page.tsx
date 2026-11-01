@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { Suspense, useState } from 'react';
 import { FamilyCard } from '@/components/patients/family-card';
 import { StratificationCard } from '@/components/programs/stratification-card';
+import { MeuSusDigitalCard } from '@/components/patients/meu-sus-digital-card';
 import { PrintPortal, printSoon } from '@/components/patients/print-portal';
 import { Timeline } from '@/components/patients/timeline';
 import type { PatientDetail, TimelineEvent, Wristband } from '@/components/patients/types';
@@ -223,7 +224,8 @@ function PatientRecord() {
             </CardBody>
           </Card>
           <FamilyCard patient={p} onChanged={() => void patient.reload()} />
-          <StratificationCard patientId={p.id} patientName={p.name} />
+          {canChart && <StratificationCard patientId={p.id} patientName={p.name} />}
+          <MeuSusDigitalCard patientId={p.id} />
           <Card>
             <CardHeader title="Contato" />
             <CardBody className="text-sm text-slate-700">

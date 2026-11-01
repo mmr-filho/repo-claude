@@ -32,6 +32,9 @@ export const PERMISSIONS = [
   'fila.chamar',
   'assistente.ler',
   'assistente.responder',
+  'ouvidoria.ler',
+  'ouvidoria.registrar',
+  'ouvidoria.gerir',
   'pulseira.emitir',
   'triagem.registrar',
   'prontuario.ler',
@@ -95,6 +98,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   RECEPCAO: [
     'assistente.ler',
     'assistente.responder',
+    'ouvidoria.ler',
+    'ouvidoria.registrar',
     'tfd.ler',
     'transporte.ler',
     'regulacao.ler',
@@ -214,6 +219,9 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   GESTOR: [
     'assistente.ler',
     'assistente.responder',
+    'ouvidoria.ler',
+    'ouvidoria.registrar',
+    'ouvidoria.gerir',
     'leitos_rede.solicitar',
     'leitos_rede.ler',
     'leitos_rede.regular',

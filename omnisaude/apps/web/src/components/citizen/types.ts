@@ -123,3 +123,45 @@ export interface UnidadeRede {
   latitude: number | null;
   longitude: number | null;
 }
+
+export interface Manifestacao {
+  id: string;
+  protocolo: string;
+  tipo: string;
+  tipoLabel: string;
+  assunto: string;
+  assuntoLabel: string;
+  unidade: string | null;
+  anonima: boolean;
+  texto: string;
+  status: string;
+  statusLabel: string;
+  recebidaEm: string;
+  venceEm: string;
+  prorrogada: boolean;
+  resposta: { texto: string; em: string | null } | null;
+  avaliacao: number | null;
+  podeAvaliar: boolean;
+}
+
+export interface Avaliacao {
+  id: string;
+  unidade: string;
+  profissional: string | null;
+  atendimentoEm: string;
+  status: 'PENDENTE' | 'RESPONDIDA' | 'EXPIRADA';
+  nota: number | null;
+  notaLabel: string | null;
+  recomendaria: number | null;
+  comentario: string | null;
+  validaAte: string;
+}
+
+export interface MeuSusDigital {
+  prontidao: { cpf: boolean; cns: boolean; rndsAtiva: boolean; pronto: boolean; pendencias: string[] };
+  enviados: { atendimentos: number; vacinas: number; dispensacoes: number; altas: number; regulacao: number; total: number };
+  pendentes: number;
+  falhas: number;
+  ultimoEnvio: string | null;
+  link: string;
+}

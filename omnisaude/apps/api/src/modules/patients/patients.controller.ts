@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
 import { zv } from '../../core/zod';
 import { allergySchema, conditionSchema, conditionUpdateSchema, patientSchema, type PatientInput } from './patients.schemas';
+import { resumoMeuSusDigital } from '../integrations/meu-sus-digital';
 import { PatientsService } from './patients.service';
 
 @Controller('patients')
@@ -64,6 +65,13 @@ export class PatientsController {
   @RequirePermission('prontuario.ler')
   timeline(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string) {
     return this.patients.timeline(ctx, id);
+  }
+
+  /** Registros do paciente enviados à RNDS e prontidão para o Meu SUS Digital (CID-4). */
+  @Get(':id/meu-sus-digital')
+  @RequirePermission('paciente.ler')
+  meuSusDigital(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string) {
+    return resumoMeuSusDigital(ctx.db, ctx.tenant, id);
   }
 
   @Get(':id/wristband')

@@ -10,6 +10,8 @@ describe('Assistente do WhatsApp: regras sem IA', () => {
     expect(interpretarPorRegras('saiu o resultado do meu exame?').intencao).toBe('EXAMES');
     expect(interpretarPorRegras('qual o horário de funcionamento da UBS Centro').intencao).toBe('UNIDADES');
     expect(interpretarPorRegras('quero falar com um atendente').intencao).toBe('ATENDENTE');
+    expect(interpretarPorRegras('quero fazer uma reclamação do atendimento de ontem').intencao).toBe('OUVIDORIA');
+    expect(interpretarPorRegras('gostaria de elogiar a enfermeira').intencao).toBe('OUVIDORIA');
     expect(interpretarPorRegras('em que posição estou na fila do cardiologista').intencao).toBe('FILA');
     expect(interpretarPorRegras('obrigada!').intencao).toBe('DESPEDIDA');
     expect(interpretarPorRegras('xyz qualquer coisa').intencao).toBe('OUTRO');

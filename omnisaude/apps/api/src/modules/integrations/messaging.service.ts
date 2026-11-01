@@ -154,6 +154,21 @@ export class MessagingService {
     });
   }
 
+  /** Template agendado (ouvidoria, pesquisa de satisfação): respeita a janela de silêncio; `at` adia o envio. */
+  async scheduleTemplate(sys: SystemContext, input: { patientId: string | null; phone: string; template: TemplateMessage; refId?: string | null; at?: Date; kind?: 'AVISO' | 'ASSISTENTE' }, now = new Date()) {
+    if (!sys.tenant.settings.whatsappEnabled) return null;
+    return sys.db.messageLog.create({
+      data: {
+        patientId: input.patientId,
+        phone: input.phone,
+        kind: input.kind ?? 'AVISO',
+        refId: input.refId ?? null,
+        scheduledFor: applyQuietHours(input.at && input.at.getTime() > now.getTime() ? input.at : now, { timeZone: sys.tenant.timeZone, priority: 'ROTINA' }),
+        payload: { type: 'template', template: input.template } satisfies StoredPayload as object,
+      },
+    });
+  }
+
   /** Envia o que já venceu. Rotina: a janela de silêncio é reaplicada no momento do envio. */
   async dispatchDue(sys: SystemContext, now = new Date(), limit = 100): Promise<{ sent: number; failed: number; postponed: number }> {
     const due = await sys.db.messageLog.findMany({ where: { status: 'AGENDADA', scheduledFor: { lte: now } }, orderBy: { scheduledFor: 'asc' }, take: limit });

@@ -63,6 +63,8 @@ model Unit {
   stockLocations StockLocation[]
 
   @@map("units")
+  ombudsmanCases OmbudsmanCase[]
+  surveys        SatisfactionSurvey[]
 }
 
 enum Role {
@@ -446,6 +448,8 @@ model Patient {
   aihRequests AihRequest[]
   accessCodes CitizenAccessCode[]
   assistantConversations AssistantConversation[]
+  ombudsmanCases         OmbudsmanCase[]
+  surveys                SatisfactionSurvey[]
 
   @@index([nameKey, birthDate])
   @@index([familyId])
@@ -1416,6 +1420,7 @@ model Encounter {
   @@index([patientId, startedAt])
   @@index([unitId, status])
   @@map("encounters")
+  survey SatisfactionSurvey?
 }
 
 enum RiskColor {
@@ -2465,4 +2470,123 @@ model AssistantMessage {
 
   @@index([conversationId, createdAt])
   @@map("assistant_messages")
+}
+
+// ───────────────────────────── Ouvidoria e pesquisa de satisfação (CID-3) ─────────────────────────────
+
+enum OmbudsmanKind {
+  RECLAMACAO
+  DENUNCIA
+  SUGESTAO
+  ELOGIO
+  SOLICITACAO
+  INFORMACAO
+}
+
+enum OmbudsmanChannel {
+  APP
+  WHATSAPP
+  PRESENCIAL
+  TELEFONE
+  SITE
+}
+
+enum OmbudsmanStatus {
+  RECEBIDA
+  EM_ANALISE
+  PRORROGADA
+  RESPONDIDA
+  ENCERRADA
+  ARQUIVADA
+}
+
+/// Manifestação do cidadão (Lei 13.460/2017): protocolo, prazo de 30 dias prorrogável uma vez, resposta conclusiva e avaliação.
+model OmbudsmanCase {
+  id              String           @id @default(uuid(7)) @db.Uuid
+  protocol        String           @unique
+  kind            OmbudsmanKind
+  channel         OmbudsmanChannel
+  subject         String
+  unitId          String?          @map("unit_id") @db.Uuid
+  patientId       String?          @map("patient_id") @db.Uuid
+  /// Identidade preservada: a equipe não vê nome nem contato (o cidadão continua acompanhando pelo app).
+  anonymous       Boolean          @default(false)
+  contactName     String?          @map("contact_name")
+  contactPhone    String?          @map("contact_phone")
+  text            String
+  status          OmbudsmanStatus  @default(RECEBIDA)
+  receivedAt      DateTime         @default(now()) @map("received_at")
+  dueAt           DateTime         @map("due_at")
+  extendedAt      DateTime?        @map("extended_at")
+  extensionReason String?          @map("extension_reason")
+  assignedUnitId  String?          @map("assigned_unit_id") @db.Uuid
+  assignedUserId  String?          @map("assigned_user_id") @db.Uuid
+  responseText    String?          @map("response_text")
+  respondedAt     DateTime?        @map("responded_at")
+  respondedBy     String?          @map("responded_by") @db.Uuid
+  closedAt        DateTime?        @map("closed_at")
+  rating          Int?
+  ratingComment   String?          @map("rating_comment")
+  ratedAt         DateTime?        @map("rated_at")
+  createdBy       String?          @map("created_by") @db.Uuid
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  patient Patient?         @relation(fields: [patientId], references: [id])
+  unit    Unit?            @relation(fields: [unitId], references: [id])
+  events  OmbudsmanEvent[]
+
+  @@index([status, dueAt])
+  @@index([patientId, createdAt])
+  @@index([unitId, status])
+  @@map("ombudsman_cases")
+}
+
+model OmbudsmanEvent {
+  id     String   @id @default(uuid(7)) @db.Uuid
+  caseId String   @map("case_id") @db.Uuid
+  kind   String
+  notes  String?
+  userId String?  @map("user_id") @db.Uuid
+  at     DateTime @default(now())
+
+  case OmbudsmanCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, at])
+  @@map("ombudsman_events")
+}
+
+enum SurveyStatus {
+  PENDENTE
+  RESPONDIDA
+  EXPIRADA
+}
+
+/// Pesquisa de satisfação enviada após o atendimento (WhatsApp e app do cidadão).
+model SatisfactionSurvey {
+  id             String       @id @default(uuid(7)) @db.Uuid
+  patientId      String       @map("patient_id") @db.Uuid
+  encounterId    String?      @unique @map("encounter_id") @db.Uuid
+  unitId         String       @map("unit_id") @db.Uuid
+  professionalId String?      @map("professional_id") @db.Uuid
+  status         SurveyStatus @default(PENDENTE)
+  /// Canal da resposta: WHATSAPP ou APP.
+  channel        String?
+  sentAt         DateTime?    @map("sent_at")
+  answeredAt     DateTime?    @map("answered_at")
+  /// Nota de 1 (muito ruim) a 5 (ótimo).
+  score          Int?
+  /// Recomendaria a unidade? 0 a 10 (NPS), só pelo app.
+  recommend      Int?
+  comment        String?
+  expiresAt      DateTime     @map("expires_at")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  patient   Patient    @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  unit      Unit       @relation(fields: [unitId], references: [id])
+  encounter Encounter? @relation(fields: [encounterId], references: [id])
+
+  @@index([unitId, createdAt])
+  @@index([patientId, status])
+  @@map("satisfaction_surveys")
 }

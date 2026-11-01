@@ -20,6 +20,7 @@ const DESCRIPTIONS: Record<string, string> = {
   '/central-leitos': 'Mapa de leitos da rede, solicitações de vaga, regulação com reserva de leito, transferência e AIH.',
   '/tfd': 'Tratamento Fora do Domicílio: laudo, parecer, agendamento, ajuda de custo e transporte.',
   '/assistente': 'Conversas do cidadão com o assistente virtual do WhatsApp: pedidos de atendente, triagens e consultas marcadas por conversa.',
+  '/ouvidoria': 'Manifestações do cidadão com protocolo e prazo legal, resposta conclusiva e pesquisa de satisfação após o atendimento.',
   '/transporte': 'Frota, motoristas, rotas, viagens com passageiros e roteiro do dia.',
   '/faturamento': 'SIGTAP, crítica pré-glosa e exportação BPA.',
   '/gestao': 'Produtividade, SLAs e pautas de reunião.',

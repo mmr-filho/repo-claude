@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { CitizenCtx, CitizenRoute, clientIp, Ctx, Public, RequirePermission, type CitizenContext, type RequestContext } from '../../core/context';
 import { zv } from '../../core/zod';
+import { resumoMeuSusDigital } from '../integrations/meu-sus-digital';
 import { CitizenAuthService } from './citizen-auth.service';
 import { CitizenService } from './citizen.service';
 
@@ -116,5 +117,12 @@ export class CitizenController {
   @CitizenRoute()
   unidades(@CitizenCtx() c: CitizenContext) {
     return this.citizen.unidades(c);
+  }
+
+  /** O que já está (ou falta para estar) no Meu SUS Digital, o app do Ministério da Saúde. */
+  @Get('meu-sus-digital')
+  @CitizenRoute()
+  meuSusDigital(@CitizenCtx() c: CitizenContext) {
+    return resumoMeuSusDigital(c.db, c.tenant, c.patientId);
   }
 }

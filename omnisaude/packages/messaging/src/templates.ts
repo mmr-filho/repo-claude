@@ -113,6 +113,20 @@ export const TEMPLATE_DEFINITIONS = [
     body: 'Olá, {{1}}! Sobre o seu pedido de {{2}} (protocolo {{3}}): {{4}}. {{5}} Em caso de dúvida, procure a sua unidade de saúde.',
     buttons: [],
   },
+  {
+    name: 'ouvidoria_resposta',
+    category: 'UTILITY',
+    language: 'pt_BR',
+    body: 'Olá, {{1}}! Sua manifestação {{2}} na ouvidoria foi {{3}}. {{4}} A resposta completa está no app do cidadão e na unidade de saúde.',
+    buttons: [],
+  },
+  {
+    name: 'pesquisa_satisfacao',
+    category: 'UTILITY',
+    language: 'pt_BR',
+    body: 'Olá, {{1}}! Como foi o seu atendimento de {{2}} na {{3}}? Sua opinião ajuda a melhorar o serviço e leva menos de um minuto.',
+    buttons: ['Ótimo', 'Regular', 'Ruim'],
+  },
 ] as const;
 
 export interface AppointmentConfirmationInput {
@@ -242,5 +256,48 @@ export function buildAccessCodeTemplate(input: AccessCodeInput): TemplateMessage
     languageCode: input.languageCode ?? 'pt_BR',
     bodyParams: [firstName(input.patientName), input.code, String(input.validMinutes)].map(sanitizeTemplateParam),
     buttons: [],
+  };
+}
+
+export interface OmbudsmanUpdateInput {
+  patientName: string;
+  protocol: string;
+  /** "respondida" ou "prorrogada". */
+  status: 'RESPONDIDA' | 'PRORROGADA';
+  detail?: string | null;
+  templateName?: string;
+  languageCode?: string;
+}
+
+/** Retorno da ouvidoria ao cidadão (modelo "ouvidoria_resposta", categoria UTILITY, sem botões). */
+export function buildOmbudsmanUpdateTemplate(input: OmbudsmanUpdateInput): TemplateMessage {
+  const status = input.status === 'RESPONDIDA' ? 'respondida' : 'prorrogada por mais 30 dias, com justificativa';
+  return {
+    name: input.templateName ?? 'ouvidoria_resposta',
+    languageCode: input.languageCode ?? 'pt_BR',
+    bodyParams: [firstName(input.patientName), input.protocol, status, (input.detail ?? '').trim() || 'Obrigado por nos ajudar a melhorar.'].map(sanitizeTemplateParam),
+    buttons: [],
+  };
+}
+
+export interface SatisfactionSurveyInput {
+  surveyId: string;
+  patientName: string;
+  service: string;
+  unitName: string;
+  templateName?: string;
+  languageCode?: string;
+}
+
+/** Notas dos três botões da pesquisa (Ótimo, Regular, Ruim) na escala de 1 a 5. */
+export const SURVEY_BUTTON_SCORES = [5, 3, 1] as const;
+
+/** Pesquisa de satisfação após o atendimento (modelo "pesquisa_satisfacao", botões de resposta rápida tratados pelo assistente). */
+export function buildSatisfactionSurveyTemplate(input: SatisfactionSurveyInput): TemplateMessage {
+  return {
+    name: input.templateName ?? 'pesquisa_satisfacao',
+    languageCode: input.languageCode ?? 'pt_BR',
+    bodyParams: [firstName(input.patientName), input.service, input.unitName].map(sanitizeTemplateParam),
+    buttons: SURVEY_BUTTON_SCORES.map((score, index) => ({ subType: 'quick_reply' as const, index, payload: encodeAssistantPayload('SURVEY', `${input.surveyId}_${score}`) })),
   };
 }

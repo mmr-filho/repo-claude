@@ -31,6 +31,8 @@ e BI conversacional).
   cancelamento, exames, cartão de vacinas, remédios, fila da regulação, TFD e senha do dia ([`docs/CIDADAO.md`](docs/CIDADAO.md)).
 - **Assistente no WhatsApp** que responde o cidadão 24 h com dados reais (agenda por conversa, exames, vacinas, remédios,
   fila, unidades), triagem com sinais de alerta e passagem para a equipe ([`docs/ASSISTENTE-WHATSAPP.md`](docs/ASSISTENTE-WHATSAPP.md)).
+- **Ouvidoria** com protocolo e prazo legal, **pesquisa de satisfação** após o atendimento e **Meu SUS Digital** (o que já foi
+  enviado à RNDS no CPF do cidadão) ([`docs/OUVIDORIA.md`](docs/OUVIDORIA.md)).
 - **Leitos/NIR**, **POPs** (hard e soft gates), **faturamento** (SIGTAP, crítica pré-glosa, BPA-I/BPA-C),
   **BI conversacional** com Text-to-SQL blindado, **gestão** (produtividade, SLAs, pautas) e **busca ativa**.
 - **Acessibilidade**: VLibras e chamada de intérprete de Libras por vídeo (WebRTC).

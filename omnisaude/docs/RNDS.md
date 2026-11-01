@@ -130,3 +130,10 @@ Pontos a confirmar na homologação: a referência do documento substituído (`C
 oficiais. A integração direta com o **e-SUS Regulação** não tem API pública: a wiki do MS e o FAQ só tratam de
 adesão e operação; pela portaria, o caminho dos sistemas próprios é a RNDS, e o campo **código no SISREG /
 e-SUS Regulação** das solicitações serve para conciliar os registros quando o município usa os dois.
+
+## 7. Meu SUS Digital
+
+O app do Ministério mostra ao cidadão o que chegou à RNDS no seu CPF (conta gov.br). Por isso a compatibilidade
+com o Meu SUS Digital é consequência do envio correto dos documentos acima com CPF e CNS do cidadão. O resumo
+por pessoa (prontidão e registros enviados por tipo) está na ficha do paciente e no app do cidadão
+(`docs/OUVIDORIA.md`, seção Meu SUS Digital).

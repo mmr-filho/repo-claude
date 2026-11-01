@@ -25,6 +25,7 @@ export const INTENCOES = [
   'TRIAGEM',
   'DUVIDA',
   'ATENDENTE',
+  'OUVIDORIA',
   'DESPEDIDA',
   'OUTRO',
 ] as const;
@@ -113,7 +114,8 @@ export function interpretarPorRegras(texto: string): { intencao: Intencao; gravi
   const regras: [RegExp, Intencao][] = [
     [/^(oi|ola|bom dia|boa tarde|boa noite|opa|eai|e ai|hey|hello)\b/, 'SAUDACAO'],
     [/\b(menu|opcoes|opcao|ajuda|inicio|comecar|voltar)\b/, 'MENU'],
-    [/\b(atendente|humano|pessoa de verdade|falar com alguem|falar com uma pessoa|reclama|ouvidoria|denuncia)/, 'ATENDENTE'],
+    [/\b(ouvidoria|reclama|denunci|elogi|sugest|sugiro|manifestac)/, 'OUVIDORIA'],
+    [/\b(atendente|humano|pessoa de verdade|falar com alguem|falar com uma pessoa)/, 'ATENDENTE'],
     [/\b(remarcar|mudar (o |a )?(horario|data|dia)|trocar (o |a )?(horario|data|dia)|adiar)/, 'REMARCAR'],
     [/\b(cancelar|desmarcar|nao vou poder ir|nao posso ir)/, 'CANCELAR'],
     [/\b(confirmar|confirmo|confirmado|vou sim|estarei la)/, 'CONFIRMAR'],
@@ -213,7 +215,7 @@ export function buildAssistantSystemPrompt(input: AssistantPromptInput): string 
     'Regras de segurança:',
     '- Você não faz diagnóstico nem prescreve. Em TRIAGEM, classifique a gravidade (EMERGENCIA: risco de vida, oriente 192/UPA; URGENCIA: avaliação hoje na UPA; POUCO_URGENTE: UBS hoje ou amanhã; NAO_URGENTE: observar e agendar) e escreva uma orientação curta, sem minimizar sinais de alerta.',
     '- Não exponha valores de exames, diagnósticos ou medicamentos de terceiros. Se o pedido parecer de outra pessoa, oriente a pessoa a usar o próprio número ou procurar a unidade.',
-    '- Reclamações, pedidos fora do seu alcance, situações de violência ou sofrimento emocional: acolha e marque precisaHumano = true (a equipe da unidade assume).',
+    '- Reclamações, denúncias, elogios e sugestões sobre o serviço: intenção OUVIDORIA (o sistema registra na ouvidoria com protocolo e prazo legal). Pedidos fora do seu alcance, situações de violência ou sofrimento emocional: acolha e marque precisaHumano = true (a equipe da unidade assume).',
     '- Não prometa prazos de fila, laudos ou resultados; explique como funciona.',
     '',
     'Unidades de saúde da rede:',
