@@ -348,6 +348,7 @@ describe.runIf(enabled)('Ouvidoria, pesquisa de satisfação e Meu SUS Digital (
     const transcricao = conversa.mensagens.map((m) => m.texto).join('\n');
     expect(transcricao).not.toContain('cobra para entregar');
     expect(transcricao).not.toContain(protocolo);
+    expect(await (await db()).messageLog.count({ where: { patientId: pacienteId, payload: { path: ['text'], string_contains: protocolo } } })).toBe(0);
     // O cidadão continua vendo a própria manifestação anônima no app.
     expect((await t.http().get('/api/cidadao/ouvidoria').set(auth(cidadao)).expect(200)).body.some((m: { protocolo: string; anonima: boolean }) => m.protocolo === protocolo && m.anonima)).toBe(true);
 

@@ -110,7 +110,8 @@ export class AssistantService implements OnModuleInit {
       data: { conversationId: conv.id, direction: 'ENTRADA', text: textoIn, providerMessageId: event.messageId, payload: event.type === 'button' ? { action: event.action, arg: event.arg } : undefined },
     });
     const resposta = event.type === 'button' ? await this.botao(sys, conv.id, ctx, pessoa, candidatos, event) : await this.texto(sys, conv.id, ctx, pessoa, candidatos, event.text);
-    await this.enviar(sys, conv.id, phone, pessoa?.id ?? null, resposta);
+    // Resposta a uma manifestação anônima não fica vinculada ao cadastro no registro de mensagens.
+    await this.enviar(sys, conv.id, phone, resposta.extra?.anonima ? null : (pessoa?.id ?? null), resposta);
     await sys.db.assistantMessage.updateMany({ where: { conversationId: conv.id, providerMessageId: event.messageId, intent: null }, data: { intent: resposta.intent } });
     this.realtime.emitToTenant(sys.tenant.id, 'assistente.conversa', { id: conv.id });
   }
