@@ -26,6 +26,7 @@ import { AuditService } from '../../core/audit.service';
 import { OutboxService } from '../../core/outbox.service';
 import type { RequestContext } from '../../core/context';
 import { DomainError, forbidden, notFound } from '../../core/errors';
+import { anoDoProtocolo, gravarComProtocolo } from '../../core/protocolo';
 import { RealtimeService } from '../../core/realtime.service';
 import { BedsService } from '../beds/beds.service';
 import { patientSummary } from '../patients/patients.service';
@@ -83,10 +84,9 @@ export class BedRegulationService {
     await this.outbox.enqueue(tx, 'RNDS_REGULACAO', id, { fonte: 'LEITO', status, evento, at: new Date().toISOString(), unitId: ctx.session.unitId, sequencia });
   }
 
-  private async proximoProtocolo(ctx: RequestContext) {
-    const ano = new Date().getFullYear();
+  private async proximoProtocolo(ctx: RequestContext, ano: number, salto = 0) {
     const total = await ctx.db.bedRequest.count({ where: { protocol: { startsWith: `LEI-${ano}-` } } });
-    for (let i = 1; i <= 50; i++) {
+    for (let i = 1 + salto; i <= 50 + salto; i++) {
       const candidato = numeroProtocoloLeito(ano, total + i);
       if (!(await ctx.db.bedRequest.findUnique({ where: { protocol: candidato }, select: { id: true } }))) return candidato;
     }
@@ -118,46 +118,51 @@ export class BedRegulationService {
     }
     const { vitals, news, suporte, sugerida } = this.avaliar(input);
     const priority = input.priority ?? sugerida;
-    const protocol = await this.proximoProtocolo(ctx);
-    const r = await ctx.db.$transaction(async (tx) => {
-      const created = await tx.bedRequest.create({
-        data: {
-          protocol,
-          patientId: input.patientId,
-          encounterId: input.encounterId ?? null,
-          originUnitId: ctx.session.unitId,
-          requesterId: ctx.session.userId,
-          requesterCbo: ctx.cbo,
-          bedKind: input.bedKind,
-          specialty: input.specialty.trim(),
-          priority,
-          requestedPriority: priority,
-          cid: input.cid?.toUpperCase().replace('.', '') || null,
-          clinicalSummary: input.clinicalSummary.trim(),
-          vitals: vitals ? (vitals as object) : undefined,
-          support: suporte as object,
-          news2: news?.pontos ?? null,
-          isolation: input.isolation ?? 'NENHUM',
-          elective: !!input.elective,
-          procedureCode: input.procedureCode?.replace(/\D/g, '') || null,
-          externalCode: input.externalCode?.trim() || null,
-        },
+    const gravar = (protocol: string) =>
+      ctx.db.$transaction(async (tx) => {
+        const created = await tx.bedRequest.create({
+          data: {
+            protocol,
+            patientId: input.patientId,
+            encounterId: input.encounterId ?? null,
+            originUnitId: ctx.session.unitId,
+            requesterId: ctx.session.userId,
+            requesterCbo: ctx.cbo,
+            bedKind: input.bedKind,
+            specialty: input.specialty.trim(),
+            priority,
+            requestedPriority: priority,
+            cid: input.cid?.toUpperCase().replace('.', '') || null,
+            clinicalSummary: input.clinicalSummary.trim(),
+            vitals: vitals ? (vitals as object) : undefined,
+            support: suporte as object,
+            news2: news?.pontos ?? null,
+            isolation: input.isolation ?? 'NENHUM',
+            elective: !!input.elective,
+            procedureCode: input.procedureCode?.replace(/\D/g, '') || null,
+            externalCode: input.externalCode?.trim() || null,
+          },
+        });
+        await tx.bedRequestEvent.create({
+          data: {
+            requestId: created.id,
+            kind: 'CRIADA',
+            toStatus: 'PENDENTE',
+            userId: ctx.session.userId,
+            role: ctx.session.role,
+            notes: `${TIPO_LEITO[input.bedKind]} · ${input.specialty.trim()} · ${PRIORIDADE_LEITO[priority].label}${news ? ` · NEWS2 ${news.pontos}` : ''}`,
+          },
+        });
+        await this.audit.record(ctx, tx, { action: 'leitos_rede.solicitar', entityType: 'BedRequest', entityId: created.id, payload: { protocol, bedKind: input.bedKind, priority, news2: news?.pontos ?? null } });
+        await this.rnds(ctx, tx, created.id, 'PENDENTE', 'CRIADA');
+        return created;
       });
-      await tx.bedRequestEvent.create({
-        data: {
-          requestId: created.id,
-          kind: 'CRIADA',
-          toStatus: 'PENDENTE',
-          userId: ctx.session.userId,
-          role: ctx.session.role,
-          notes: `${TIPO_LEITO[input.bedKind]} · ${input.specialty.trim()} · ${PRIORIDADE_LEITO[priority].label}${news ? ` · NEWS2 ${news.pontos}` : ''}`,
-        },
-      });
-      await this.audit.record(ctx, tx, { action: 'leitos_rede.solicitar', entityType: 'BedRequest', entityId: created.id, payload: { protocol, bedKind: input.bedKind, priority, news2: news?.pontos ?? null } });
-      await this.rnds(ctx, tx, created.id, 'PENDENTE', 'CRIADA');
-      return created;
+    // Dois pedidos ao mesmo tempo podem disputar o mesmo número: tenta o seguinte quando o índice único recusa.
+    const ano = anoDoProtocolo(ctx.tenant.timeZone);
+    const r = await gravarComProtocolo((salto) => this.proximoProtocolo(ctx, ano, salto), gravar, {
+      mensagem: 'Não foi possível gerar o número da solicitação; tente de novo',
     });
-    this.realtime.emitToTenant(ctx.tenant.id, 'leitos_rede.fila', { id: r.id, protocol, priority });
+    this.realtime.emitToTenant(ctx.tenant.id, 'leitos_rede.fila', { id: r.id, protocol: r.protocol, priority });
     return this.detalhe(ctx, r.id);
   }
 

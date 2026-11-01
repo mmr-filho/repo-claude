@@ -443,6 +443,25 @@ describe.runIf(enabled)('TFD e transporte sanitário', () => {
       expect(fim.body.closedAt).toBeTruthy();
       await t.http().post('/api/tfd/processos').set(auth(medica)).send(laudo(pacienteC)).expect(201);
     });
+
+    it('processos abertos ao mesmo tempo recebem protocolos distintos', async () => {
+      // Um processo em andamento por pessoa: cinco pessoas novas.
+      const pessoas: string[] = [];
+      for (const [i, nome] of ['Alice', 'Bruna', 'Clara', 'Diana', 'Elisa'].entries()) {
+        const p = await t
+          .http()
+          .post('/api/patients')
+          .set(auth(recepcao))
+          .send({ name: `${nome} Simultanea Viagem`, birthDate: '1970-04-04', sex: 'F', cpf: completeCpf(`47700041${i}`), cns: cnsFromBase(`2770000041${i}`), motherName: 'Mae Viagem Teste', address })
+          .expect(201);
+        pessoas.push(p.body.id);
+      }
+      const juntos = await Promise.all(pessoas.map((patientId) => t.http().post('/api/tfd/processos').set(auth(medica)).send(laudo(patientId))));
+      expect(juntos.map((r) => r.status)).toEqual([201, 201, 201, 201, 201]);
+      const protocolos = juntos.map((r) => r.body.protocol as string);
+      expect(protocolos.every((p) => /^TFD-\d{4}-\d{6}$/.test(p))).toBe(true);
+      expect(new Set(protocolos).size).toBe(5);
+    });
   });
 });
 
