@@ -272,7 +272,7 @@ export class CitizenService {
       timeZone: c.tenant.timeZone,
     });
     model.footer.push('Emitido pelo cidadão no app, sem assinatura digital. A versão assinada pode ser pedida na unidade de saúde.');
-    const data = await renderDocument(model, { reason: 'Certificado de vacinação', location: model.unit.name, contactInfo: c.tenant.name });
+    const data = await renderDocument(model);
     return { data, fileName: `certificado-vacinacao-${c.patientId.slice(0, 8)}.pdf` };
   }
 

@@ -109,7 +109,52 @@ export function validateRndsBundle(bundle: unknown): ValidationResult {
     });
   });
 
+  if (first.resourceType === 'Composition') validarRel(b.entry, error);
   return { valid: !issues.some((i) => i.severity === 'error'), issues };
+}
+
+const REL_DATA_HORA = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:\d{2}|Z)$/;
+
+/** Regras do REL 3.2.1 (cardinalidades 1..1 do perfil e do guia), aplicadas quando o documento é do tipo REL. */
+function validarRel(entries: { fullUrl: string; resource: { resourceType: string } & Record<string, unknown> }[], error: (path: string, message: string) => void) {
+  const comp = entries[0]!.resource as { type?: { coding?: { code?: string }[] }; title?: string; author?: unknown[]; section?: { entry?: { reference?: string }[] }[] };
+  if (comp.type?.coding?.[0]?.code !== 'REL') return;
+  if (comp.title !== 'Resultado de Exame Laboratorial') error('Composition.title', 'O título do REL é fixo: "Resultado de Exame Laboratorial"');
+  if ((comp.author?.length ?? 0) !== 1) error('Composition.author', 'O REL tem exatamente um autor (estabelecimento)');
+  const porUrl = new Map(entries.map((e) => [e.fullUrl, e.resource]));
+  const refs = comp.section?.flatMap((s) => s.entry ?? []).map((e) => e.reference ?? '') ?? [];
+  const cond = refs.map((r) => porUrl.get(r)).filter((r) => r?.resourceType === 'Condition');
+  const obs = refs.map((r) => porUrl.get(r)).filter((r) => r?.resourceType === 'Observation') as Record<string, unknown>[];
+  if (cond.length !== 1) error('Composition.section.entry', 'O REL referencia exatamente uma Condition (suspeita diagnóstica)');
+  if (!obs.length) error('Composition.section.entry', 'O REL referencia ao menos uma Observation (exame)');
+  obs.forEach((o, i) => {
+    const p = `Observation[${i}]`;
+    const code = o.code as { coding?: { system?: string }[] } | undefined;
+    if (!code?.coding?.some((c) => c.system === `${RNDS_BASE}/CodeSystem/BRNomeExameLOINC` || c.system === `${RNDS_BASE}/CodeSystem/BRNomeExameGAL`))
+      error(`${p}.code`, 'Exame fora de BRNomeExameLOINC ou BRNomeExameGAL');
+    const v = o.valueCodeableConcept as { coding?: { system?: string; code?: string }[] } | undefined;
+    const vq = o.valueQuantity;
+    if (!v && !vq) error(`${p}.value[x]`, 'Resultado obrigatório');
+    if (v && !v.coding?.some((c) => c.system?.startsWith(`${RNDS_BASE}/CodeSystem/BRTipoResultado`) || c.system === `${RNDS_BASE}/CodeSystem/BRResultadoQualitativoExame`))
+      error(`${p}.valueCodeableConcept`, 'Resultado fora de BRResultadoQualitativoExame-2.0');
+    if (!(o.method as { text?: string } | undefined)?.text) error(`${p}.method.text`, 'Método obrigatório (texto)');
+    if (!(o.specimen as { reference?: string } | undefined)?.reference) error(`${p}.specimen`, 'Amostra obrigatória');
+    if (!Array.isArray(o.referenceRange) || !(o.referenceRange as { text?: string }[])[0]?.text) error(`${p}.referenceRange`, 'Valor de referência (texto) obrigatório');
+    if (!Array.isArray(o.performer) || !o.performer.length) error(`${p}.performer`, 'Estabelecimento executor obrigatório');
+    for (const k of ['effectiveDateTime', 'issued'] as const) {
+      const d = o[k];
+      if (typeof d !== 'string' || !REL_DATA_HORA.test(d)) error(`${p}.${k}`, 'Data e hora com segundos e fuso obrigatórias');
+    }
+    if (o.status !== 'final' && o.status !== 'entered-in-error') error(`${p}.status`, 'Situação do resultado deve ser final ou entered-in-error');
+    for (const k of ['code', 'category'] as const) {
+      const cc = ([] as { coding?: { display?: string }[] }[]).concat((o[k] as never) ?? []);
+      if (cc.some((c) => c.coding?.some((x) => x.display !== undefined))) error(`${p}.${k}.coding.display`, 'O perfil do REL não admite display (0..0)');
+    }
+  });
+  if (comp.type?.coding?.some((c) => (c as { display?: string }).display !== undefined)) error('Composition.type.coding.display', 'O perfil do REL não admite display (0..0)');
+  for (const e of entries)
+    if (e.resource.resourceType === 'Specimen' && (e.resource.type as { coding?: { display?: string }[] } | undefined)?.coding?.some((c) => c.display !== undefined))
+      error('Specimen.type.coding.display', 'O perfil do REL não admite display (0..0)');
 }
 
 type Visitor = (key: string, value: unknown, path: string, parent: Record<string, unknown> | null) => void;

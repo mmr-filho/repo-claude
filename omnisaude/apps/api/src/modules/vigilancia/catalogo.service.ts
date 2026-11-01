@@ -1,7 +1,21 @@
 import { createHash } from 'node:crypto';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { TenantClient } from '@omnisaude/database';
-import { LNNC_NACIONAL, MAPEAMENTOS_INICIAIS, mapearCodigo, mesclarCatalogo, versaoNaData, type ContextoAgravo } from '@omnisaude/shared';
+import {
+  LNNC_NACIONAL,
+  MAPEAMENTOS_INICIAIS,
+  mapearCodigo,
+  mesclarCatalogo,
+  ROTAS_PADRAO,
+  ROTAS_VIGENTES_DESDE,
+  rotaDoAgravo,
+  SISTEMA_INFO,
+  SITUACAO_ROTA_LABEL,
+  versaoNaData,
+  type ContextoAgravo,
+  type SistemaOficial,
+  type SituacaoRota,
+} from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { DomainError, notFound } from '../../core/errors';
@@ -139,6 +153,11 @@ export class CatalogoVigilanciaService {
         source: m.source,
         homologatedAt: m.status === 'HOMOLOGADO' ? new Date() : null,
       })),
+      skipDuplicates: true,
+    });
+    // Rotas agravo → sistema oficial conferidas em nota técnica (a vigilância muda abrindo nova vigência).
+    await sys.db.officialSystemRoute.createMany({
+      data: ROTAS_PADRAO.map((r) => ({ groupKey: r.grupo, conditionKey: r.chave ?? '', system: r.sistema, status: r.situacao, validFrom: comoData(ROTAS_VIGENTES_DESDE), source: r.fonte, notes: r.nota ?? null })),
       skipDuplicates: true,
     });
     if ((await sys.db.surveillanceContact.count()) === 0) {
@@ -337,5 +356,59 @@ export class CatalogoVigilanciaService {
     const r = await ctx.db.notifiableCodeMap.update({ where: { id }, data: { status, ...(status === 'HOMOLOGADO' ? { homologatedBy: ctx.session.userId, homologatedAt: new Date() } : {}) } });
     await this.audit.recordStandalone(ctx, { action: 'vigilancia.codigo_status', entityType: 'NotifiableCodeMap', entityId: id, payload: { de: m.status, para: status } });
     return r;
+  }
+
+  // ───────────────────────────── sistemas oficiais de destino ─────────────────────────────
+
+  /** Rota vigente na data para a linha do catálogo (a da linha prevalece sobre a do grupo; sem rota, Sinan Net). */
+  async rotaNaData(sys: Sys, linha: { key: string; groupKey: string }, dia: string) {
+    await this.garantir(sys);
+    const rotas = await sys.db.officialSystemRoute.findMany({ where: { groupKey: linha.groupKey } });
+    return rotaDoAgravo(
+      rotas.map((r) => ({ ...r, validFrom: dataIso(r.validFrom)!, validTo: dataIso(r.validTo) })),
+      linha,
+      dia,
+    );
+  }
+
+  async rotas(ctx: RequestContext) {
+    await this.garantir(ctx);
+    const rows = await ctx.db.officialSystemRoute.findMany({ orderBy: [{ groupKey: 'asc' }, { conditionKey: 'asc' }, { validFrom: 'desc' }] });
+    const hoje = new Date().toISOString().slice(0, 10);
+    return rows.map((r) => ({
+      id: r.id,
+      grupo: r.groupKey,
+      chave: r.conditionKey || null,
+      sistema: r.system,
+      sistemaLabel: SISTEMA_INFO[r.system as SistemaOficial].label,
+      situacao: r.status,
+      situacaoLabel: SITUACAO_ROTA_LABEL[r.status as SituacaoRota],
+      vigenteDe: dataIso(r.validFrom),
+      vigenteAte: dataIso(r.validTo),
+      vigente: dataIso(r.validFrom)! <= hoje && (!r.validTo || hoje <= dataIso(r.validTo)!),
+      fonte: r.source,
+      notas: r.notes,
+    }));
+  }
+
+  /** Nova vigência de rota (pactuação com a SES): encerra a anterior do mesmo grupo/linha na véspera. */
+  async novaRota(ctx: RequestContext, input: { groupKey: string; conditionKey?: string | null; system: SistemaOficial; status: SituacaoRota; validFrom: string; source: string; notes?: string | null }) {
+    await this.garantir(ctx);
+    const existe = await ctx.db.notifiableCondition.findFirst({ where: { groupKey: input.groupKey, ...(input.conditionKey ? { key: input.conditionKey } : {}) } });
+    if (!existe) throw new DomainError('AGRAVO_INEXISTENTE', 'Agravo não encontrado no catálogo', HttpStatus.BAD_REQUEST);
+    const conditionKey = input.conditionKey ?? '';
+    const inicio = comoData(input.validFrom);
+    const conflito = await ctx.db.officialSystemRoute.findFirst({ where: { groupKey: input.groupKey, conditionKey, validFrom: { gte: inicio } } });
+    if (conflito) throw new DomainError('VIGENCIA_SOBREPOSTA', 'Já existe rota com início nessa data ou depois: ajuste a data', HttpStatus.CONFLICT);
+    const vespera = new Date(inicio.getTime() - 86_400_000);
+    const r = await ctx.db.$transaction(async (tx) => {
+      await tx.officialSystemRoute.updateMany({ where: { groupKey: input.groupKey, conditionKey, validFrom: { lt: inicio }, OR: [{ validTo: null }, { validTo: { gte: inicio } }] }, data: { validTo: vespera } });
+      const nova = await tx.officialSystemRoute.create({
+        data: { groupKey: input.groupKey, conditionKey, system: input.system, status: input.status, validFrom: inicio, source: input.source.trim(), notes: input.notes ?? null, createdBy: ctx.session.userId },
+      });
+      await this.audit.record(ctx, tx, { action: 'vigilancia.rota_sistema', entityType: 'OfficialSystemRoute', entityId: nova.id, payload: input });
+      return nova;
+    });
+    return (await this.rotas(ctx)).find((x) => x.id === r.id);
   }
 }

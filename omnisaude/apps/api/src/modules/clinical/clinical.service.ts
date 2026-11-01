@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { analyzePrescription, parseVoiceCommand, structureSoap, suggestCarePathway, WhisperAsrProvider, type MedicationItem } from '@omnisaude/ai-engine';
-import { ageInYears, roleHasPermission } from '@omnisaude/shared';
+import { ageInYears, exameVigilancia, RESULTADOS_DA_TECNICA, roleHasPermission, type ResultadoQualitativo } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import { SatisfactionService } from '../ombudsman/satisfaction.service';
 import { NotificacaoService } from '../vigilancia/notificacao.service';
@@ -340,10 +340,50 @@ export class ClinicalService {
     );
   }
 
-  async recordResult(ctx: RequestContext, id: string, input: { value?: number; unit?: string; text?: string }) {
+  /**
+   * Resultado de exame. Exame de vigilância (covid-19, mpox, arboviroses) com resultado qualitativo: o positivo
+   * confirma ou abre a notificação compulsória e, para covid-19 e mpox, todo resultado vai à RNDS (REL) em 24 h
+   * (Anexo V da PRC GM/MS nº 4/2017, arts. 22 a 26), se a instituição ligou o envio.
+   */
+  async recordResult(
+    ctx: RequestContext,
+    id: string,
+    input: { value?: number; unit?: string; text?: string; examKey?: string; qualitative?: ResultadoQualitativo; collectedAt?: string; method?: string; labCnes?: string },
+  ) {
     const x = await ctx.db.examRequest.findUnique({ where: { id } });
     if (!x) throw notFound('Exame');
-    return ctx.db.examRequest.update({ where: { id }, data: { status: 'RESULTADO', resultValue: input.value ?? null, resultUnit: input.unit ?? null, resultText: input.text ?? null, resultAt: new Date() } });
+    const cat = exameVigilancia(input.examKey ?? x.examKey);
+    if (input.examKey && !cat) throw new DomainError('EXAME_DESCONHECIDO', 'Exame de vigilância desconhecido', 400);
+    if (input.qualitative && !cat) throw new DomainError('EXAME_OBRIGATORIO', 'Informe qual exame de vigilância teve o resultado qualitativo', 400);
+    if (cat && input.qualitative && !RESULTADOS_DA_TECNICA[cat.tecnica].includes(input.qualitative)) throw new DomainError('RESULTADO_INVALIDO', `Resultado incompatível com o exame (${cat.nome})`, 400);
+    const agora = new Date();
+    const coleta = input.collectedAt ? new Date(input.collectedAt) : null;
+    if (coleta && coleta.getTime() > agora.getTime() + 60_000) throw new DomainError('DATA_FUTURA', 'A coleta não pode ter data futura', 400);
+    if (cat?.rel && input.qualitative && !coleta) throw new DomainError('COLETA_OBRIGATORIA', 'Informe a data e a hora da coleta (exigidas no envio à RNDS)', 400);
+    const enviaRel = !!(cat?.rel && input.qualitative && ctx.tenant.settings.rndsEnabled && ctx.tenant.settings.vigilancia.relEnabled);
+    const exame = await ctx.db.$transaction(async (tx) => {
+      const r = await tx.examRequest.update({
+        where: { id },
+        data: {
+          status: 'RESULTADO',
+          resultValue: input.value ?? null,
+          resultUnit: input.unit ?? null,
+          resultText: input.text ?? null,
+          resultAt: agora,
+          ...(cat ? { examKey: cat.key } : {}),
+          qualitative: input.qualitative ?? null,
+          collectedAt: coleta,
+          method: input.method ?? null,
+          labCnes: input.labCnes ?? null,
+          releasedBy: ctx.session.userId,
+        },
+      });
+      if (enviaRel) await this.outbox.enqueue(tx, 'RNDS_REL', r.id, { unitId: ctx.session.unitId });
+      await this.audit.record(ctx, tx, { action: 'exame.resultado', entityType: 'ExamRequest', entityId: id, payload: { exame: cat?.key ?? x.name, resultado: input.qualitative ?? null, rel: enviaRel } });
+      return r;
+    });
+    const notificacoes = await this.vigilancia.aoResultadoExame(ctx, exame);
+    return { ...exame, notificacoes };
   }
 
   carePathway(code: string, system: 'CID10' | 'CIAP2' = 'CID10') {

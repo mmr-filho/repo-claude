@@ -1593,6 +1593,13 @@ model ExamRequest {
   resultText  String?    @map("result_text")
   resultAt    DateTime?  @map("result_at")
   requestedAt DateTime   @default(now()) @map("requested_at")
+  /// Exame de vigilância (catálogo compartilhado): liga o resultado ao agravo e ao REL da RNDS.
+  examKey     String?          @map("exam_key") @db.VarChar(40)
+  qualitative ExamQualitative?
+  collectedAt DateTime?        @map("collected_at")
+  method      String?
+  labCnes     String?          @map("lab_cnes") @db.Char(7)
+  releasedBy  String?          @map("released_by") @db.Uuid
 
   encounter Encounter? @relation(fields: [encounterId], references: [id])
   patient   Patient    @relation(fields: [patientId], references: [id])
@@ -2244,6 +2251,7 @@ enum OutboxKind {
   RNDS_SUMARIO_ALTA
   /// Registro de Regulação Assistencial (Portaria GM/MS 6.656/2025).
   RNDS_REGULACAO
+  RNDS_REL
 }
 
 enum OutboxStatus {
@@ -2643,6 +2651,7 @@ enum NotificationStatus {
   RASCUNHO
   NOTIFICADA
   DESCARTADA
+  ENCERRADA
 }
 
 enum NotificationOrigin {
@@ -2652,6 +2661,7 @@ enum NotificationOrigin {
   MANUAL
   VACINA
   VARREDURA
+  EXAME
 }
 
 enum NotificationBasis {
@@ -2663,6 +2673,7 @@ enum Sphere {
   SMS
   SES
   MS
+  AUTORIDADE_POLICIAL
 }
 
 enum CommChannel {
@@ -2811,6 +2822,26 @@ model Notification {
   discardReason         String?            @map("discard_reason")
   discardedBy           String?            @map("discarded_by") @db.Uuid
   discardedAt           DateTime?          @map("discarded_at")
+  /// Sistema oficial de destino (definido na confirmação) e a fila de digitação.
+  officialSystem        OfficialSystem?    @map("official_system")
+  entryStatus           EntryStatus?       @map("entry_status")
+  officialNumber        String?            @map("official_number") @db.VarChar(30)
+  officialBatch         String?            @map("official_batch") @db.VarChar(40)
+  enteredBy             String?            @map("entered_by") @db.Uuid
+  enteredAt             DateTime?          @map("entered_at")
+  /// Investigação e encerramento (campos 31 a 43 do Sinan Net v5) e conclusão do e-SUS Sinan.
+  investigatedAt        DateTime?          @map("investigated_at") @db.Date
+  finalClass            String?            @map("final_class") @db.VarChar(2)
+  criterion             String?            @db.VarChar(2)
+  evolution             String?            @db.VarChar(1)
+  deathDate             DateTime?          @map("death_date") @db.Date
+  closedAt              DateTime?          @map("closed_at") @db.Date
+  closedBy              String?            @map("closed_by") @db.Uuid
+  conclusion            Json?
+  /// Violência contra a mulher: comunicação à autoridade policial em 24 h (Anexo V, arts. 14-A a 14-C).
+  policeRequired        Boolean            @default(false) @map("police_required")
+  policeDueAt           DateTime?          @map("police_due_at")
+  policeWaiver          String?            @map("police_waiver")
   createdBy             String?            @map("created_by") @db.Uuid
   createdAt             DateTime           @default(now()) @map("created_at")
   updatedAt             DateTime           @updatedAt @map("updated_at")
@@ -2830,6 +2861,7 @@ model Notification {
   @@index([notifierId, createdAt])
   @@index([encounterId, groupKey])
   @@index([vaccinationId])
+  @@index([officialSystem, entryStatus])
   @@map("notifications")
 }
 
@@ -2885,4 +2917,53 @@ model SurveillanceContact {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("surveillance_contacts")
+}
+
+enum OfficialSystem {
+  SINAN_NET
+  SINAN_ONLINE
+  ESUS_SINAN
+  ESUS_NOTIFICA
+  SIVEP_GRIPE
+  SINASC_SIM
+}
+
+enum RouteStatus {
+  CONFIRMADO
+  A_DEFINIR
+  NAO_CONFIRMADO
+}
+
+enum EntryStatus {
+  PENDENTE
+  DIGITADA
+  LEMBRETE
+}
+
+enum ExamQualitative {
+  DETECTAVEL
+  NAO_DETECTAVEL
+  INCONCLUSIVO
+  REAGENTE
+  NAO_REAGENTE
+  INDETERMINADO
+}
+
+/// Rota agravo → sistema oficial de destino, com vigência (a da linha prevalece sobre a do grupo; sem rota, Sinan Net).
+model OfficialSystemRoute {
+  id           String         @id @default(uuid(7)) @db.Uuid
+  groupKey     String         @map("group_key") @db.VarChar(40)
+  /// Vazio = vale para o grupo inteiro.
+  conditionKey String         @default("") @map("condition_key") @db.VarChar(60)
+  system       OfficialSystem
+  status       RouteStatus
+  validFrom    DateTime       @map("valid_from") @db.Date
+  validTo      DateTime?      @map("valid_to") @db.Date
+  source       String
+  notes        String?
+  createdBy    String?        @map("created_by") @db.Uuid
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  @@unique([groupKey, conditionKey, validFrom])
+  @@map("official_system_routes")
 }

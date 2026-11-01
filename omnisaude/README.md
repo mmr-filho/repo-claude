@@ -33,9 +33,12 @@ e BI conversacional).
   fila, unidades), triagem com sinais de alerta e passagem para a equipe ([`docs/ASSISTENTE-WHATSAPP.md`](docs/ASSISTENTE-WHATSAPP.md)).
 - **Ouvidoria** com protocolo e prazo legal, **pesquisa de satisfação** após o atendimento e **Meu SUS Digital** (o que já foi
   enviado à RNDS no CPF do cidadão) ([`docs/OUVIDORIA.md`](docs/OUVIDORIA.md)).
-- **Vigilância em saúde**: notificação compulsória aberta sozinha ao assinar o atendimento, no óbito e na internação, com a
-  lista nacional vigente (e listas locais), prazos de 24 h e 7 dias, ciência e repasse da vigilância e sigilo dos agravos
-  sensíveis ([`docs/VIGILANCIA.md`](docs/VIGILANCIA.md)).
+- **Vigilância em saúde**: notificação compulsória aberta sozinha ao assinar o atendimento, no óbito, na internação
+  (inclusive Srag) e no resultado positivo de exame, com a lista nacional vigente (e listas locais), prazos de 24 h e 7 dias,
+  ciência e repasse da vigilância e sigilo dos agravos sensíveis; fila de digitação para o sistema oficial de cada agravo
+  (Sinan Net, Sinan Online, e-SUS Sinan, e-SUS Notifica, Sivep-Gripe) com o número oficial, espelho e PDF da ficha,
+  encerramento, REL de covid-19 e mpox à RNDS e comunicação policial na violência contra a mulher
+  ([`docs/VIGILANCIA.md`](docs/VIGILANCIA.md)).
 - **Leitos/NIR**, **POPs** (hard e soft gates), **faturamento** (SIGTAP, crítica pré-glosa, BPA-I/BPA-C),
   **BI conversacional** com Text-to-SQL blindado, **gestão** (produtividade, SLAs, pautas) e **busca ativa**.
 - **Acessibilidade**: VLibras e chamada de intérprete de Libras por vídeo (WebRTC).

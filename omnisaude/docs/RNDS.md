@@ -1,10 +1,10 @@
 # RNDS: credenciamento, configuração e perfis
 
 A RNDS (Rede Nacional de Dados em Saúde) recebe do OmniSaúde o registro de atendimento clínico (RAC), o
-registro de imunobiológico administrado, a dispensação de medicamento e o sumário de alta, em FHIR R4, com
-autenticação pelo certificado digital do estabelecimento. Este documento junta o que foi conferido nas fontes
-oficiais (guia de integração em rnds-guia.saude.gov.br, coleção oficial de requisições do DATASUS e pacote de
-perfis publicado no Simplifier) e o que a gestão precisa fazer.
+registro de imunobiológico administrado, a dispensação de medicamento, o sumário de alta, a regulação e o resultado
+de exame de covid-19 e mpox (REL), em FHIR R4, com autenticação pelo certificado digital do estabelecimento. Este
+documento junta o que foi conferido nas fontes oficiais (guia de integração em rnds-guia.saude.gov.br, coleção
+oficial de requisições do DATASUS e pacote de perfis publicado no Simplifier) e o que a gestão precisa fazer.
 
 ## 1. Credenciamento (quem faz: a gestão)
 
@@ -137,3 +137,30 @@ O app do Ministério mostra ao cidadão o que chegou à RNDS no seu CPF (conta g
 com o Meu SUS Digital é consequência do envio correto dos documentos acima com CPF e CNS do cidadão. O resumo
 por pessoa (prontidão e registros enviados por tipo) está na ficha do paciente e no app do cidadão
 (`docs/OUVIDORIA.md`, seção Meu SUS Digital).
+
+## 8. Resultado de exame laboratorial (REL) de covid-19 e mpox
+
+Os resultados de covid-19 e mpox (positivos, negativos e inconclusivos) vão à RNDS em até 24 h (Anexo V da PRC
+GM/MS nº 4/2017, arts. 22 a 26). O OmniSaúde monta o **REL 3.2.1**, cujos perfis estão ativos no projeto público
+da RNDS no Simplifier (o REL v4 só aparece no Portal de Serviços e fica para a homologação):
+
+| Recurso | Perfil e conteúdo |
+|---|---|
+| Composition | `BRResultadoExameLaboratorial-3.2.1`, tipo `REL` (BRTipoDocumento), título "Resultado de Exame Laboratorial", autor pelo CNES (`BREstabelecimentoSaude-1.0`) e sujeito pelo CPF ou CNS (`BRIndividuo-1.0`) |
+| Condition | `BRCondicaoSaude`, suspeita B34.2 (covid-19) ou B04 (mpox) em `BRTerminologiaSuspeitaDiagnostica`, com `stage.assessment` apontando a Observation |
+| Observation | `BRDiagnosticoLaboratorioClinico-3.2.1`, `final`, categoria `BRSubgrupoTabelaSUS` (0214 teste rápido; 0202 no PCR, escolha nossa), exame em `BRNomeExameLOINC`, resultado em `BRTipoResultadoDTNT` (detectável, não detectável, inconclusivo) ou `BRTipoResultadoRGNR` (reagente, não reagente, indeterminado), patógeno (`BRPatogeno`: 07 SARS-CoV-2, 03 Monkeypox), coleta (`effectiveDateTime`) e liberação (`issued`) com segundos e fuso, executante pelo CNES |
+| Specimen | `BRAmostraBiologica-1.0`, tipo pela tabela do GAL (`SWNAFA` swab nasofaríngeo, `SWLES` swab de lesão) |
+
+Sem `coding.display` onde o perfil o proíbe (0..0: Composition.type, Observation.code e category, Specimen.type)
+nem no resultado e no patógeno (o guia não o usa); `subject.display` também é 0..0, então o nome do paciente não
+vai no documento. O documento é validado antes do envio (inclusive essas proibições) e segue pela fila
+(`RNDS_REL`, com novas tentativas). Um novo laudo do mesmo
+pedido substitui o documento anterior. O envio só acontece com a RNDS ligada e com **Enviar à RNDS os resultados de covid-19 e mpox (REL)** marcado em
+Vigilância > Plantão e contatos (desligado de saída), para não duplicar o que o laboratório já envia. Os códigos
+LOINC e de amostra estão em `packages/shared/src/vigilancia/exames.ts` e devem ser conferidos com os métodos da
+rede na homologação.
+
+A confirmar na homologação: a Tabela 2 do modelo de informação marca três LOINC de antígeno (94558-4, 95209-3 e
+96119-3) com o tipo de resultado "RGNG", que não existe como CodeSystem (usamos RGNR, o do 97097-0); o ValueSet
+`BRResultadoQualitativoExame-1.0`, citado no perfil, não está publicado; o exemplo JSON completo linkado pelo guia
+é do REL 2.0 (aposentado) e não serve de modelo.

@@ -1,19 +1,21 @@
 'use client';
 
-import { BellPlus, Lock } from 'lucide-react';
+import { BellPlus, FileDown, Lock, ShieldAlert } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader, EmptyState, PageHeader, Stat } from '@/components/ui/card';
-import { Select } from '@/components/ui/input';
+import { Field, Input, Select } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { TabPanel, Tabs } from '@/components/ui/tabs';
 import { FichaNotificacao } from '@/components/vigilancia/ficha-notificacao';
-import { CatalogoTab, CodigosTab, PlantaoTab } from '@/components/vigilancia/gestao';
+import { CatalogoTab, CodigosTab, PlantaoTab, SistemasTab } from '@/components/vigilancia/gestao';
 import { NovaNotificacaoDialog } from '@/components/vigilancia/nova-notificacao';
-import { ORIGEM, SITUACAO, STATUS, tempoAte, type NotificacaoResumo, type PainelVigilancia } from '@/components/vigilancia/types';
-import { fmtDateTime } from '@/lib/format';
+import { DIGITACAO, ORIGEM, SITUACAO, STATUS, tempoAte, type FilaDigitacao, type NotificacaoResumo, type PainelVigilancia, type SugestaoSrag } from '@/components/vigilancia/types';
+import { api, errorMessage, saveBlob } from '@/lib/api';
+import { useToast } from '@/components/ui/toast';
+import { fmtDateTime, todayIso } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useRealtime } from '@/lib/realtime';
 import { useSession } from '@/lib/session';
@@ -47,6 +49,12 @@ function Linha({ n, ativa, onClick }: { n: NotificacaoResumo; ativa: boolean; on
               </Badge>
             ))}
           {n.escalada && <Badge tone="red">Escalada</Badge>}
+          {n.policial && n.policial.situacao !== 'CUMPRIDO' && (
+            <Badge tone={SITUACAO[n.policial.situacao].tone}>
+              <ShieldAlert className="h-3 w-3" /> Autoridade policial
+            </Badge>
+          )}
+          {n.digitacao && <Badge tone={DIGITACAO[n.digitacao]!.tone}>{n.numeroOficial ? `Nº ${n.numeroOficial}` : DIGITACAO[n.digitacao]!.label}</Badge>}
           {n.naoHomologado && <Badge tone="slate">Não homologado</Badge>}
         </p>
       </button>
@@ -60,6 +68,12 @@ export default function VigilanciaPage() {
   const painelOk = session.can('vigilancia.painel');
   const notifica = session.can('notificacao.registrar');
   const gere = session.can('vigilancia.catalogo');
+  const digita = session.can('vigilancia.digitar');
+  const exporta = session.can('vigilancia.exportar');
+  const toast = useToast();
+  const [sistema, setSistema] = useState('');
+  const [situacaoFila, setSituacaoFila] = useState('PENDENTE');
+  const [periodo, setPeriodo] = useState({ de: todayIso(-30), ate: todayIso() });
   const [tab, setTab] = useState(painelOk ? 'painel' : notifica ? 'minhas' : 'resumo');
   const [status, setStatus] = useState('');
   const [situacao, setSituacao] = useState('');
@@ -69,24 +83,47 @@ export default function VigilanciaPage() {
   const minhas = useApi<NotificacaoResumo[]>(notifica && tab === 'minhas' ? '/vigilancia/notificacoes/minhas' : null, [tab]);
   const descartes = useApi<(NotificacaoResumo & { motivo: string | null; descartadaEm: string | null })[]>(painelOk && tab === 'descartes' ? '/vigilancia/descartes' : null, [tab]);
   const resumo = useApi<{ imediatasNoPrazo: number; vencidas: number; repassesPendentes: number; semana: string }>(!painelOk && !notifica ? '/vigilancia/resumo' : null);
+  const fila = useApi<FilaDigitacao>(digita && tab === 'digitacao' ? `/vigilancia/digitacao?${new URLSearchParams({ ...(sistema ? { sistema } : {}), situacao: situacaoFila })}` : null, [tab, sistema, situacaoFila]);
+  const srag = useApi<SugestaoSrag[]>(painelOk && tab === 'painel' ? '/vigilancia/srag/sugestoes' : null, [tab]);
+  async function notificarSrag(s: SugestaoSrag) {
+    try {
+      const n = await api.post<{ id: string }>('/vigilancia/notificacoes', { patientId: s.patientId, conditionKey: 'srag-coronavirus', encounterId: s.encounterId });
+      toast.success('Notificação de Srag aberta.');
+      setSel(n.id);
+      await Promise.all([painel.reload(), srag.reload()]);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  }
+  async function exportar() {
+    try {
+      const r = await api.download(`/vigilancia/exportacao.csv?${new URLSearchParams({ ...(sistema ? { sistema } : {}), de: periodo.de, ate: periodo.ate })}`);
+      saveBlob(r.blob, r.fileName ?? 'notificacoes.csv');
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  }
   useRealtime('vigilancia:notificacao', () => {
     if (tab === 'painel') void painel.reload();
     if (tab === 'minhas') void minhas.reload();
+    if (tab === 'digitacao') void fila.reload();
   });
   useRealtime('vigilancia:escalada', () => void painel.reload());
 
   const tabs = [
     ...(painelOk ? [{ value: 'painel', label: 'Painel da vigilância' }] : []),
     ...(notifica ? [{ value: 'minhas', label: 'Minhas notificações' }] : []),
+    ...(digita ? [{ value: 'digitacao', label: 'Digitação nos sistemas oficiais' }] : []),
     ...(painelOk ? [{ value: 'descartes', label: 'Descartes' }] : []),
     ...(painelOk ? [{ value: 'catalogo', label: 'Lista (LNNC)' }] : []),
     ...(painelOk ? [{ value: 'codigos', label: 'Códigos' }] : []),
+    ...(painelOk ? [{ value: 'sistemas', label: 'Sistemas oficiais' }] : []),
     ...(gere ? [{ value: 'plantao', label: 'Plantão e contatos' }] : []),
     ...(!painelOk && !notifica ? [{ value: 'resumo', label: 'Resumo' }] : []),
   ];
-  const lista = tab === 'painel' ? painel.data?.notificacoes : tab === 'minhas' ? minhas.data : tab === 'descartes' ? descartes.data : undefined;
+  const lista = tab === 'painel' ? painel.data?.notificacoes : tab === 'minhas' ? minhas.data : tab === 'descartes' ? descartes.data : tab === 'digitacao' ? fila.data?.notificacoes : undefined;
   // Carregamento e erro da aba aberta (o erro de uma aba não aparece nas outras).
-  const atual = tab === 'painel' ? painel : tab === 'minhas' ? minhas : tab === 'descartes' ? descartes : null;
+  const atual = tab === 'painel' ? painel : tab === 'minhas' ? minhas : tab === 'descartes' ? descartes : tab === 'digitacao' ? fila : null;
   const carregando = !!atual && atual.loading && !atual.data;
   const c = painel.data?.cartoes;
   return (
@@ -103,7 +140,7 @@ export default function VigilanciaPage() {
         }
       />
       <Tabs value={tab} onValueChange={(v) => (setTab(v), setSel(null))} tabs={tabs}>
-        {(['painel', 'minhas', 'descartes'] as const).map((t) => (
+        {(['painel', 'minhas', 'descartes', 'digitacao'] as const).map((t) => (
           <TabPanel key={t} value={t}>
             {t === 'painel' && c && (
               <div className="mb-4 grid gap-3 md:grid-cols-6" id="vig-cartoes">
@@ -113,14 +150,79 @@ export default function VigilanciaPage() {
                 <Stat label="Vencidas" value={c.vencidas} tone={c.vencidas ? 'bad' : 'good'} />
                 <Stat label="Semanais em rascunho" value={c.semanaisAVencer} />
                 <Stat label="Descartes (30 d)" value={c.descartes30d} hint={`Semana epidemiológica ${painel.data!.semanaAtual.slice(4)}/${painel.data!.semanaAtual.slice(0, 4)}`} />
+                <Stat label="Comunicação policial pendente" value={c.comunicacoesPoliciais} tone={c.comunicacoesPoliciais ? 'bad' : 'good'} hint="Violência contra a mulher, 24 h" />
+                <Stat label="Pendentes de digitação" value={c.pendentesDigitacao} tone={c.pendentesDigitacao ? 'warn' : 'good'} hint="Sinan, e-SUS Sinan, Notifica, Sivep" />
+                {c.encerramentoVencido !== null && <Stat label="Encerramento vencido" value={c.encerramentoVencido} tone={c.encerramentoVencido ? 'bad' : 'good'} hint="Prazos definidos pela vigilância" />}
+              </div>
+            )}
+            {t === 'painel' && !!srag.data?.length && (
+              <Card className="mb-4" id="vig-srag">
+                <CardHeader
+                  title="Internações com indício de Srag"
+                  description="CID respiratório agudo ou sinal de Srag na triagem (SpO2 ≤ 94%, dispneia ou desconforto respiratório, taquipneia; NT nº 11/2026), sem notificação de Srag. Avalie e notifique no Sivep-Gripe."
+                />
+                <CardBody className="flex flex-col gap-2 text-sm">
+                  {srag.data.map((x) => (
+                    <div key={x.admissionId} className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-200 p-2">
+                      <span>
+                        <b>{x.paciente}</b> · {x.unidade} · internado em {fmtDateTime(x.internadoEm)} · CID {x.cid}
+                        {x.cidRespiratorio ? ' (respiratório)' : ''}
+                        {x.sinais.length ? ` · ${x.sinais.join(', ')}` : ''}
+                      </span>
+                      {notifica && (
+                        <Button size="sm" variant="secondary" onClick={() => notificarSrag(x)}>
+                          Notificar Srag
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </CardBody>
+              </Card>
+            )}
+            {t === 'digitacao' && fila.data && (
+              <div className="mb-4 flex flex-col gap-3" id="vig-digitacao">
+                <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+                  {fila.data.sistemas.map((x) => (
+                    <button
+                      key={x.sistema}
+                      type="button"
+                      onClick={() => setSistema(sistema === x.sistema ? '' : x.sistema)}
+                      className={`rounded-lg border p-3 text-left ${sistema === x.sistema ? 'border-brand-500 bg-brand-50' : 'border-slate-200 bg-white'}`}
+                    >
+                      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{x.label}</p>
+                      <p className="mt-1 text-2xl font-semibold tabular-nums">{x.digitacao ? x.pendentes : x.lembretes}</p>
+                      <p className="text-xs text-slate-500">{x.digitacao ? `pendentes · ${x.digitadas} digitadas` : 'lembretes de DNV/DO'}</p>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-slate-500">Nenhum desses sistemas recebe dados de terceiros por API: a notificação é digitada lá e o número gerado é informado aqui, o que a tira da fila.</p>
+                {exporta && (
+                  <div className="flex flex-wrap items-end gap-2">
+                    <Field label="De" htmlFor="exp-de">
+                      <Input id="exp-de" type="date" value={periodo.de} onChange={(e) => setPeriodo({ ...periodo, de: e.target.value })} />
+                    </Field>
+                    <Field label="Até" htmlFor="exp-ate">
+                      <Input id="exp-ate" type="date" value={periodo.ate} onChange={(e) => setPeriodo({ ...periodo, ate: e.target.value })} />
+                    </Field>
+                    <Button variant="secondary" onClick={exportar} id="vig-exportar">
+                      <FileDown className="h-4 w-4" /> Exportar CSV (dicionário do Sinan)
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
             <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
               <Card>
                 <CardHeader
-                  title={t === 'painel' ? 'Notificações' : t === 'minhas' ? 'Minhas notificações' : 'Descartadas'}
+                  title={t === 'painel' ? 'Notificações' : t === 'minhas' ? 'Minhas notificações' : t === 'digitacao' ? 'Fila de digitação' : 'Descartadas'}
                   actions={
-                    t === 'painel' ? (
+                    t === 'digitacao' ? (
+                      <Select value={situacaoFila} onChange={(e) => setSituacaoFila(e.target.value)} aria-label="Situação na fila">
+                        <option value="PENDENTE">Pendentes</option>
+                        <option value="DIGITADA">Digitadas</option>
+                        <option value="LEMBRETE">Lembretes de DNV/DO</option>
+                      </Select>
+                    ) : t === 'painel' ? (
                       <div className="flex flex-wrap gap-2">
                         <Select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Situação da notificação">
                           <option value="">Abertas e notificadas</option>
@@ -175,6 +277,9 @@ export default function VigilanciaPage() {
         </TabPanel>
         <TabPanel value="codigos">
           <CodigosTab podeGerir={gere} />
+        </TabPanel>
+        <TabPanel value="sistemas">
+          <SistemasTab podeGerir={gere} />
         </TabPanel>
         <TabPanel value="plantao">
           <PlantaoTab />

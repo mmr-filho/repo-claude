@@ -1,5 +1,7 @@
 export type SituacaoPrazo = 'CUMPRIDO' | 'NO_PRAZO' | 'A_VENCER' | 'VENCIDO' | 'SEM_PRAZO';
 export type Esfera = 'SMS' | 'SES' | 'MS';
+export type Destino = Esfera | 'AUTORIDADE_POLICIAL';
+export type SistemaOficial = 'SINAN_NET' | 'SINAN_ONLINE' | 'ESUS_SINAN' | 'ESUS_NOTIFICA' | 'SIVEP_GRIPE' | 'SINASC_SIM';
 
 /** Rascunho aberto pelo gatilho (resposta da assinatura, do encerramento e da internação). */
 export interface NotificacaoCriada {
@@ -36,10 +38,24 @@ export interface NotificacaoResumo {
   criadaEm: string;
   /** A pessoa pode abrir a ficha (alcance e sigilo). */
   podeAbrir: boolean;
+  policial: { situacao: SituacaoPrazo; venceEm: string | null } | null;
+  sistemaOficial: SistemaOficial | null;
+  digitacao: 'PENDENTE' | 'DIGITADA' | 'LEMBRETE' | null;
+  numeroOficial: string | null;
 }
 
 export interface PainelVigilancia {
-  cartoes: { imediatasAguardandoCiencia: number; rascunhosImediatos: number; repassesPendentes: number; vencidas: number; semanaisAVencer: number; descartes30d: number };
+  cartoes: {
+    imediatasAguardandoCiencia: number;
+    rascunhosImediatos: number;
+    repassesPendentes: number;
+    vencidas: number;
+    semanaisAVencer: number;
+    descartes30d: number;
+    comunicacoesPoliciais: number;
+    pendentesDigitacao: number;
+    encerramentoVencido: number | null;
+  };
   notificacoes: NotificacaoResumo[];
   semanaAtual: string;
 }
@@ -68,7 +84,7 @@ export interface Contato {
 export interface NotificacaoDetalhe {
   id: string;
   numero: string;
-  status: 'RASCUNHO' | 'NOTIFICADA' | 'DESCARTADA';
+  status: 'RASCUNHO' | 'NOTIFICADA' | 'DESCARTADA' | 'ENCERRADA';
   origem: string;
   agravo: {
     id: string;
@@ -100,18 +116,101 @@ export interface NotificacaoDetalhe {
     inicio: string | null;
     venceEm: string | null;
     aguardandoConfirmacao: boolean;
-    porEsfera: { esfera: Esfera; rotulo: string; venceEm: string | null; cumpridaEm: string | null; situacao: SituacaoPrazo }[];
+    porEsfera: { esfera: Destino; rotulo: string; venceEm: string | null; cumpridaEm: string | null; situacao: SituacaoPrazo }[];
   };
   datas: { primeiroAtendimento: string | null; conhecimento: string; confirmacao: string | null; notificacao: string | null; sintomas: string | null; semanaNotificacao: string | null; semanaSintomas: string | null };
   ciencia: { em: string; por: string | null } | null;
   ficha: FichaFin;
   foraDoMunicipio: boolean;
   descarte: { em: string; motivo: string | null } | null;
-  comunicacoes: { id: string; esfera: Esfera; meio: string; em: string; interlocutor: string; orgao: string | null; contato: string | null; protocolo: string | null; notas: string | null; por: string | null }[];
+  comunicacoes: { id: string; esfera: Destino; meio: string; em: string; interlocutor: string; orgao: string | null; contato: string | null; protocolo: string | null; notas: string | null; por: string | null }[];
   eventos: { id: string; tipo: string; em: string; por: string | null; notas: string | null }[];
   contatos: Contato[];
-  permissoes: { editar: boolean; confirmar: boolean; descartar: boolean; ciencia: boolean; comunicar: boolean };
+  saida: {
+    sistema: SistemaOficial;
+    sistemaLabel: string;
+    digitacao: 'PENDENTE' | 'DIGITADA' | 'LEMBRETE' | null;
+    numero: string | null;
+    lote: string | null;
+    digitadaPor: string | null;
+    digitadaEm: string | null;
+    dicaNumero: string;
+    rota: { sistema: SistemaOficial; situacao: string; situacaoLabel: string; fonte: string; nota: string | null };
+  } | null;
+  encerramento: {
+    investigadaEm: string | null;
+    classificacao: string | null;
+    classificacaoLabel: string | null;
+    criterio: string | null;
+    criterioLabel: string | null;
+    evolucao: string | null;
+    evolucaoLabel: string | null;
+    obitoEm: string | null;
+    encerradaEm: string | null;
+    encerradaPor: string | null;
+    conclusao: Record<string, string> | null;
+    camposConclusao: { campo: string; rotulo: string; obrigatorio: boolean; obrigatorioSe?: string; tipo: 'texto' | 'data' | 'opcao'; opcoes?: Record<string, string> }[];
+    numeracao: { investigacao: string; classificacao: string; criterio: string; evolucao: string; obito: string; encerramento: string };
+    fichaEsus: boolean;
+    prazoDias: number | null;
+  };
+  policial: { venceEm: string | null; dispensa: string | null } | null;
+  /** Vítima fora do art. 14-A (menor de 18 anos ou idosa): a comunicação segue o ECA ou o Estatuto da Pessoa Idosa. */
+  orientacaoViolencia: string | null;
+  permissoes: {
+    editar: boolean;
+    confirmar: boolean;
+    descartar: boolean;
+    ciencia: boolean;
+    comunicar: boolean;
+    comunicarPolicia: boolean;
+    digitar: boolean;
+    desfazerDigitacao: boolean;
+    encerrar: boolean;
+    reabrir: boolean;
+  };
   aviso: string;
+}
+
+export interface LinhaEspelho {
+  bloco: 'NOTIFICACAO' | 'CONCLUSAO' | 'CONCLUSAO_ESUS';
+  numero: string;
+  variavel: string;
+  rotulo: string;
+  valor: string;
+  exportado: string;
+}
+
+export interface FilaDigitacao {
+  sistemas: { sistema: SistemaOficial; label: string; digitacao: boolean; dicaNumero: string; pendentes: number; lembretes: number; digitadas: number }[];
+  notificacoes: (NotificacaoResumo & { notificadaEm: string | null; lote: string | null })[];
+}
+
+export interface RotaSistema {
+  id: string;
+  grupo: string;
+  chave: string | null;
+  sistema: SistemaOficial;
+  sistemaLabel: string;
+  situacao: string;
+  situacaoLabel: string;
+  vigenteDe: string;
+  vigenteAte: string | null;
+  vigente: boolean;
+  fonte: string;
+  notas: string | null;
+}
+
+export interface SugestaoSrag {
+  admissionId: string;
+  encounterId: string;
+  patientId: string;
+  paciente: string;
+  unidade: string;
+  internadoEm: string;
+  cid: string;
+  cidRespiratorio: boolean;
+  sinais: string[];
 }
 
 export interface CondicaoCatalogo {
@@ -177,12 +276,26 @@ export const SITUACAO: Record<SituacaoPrazo, { label: string; tone: 'green' | 'a
   VENCIDO: { label: 'Vencido', tone: 'red' },
   SEM_PRAZO: { label: 'Sem prazo', tone: 'slate' },
 };
-export const STATUS: Record<string, { label: string; tone: 'amber' | 'green' | 'slate' }> = {
+export const STATUS: Record<string, { label: string; tone: 'amber' | 'green' | 'slate' | 'blue' }> = {
   RASCUNHO: { label: 'Rascunho', tone: 'amber' },
   NOTIFICADA: { label: 'Notificada', tone: 'green' },
+  ENCERRADA: { label: 'Encerrada', tone: 'blue' },
   DESCARTADA: { label: 'Descartada', tone: 'slate' },
 };
-export const ORIGEM: Record<string, string> = { ATENDIMENTO: 'Atendimento', OBITO: 'Óbito', INTERNACAO: 'Internação', MANUAL: 'Manual', VACINA: 'Vacina (ESAVI)', VARREDURA: 'Recuperada pela varredura' };
+export const DIGITACAO: Record<string, { label: string; tone: 'amber' | 'green' | 'blue' }> = {
+  PENDENTE: { label: 'Pendente de digitação', tone: 'amber' },
+  DIGITADA: { label: 'Digitada', tone: 'green' },
+  LEMBRETE: { label: 'Registrar na DNV/DO', tone: 'blue' },
+};
+export const ORIGEM: Record<string, string> = {
+  ATENDIMENTO: 'Atendimento',
+  OBITO: 'Óbito',
+  INTERNACAO: 'Internação',
+  MANUAL: 'Manual',
+  VACINA: 'Vacina (ESAVI)',
+  VARREDURA: 'Recuperada pela varredura',
+  EXAME: 'Resultado de exame',
+};
 export const MEIO: Record<string, string> = { SISTEMA: 'Painel do OmniSaúde', TELEFONE: 'Telefone', EMAIL: 'E-mail', FORMULARIO: 'Formulário eletrônico', PRESENCIAL: 'Presencial', OUTRO: 'Outro' };
 export const EVENTO: Record<string, string> = {
   GERADA_PELO_GATILHO: 'Rascunho aberto pelo sistema',
@@ -195,6 +308,11 @@ export const EVENTO: Record<string, string> = {
   ESCALADA: 'Escalada ao plantão',
   PRAZO_VENCIDO: 'Prazo vencido',
   DESCARTADA: 'Descartada',
+  DIGITADA: 'Número oficial informado',
+  DIGITACAO_DESFEITA: 'Digitação desfeita',
+  ENCERRADA: 'Investigação encerrada',
+  REABERTA: 'Investigação reaberta',
+  RESULTADO_EXAME: 'Confirmada por resultado de exame',
 };
 
 /** "vence em 3 h 20 min" ou "vencido há 2 h". */

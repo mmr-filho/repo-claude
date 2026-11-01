@@ -30,8 +30,26 @@ const itemSchema = z.object({
 const prescribeSchema = z.object({ kind: z.enum(['AMBULATORIAL', 'HOSPITALAR']).optional(), items: z.array(itemSchema).min(1).max(30), justification: z.string().max(2000).optional() });
 const checkSchema = z.object({ patientId: z.string().uuid(), items: z.array(itemSchema).min(1).max(30) });
 const closeSchema = z.object({ outcome: z.enum(['ALTA', 'INTERNACAO', 'ENCAMINHAMENTO', 'TRANSFERENCIA', 'OBITO', 'EVASAO']), mainCid: z.string().max(5).optional() });
-const examsSchema = z.object({ items: z.array(z.object({ sigtapCode: z.string().min(10).max(14), name: z.string().min(2), analyte: z.string().max(30).optional() })).min(1).max(30) });
-const resultSchema = z.object({ value: z.number().optional(), unit: z.string().max(20).optional(), text: z.string().max(5000).optional() });
+const examsSchema = z.object({
+  items: z
+    .array(z.object({ sigtapCode: z.string().min(10).max(14), name: z.string().min(2), analyte: z.string().max(30).optional() }))
+    .min(1)
+    .max(30),
+});
+const resultSchema = z.object({
+  value: z.number().optional(),
+  unit: z.string().max(20).optional(),
+  text: z.string().max(5000).optional(),
+  /** Exame de vigilância (catálogo compartilhado) com resultado qualitativo: dispara a notificação e o REL. */
+  examKey: z.string().trim().max(40).optional(),
+  qualitative: z.enum(['DETECTAVEL', 'NAO_DETECTAVEL', 'INCONCLUSIVO', 'REAGENTE', 'NAO_REAGENTE', 'INDETERMINADO']).optional(),
+  collectedAt: z.string().datetime({ offset: true }).optional(),
+  method: z.string().trim().max(120).optional(),
+  labCnes: z
+    .string()
+    .regex(/^\d{7}$/)
+    .optional(),
+});
 const certificateSchema = z.object({ days: z.number().int().min(1).max(365), cid: z.string().max(5).optional(), includeCid: z.boolean(), text: z.string().max(2000).optional() });
 const vaccineSchema = z.object({
   patientId: z.string().uuid(),

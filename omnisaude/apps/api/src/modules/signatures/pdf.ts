@@ -13,12 +13,13 @@ import { buildCms, type ParsedPfx } from './cms';
 export interface DocumentModel {
   title: string;
   unit: { name: string; cnes: string; address?: string | null };
+  /** Nulo nos documentos que não podem identificar a pessoa atendida (ex.: comunicação policial sem identificação). */
   patient: {
     name: string;
     cpf?: string | null;
     cns?: string | null;
     birthDate: Date;
-  };
+  } | null;
   professional: {
     name: string;
     council?: string | null;
@@ -157,8 +158,11 @@ class Writer {
   }
 }
 
-/** Monta o PDF (ainda sem assinatura) com o campo de assinatura reservado. */
-export async function renderDocument(model: DocumentModel, placeholder: { reason: string; location: string; contactInfo: string }): Promise<Buffer> {
+/**
+ * Monta o PDF. Com `placeholder`, reserva o campo da assinatura ICP-Brasil (o fluxo de assinatura assina em seguida);
+ * sem ele, o documento sai como emitido pelo sistema, sem assinatura digital (e diz isso no rodapé).
+ */
+export async function renderDocument(model: DocumentModel, placeholder?: { reason: string; location: string; contactInfo: string }): Promise<Buffer> {
   const doc = await PDFDocument.create();
   doc.setTitle(model.title);
   doc.setAuthor(model.professional.name);
@@ -178,10 +182,12 @@ export async function renderDocument(model: DocumentModel, placeholder: { reason
     gap: 10,
   });
   w.rule();
-  const ids = [model.patient.cpf ? `CPF ${maskCpf(model.patient.cpf)}` : null, model.patient.cns ? `CNS ${model.patient.cns}` : null].filter(Boolean).join(' · ');
-  w.text(`Paciente: ${model.patient.name}`, { bold: true });
-  w.text(`${ids ? `${ids} · ` : ''}Nascimento ${formatDate(model.patient.birthDate)}`, { size: 9.5, color: [0.3, 0.3, 0.3] });
-  w.space(4);
+  if (model.patient) {
+    const ids = [model.patient.cpf ? `CPF ${maskCpf(model.patient.cpf)}` : null, model.patient.cns ? `CNS ${model.patient.cns}` : null].filter(Boolean).join(' · ');
+    w.text(`Paciente: ${model.patient.name}`, { bold: true });
+    w.text(`${ids ? `${ids} · ` : ''}Nascimento ${formatDate(model.patient.birthDate)}`, { size: 9.5, color: [0.3, 0.3, 0.3] });
+    w.space(4);
+  }
   w.text(`Profissional: ${model.professional.name}${model.professional.council ? ` · ${model.professional.council}` : ''}`, { bold: true });
   w.text(`${model.professional.roleLabel} · CBO ${model.professional.cbo} · emitido em ${formatDateTime(model.issuedAt, model.timeZone)}`, { size: 9.5, color: [0.3, 0.3, 0.3] });
   w.rule();
@@ -192,16 +198,21 @@ export async function renderDocument(model: DocumentModel, placeholder: { reason
   }
   w.space(10);
   w.rule(6);
-  w.text('ASSINADO DIGITALMENTE', {
-    bold: true,
-    size: 9,
-    color: [0.1, 0.4, 0.2],
-  });
-  w.text(`${model.signer.name} · CPF ${maskCpf(model.signer.cpf)} · ${formatDateTime(model.issuedAt, model.timeZone)}`, { size: 9 });
-  w.text(
-    'Documento assinado com certificado digital no padrão ICP-Brasil (PAdES), com validade jurídica nos termos da MP nº 2.200-2/2001. A assinatura pode ser conferida em https://validar.iti.gov.br ou na área de auditoria do sistema.',
-    { size: 8, color: [0.3, 0.3, 0.3] },
-  );
+  if (placeholder) {
+    w.text('ASSINADO DIGITALMENTE', {
+      bold: true,
+      size: 9,
+      color: [0.1, 0.4, 0.2],
+    });
+    w.text(`${model.signer.name} · CPF ${maskCpf(model.signer.cpf)} · ${formatDateTime(model.issuedAt, model.timeZone)}`, { size: 9 });
+    w.text(
+      'Documento assinado com certificado digital no padrão ICP-Brasil (PAdES), com validade jurídica nos termos da MP nº 2.200-2/2001. A assinatura pode ser conferida em https://validar.iti.gov.br ou na área de auditoria do sistema.',
+      { size: 8, color: [0.3, 0.3, 0.3] },
+    );
+  } else {
+    w.text('DOCUMENTO SEM ASSINATURA DIGITAL', { bold: true, size: 9, color: [0.45, 0.3, 0.05] });
+    w.text(`Emitido pelo sistema por ${model.signer.name} · CPF ${maskCpf(model.signer.cpf)} · ${formatDateTime(model.issuedAt, model.timeZone)}`, { size: 9 });
+  }
   for (const line of model.footer) w.text(line, { size: 7.5, color: [0.4, 0.4, 0.4] });
 
   const pages = doc.getPages();
@@ -216,16 +227,17 @@ export async function renderDocument(model: DocumentModel, placeholder: { reason
     });
   });
 
-  pdflibAddPlaceholder({
-    pdfDoc: doc,
-    reason: toWinAnsi(placeholder.reason),
-    contactInfo: toWinAnsi(placeholder.contactInfo),
-    name: toWinAnsi(model.signer.name),
-    location: toWinAnsi(placeholder.location),
-    signatureLength: 24000,
-    subFilter: SUBFILTER_ETSI_CADES_DETACHED,
-    appName: 'OmniSaude',
-  });
+  if (placeholder)
+    pdflibAddPlaceholder({
+      pdfDoc: doc,
+      reason: toWinAnsi(placeholder.reason),
+      contactInfo: toWinAnsi(placeholder.contactInfo),
+      name: toWinAnsi(model.signer.name),
+      location: toWinAnsi(placeholder.location),
+      signatureLength: 24000,
+      subFilter: SUBFILTER_ETSI_CADES_DETACHED,
+      appName: 'OmniSaude',
+    });
   return Buffer.from(await doc.save({ useObjectStreams: false }));
 }
 

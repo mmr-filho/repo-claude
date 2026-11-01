@@ -697,7 +697,7 @@ export class BedRegulationService {
       footer: [`Solicitação ${r.protocol} · emitida em ${formatDateTime(new Date(), ctx.tenant.timeZone)} por ${signer.name}`],
       signer: { name: signer.name, cpf: signer.cpf },
     };
-    const data = await renderDocument(model, { reason: 'Solicitação de vaga', location: unit.name, contactInfo: ctx.tenant.name });
+    const data = await renderDocument(model);
     await this.audit.recordStandalone(ctx, { action: 'leitos_rede.ficha_pdf', entityType: 'BedRequest', entityId: id, payload: { protocol: r.protocol } });
     return { data, fileName: `vaga-${r.protocol}.pdf` };
   }

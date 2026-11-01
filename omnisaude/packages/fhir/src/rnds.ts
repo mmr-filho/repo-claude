@@ -59,6 +59,14 @@ export const CODE_SYSTEMS = {
   statusRegulacao: `${RNDS_BASE}/CodeSystem/BRStatusRegulacaoAssistencial`,
   tipoParticipante: `${RNDS_BASE}/CodeSystem/BRTipoParticipante`,
   requestPriority: 'http://hl7.org/fhir/request-priority',
+  /** REL (resultado de exame laboratorial, conferido no pacote da RNDS no Simplifier). */
+  nomeExameLoinc: `${RNDS_BASE}/CodeSystem/BRNomeExameLOINC`,
+  tipoResultadoDTNT: `${RNDS_BASE}/CodeSystem/BRTipoResultadoDTNT`,
+  tipoResultadoRGNR: `${RNDS_BASE}/CodeSystem/BRTipoResultadoRGNR`,
+  subgrupoTabelaSus: `${RNDS_BASE}/CodeSystem/BRSubgrupoTabelaSUS`,
+  tipoAmostraGal: `${RNDS_BASE}/CodeSystem/BRTipoAmostraGAL`,
+  patogeno: `${RNDS_BASE}/CodeSystem/BRTerminologiaPatogeno`,
+  suspeitaDiagnostica: `${RNDS_BASE}/CodeSystem/BRTerminologiaSuspeitaDiagnostica`,
 } as const;
 
 const sd = (name: string) => `${RNDS_BASE}/StructureDefinition/${name}`;
@@ -88,6 +96,12 @@ export const PROFILES = {
   regulationComposition: sd('BRRegulacaoAssistencial'),
   regulationAppointment: sd('BRAgendamentoRegulacaoAssistencial'),
   regulationRequest: sd('BRRequisicaoRegulacaoAssistencial'),
+  /** REL 3.2.1 (perfis ativos no projeto público da RNDS; o REL v4 só está no Portal de Serviços). */
+  relComposition: sd('BRResultadoExameLaboratorial-3.2.1'),
+  relObservation: sd('BRDiagnosticoLaboratorioClinico-3.2.1'),
+  relCondition: sd('BRCondicaoSaude'),
+  relSpecimen: sd('BRAmostraBiologica-1.0'),
+  relPathogenExtension: sd('BRPatogeno'),
 } as const;
 
 /**
@@ -106,6 +120,7 @@ export const DOCUMENT_TYPES = {
   dispensation: { code: 'RDM', display: 'Registro de Dispensação de Medicamento' },
   discharge: { code: 'SA', display: 'Sumário de Alta' },
   regulation: { code: 'RA', display: 'Regulação Assistencial' },
+  rel: { code: 'REL', display: 'Resultado de Exame(s) Laboratoriais(s)' },
 } as const;
 
 export const LOINC = {

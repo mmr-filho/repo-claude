@@ -307,7 +307,7 @@ export class VaccinesService {
       timeZone: ctx.tenant.timeZone,
     });
     model.footer.push('Documento sem assinatura digital. A versão assinada com certificado ICP-Brasil pode ser conferida em Validar documento.');
-    const data = await renderDocument(model, { reason: 'Certificado de vacinação', location: model.unit.name, contactInfo: ctx.tenant.name });
+    const data = await renderDocument(model);
     await this.audit.record(ctx, ctx.db, { action: 'vacinas.certificado', entityType: 'Patient', entityId: patientId, payload: { doses: model.sections[1]?.paragraphs.length ?? 0 } });
     return { data, fileName: `certificado-vacinacao-${patientId.slice(0, 8)}.pdf` };
   }

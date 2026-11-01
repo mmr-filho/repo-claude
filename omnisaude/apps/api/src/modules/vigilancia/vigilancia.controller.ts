@@ -1,13 +1,16 @@
-import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
+import { Body, Controller, Get, Header, HttpCode, Param, ParseUUIDPipe, Patch, Post, Put, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
 import { zv } from '../../core/zod';
 import { CatalogoVigilanciaService } from './catalogo.service';
 import { CAMPOS_EDITAVEIS } from './ficha';
 import { NotificacaoService } from './notificacao.service';
+import { SaidaOficialService } from './saida.service';
 
 const dia = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const esfera = z.enum(['SMS', 'SES', 'MS']);
+const sistema = z.enum(['SINAN_NET', 'SINAN_ONLINE', 'ESUS_SINAN', 'ESUS_NOTIFICA', 'SIVEP_GRIPE', 'SINASC_SIM']);
 const contexto = z.enum(['CASO', 'OBITO', 'GESTANTE', 'ANOMALIA_CONGENITA', 'OUTRO']);
 const manualSchema = z.object({
   patientId: z.string().uuid(),
@@ -24,10 +27,11 @@ const editarSchema = z.object({
   confirmedAt: z.string().datetime({ offset: true }).nullish(),
   symptomsOnset: dia.nullish(),
   ficha: fichaSchema.optional(),
+  policial: z.object({ dispensa: z.string().trim().max(500).nullable() }).optional(),
 });
 const descartarSchema = z.object({ reason: z.string().trim().min(10).max(1000) });
 const comunicarSchema = z.object({
-  target: esfera,
+  target: z.enum(['SMS', 'SES', 'MS', 'AUTORIDADE_POLICIAL']),
   channel: z.enum(['TELEFONE', 'EMAIL', 'FORMULARIO', 'PRESENCIAL', 'OUTRO']),
   communicatedAt: z.string().datetime({ offset: true }),
   counterpartName: z.string().trim().min(2).max(120),
@@ -107,7 +111,36 @@ const contatoSchema = z.object({
   active: z.boolean().optional(),
   sort: z.number().int().min(0).max(999).optional(),
 });
-const configuracoesSchema = z.object({ ackMinutes: z.number().int().min(5).max(720).optional(), onCallPhones: z.array(z.string().trim().min(8).max(20)).max(10).optional(), whatsappAlerts: z.boolean().optional() });
+const numeroSchema = z.object({ numero: z.string().trim().min(1).max(30), lote: z.string().trim().max(40).nullish() });
+const motivoSchema = z.object({ reason: z.string().trim().min(10).max(1000) });
+const filaSchema = z.object({ sistema: sistema.optional(), situacao: z.enum(['PENDENTE', 'DIGITADA', 'LEMBRETE']).optional() });
+const encerrarSchema = z.object({
+  investigadaEm: dia,
+  classificacao: z.enum(['1', '2', '8']),
+  criterio: z.enum(['1', '2', '3']).nullish(),
+  evolucao: z.enum(['1', '2', '3', '9']).nullish(),
+  obitoEm: dia.nullish(),
+  encerradaEm: dia,
+  conclusao: z.record(z.string().regex(/^\d{2}$/), z.string().trim().max(120).nullable()).nullish(),
+});
+const exportacaoSchema = z.object({ sistema: sistema.optional(), de: dia, ate: dia, situacao: z.enum(['PENDENTE', 'DIGITADA']).optional() });
+const rotaSchema = z.object({
+  groupKey: z.string().trim().min(2).max(40),
+  conditionKey: z.string().trim().min(2).max(60).nullish(),
+  system: sistema,
+  status: z.enum(['CONFIRMADO', 'A_DEFINIR', 'NAO_CONFIRMADO']),
+  validFrom: dia,
+  source: z.string().trim().min(3).max(300),
+  notes: z.string().trim().max(500).nullish(),
+});
+const configuracoesSchema = z.object({
+  ackMinutes: z.number().int().min(5).max(720).optional(),
+  onCallPhones: z.array(z.string().trim().min(8).max(20)).max(10).optional(),
+  whatsappAlerts: z.boolean().optional(),
+  relEnabled: z.boolean().optional(),
+  prazosEncerramento: z.record(z.string().regex(/^[a-z0-9-]{2,40}$/), z.number().int().min(1).max(365)).optional(),
+  modeloPolicial: z.string().max(4000).nullish(),
+});
 
 /** Vigilância em saúde: notificação compulsória (VIG-1a), painel da vigilância e catálogo da LNNC. */
 @Controller('vigilancia')
@@ -115,6 +148,7 @@ export class VigilanciaController {
   constructor(
     private readonly notificacoes: NotificacaoService,
     private readonly catalogo: CatalogoVigilanciaService,
+    private readonly saida: SaidaOficialService,
   ) {}
 
   @Get('painel')
@@ -181,9 +215,96 @@ export class VigilanciaController {
   }
 
   @Post('notificacoes/:id/comunicacoes')
-  @RequirePermission('vigilancia.comunicar')
+  @RequirePermission('vigilancia.comunicar', 'notificacao.registrar')
   comunicar(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(comunicarSchema)) body: z.infer<typeof comunicarSchema>) {
     return this.notificacoes.comunicar(ctx, id, body);
+  }
+
+  // ── Saída para os sistemas oficiais, investigação e encerramento (VIG-1b) ──
+
+  @Get('digitacao')
+  @RequirePermission('vigilancia.digitar')
+  fila(@Ctx() ctx: RequestContext, @Query(zv(filaSchema)) q: z.infer<typeof filaSchema>) {
+    return this.notificacoes.fila(ctx, q);
+  }
+
+  @Post('notificacoes/:id/numero-oficial')
+  @HttpCode(200)
+  @RequirePermission('vigilancia.digitar')
+  informarNumero(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(numeroSchema)) body: z.infer<typeof numeroSchema>) {
+    return this.notificacoes.informarNumero(ctx, id, body);
+  }
+
+  @Post('notificacoes/:id/numero-oficial/desfazer')
+  @HttpCode(200)
+  @RequirePermission('vigilancia.digitar')
+  desfazerNumero(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(motivoSchema)) body: z.infer<typeof motivoSchema>) {
+    return this.notificacoes.desfazerNumero(ctx, id, body.reason);
+  }
+
+  @Post('notificacoes/:id/encerrar')
+  @HttpCode(200)
+  @RequirePermission('vigilancia.investigar')
+  encerrar(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(encerrarSchema)) body: z.infer<typeof encerrarSchema>) {
+    return this.notificacoes.encerrar(ctx, id, body);
+  }
+
+  @Post('notificacoes/:id/reabrir')
+  @HttpCode(200)
+  @RequirePermission('vigilancia.investigar')
+  reabrir(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(motivoSchema)) body: z.infer<typeof motivoSchema>) {
+    return this.notificacoes.reabrir(ctx, id, body.reason);
+  }
+
+  @Get('notificacoes/:id/espelho')
+  @RequirePermission('notificacao.registrar', 'vigilancia.painel')
+  espelho(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string) {
+    return this.saida.espelho(ctx, id);
+  }
+
+  @Get('notificacoes/:id/ficha.pdf')
+  @RequirePermission('notificacao.registrar', 'vigilancia.painel')
+  @Header('Content-Type', 'application/pdf')
+  async fichaPdf(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Res() res: Response) {
+    const { data, fileName } = await this.saida.fichaPdf(ctx, id);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(data);
+  }
+
+  @Get('notificacoes/:id/comunicacao-policial.pdf')
+  @RequirePermission('notificacao.registrar', 'vigilancia.painel')
+  @Header('Content-Type', 'application/pdf')
+  async comunicacaoPolicialPdf(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Res() res: Response) {
+    const { data, fileName } = await this.saida.comunicacaoPolicialPdf(ctx, id);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.send(data);
+  }
+
+  @Get('exportacao.csv')
+  @RequirePermission('vigilancia.exportar')
+  async exportar(@Ctx() ctx: RequestContext, @Query(zv(exportacaoSchema)) q: z.infer<typeof exportacaoSchema>, @Res() res: Response) {
+    const r = await this.saida.exportarCsv(ctx, q);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${r.fileName}"`);
+    res.send(`\uFEFF${r.content}`);
+  }
+
+  @Get('srag/sugestoes')
+  @RequirePermission('vigilancia.painel')
+  sugestoesSrag(@Ctx() ctx: RequestContext) {
+    return this.notificacoes.sugestoesSrag(ctx);
+  }
+
+  @Get('sistemas')
+  @RequirePermission('vigilancia.painel')
+  sistemas(@Ctx() ctx: RequestContext) {
+    return this.catalogo.rotas(ctx);
+  }
+
+  @Post('sistemas')
+  @RequirePermission('vigilancia.catalogo')
+  novaRota(@Ctx() ctx: RequestContext, @Body(zv(rotaSchema)) body: z.infer<typeof rotaSchema>) {
+    return this.catalogo.novaRota(ctx, body);
   }
 
   @Get('pacientes/:id/notificacoes')

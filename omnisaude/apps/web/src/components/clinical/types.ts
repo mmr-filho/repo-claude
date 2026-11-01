@@ -61,6 +61,9 @@ export interface ExamRequest {
   resultText: string | null;
   requestedAt: string;
   resultAt: string | null;
+  examKey?: string | null;
+  qualitative?: string | null;
+  collectedAt?: string | null;
 }
 
 export interface Triage {

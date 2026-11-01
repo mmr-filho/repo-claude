@@ -137,3 +137,31 @@ export interface RegulationDocumentInput extends DocumentMeta {
   /** Referência ao documento anterior na RNDS (ex.: "Composition/<id>") quando este o substitui. */
   replaces?: string;
 }
+
+/** Resultado de exame laboratorial (REL 3.2.1): covid-19 e mpox no guia público da RNDS. */
+export interface RelInput extends DocumentMeta {
+  patient: PatientIdentity;
+  /** Laboratório ou estabelecimento que realizou o exame (author e performer). */
+  establishment: EstablishmentIdentity;
+  /** Suspeita diagnóstica (BRTerminologiaSuspeitaDiagnostica): B342 (coronavírus) ou B04 (monkeypox). */
+  suspicion: { code: 'B342' | 'B04'; display: string };
+  /** Exame em LOINC (BRNomeExameLOINC). */
+  exam: { loinc: string; display: string };
+  /** Tipo de resultado do exame: DTNT (detectável) ou RGNR (reagente), com o código 1, 2 ou 3. */
+  result: { type: 'DTNT' | 'RGNR'; code: '1' | '2' | '3'; display: string };
+  /** Texto de referência (ex.: "Não detectável"). */
+  referenceRange: string;
+  method: string;
+  /** Subgrupo da Tabela SUS (BRSubgrupoTabelaSUS): 0214 teste rápido; 0202 laboratório clínico. */
+  category: '0214' | '0202' | '0213';
+  /** Tipo da amostra (BRTipoAmostraGAL). */
+  specimen: { code: string; display: string };
+  /** Agente etiológico (BRTerminologiaPatogeno): 07 SARS-CoV-2, 03 vírus Monkeypox. */
+  pathogen?: { code: string; display: string };
+  collectedAt: Date;
+  resultAt: Date;
+  /** Fuso do estabelecimento: o guia exige data e hora com segundos e fuso local. */
+  timeZone: string;
+  /** Substituição de um REL já aceito (id da Composition na RNDS). */
+  replaces?: string;
+}

@@ -19,6 +19,7 @@ export const FLAG_LABELS: Record<RiskFlag, string> = {
   choque: 'Sinais de choque',
   convulsao_ativa: 'Convulsão ativa',
   dor_toracica: 'Dor torácica',
+  desconforto_respiratorio: 'Desconforto respiratório / dispneia',
   deficit_neurologico_agudo: 'Déficit neurológico agudo',
   alteracao_aguda_consciencia: 'Alteração aguda de consciência',
   hemorragia_nao_controlada: 'Hemorragia não controlada',
@@ -143,13 +144,7 @@ export function TriageForm({ encounterId, patientName, onDone }: { encounterId: 
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {VITALS.map((v) => (
             <Field key={v.key} label={`${v.label} (${v.unit})`} htmlFor={`tr-${v.key}`}>
-              <Input
-                id={`tr-${v.key}`}
-                inputMode="decimal"
-                value={vitals[v.key]}
-                onChange={(e) => setVitals((s) => ({ ...s, [v.key]: e.target.value }))}
-                className="h-11 text-base tabular-nums"
-              />
+              <Input id={`tr-${v.key}`} inputMode="decimal" value={vitals[v.key]} onChange={(e) => setVitals((s) => ({ ...s, [v.key]: e.target.value }))} className="h-11 text-base tabular-nums" />
             </Field>
           ))}
         </div>
@@ -198,7 +193,11 @@ export function TriageForm({ encounterId, patientName, onDone }: { encounterId: 
               role="radio"
               aria-checked={color === c}
               onClick={() => setChosen(c)}
-              className={cn('flex min-h-14 flex-col items-center justify-center rounded-lg px-2 py-2 text-sm font-semibold ring-offset-2', RISK_BG[c], color === c ? 'ring-4 ring-slate-900' : 'opacity-60 hover:opacity-90')}
+              className={cn(
+                'flex min-h-14 flex-col items-center justify-center rounded-lg px-2 py-2 text-sm font-semibold ring-offset-2',
+                RISK_BG[c],
+                color === c ? 'ring-4 ring-slate-900' : 'opacity-60 hover:opacity-90',
+              )}
             >
               {c}
               <span className="text-xs font-normal">

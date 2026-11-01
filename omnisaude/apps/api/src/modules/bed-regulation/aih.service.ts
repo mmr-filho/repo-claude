@@ -387,7 +387,7 @@ export class AihService {
       footer: [`Laudo emitido em ${formatDateTime(new Date(), ctx.tenant.timeZone)} por ${signer.name} · ${a.statusLabel}`],
       signer: { name: signer.name, cpf: signer.cpf },
     };
-    const data = await renderDocument(model, { reason: 'Laudo de AIH', location: unit.name, contactInfo: ctx.tenant.name });
+    const data = await renderDocument(model);
     await this.audit.recordStandalone(ctx, { action: 'aih.laudo_pdf', entityType: 'AihRequest', entityId: id, payload: { aihNumber: a.aihNumber } });
     return { data, fileName: `aih-laudo-${a.aihNumber ?? a.id.slice(0, 8)}.pdf` };
   }

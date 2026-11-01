@@ -6,6 +6,7 @@ import {
   buildDispensationBundle,
   buildImmunizationBundle,
   buildRacBundle,
+  buildRelBundle,
   FhirInputError,
   RndsCadsusClient,
   RndsClient,
@@ -15,6 +16,7 @@ import {
   type PatientIdentity,
   type ProblemInput,
 } from '@omnisaude/fhir';
+import { exameVigilancia, resultadoRel, type ResultadoQualitativo } from '@omnisaude/shared';
 import { IntegrationConfigService, type RndsConfig } from './integration-config.service';
 import { montarRegulacaoRnds, RegulacaoIncompleta, type RegulacaoOutboxPayload } from './rnds-regulacao';
 import type { SystemContext } from './messaging.service';
@@ -50,7 +52,11 @@ export class RndsService {
   /** Situação da configuração da RNDS da instituição, sem segredos, e a fila de envio. */
   async status(sys: SystemContext) {
     const cfg = await this.integrations.rnds(sys.tenant.id);
-    const groups = await sys.db.outboxMessage.groupBy({ by: ['status'], _count: { _all: true }, where: { kind: { in: ['RNDS_RAC', 'RNDS_IMUNIZACAO', 'RNDS_DISPENSACAO', 'RNDS_SUMARIO_ALTA', 'RNDS_REGULACAO'] } } });
+    const groups = await sys.db.outboxMessage.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+      where: { kind: { in: ['RNDS_RAC', 'RNDS_IMUNIZACAO', 'RNDS_DISPENSACAO', 'RNDS_SUMARIO_ALTA', 'RNDS_REGULACAO', 'RNDS_REL'] } },
+    });
     const mask = (v: string) => `${v.slice(0, 3)}${'*'.repeat(Math.max(0, v.length - 5))}${v.slice(-2)}`;
     return {
       enabled: sys.tenant.settings.rndsEnabled,
@@ -237,6 +243,38 @@ export class RndsService {
         diagnoses: [{ system: 'CID10', code: a.mainCid, role: 'principal' }, ...secondary.map((code) => ({ system: 'CID10' as const, code, role: 'secundario' as const }))],
         clinicalSummary: payload.summary as string | undefined,
         followUp: payload.followUp as string | undefined,
+      });
+    }
+    if (kind === 'RNDS_REL') {
+      // Resultado de exame laboratorial (REL 3.2.1): covid-19 e mpox, positivo, negativo ou inconclusivo.
+      const x = await sys.db.examRequest.findUniqueOrThrow({ where: { id: aggregateId }, include: { encounter: { include: { unit: true } } } });
+      const cat = exameVigilancia(x.examKey);
+      if (!cat?.relInfo || !x.qualitative) throw new PermanentError('Exame sem dados do REL (exame de vigilância e resultado qualitativo)');
+      if (!x.collectedAt || !x.resultAt) throw new PermanentError('Exame sem data da coleta ou do resultado');
+      const unitId = (payload.unitId as string | undefined) ?? x.encounter?.unitId;
+      const unit = x.labCnes ? null : unitId ? await sys.db.unit.findUnique({ where: { id: unitId } }) : null;
+      const cnes = x.labCnes ?? unit?.cnes ?? x.encounter?.unit.cnes;
+      if (!cnes) throw new PermanentError('Estabelecimento executor (CNES) não identificado');
+      const info = cat.relInfo;
+      const r = resultadoRel(x.qualitative as ResultadoQualitativo);
+      // Substitui o REL anterior do mesmo exame já aceito pela RNDS (resultado corrigido).
+      const anterior = await sys.db.outboxMessage.findFirst({ where: { kind: 'RNDS_REL', aggregateId, status: 'ENVIADO', id: { not: localId } }, orderBy: { sentAt: 'desc' }, select: { externalId: true } });
+      return buildRelBundle({
+        ...meta,
+        patient: await this.patientIdentity(sys, x.patientId),
+        establishment: { cnes, ...(unit ? { name: unit.name } : {}) },
+        suspicion: info.suspeita,
+        exam: { loinc: info.loinc, display: info.loincDisplay },
+        result: { type: info.tipoResultado, ...r },
+        referenceRange: info.tipoResultado === 'DTNT' ? 'Não Detectável' : 'Não Reagente',
+        method: x.method ?? (cat.tecnica === 'MOLECULAR' ? 'RT-PCR' : 'Imunocromatográfico'),
+        category: info.categoria,
+        specimen: info.amostraGal,
+        pathogen: info.patogeno,
+        collectedAt: x.collectedAt,
+        resultAt: x.resultAt,
+        timeZone: sys.tenant.timeZone,
+        ...(anterior?.externalId ? { replaces: `Composition/${anterior.externalId}` } : {}),
       });
     }
     throw new PermanentError(`Tipo de mensagem desconhecido: ${kind}`);

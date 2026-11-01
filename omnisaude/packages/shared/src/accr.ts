@@ -16,10 +16,7 @@ export const RISK_INFO: Record<RiskColor, { label: string; maxWaitMinutes: numbe
 };
 
 /** Ordem da fila: cor mais grave primeiro; dentro da mesma cor, quem chegou antes. */
-export function compareRisk(
-  a: { color: RiskColor; classifiedAt: Date },
-  b: { color: RiskColor; classifiedAt: Date },
-): number {
+export function compareRisk(a: { color: RiskColor; classifiedAt: Date }, b: { color: RiskColor; classifiedAt: Date }): number {
   const byColor = RISK_COLORS.indexOf(a.color) - RISK_COLORS.indexOf(b.color);
   return byColor !== 0 ? byColor : a.classifiedAt.getTime() - b.classifiedAt.getTime();
 }
@@ -42,6 +39,8 @@ export const RISK_FLAGS = {
   choque: 'VERMELHO',
   convulsao_ativa: 'VERMELHO',
   dor_toracica: 'LARANJA',
+  /** Dispneia ou desconforto respiratório (também critério de Srag, com SpO2 < 95% e taquipneia). */
+  desconforto_respiratorio: 'LARANJA',
   deficit_neurologico_agudo: 'LARANJA',
   alteracao_aguda_consciencia: 'LARANJA',
   hemorragia_nao_controlada: 'LARANJA',

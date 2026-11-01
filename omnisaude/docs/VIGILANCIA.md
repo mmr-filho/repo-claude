@@ -1,6 +1,7 @@
-# Vigilância em saúde: notificação compulsória (VIG-1a)
+# Vigilância em saúde: notificação compulsória (VIG-1a e VIG-1b)
 
-Entrega da semana 23 do cronograma (primeira da onda 4).
+Entregas das semanas 23 (notificação a partir do atendimento) e 24 (investigação, encerramento, saída para os
+sistemas oficiais, REL de covid-19 e mpox e comunicação policial; seção [Semana 24](#semana-24-vig-1b--int-4a)).
 
 ## Base normativa (conferida em 01/11/2026)
 
@@ -93,7 +94,7 @@ Ao **confirmar**: gestante obrigatório para mulher de 10 a 49 anos; datas não 
 notificação; Cartão SUS válido; unidade com CNES; valores dentro dos domínios. A confirmação grava a data, a
 semana epidemiológica da notificação e dos sintomas e a comunicação à vigilância municipal pelo painel.
 
-Numeração interna `AAAA/NNNNNN` (não é o número do Sinan, que chega na semana 24).
+Numeração interna `AAAA/NNNNNN` (não é o número do sistema oficial, informado na fila de digitação; ver semana 24).
 
 Trocar o subitem não pode **afrouxar** a notificação (de imediata para semanal ou com menos esferas) sem a
 vigilância municipal, nem tirar o sigilo. Agravo notificado na confirmação (item 60) só é confirmado com a data de
@@ -152,11 +153,156 @@ alcance. Na ficha do paciente, quem não pode abrir uma notificação a vê sem 
 `notificacoes` com os rascunhos abertos. A tarefa periódica é `vigilancia` (a cada 5 minutos; também em
 `POST /api/jobs/tick?tasks=vigilancia`).
 
+## Semana 24 (VIG-1b + INT-4a)
+
+### Base normativa (conferida em 01/11/2026)
+
+| Tema | Regra | Fonte |
+|---|---|---|
+| Dengue e chikungunya | Sinan Online (o único agravo que segue nele além da chikungunya) | NT nº 6/2026-CGFAM/DPNI/SVSA/MS; página do Sinan no gov.br |
+| Ficha de Notificação/Conclusão | Oropouche (A93.0), esporotricose (B42), HTLV (B33.3, Z22.6, Z20.8), hepatite B na gestação (Z22.8, Z20.5), doença falciforme (D57) e distúrbio de voz relacionado ao trabalho (R49) no **e-SUS Sinan**, com os campos 41 a 56 | página oficial do e-SUS Sinan; ficha e modelo de informação v2.0.2 (12/06/2025); NT nº 117/2024 (Oropouche) e nº 20/2025 (esporotricose) |
+| Mpox | e-SUS Sinan, notificação em até 24 h | Ministério da Saúde, página da mpox |
+| Covid-19 e Srag | SG por covid-19 **confirmada** no e-SUS Notifica em 24 h; Srag hospitalizada (síndrome gripal com dispneia, taquipneia e/ou SpO2 ≤ 94%) ou óbito por Srag no **Sivep-Gripe** | NT nº 11/2026-CGCOVID/DEDT/SVSA/MS |
+| ESAVI | e-SUS Notifica | NT nº 6/2026-CGFAM/DPNI/SVSA/MS |
+| Anomalias congênitas | sem ficha no Sinan: Declaração de Nascido Vivo (bloco VI, campo 41) ou Declaração de Óbito; identificada depois da DNV (até 1 ano de idade), formulário do Anexo 2 à vigilância municipal (à estadual, se fora do município de nascimento) em até 7 dias | NT nº 3/2026-SVSA/MS; NT Conjunta nº 54/2026-DAENT/DEMSP/SVSA |
+| Demais agravos | Sinan Net, versão vigente do Sinan | — |
+| Encerramento oportuno | 60 dias da notificação para os agudos; 180 dias para hepatites virais, leishmaniose tegumentar e visceral; Oropouche em 60 dias | Manual de Normas e Rotinas do Sinan (2ª ed., 2007), item 4.5.3; modelo de informação do e-SUS Sinan |
+| REL | resultados de covid-19 e mpox (positivos, negativos e inconclusivos) à RNDS em até 24 h | Anexo V da PRC GM/MS nº 4/2017, arts. 22 a 26 |
+| Violência contra a mulher | casos de **violência interpessoal contra a mulher** comunicados à autoridade policial em até 24 h da constatação, à autoridade de referência definida pela SES; crianças e adolescentes seguem o ECA e idosas o Estatuto da Pessoa Idosa; os arts. 14-D a 14-F foram revogados | Lei nº 10.778/2003, art. 1º, § 4º; Anexo V da PRC 4/2017, arts. 14-A a 14-C (PRT nº 1.077/2021 revogou os arts. 14-D a 14-F e o Anexo 4) |
+| Sigilo da vítima | fora do setor saúde, a identificação só em caráter excepcional, em caso de risco à comunidade ou à vítima, a juízo da autoridade sanitária e com conhecimento prévio da vítima | Lei nº 10.778/2003, art. 3º, parágrafo único |
+
+### Rota agravo → sistema oficial
+
+Tabela com vigência (`official_system_routes`), semeada com as rotas acima e marcada por situação: confirmada em
+nota técnica, **a definir com a SES** (caxumba, item 48: o art. 2º, I, e o Anexo 1 divergem) ou não confirmada
+para o ano. A rota é escolhida pela data da notificação; uma linha da chave do subitem prevalece sobre a do grupo;
+sem rota, Sinan Net. A vigilância municipal muda a rota na aba *Sistemas* abrindo nova vigência (a anterior fecha no
+dia anterior; vigências sobrepostas são recusadas), com o ato ou acordo que a fundamenta.
+
+### Fila de digitação e número oficial
+
+- Ao **confirmar**, a notificação entra na fila do sistema de destino (*pendente*). A anomalia congênita não entra
+  na fila: vira **lembrete** da DNV ou da DO, sem número.
+- O digitador (vigilância municipal ou núcleo do estabelecimento, permissão `vigilancia.digitar`) informa o número
+  gerado no sistema oficial e, se quiser, o lote; a notificação sai da fila (*digitada*). Formato conferido por
+  sistema: Sinan Net até 7 dígitos (NU_NOTIFIC, varchar2(7) no dicionário, atribuído pela unidade); e-SUS Sinan
+  com 12 dígitos no formato UFAANNNNNNNN (código IBGE da UF, ano e sequencial, conforme o dicionário de dados da
+  notificação); Sivep-Gripe com 12 ou 14 dígitos (o dicionário diz 12; os dados abertos de 2023 em diante têm 14;
+  o 1º dígito é o tipo da ficha, 3 na Srag hospitalizada); Sinan Online até 12 dígitos e e-SUS Notifica de 8 a 15
+  (em geral 12), com validação larga porque o formato não está em documento nacional. O número é sempre o que o
+  sistema oficial devolve: o OmniSaúde nunca o gera.
+- **Número repetido**: recusado no mesmo sistema. No Sinan Net a chave é número + data da notificação + município
+  + agravo, então o mesmo NU_NOTIFIC é aceito em outro agravo, data ou município.
+- Só a vigilância municipal **desfaz** a digitação (com motivo, na linha do tempo); a notificação volta à fila.
+
+### Espelho, PDF e exportação
+
+- **Espelho** (tela) e **PDF** da ficha na ordem da FIN do Sinan Net v5: NU_NOTIFIC, campos 1 a 33 com SEM_NOT
+  depois de DT_NOTIFIC, SEM_PRI depois de DT_SIN_PRI e o DDD com o telefone; depois, o bloco de conclusão
+  numerado como no sistema de destino (31 a 43 no Sinan Net; 46 a 56 e os campos 44, 45 e 49 a 53 no e-SUS Sinan).
+  Cada linha mostra o valor e o código como se digita no sistema (datas dd/mm/aaaa, município com 6 dígitos, CID
+  sem ponto, semanas em AAAASS). O dicionário não diz como as datas ficam no DBF exportado pelo Sinan Net: a
+  exportação é para conferência e digitação, não para importar no Sinan.
+- **Exportação CSV** (só a vigilância municipal, auditada; lista nominal): colunas com os nomes das variáveis do
+  dicionário de dados, separador `;`, UTF-8 com BOM, filtros de período, sistema e situação.
+
+### Investigação e encerramento
+
+- **Sinan Net** (bloco genérico): 31 data da investigação, 32 classificação final (confirmado, descartado,
+  inconclusivo), 33 critério (obrigatório no confirmado), 41 evolução, 42 data do óbito (obrigatória no óbito) e 43
+  data do encerramento. Recusa: datas futuras ou fora de ordem, óbito pelo agravo em caso não confirmado, óbito
+  antes dos sintomas.
+- **e-SUS Sinan** (Oropouche e os demais da ficha de Notificação/Conclusão): 47 classificação (só confirmado ou
+  descartado; o inconclusivo é gravado pelo próprio sistema no fim do prazo), 48 critério sempre (laboratorial ou
+  clínico-epidemiológico), 54 evolução sempre (descartado só aceita óbito por outras causas ou ignorado), 44
+  (trabalho) e 45 (desastre) obrigatórios e 49 (autóctone) obrigatório no confirmado. **Oropouche só encerra com os
+  campos 47, 48 e 54 preenchidos.**
+- Encerrada, a ficha não é editada; a vigilância municipal **reabre** com motivo. Prazos de encerramento
+  oportuno por agravo são configuráveis (referência na tela; não vêm ligados) e o painel conta os vencidos.
+
+### Gatilho por resultado de exame e por Srag
+
+- **Resultado de exame**: o laudo de um exame do catálogo de vigilância (covid-19 RT-PCR e antígeno, mpox PCR,
+  dengue NS1/IgM/RT-PCR, chikungunya, zika e Oropouche) é lançado com resultado qualitativo compatível com a técnica
+  e, para covid-19 e mpox, a data e a hora da coleta. O **positivo** confirma a notificação ativa do agravo ou abre
+  uma nova já confirmada, com o CID do exame; no item notificado na confirmação (SG por covid-19), o prazo de 24 h
+  passa a contar do resultado. Negativo não abre nem descarta notificação.
+- **Srag**: na internação, CID respiratório agudo **e** um sinal registrado na triagem (SpO2 ≤ 94%, dispneia ou
+  desconforto respiratório, taquipneia para a idade) abrem o rascunho de Srag, que vai ao Sivep-Gripe. Só um dos
+  dois vira **sugestão** no painel da vigilância (internações dos últimos 10 dias sem notificação de Srag). A NT não
+  fixa a frequência da taquipneia: usamos os limites da OMS para crianças e 24 irpm para os demais.
+
+### REL de covid-19 e mpox (INT-4a)
+
+Documento REL 3.2.1 (perfis do projeto público da RNDS no Simplifier): Bundle `document` com a Composition
+`BRResultadoExameLaboratorial-3.2.1`, a Condition da suspeita (B34.2 ou B04), a Observation
+`BRDiagnosticoLaboratorioClinico-3.2.1` (LOINC do catálogo `BRNomeExameLOINC`, resultado DTNT ou RGNR, patógeno,
+data da coleta e da liberação com fuso, executante pelo CNES) e o Specimen pela tabela do GAL. Vai pela fila da
+RNDS (outbox `RNDS_REL`), para todo resultado, quando a RNDS e o envio do REL estão ligados (`relEnabled`, desligado
+de saída) e é conferido pelo simulador. O REL v4 só está no Portal de Serviços e fica para a homologação.
+
+### Comunicação à autoridade policial
+
+- Exigida para **mulher de 18 a 59 anos** (idade na ciência do caso) com notificação de violência interpessoal;
+  lesão autoprovocada (X60 a X84) e homens não entram. A exclusão da lesão autoprovocada é interpretação do art.
+  14-A ("violência interpessoal") com o art. 2º, I, do Anexo V, que separa as duas; nenhuma norma a diz com todas
+  as letras, e ela deve ser validada com a SES ou a assessoria jurídica. Prazo: 24 h da ciência, com contagem regressiva na ficha e
+  no painel ("comunicações policiais" pendentes).
+- Menina ou adolescente: a ficha orienta comunicar o **Conselho Tutelar** (ECA, art. 13). Idosa: autoridade
+  policial, Ministério Público ou Conselho do Idoso (**Estatuto da Pessoa Idosa**, art. 19). Nesses casos o
+  OmniSaúde não controla prazo.
+- **PDF da comunicação**: o modelo padrão traz o estabelecimento, a data do atendimento e o número da notificação,
+  **sem identificar a vítima** (nem o cabeçalho do paciente). A instituição pode editar o modelo (aba *Plantão*,
+  com aprovação da procuradoria); só se ele usar `{paciente}`, `{nascimento}` ou `{endereco}` a identificação
+  sai, e a auditoria registra isso.
+- O **envio** é registrado como comunicação à "Autoridade policial" (quem atendeu também registra, mesmo em
+  rascunho); a vigilância pode **dispensar** com justificativa (ex.: a vítima já comunicou, com protocolo).
+- A comunicação pela SES quando a unidade não comunica (art. 14-B, § 1º) e o envio da ficha de comunicação à
+  autoridade sanitária local (§ 2º) seguem os fluxos da vigilância municipal.
+
+### Perfis (semana 24)
+
+| Permissão | Quem |
+|---|---|
+| `vigilancia.digitar` (fila e número oficial) | vigilância municipal e núcleo do estabelecimento |
+| `vigilancia.investigar` (encerrar e reabrir) | vigilância municipal e núcleo; reabrir e desfazer a digitação, só a municipal |
+| `vigilancia.exportar` (CSV nominal) | vigilância municipal |
+
+### Telas (semana 24)
+
+- **Vigilância**: aba *Digitação* (fila por sistema, com contagem de pendentes e lembretes, informar número e
+  lote), aba *Sistemas* (rotas com vigência e nova rota), exportação CSV, sugestões de Srag no painel e cartões de
+  digitação pendente, encerramento vencido e comunicações policiais.
+- **Ficha**: cartão do sistema oficial (rota, situação, número, desfazer), espelho e PDF, formulário de
+  encerramento com a numeração do sistema de destino, cartão da comunicação policial (PDF, registrar envio,
+  dispensar) e a orientação para menores de 18 anos e idosas.
+- **Atendimento**: no laudo do exame, o exame de vigilância, o resultado qualitativo e a coleta; o aviso mostra a
+  notificação aberta ou confirmada pelo resultado.
+- **Plantão e contatos**: configuração do envio do REL, prazos de encerramento por agravo e modelo da comunicação
+  policial.
+
+### API (semana 24)
+
+`/api/vigilancia/...`: `digitacao?sistema=&situacao=`, `notificacoes/:id/numero-oficial` (POST), `.../desfazer`,
+`notificacoes/:id/encerrar`, `/reabrir`, `/espelho`, `/ficha.pdf`, `/comunicacao-policial.pdf`,
+`exportacao.csv?de=&ate=&sistema=&situacao=`, `srag/sugestoes`, `sistemas` (GET, POST). O resultado de exame
+(`POST /api/clinical/exams/:id/result`) aceita `examKey`, `qualitative`, `collectedAt`, `method` e `labCnes` e
+devolve `notificacoes`.
+
 ## Pendências e limites
 
-- O registro no Sinan e nos demais sistemas oficiais é a semana 24 (fila de digitação e número oficial).
+- **Acordo com a SES**: quem digita em cada sistema e o destino da caxumba (marcada "a definir"); contas dos
+  digitadores em cada sistema oficial.
+- **Números oficiais**: os formatos do Sinan Online e do e-SUS Notifica não estão em documento nacional; a
+  validação é larga e deve ser ajustada com os primeiros números reais.
+- **Lesão autoprovocada fora da comunicação policial**: interpretação a validar com a SES ou a assessoria jurídica.
+- **REL**: credenciamento na RNDS e homologação (o REL v4 só está no Portal de Serviços); confirmar se a rede faz
+  testes de covid-19 e mpox e com quais métodos (o catálogo traz os LOINC conferidos no pacote público).
+- **Comunicação policial**: autoridade policial de referência definida pela SES e modelo aprovado pela procuradoria.
 - O de-para de códigos precisa da homologação de um técnico da vigilância; até lá os rascunhos trazem o aviso.
 - O modelo `vigilancia_alerta` precisa ser aprovado na conta do WhatsApp para o escalonamento por mensagem.
 - Contatos da vigilância municipal e do CIEVS estadual, escala de plantão e lista complementar estadual ou
   municipal (se houver) dependem da instituição.
 - O marco do prazo na internação (conhecimento, e não a admissão) é decisão a validar com a vigilância.
+- Fichas de investigação específicas de cada agravo (além do bloco de conclusão) ficam para a próxima etapa da
+  vigilância.

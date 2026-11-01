@@ -1,7 +1,7 @@
 'use client';
 
 import { CAMPOS_FIN, DOMINIO_FIN } from '@omnisaude/shared';
-import { BellRing, CheckCircle2, Eye, Lock, Pencil, PhoneCall, Trash2 } from 'lucide-react';
+import { BellRing, CheckCircle2, ClipboardCheck, Eye, FileDown, Hash, Lock, Pencil, PhoneCall, ShieldAlert, Table2, Trash2, Undo2 } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
@@ -11,12 +11,13 @@ import { Dialog } from '@/components/ui/dialog';
 import { Field, Input, Select, Textarea } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { useToast } from '@/components/ui/toast';
-import { api, ApiError, errorMessage } from '@/lib/api';
+import { api, ApiError, errorMessage, saveBlob } from '@/lib/api';
 import { fmtDate, fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useRealtime } from '@/lib/realtime';
 import { useSession } from '@/lib/session';
-import { EVENTO, MEIO, ORIGEM, SITUACAO, STATUS, tempoAte, type Esfera, type NotificacaoDetalhe } from './types';
+import { DIGITACAO, EVENTO, MEIO, ORIGEM, SITUACAO, STATUS, tempoAte, type Destino, type LinhaEspelho, type NotificacaoDetalhe } from './types';
+import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 
 const paraLocal = (iso: string | null) => {
   if (!iso) return '';
@@ -65,11 +66,15 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
   const [agora, setAgora] = useState(() => Date.now());
   const [edicao, setEdicao] = useState<Edicao | null>(null);
   const [descarte, setDescarte] = useState<string | null>(null);
-  const [comunicacao, setComunicacao] = useState<{ target: Esfera; channel: string; communicatedAt: string; counterpartName: string; contactId: string; contactValue: string; protocol: string; notes: string } | null>(
+  const [comunicacao, setComunicacao] = useState<{ target: Destino; channel: string; communicatedAt: string; counterpartName: string; contactId: string; contactValue: string; protocol: string; notes: string } | null>(
     null,
   );
   const [erros, setErros] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const [numero, setNumero] = useState({ numero: '', lote: '' });
+  const [espelho, setEspelho] = useState<LinhaEspelho[] | null>(null);
+  const [motivo, setMotivo] = useState<{ tipo: 'desfazer' | 'reabrir' | 'dispensa'; texto: string } | null>(null);
+  const [encerra, setEncerra] = useState<{ investigadaEm: string; classificacao: string; criterio: string; evolucao: string; obitoEm: string; encerradaEm: string; conclusao: Record<string, string> } | null>(null);
   useEffect(() => {
     const t = setInterval(() => setAgora(Date.now()), 30_000);
     return () => clearInterval(t);
@@ -130,7 +135,36 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
 
   const imediata = d.prazo.tipo === 'IMEDIATA';
   const sms = d.prazo.porEsfera.find((e) => e.esfera === 'SMS');
-  const esferasComunicacao: Esfera[] = nucleo ? ['SMS'] : ['SMS', 'SES', 'MS'];
+  const esferasComunicacao: Destino[] = [
+    ...(d.permissoes.comunicar ? (nucleo ? (['SMS'] as Destino[]) : (['SMS', 'SES', 'MS'] as Destino[])) : []),
+    ...(d.permissoes.comunicarPolicia ? (['AUTORIDADE_POLICIAL'] as Destino[]) : []),
+  ];
+  const policia = d.prazo.porEsfera.find((e) => e.esfera === 'AUTORIDADE_POLICIAL');
+  const baixar = async (caminho: string, nome: string) => {
+    try {
+      const r = await api.download(caminho);
+      saveBlob(r.blob, r.fileName ?? nome);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
+  const novaComunicacao = (target: Destino) =>
+    setComunicacao({ target, channel: target === 'AUTORIDADE_POLICIAL' ? 'PRESENCIAL' : 'TELEFONE', communicatedAt: agoraLocal(), counterpartName: '', contactId: '', contactValue: '', protocol: '', notes: '' });
+  const hojeIso = agoraLocal().slice(0, 10);
+  const num = d.encerramento.numeracao;
+  async function confirmarMotivo() {
+    if (!motivo) return;
+    const ok = await acao(
+      () =>
+        motivo.tipo === 'desfazer'
+          ? api.post(`/vigilancia/notificacoes/${id}/numero-oficial/desfazer`, { reason: motivo.texto })
+          : motivo.tipo === 'reabrir'
+            ? api.post(`/vigilancia/notificacoes/${id}/reabrir`, { reason: motivo.texto })
+            : api.patch(`/vigilancia/notificacoes/${id}`, { policial: { dispensa: motivo.texto } }),
+      motivo.tipo === 'desfazer' ? 'Digitação desfeita: a notificação voltou à fila.' : motivo.tipo === 'reabrir' ? 'Investigação reaberta.' : 'Comunicação policial dispensada.',
+    );
+    if (ok) setMotivo(null);
+  }
   return (
     <div className="flex flex-col gap-4" id="ficha-notificacao">
       <Card>
@@ -178,22 +212,28 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
                   size="sm"
                   variant="secondary"
                   id="vig-comunicar"
-                  onClick={() =>
-                    setComunicacao({
-                      target: nucleo ? 'SMS' : (d.prazo.porEsfera.find((e) => e.esfera !== 'SMS' && e.situacao !== 'CUMPRIDO')?.esfera ?? 'SMS'),
-                      channel: 'TELEFONE',
-                      communicatedAt: agoraLocal(),
-                      counterpartName: '',
-                      contactId: '',
-                      contactValue: '',
-                      protocol: '',
-                      notes: '',
-                    })
-                  }
+                  onClick={() => novaComunicacao(nucleo ? 'SMS' : (d.prazo.porEsfera.find((e) => (e.esfera === 'SES' || e.esfera === 'MS') && e.situacao !== 'CUMPRIDO')?.esfera ?? 'SMS'))}
                 >
                   <PhoneCall className="h-4 w-4" /> Registrar comunicação
                 </Button>
               )}
+              <Button
+                size="sm"
+                variant="ghost"
+                id="vig-espelho"
+                onClick={async () => {
+                  try {
+                    setEspelho((await api.get<{ linhas: LinhaEspelho[] }>(`/vigilancia/notificacoes/${id}/espelho`)).linhas);
+                  } catch (err) {
+                    toast.error(errorMessage(err));
+                  }
+                }}
+              >
+                <Table2 className="h-4 w-4" /> Espelho
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => baixar(`/vigilancia/notificacoes/${id}/ficha.pdf`, `notificacao-${d.numero.replace('/', '-')}.pdf`)}>
+                <FileDown className="h-4 w-4" /> PDF
+              </Button>
               {d.permissoes.descartar && (
                 <Button size="sm" variant="ghost" onClick={() => setDescarte('')}>
                   <Trash2 className="h-4 w-4" /> Descartar
@@ -204,7 +244,7 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
         />
         <CardBody className="flex flex-col gap-3">
           {erros.length > 0 && (
-            <Alert tone="error" title="A ficha não pode ser confirmada ainda">
+            <Alert tone="error" title="Pendências da ficha">
               <ul className="list-disc pl-5">
                 {erros.map((e) => (
                   <li key={e}>{e}</li>
@@ -285,6 +325,263 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
           <p className="text-xs text-slate-500">{d.aviso}</p>
         </CardBody>
       </Card>
+
+      {d.policial && (
+        <Card id="vig-policial">
+          <CardHeader
+            title={
+              <span className="flex items-center gap-2">
+                <ShieldAlert className="h-4 w-4 text-red-600" /> Violência contra a mulher: comunicação à autoridade policial
+              </span>
+            }
+            description="Mulher de 18 a 59 anos: até 24 horas da constatação (Lei nº 10.778/2003, art. 1º, § 4º; Anexo V da PRC GM/MS nº 4/2017, arts. 14-A a 14-C), à autoridade de referência definida pela SES. O PDF padrão não identifica a vítima (Lei nº 10.778/2003, art. 3º)."
+            actions={
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" onClick={() => baixar(`/vigilancia/notificacoes/${id}/comunicacao-policial.pdf`, 'comunicacao-policial.pdf')} id="vig-policial-pdf">
+                  <FileDown className="h-4 w-4" /> Comunicação (PDF)
+                </Button>
+                {d.permissoes.comunicarPolicia && (
+                  <Button size="sm" onClick={() => novaComunicacao('AUTORIDADE_POLICIAL')} id="vig-policial-registrar">
+                    <PhoneCall className="h-4 w-4" /> Registrar envio
+                  </Button>
+                )}
+                {d.status !== 'DESCARTADA' && d.permissoes.editar && (d.policial.dispensa || !policia?.cumpridaEm) && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => (d.policial?.dispensa ? acao(() => api.patch(`/vigilancia/notificacoes/${id}`, { policial: { dispensa: null } }), 'Exigência restaurada.') : setMotivo({ tipo: 'dispensa', texto: '' }))}
+                  >
+                    {d.policial.dispensa ? 'Restaurar exigência' : 'Dispensar'}
+                  </Button>
+                )}
+              </div>
+            }
+          />
+          <CardBody className="text-sm">
+            {d.policial.dispensa ? (
+              <p>
+                <span className="text-slate-500">Dispensada: </span>
+                {d.policial.dispensa}
+              </p>
+            ) : policia ? (
+              <p className="flex flex-wrap items-center gap-2">
+                <Badge tone={SITUACAO[policia.situacao].tone}>{SITUACAO[policia.situacao].label}</Badge>
+                {policia.cumpridaEm ? `Comunicada em ${fmtDateTime(policia.cumpridaEm)}` : `${tempoAte(policia.venceEm, agora)} (${fmtDateTime(policia.venceEm)})`}
+              </p>
+            ) : null}
+          </CardBody>
+        </Card>
+      )}
+
+      {d.orientacaoViolencia && (
+        <Card id="vig-violencia-orientacao">
+          <CardBody className="flex items-start gap-2 text-sm">
+            <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <p>{d.orientacaoViolencia}</p>
+          </CardBody>
+        </Card>
+      )}
+
+      {d.saida && (
+        <Card id="vig-saida">
+          <CardHeader
+            title={
+              <span className="flex flex-wrap items-center gap-2">
+                Sistema oficial: {d.saida.sistemaLabel}
+                {d.saida.digitacao && <Badge tone={DIGITACAO[d.saida.digitacao]!.tone}>{DIGITACAO[d.saida.digitacao]!.label}</Badge>}
+                {d.saida.rota.situacao !== 'CONFIRMADO' && <Badge tone="amber">{d.saida.rota.situacaoLabel}</Badge>}
+              </span>
+            }
+            description={`Destino: ${d.saida.rota.fonte}`}
+            actions={
+              d.permissoes.desfazerDigitacao ? (
+                <Button size="sm" variant="ghost" onClick={() => setMotivo({ tipo: 'desfazer', texto: '' })}>
+                  <Undo2 className="h-4 w-4" /> Desfazer digitação
+                </Button>
+              ) : undefined
+            }
+          />
+          <CardBody className="flex flex-col gap-3 text-sm">
+            {d.saida.rota.nota && <Alert tone="info">{d.saida.rota.nota}</Alert>}
+            {d.saida.numero && (
+              <p>
+                <span className="text-slate-500">Número no {d.saida.sistemaLabel}: </span>
+                <b>{d.saida.numero}</b>
+                {d.saida.lote ? ` · lote ${d.saida.lote}` : ''} · {d.saida.digitadaPor ?? ''} em {fmtDateTime(d.saida.digitadaEm)}
+              </p>
+            )}
+            {d.permissoes.digitar && (
+              <div className="flex flex-wrap items-end gap-2">
+                <Field label={`Número gerado no ${d.saida.sistemaLabel}`} htmlFor="vig-numero" hint={d.saida.dicaNumero}>
+                  <Input id="vig-numero" value={numero.numero} onChange={(e) => setNumero({ ...numero, numero: e.target.value })} className="w-48" />
+                </Field>
+                <Field label="Lote (opcional)" htmlFor="vig-lote">
+                  <Input id="vig-lote" value={numero.lote} onChange={(e) => setNumero({ ...numero, lote: e.target.value })} className="w-32" />
+                </Field>
+                <Button
+                  loading={busy}
+                  disabled={!numero.numero.trim()}
+                  id="vig-numero-salvar"
+                  onClick={async () => {
+                    if (await acao(() => api.post(`/vigilancia/notificacoes/${id}/numero-oficial`, { numero: numero.numero, lote: numero.lote || null }), 'Número oficial registrado: a notificação saiu da fila.'))
+                      setNumero({ numero: '', lote: '' });
+                  }}
+                >
+                  <Hash className="h-4 w-4" /> Informar número
+                </Button>
+              </div>
+            )}
+          </CardBody>
+        </Card>
+      )}
+
+      {(d.status === 'NOTIFICADA' || d.status === 'ENCERRADA') && (
+        <Card id="vig-encerramento">
+          <CardHeader
+            title="Investigação e encerramento"
+            description={
+              d.encerramento.fichaEsus
+                ? 'Conclusão da ficha de Notificação/Conclusão do e-SUS Sinan (campos 44 a 56).'
+                : `Bloco "notificação/conclusão" do Sinan Net v5 (campos 31 a 43).${d.encerramento.prazoDias ? ` Prazo de encerramento: ${d.encerramento.prazoDias} dias da notificação.` : ''}`
+            }
+            actions={
+              d.permissoes.reabrir ? (
+                <Button size="sm" variant="ghost" onClick={() => setMotivo({ tipo: 'reabrir', texto: '' })}>
+                  <Undo2 className="h-4 w-4" /> Reabrir
+                </Button>
+              ) : d.permissoes.encerrar && !encerra ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  id="vig-encerrar"
+                  onClick={() => setEncerra({ investigadaEm: hojeIso, classificacao: '', criterio: '', evolucao: '', obitoEm: '', encerradaEm: hojeIso, conclusao: { ...(d.encerramento.conclusao ?? {}) } })}
+                >
+                  <ClipboardCheck className="h-4 w-4" /> Encerrar investigação
+                </Button>
+              ) : undefined
+            }
+          />
+          <CardBody className="flex flex-col gap-3 text-sm">
+            {d.status === 'ENCERRADA' && (
+              <div className="grid gap-1 md:grid-cols-2">
+                <p>
+                  <span className="text-slate-500">{num.classificacao}. Classificação final: </span>
+                  {d.encerramento.classificacaoLabel}
+                </p>
+                <p>
+                  <span className="text-slate-500">{num.criterio}. Critério: </span>
+                  {d.encerramento.criterioLabel ?? '—'}
+                </p>
+                <p>
+                  <span className="text-slate-500">{num.evolucao}. Evolução: </span>
+                  {d.encerramento.evolucaoLabel ?? '—'}
+                  {d.encerramento.obitoEm ? ` (óbito em ${fmtDate(d.encerramento.obitoEm)})` : ''}
+                </p>
+                <p>
+                  <span className="text-slate-500">{num.encerramento}. Encerrada em: </span>
+                  {fmtDate(d.encerramento.encerradaEm)}
+                  {d.encerramento.encerradaPor ? ` · ${d.encerramento.encerradaPor}` : ''}
+                </p>
+                {d.encerramento.camposConclusao
+                  .filter((c) => d.encerramento.conclusao?.[c.campo])
+                  .map((c) => (
+                    <p key={c.campo}>
+                      <span className="text-slate-500">
+                        {c.campo}. {c.rotulo}:{' '}
+                      </span>
+                      {c.opcoes?.[d.encerramento.conclusao![c.campo]!] ?? d.encerramento.conclusao![c.campo]}
+                    </p>
+                  ))}
+              </div>
+            )}
+            {d.status === 'NOTIFICADA' && !encerra && <p className="text-slate-500">Investigação em aberto.</p>}
+            {encerra && (
+              <div className="grid gap-3 md:grid-cols-3" id="vig-encerrar-form">
+                <Field label={`${num.investigacao}. Data da investigação`} htmlFor="enc-inv">
+                  <Input id="enc-inv" type="date" max={hojeIso} value={encerra.investigadaEm} onChange={(e) => setEncerra({ ...encerra, investigadaEm: e.target.value })} />
+                </Field>
+                <Field label={`${num.classificacao}. Classificação final`} htmlFor="enc-class">
+                  <Select id="enc-class" value={encerra.classificacao} onChange={(e) => setEncerra({ ...encerra, classificacao: e.target.value })}>
+                    <option value="">Escolha…</option>
+                    <option value="1">1 - Confirmado</option>
+                    <option value="2">2 - Descartado</option>
+                    {!d.encerramento.fichaEsus && <option value="8">8 - Inconclusivo</option>}
+                  </Select>
+                </Field>
+                <Field label={`${num.criterio}. Critério de confirmação/descarte`} htmlFor="enc-crit">
+                  <Select id="enc-crit" value={encerra.criterio} onChange={(e) => setEncerra({ ...encerra, criterio: e.target.value })}>
+                    <option value="">—</option>
+                    <option value="1">1 - Laboratorial</option>
+                    <option value="2">2 - Clínico-epidemiológico</option>
+                    {!d.encerramento.fichaEsus && <option value="3">3 - Clínico</option>}
+                  </Select>
+                </Field>
+                <Field label={`${num.evolucao}. Evolução do caso`} htmlFor="enc-evo">
+                  <Select id="enc-evo" value={encerra.evolucao} onChange={(e) => setEncerra({ ...encerra, evolucao: e.target.value })}>
+                    <option value="">—</option>
+                    <option value="1">1 - Cura</option>
+                    <option value="2">2 - Óbito pelo agravo notificado</option>
+                    <option value="3">3 - Óbito por outras causas</option>
+                    <option value="9">9 - Ignorado</option>
+                  </Select>
+                </Field>
+                {(encerra.evolucao === '2' || encerra.evolucao === '3') && (
+                  <Field label={`${num.obito}. Data do óbito`} htmlFor="enc-obito">
+                    <Input id="enc-obito" type="date" max={hojeIso} value={encerra.obitoEm} onChange={(e) => setEncerra({ ...encerra, obitoEm: e.target.value })} />
+                  </Field>
+                )}
+                <Field label={`${num.encerramento}. ${d.encerramento.fichaEsus ? 'Data de conclusão' : 'Data do encerramento'}`} htmlFor="enc-data">
+                  <Input id="enc-data" type="date" max={hojeIso} value={encerra.encerradaEm} onChange={(e) => setEncerra({ ...encerra, encerradaEm: e.target.value })} />
+                </Field>
+                {d.encerramento.camposConclusao.map((c) => (
+                  <Field key={c.campo} label={`${c.campo}. ${c.rotulo}${c.obrigatorio ? '' : c.obrigatorioSe ? ` (obrigatório ${c.obrigatorioSe})` : ' (se couber)'}`} htmlFor={`enc-${c.campo}`}>
+                    {c.tipo === 'opcao' ? (
+                      <Select id={`enc-${c.campo}`} value={encerra.conclusao[c.campo] ?? ''} onChange={(e) => setEncerra({ ...encerra, conclusao: { ...encerra.conclusao, [c.campo]: e.target.value } })}>
+                        <option value="">—</option>
+                        {Object.entries(c.opcoes ?? {}).map(([v, l]) => (
+                          <option key={v} value={v}>
+                            {v} - {l}
+                          </option>
+                        ))}
+                      </Select>
+                    ) : (
+                      <Input id={`enc-${c.campo}`} value={encerra.conclusao[c.campo] ?? ''} onChange={(e) => setEncerra({ ...encerra, conclusao: { ...encerra.conclusao, [c.campo]: e.target.value } })} />
+                    )}
+                  </Field>
+                ))}
+                <div className="flex gap-2 md:col-span-3">
+                  <Button
+                    loading={busy}
+                    disabled={!encerra.classificacao}
+                    id="vig-encerrar-salvar"
+                    onClick={async () => {
+                      const ok = await acao(
+                        () =>
+                          api.post(`/vigilancia/notificacoes/${id}/encerrar`, {
+                            investigadaEm: encerra.investigadaEm,
+                            classificacao: encerra.classificacao,
+                            criterio: encerra.criterio || null,
+                            evolucao: encerra.evolucao || null,
+                            obitoEm: encerra.obitoEm || null,
+                            encerradaEm: encerra.encerradaEm,
+                            conclusao: Object.keys(encerra.conclusao).length ? Object.fromEntries(Object.entries(encerra.conclusao).map(([k, v]) => [k, v || null])) : null,
+                          }),
+                        'Investigação encerrada.',
+                      );
+                      if (ok) setEncerra(null);
+                    }}
+                  >
+                    Encerrar
+                  </Button>
+                  <Button variant="secondary" onClick={() => setEncerra(null)}>
+                    Cancelar
+                  </Button>
+                </div>
+              </div>
+            )}
+          </CardBody>
+        </Card>
+      )}
 
       {edicao && (
         <Card>
@@ -470,10 +767,10 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
         {comunicacao && (
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Esfera" htmlFor="com-esfera">
-              <Select id="com-esfera" value={comunicacao.target} onChange={(e) => setComunicacao({ ...comunicacao, target: e.target.value as Esfera, contactId: '', contactValue: '' })}>
+              <Select id="com-esfera" value={comunicacao.target} onChange={(e) => setComunicacao({ ...comunicacao, target: e.target.value as Destino, contactId: '', contactValue: '' })}>
                 {esferasComunicacao.map((e) => (
                   <option key={e} value={e}>
-                    {e === 'SMS' ? 'SMS (vigilância municipal)' : e === 'SES' ? 'SES (vigilância estadual)' : 'MS (CIEVS Nacional)'}
+                    {e === 'SMS' ? 'SMS (vigilância municipal)' : e === 'SES' ? 'SES (vigilância estadual)' : e === 'MS' ? 'MS (CIEVS Nacional)' : 'Autoridade policial (violência contra a mulher)'}
                   </option>
                 ))}
               </Select>
@@ -524,6 +821,60 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
             </Field>
           </div>
         )}
+      </Dialog>
+      <Dialog
+        open={!!espelho}
+        onOpenChange={(o) => !o && setEspelho(null)}
+        size="xl"
+        title={`Espelho da ficha ${d.numero}`}
+        description="Campos na ordem da ficha individual do Sinan Net v5, com a variável do dicionário de dados e o valor exportado."
+      >
+        {espelho && (
+          <div className="max-h-[60vh] overflow-auto" id="vig-espelho-tabela">
+            <Table>
+              <THead>
+                <TR>
+                  <TH>Nº</TH>
+                  <TH>Variável</TH>
+                  <TH>Campo</TH>
+                  <TH>Valor</TH>
+                  <TH>Exportado</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {espelho.map((l) => (
+                  <TR key={`${l.bloco}-${l.variavel}`}>
+                    <TD className="text-xs">{l.numero}</TD>
+                    <TD className="font-mono text-xs">{l.variavel}</TD>
+                    <TD className="text-xs">{l.rotulo}</TD>
+                    <TD className="text-xs">{l.valor || '—'}</TD>
+                    <TD className="font-mono text-xs">{l.exportado}</TD>
+                  </TR>
+                ))}
+              </TBody>
+            </Table>
+          </div>
+        )}
+      </Dialog>
+
+      <Dialog
+        open={!!motivo}
+        onOpenChange={(o) => !o && setMotivo(null)}
+        title={motivo?.tipo === 'desfazer' ? 'Desfazer a digitação' : motivo?.tipo === 'reabrir' ? 'Reabrir a investigação' : 'Dispensar a comunicação policial'}
+        description={
+          motivo?.tipo === 'dispensa'
+            ? 'Use só quando a comunicação não se aplica (ex.: lesão autoprovocada) ou já foi feita por outro meio. Fica na trilha de auditoria.'
+            : 'O motivo fica na linha do tempo e na trilha de auditoria.'
+        }
+        footer={
+          <Button loading={busy} disabled={(motivo?.texto.trim().length ?? 0) < 10} onClick={confirmarMotivo}>
+            Confirmar
+          </Button>
+        }
+      >
+        <Field label="Motivo (mínimo de 10 caracteres)" htmlFor="vig-motivo-acao">
+          <Textarea id="vig-motivo-acao" rows={3} value={motivo?.texto ?? ''} onChange={(e) => motivo && setMotivo({ ...motivo, texto: e.target.value })} />
+        </Field>
       </Dialog>
       {sms && d.status !== 'DESCARTADA' && sms.situacao === 'VENCIDO' && (
         <Alert tone="error">O prazo perante a vigilância municipal venceu. Confirme e comunique assim que possível: a notificação continua obrigatória.</Alert>

@@ -510,7 +510,7 @@ export class TfdService {
           : ['Aguardando parecer da regional / estado.'],
       },
     ];
-    const data = await renderDocument(model, { reason: 'Laudo de TFD', location: model.unit.name, contactInfo: ctx.tenant.name });
+    const data = await renderDocument(model);
     await this.audit.recordStandalone(ctx, { action: 'tfd.laudo_pdf', entityType: 'TfdProcess', entityId: id, payload: { protocol: p.protocol } });
     return { data, fileName: `tfd-laudo-${p.protocol}.pdf` };
   }
@@ -554,7 +554,7 @@ export class TfdService {
         paragraphs: ['Declaro ter recebido as orientações sobre a viagem, o atendimento e a ajuda de custo acima.', 'Assinatura do paciente ou responsável: ______________________________    Data: ____/____/______'],
       },
     ];
-    const data = await renderDocument(model, { reason: 'Guia de viagem de TFD', location: model.unit.name, contactInfo: ctx.tenant.name });
+    const data = await renderDocument(model);
     await this.audit.recordStandalone(ctx, { action: 'tfd.guia_pdf', entityType: 'TfdProcess', entityId: id, payload: { protocol: p.protocol } });
     return { data, fileName: `tfd-guia-${p.protocol}.pdf` };
   }

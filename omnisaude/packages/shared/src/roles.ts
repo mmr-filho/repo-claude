@@ -49,6 +49,12 @@ export const PERMISSIONS = [
   'vigilancia.catalogo',
   /** Só contagens agregadas, sem identificação. */
   'vigilancia.resumo',
+  /** Fila de digitação: informar o número gerado no sistema oficial. */
+  'vigilancia.digitar',
+  /** Investigação e encerramento da notificação. */
+  'vigilancia.investigar',
+  /** Exportação no layout do dicionário de dados do Sinan (lista nominal). */
+  'vigilancia.exportar',
   'pulseira.emitir',
   'triagem.registrar',
   'prontuario.ler',
@@ -304,9 +310,12 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vigilancia.comunicar',
     'vigilancia.catalogo',
     'vigilancia.resumo',
+    'vigilancia.digitar',
+    'vigilancia.investigar',
+    'vigilancia.exportar',
     'vacinas.ler',
   ],
-  NUCLEO_VIGILANCIA: [...COMMON, 'notificacao.registrar', 'notificacao.sensivel', 'vigilancia.painel', 'vigilancia.comunicar', 'vacinas.ler'],
+  NUCLEO_VIGILANCIA: [...COMMON, 'notificacao.registrar', 'notificacao.sensivel', 'vigilancia.painel', 'vigilancia.comunicar', 'vigilancia.digitar', 'vigilancia.investigar', 'vacinas.ler'],
 };
 
 export function isRole(value: unknown): value is Role {

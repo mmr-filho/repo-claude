@@ -31,6 +31,12 @@ export interface VigilanciaSettings {
   onCallPhones: string[];
   /** Liga o alerta por WhatsApp (exige o modelo "vigilancia_alerta" aprovado na conta). */
   whatsappAlerts: boolean;
+  /** Envia à RNDS o resultado de exame de covid-19 e mpox (REL); desligado se a rede não faz esses testes. */
+  relEnabled: boolean;
+  /** Prazo de encerramento em dias por grupo de agravo (sem padrão: só aparece o que a vigilância definir). */
+  prazosEncerramento: Record<string, number>;
+  /** Modelo da comunicação à autoridade policial (nulo = modelo padrão do sistema). */
+  modeloPolicial: string | null;
 }
 
 export const DEFAULT_TENANT_SETTINGS: TenantSettings = {
@@ -44,7 +50,7 @@ export const DEFAULT_TENANT_SETTINGS: TenantSettings = {
   assistantEnabled: false,
   assistantName: 'Assistente de saúde',
   assistantFaq: [],
-  vigilancia: { ackMinutes: 60, onCallPhones: [], whatsappAlerts: false },
+  vigilancia: { ackMinutes: 60, onCallPhones: [], whatsappAlerts: false, relEnabled: false, prazosEncerramento: {}, modeloPolicial: null },
 };
 
 export function tenantSettings(raw: unknown): TenantSettings {
