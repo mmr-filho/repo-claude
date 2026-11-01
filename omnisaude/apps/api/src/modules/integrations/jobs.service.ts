@@ -6,7 +6,7 @@ import { MASTER_DB, TenantsService } from '../../core/database';
 import { MessagingService, type SystemContext } from './messaging.service';
 import { RndsService } from './rnds.service';
 
-type JobName = 'whatsapp' | 'rnds' | 'sigtap';
+type JobName = 'whatsapp' | 'rnds' | 'sigtap' | 'vigilancia';
 type TenantJob = (sys: SystemContext) => Promise<unknown>;
 
 /**
@@ -65,6 +65,8 @@ export class JobsService implements OnApplicationBootstrap, OnModuleDestroy {
       this.queue = new Queue('omnisaude', { connection });
       await this.queue.upsertJobScheduler('whatsapp', { every: 30_000 }, { name: 'whatsapp' });
       await this.queue.upsertJobScheduler('rnds', { every: 60_000 }, { name: 'rnds' });
+      // Vigilância: escalonamento ao plantão, prazos vencidos e varredura de recuperação do gatilho.
+      await this.queue.upsertJobScheduler('vigilancia', { every: 5 * 60_000 }, { name: 'vigilancia' });
       // Diariamente às 6h nos primeiros dias do mês; o job verifica se é o primeiro dia útil da competência.
       await this.queue.upsertJobScheduler('sigtap', { pattern: '0 6 1-7 * *', tz: 'America/Sao_Paulo' }, { name: 'sigtap' });
       this.worker = new Worker('omnisaude', (job) => this.runForAllTenants(job.name as JobName), { connection, concurrency: 1 });
@@ -72,6 +74,7 @@ export class JobsService implements OnApplicationBootstrap, OnModuleDestroy {
     } else {
       this.timers.push(setInterval(() => void this.runForAllTenants('whatsapp'), 30_000));
       this.timers.push(setInterval(() => void this.runForAllTenants('rnds'), 60_000));
+      this.timers.push(setInterval(() => void this.runForAllTenants('vigilancia'), 5 * 60_000));
       this.timers.push(setInterval(() => void this.runForAllTenants('sigtap'), 6 * 3_600_000));
       this.logger.warn('REDIS_URL ausente: jobs rodando com temporizador local (use só em desenvolvimento)');
     }

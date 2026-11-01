@@ -47,6 +47,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | Ouvidoria (manifestação com protocolo, prazo legal de 30 dias prorrogável uma vez, anonimato, encaminhamento, resposta com aviso por WhatsApp, avaliação) e pesquisa de satisfação após o atendimento (WhatsApp com botões, app com NPS, painel) | ✅ | CID-3 (`docs/OUVIDORIA.md`); revisado por seis frentes com verificação cruzada (35 achados corrigidos); modelos `ouvidoria_resposta` e `pesquisa_satisfacao` a aprovar |
 | Meu SUS Digital: prontidão por CPF/CNS e registros enviados à RNDS por tipo (com fila, erro temporário e recusados) na ficha do paciente e no app do cidadão | ✅ | CID-4; depende do credenciamento na RNDS para valer em produção |
 | Unificação de cadastros move também regulação, leitos, AIH, TFD, transporte, visitas do ACS, estratificações, fichas e-SUS, documentos assinados, códigos e conversas do app/assistente, ouvidoria e pesquisas | ✅ | corrigido na revisão da semana 22 (antes só movia os registros dos módulos iniciais) |
+| Notificação compulsória: catálogo da Lista Nacional versionado e gerado do texto oficial (PRT 11.211/2026 e a anterior 10.175/2026), listas estadual e municipal, de-para CID-10/CIAP-2 com homologação, rascunho aberto sozinho ao assinar, no óbito e na internação (sem bloquear o atendimento, com varredura de recuperação), ficha FIN do Sinan Net v5, prazos de 24 h e 7 dias, ciência da SMS e repasse em 24 h, escalonamento ao plantão, sigilo com leitura auditada | ✅ | VIG-1a (`docs/VIGILANCIA.md`); sem envio ao Sinan (fila de digitação na semana 24); de-para a homologar pela vigilância; modelo `vigilancia_alerta` a aprovar |
 
 ## 5. Gestão e BI
 
@@ -122,6 +123,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | App do cidadão (`/cidadao`, celular): entrada por CPF, nascimento e código de 6 dígitos; início com senha do dia, próximo compromisso e pendências; agenda (confirmar, cancelar, salvar .ics, lembretes WhatsApp); exames; vacinas com próximas doses e certificado PDF; remédios com posologia simples e onde há estoque; fila da regulação com posição, leitos e TFD; unidades com "como chegar"; botão "Código do app" na ficha do paciente | ✅ | CID-1; sessão própria (localStorage), rotas `/api/cidadao/*` isoladas por token |
 | Assistente WhatsApp (`/assistente`): painel (conversas, aguardando atendente, consultas marcadas por conversa, triagens), lista com filtro e busca, transcrição com intenção por mensagem, resposta humana pelo mesmo número e encerramento | ✅ | CID-2; atualiza em tempo real |
 | Ouvidoria (`/ouvidoria`): painel de prazos, lista com filtros, detalhe com linha do tempo, registrar no balcão/telefone, encaminhar, prorrogar, responder, arquivar; aba Pesquisa de satisfação com distribuição, NPS, por unidade e por profissional; no app do cidadão: nova manifestação (inclusive anônima), acompanhamento, avaliação da resposta, pesquisa de satisfação com NPS e cartão Meu SUS Digital | ✅ | CID-3/CID-4 |
+| Vigilância (`/vigilancia`): painel com cartões (imediatas aguardando ciência, repasses, vencidas), lista com a ficha ao lado, minhas notificações, descartes, lista LNNC com versões e lista local, de-para de códigos com homologação em lote, plantão e contatos; ficha com contagem regressiva por esfera, edição, confirmação, ciência, comunicação e linha do tempo; aviso após assinar no atendimento, cartão no paciente e "Notificar ESAVI" na vacina; resumo só com contagens para a gestão | ✅ | VIG-1a; atualiza em tempo real |
 | Recepção (OCR, CADSUS, duplicidade, senhas, acolhimento, pulseira) | ✅ | |
 | Painel de chamada (TV) com voz | ✅ | exige um clique para liberar o som (regra dos navegadores) |
 | Classificação de risco com mapa corporal 2D e escala 0–10 | ✅ | |
@@ -159,6 +161,11 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 - Assistente do WhatsApp no navegador: conversa simulada pelo webhook (saudação, agenda, oferta de horários e
   marcação por botão, triagem com emergência, pedido de atendente) aparece na tela da recepção com a intenção de
   cada mensagem; a recepção responde pela tela e a mensagem sai pelo WhatsApp simulado.
+- Vigilância no navegador: a médica assina um SOAP com A37.9 e vê o aviso do rascunho imediato de coqueluche,
+  abre a ficha, informa os sintomas e confirma; a vigilância municipal vê o cartão "imediatas aguardando ciência",
+  dá ciência e registra o repasse por telefone ao CIEVS estadual (SMS e SES cumpridas); a enfermeira vê a
+  notificação de HIV de outro profissional como "agravo de acesso restrito" na ficha do paciente; a gestora vê só
+  as contagens; a ficha cabe na largura do celular.
 - Ouvidoria no navegador: cidadão registra manifestação anônima pelo app; a gestora vê a manifestação sem
   identidade na tela, encaminha, responde e a resposta aparece no app do cidadão, que avalia; a pesquisa de
   satisfação do atendimento encerrado é respondida no app e o painel mostra a nota, o NPS e o comentário.

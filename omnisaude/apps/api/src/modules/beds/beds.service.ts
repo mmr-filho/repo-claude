@@ -7,6 +7,7 @@ import type { RequestContext } from '../../core/context';
 import { conflict, DomainError, notFound } from '../../core/errors';
 import { OutboxService } from '../../core/outbox.service';
 import { RealtimeService } from '../../core/realtime.service';
+import { NotificacaoService } from '../vigilancia/notificacao.service';
 import type { admissionSchema, bedUpdateSchema, dischargeSchema, transferBedSchema } from './beds.schemas';
 
 type Tx = TenantPrisma.TransactionClient;
@@ -21,6 +22,7 @@ export class BedsService {
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
     private readonly realtime: RealtimeService,
+    private readonly vigilancia: NotificacaoService,
   ) {}
 
   /** Censo diário: leitos por setor, ocupante, totais por situação e taxa de ocupação. */
@@ -224,7 +226,9 @@ export class BedsService {
     });
     this.emit(ctx, bed.ward.unitId, { bedId: bed.id, code: bed.code, status: 'OCUPADO', admissionId: result.id });
     if (request) this.realtime.emitToUnit(ctx.tenant.id, request.originUnitId, 'leitos_rede.atualizado', { id: request.id, protocol: request.protocol, status: 'INTERNADA' });
-    return result;
+    // Notificação compulsória (VIG-1a): o CID da internação, com prazo contado do conhecimento.
+    const notificacoes = await this.vigilancia.aoInternar(ctx, { id: result.id, encounterId: result.encounterId, mainCid: result.mainCid });
+    return { ...result, notificacoes };
   }
 
   /** Reserva ou libera um leito para a central de leitos (dentro da transação da solicitação). */

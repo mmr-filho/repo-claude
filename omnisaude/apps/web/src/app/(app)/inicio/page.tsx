@@ -28,6 +28,7 @@ const DESCRIPTIONS: Record<string, string> = {
   '/servico-social': 'Busca ativa humanizada de pacientes crônicos em atraso.',
   '/acs': 'Território do agente, visitas domiciliares e cadastros em campo, também sem internet.',
   '/vacinas': 'Sala de vacina, cartão, aprazamento, faltosos e estoque por lote.',
+  '/vigilancia': 'Notificação compulsória com prazo de 24 h ou 7 dias, ciência e repasse da vigilância, lista vigente e de-para de códigos.',
   '/programas': 'Programas da APS com faltosos, busca ativa e estratificações.',
   '/indicadores': 'Os 15 indicadores do cofinanciamento, por equipe e competência.',
   '/esus': 'Lotes de fichas do e-SUS APS e envio ao PEC.',

@@ -25,6 +25,7 @@ import { SignaturesModule } from './modules/signatures/signatures.module';
 import { BedRegulationModule } from './modules/bed-regulation/bed-regulation.module';
 import { AssistantModule } from './modules/assistant/assistant.module';
 import { OmbudsmanModule } from './modules/ombudsman/ombudsman.module';
+import { VigilanciaModule } from './modules/vigilancia/vigilancia.module';
 import { CitizenModule } from './modules/citizen/citizen.module';
 import { TfdModule } from './modules/tfd/tfd.module';
 import { TransportModule } from './modules/transport/transport.module';
@@ -55,6 +56,7 @@ import { TriageModule } from './modules/triage/triage.module';
     CitizenModule,
     AssistantModule,
     OmbudsmanModule,
+    VigilanciaModule,
     PharmacyModule,
     BedsModule,
     PopsModule,

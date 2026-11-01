@@ -26,10 +26,11 @@ export const UNITS = [
   { key: 'ceo', cnes: '9000060', name: 'CEO Sorriso', type: 'CEO' },
   { key: 'fc', cnes: '9000079', name: 'Farmácia Central', type: 'FARMACIA_CENTRAL' },
   { key: 'alm', cnes: '9000087', name: 'Almoxarifado Central', type: 'ALMOXARIFADO' },
+  { key: 'vig', cnes: '9000117', name: 'Vigilância em Saúde', type: 'VIGILANCIA_SAUDE' },
 ] as const;
 export type UnitKey = (typeof UNITS)[number]['key'];
 
-type RoleName = 'RECEPCAO' | 'ENFERMAGEM' | 'MEDICO' | 'MULTIPROFISSIONAL' | 'SERVICO_SOCIAL' | 'NIR' | 'FARMACIA' | 'FATURAMENTO' | 'GESTOR' | 'ACS';
+type RoleName = 'RECEPCAO' | 'ENFERMAGEM' | 'MEDICO' | 'MULTIPROFISSIONAL' | 'SERVICO_SOCIAL' | 'NIR' | 'FARMACIA' | 'FATURAMENTO' | 'GESTOR' | 'ACS' | 'VIGILANCIA_EPIDEMIOLOGICA' | 'NUCLEO_VIGILANCIA';
 
 export const STAFF: {
   key: string;
@@ -169,6 +170,22 @@ export const STAFF: {
     cpf: completeCpf('100000011'),
     cns: cnsFromBase('10000000011'),
     assignments: [{ unit: 'ubs', role: 'ACS', cbo: '515105' }],
+  },
+  {
+    key: 'vigilancia',
+    name: 'Vera Lúcia Vigilância Epidemiológica',
+    cpf: completeCpf('100000014'),
+    cns: cnsFromBase('10000000014'),
+    council: 'COREN-TO 100014',
+    assignments: [{ unit: 'vig', role: 'VIGILANCIA_EPIDEMIOLOGICA', cbo: '223505' }],
+  },
+  {
+    key: 'nucleo',
+    name: 'Nelson Núcleo Hospitalar',
+    cpf: completeCpf('100000015'),
+    cns: cnsFromBase('10000000015'),
+    council: 'COREN-TO 100015',
+    assignments: [{ unit: 'hosp', role: 'NUCLEO_VIGILANCIA', cbo: '223505' }],
   },
 ];
 

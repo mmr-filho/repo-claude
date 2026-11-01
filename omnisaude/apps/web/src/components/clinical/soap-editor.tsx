@@ -16,6 +16,8 @@ import { useMyCertificate, useSignedDocuments } from '@/components/signatures/us
 import { CodesInput } from './codes-input';
 import { parseStoredCode, type ClinicalNote, type CodeRef, type EncounterDetail } from './types';
 import { useDictation } from './use-dictation';
+import { AvisoNotificacoes } from '@/components/vigilancia/aviso';
+import type { NotificacaoCriada } from '@/components/vigilancia/types';
 
 interface SoapResult {
   soap: SoapNote;
@@ -43,10 +45,14 @@ export function SoapEditor({ encounter, onChanged }: { encounter: EncounterDetai
   const [codes, setCodes] = useState<CodeRef[]>(myDraft ? myDraft.codes.map(parseStoredCode) : []);
   const [structured, setStructured] = useState<SoapResult | null>(null);
   const [busy, setBusy] = useState<'save' | 'sign' | 'ai' | null>(null);
+  const [notificacoes, setNotificacoes] = useState<NotificacaoCriada[]>([]);
   const dictation = useDictation((m) => toast.error(m));
   const closed = encounter.status === 'ENCERRADO' || encounter.status === 'CANCELADO' || encounter.status === 'EVADIU';
   const signed = encounter.notes.filter((n) => n.status === 'ASSINADO' && n.kind !== 'ATESTADO');
-  const signedDocs = useSignedDocuments('ClinicalNote', signed.map((n) => n.id));
+  const signedDocs = useSignedDocuments(
+    'ClinicalNote',
+    signed.map((n) => n.id),
+  );
   const myCertificate = useMyCertificate();
 
   useEffect(() => {
@@ -92,8 +98,10 @@ export function SoapEditor({ encounter, onChanged }: { encounter: EncounterDetai
     setBusy('sign');
     try {
       const id = await save();
-      const n = await api.post<ClinicalNote>(`/clinical/notes/${id}/sign`);
+      const n = await api.post<ClinicalNote & { notificacoes?: NotificacaoCriada[] }>(`/clinical/notes/${id}/sign`);
       toast.success(`Registro assinado · hash ${n.auditHash?.slice(0, 12)}…`);
+      // Notificação compulsória: o rascunho foi aberto; o aviso fica até ser fechado.
+      if (n.notificacoes?.length) setNotificacoes((atual) => [...atual, ...n.notificacoes!]);
       setNoteId(null);
       setSoap({ subjective: '', objective: '', assessment: '', plan: '' });
       setCodes([]);
@@ -135,6 +143,7 @@ export function SoapEditor({ encounter, onChanged }: { encounter: EncounterDetai
 
   return (
     <div className="flex flex-col gap-5">
+      <AvisoNotificacoes itens={notificacoes} onDismiss={() => setNotificacoes([])} />
       {!closed && session.can('prontuario.evoluir') && (
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center gap-2">
@@ -173,7 +182,12 @@ export function SoapEditor({ encounter, onChanged }: { encounter: EncounterDetai
                 </Badge>
               ))}
               {structured.cidSuggestions.map((c) => (
-                <button key={c.code} type="button" onClick={() => setCodes((s) => (s.some((x) => x.code === c.code) ? s : [...s, { system: 'CID10', code: c.code.replace('.', '') }]))} className="rounded-full bg-white px-2 py-0.5 text-xs ring-1 ring-violet-300">
+                <button
+                  key={c.code}
+                  type="button"
+                  onClick={() => setCodes((s) => (s.some((x) => x.code === c.code) ? s : [...s, { system: 'CID10', code: c.code.replace('.', '') }]))}
+                  className="rounded-full bg-white px-2 py-0.5 text-xs ring-1 ring-violet-300"
+                >
                   + {c.code} {c.description}
                 </button>
               ))}
@@ -199,7 +213,12 @@ export function SoapEditor({ encounter, onChanged }: { encounter: EncounterDetai
             <Button variant="secondary" onClick={onSave} loading={busy === 'save'}>
               <Save className="h-4 w-4" /> Salvar rascunho
             </Button>
-            <Button onClick={onSign} loading={busy === 'sign'} disabled={!soap.assessment.trim() || codes.length === 0} title={!soap.assessment.trim() || codes.length === 0 ? 'Preencha a avaliação e informe ao menos um código' : undefined}>
+            <Button
+              onClick={onSign}
+              loading={busy === 'sign'}
+              disabled={!soap.assessment.trim() || codes.length === 0}
+              title={!soap.assessment.trim() || codes.length === 0 ? 'Preencha a avaliação e informe ao menos um código' : undefined}
+            >
               <FileSignature className="h-4 w-4" /> Assinar
             </Button>
           </div>
@@ -217,12 +236,34 @@ export function SoapEditor({ encounter, onChanged }: { encounter: EncounterDetai
                   hash {n.auditHash?.slice(0, 16)}…
                 </span>
               </p>
-              {n.subjective && <p><b>S:</b> {n.subjective}</p>}
-              {n.objective && <p><b>O:</b> {n.objective}</p>}
-              {n.assessment && <p><b>A:</b> {n.assessment}</p>}
-              {n.plan && <p><b>P:</b> {n.plan}</p>}
+              {n.subjective && (
+                <p>
+                  <b>S:</b> {n.subjective}
+                </p>
+              )}
+              {n.objective && (
+                <p>
+                  <b>O:</b> {n.objective}
+                </p>
+              )}
+              {n.assessment && (
+                <p>
+                  <b>A:</b> {n.assessment}
+                </p>
+              )}
+              {n.plan && (
+                <p>
+                  <b>P:</b> {n.plan}
+                </p>
+              )}
               <div className="mt-2">
-                <SignWithCertificate entityType="ClinicalNote" entityId={n.id} doc={signedDocs.byEntity.get(n.id)} canSign={!!myCertificate.certificate && n.authorId === session.me?.user.id} onSigned={() => void signedDocs.reload()} />
+                <SignWithCertificate
+                  entityType="ClinicalNote"
+                  entityId={n.id}
+                  doc={signedDocs.byEntity.get(n.id)}
+                  canSign={!!myCertificate.certificate && n.authorId === session.me?.user.id}
+                  onSigned={() => void signedDocs.reload()}
+                />
               </div>
             </article>
           ))}

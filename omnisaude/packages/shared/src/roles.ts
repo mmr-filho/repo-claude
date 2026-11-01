@@ -3,7 +3,7 @@
  * Tenant_ID + Unidade_Fisica_ID + Papel_Ativo. Um mesmo profissional pode ter papéis diferentes em cada unidade.
  */
 
-export const ROLES = ['RECEPCAO', 'ENFERMAGEM', 'MEDICO', 'MULTIPROFISSIONAL', 'SERVICO_SOCIAL', 'NIR', 'FARMACIA', 'FATURAMENTO', 'GESTOR', 'ACS'] as const;
+export const ROLES = ['RECEPCAO', 'ENFERMAGEM', 'MEDICO', 'MULTIPROFISSIONAL', 'SERVICO_SOCIAL', 'NIR', 'FARMACIA', 'FATURAMENTO', 'GESTOR', 'ACS', 'VIGILANCIA_EPIDEMIOLOGICA', 'NUCLEO_VIGILANCIA'] as const;
 export type Role = (typeof ROLES)[number];
 
 export const ROLE_LABELS: Record<Role, string> = {
@@ -17,6 +17,8 @@ export const ROLE_LABELS: Record<Role, string> = {
   FATURAMENTO: 'Faturamento e Auditoria SUS',
   GESTOR: 'Gestor Executivo / Diretor Técnico',
   ACS: 'Agente Comunitário de Saúde',
+  VIGILANCIA_EPIDEMIOLOGICA: 'Vigilância Epidemiológica (SMS)',
+  NUCLEO_VIGILANCIA: 'Núcleo de Vigilância do Estabelecimento',
 };
 
 export const PERMISSIONS = [
@@ -35,6 +37,18 @@ export const PERMISSIONS = [
   'ouvidoria.ler',
   'ouvidoria.registrar',
   'ouvidoria.gerir',
+  /** Notificar agravo (perfil Notificador do e-SUS Sinan): vê só as próprias notificações. */
+  'notificacao.registrar',
+  /** Abrir notificação de agravo sensível (art. 7º): HIV, sífilis, violência. */
+  'notificacao.sensivel',
+  /** Descartar notificação imediata ou já confirmada (só a vigilância municipal). */
+  'notificacao.descartar',
+  'vigilancia.painel',
+  'vigilancia.ciencia',
+  'vigilancia.comunicar',
+  'vigilancia.catalogo',
+  /** Só contagens agregadas, sem identificação. */
+  'vigilancia.resumo',
   'pulseira.emitir',
   'triagem.registrar',
   'prontuario.ler',
@@ -116,6 +130,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'pulseira.emitir',
   ],
   ENFERMAGEM: [
+    'notificacao.registrar',
     'tfd.ler',
     'transporte.ler',
     'leitos_rede.ler',
@@ -140,6 +155,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'esus.ler',
   ],
   MEDICO: [
+    'notificacao.registrar',
     'leitos_rede.solicitar',
     'leitos_rede.ler',
     'aih.solicitar',
@@ -164,6 +180,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'pop.executar',
   ],
   MULTIPROFISSIONAL: [
+    'notificacao.registrar',
     'regulacao.solicitar',
     'regulacao.ler',
     'vacinas.ler',
@@ -178,6 +195,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'odontograma.registrar',
   ],
   SERVICO_SOCIAL: [
+    'notificacao.registrar',
     'ouvidoria.ler',
     'ouvidoria.registrar',
     'ouvidoria.gerir',
@@ -198,6 +216,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'busca_ativa.gerir',
   ],
   NIR: [
+    'notificacao.registrar',
     ...COMMON,
     'prontuario.ler',
     'leitos.ler',
@@ -217,9 +236,22 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'aih.solicitar',
     'aih.autorizar',
   ],
-  FARMACIA: ['vacinas.ler', ...COMMON, 'prontuario.ler', 'estoque.ler', 'estoque.movimentar', 'nfe.importar', 'unitarizacao.executar', 'dispensacao.registrar', 'controlados.relatorio', 'pop.executar'],
+  FARMACIA: [
+    'notificacao.registrar',
+    'vacinas.ler',
+    ...COMMON,
+    'prontuario.ler',
+    'estoque.ler',
+    'estoque.movimentar',
+    'nfe.importar',
+    'unitarizacao.executar',
+    'dispensacao.registrar',
+    'controlados.relatorio',
+    'pop.executar',
+  ],
   FATURAMENTO: ['aih.ler', 'aps.indicadores', ...COMMON, 'prontuario.ler', 'faturamento.ler', 'faturamento.criticar', 'faturamento.exportar', 'sigtap.sincronizar', 'auditoria.ler', 'esus.ler', 'esus.gerir'],
   GESTOR: [
+    'vigilancia.resumo',
     'assistente.ler',
     'assistente.responder',
     'ouvidoria.ler',
@@ -262,6 +294,19 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'esus.gerir',
   ],
   ACS: ['acs.campo', 'acs.territorio', 'vacinas.ler', 'aps.programas', ...COMMON, 'paciente.cadastrar', 'cadsus.consultar'],
+  VIGILANCIA_EPIDEMIOLOGICA: [
+    ...COMMON,
+    'notificacao.registrar',
+    'notificacao.sensivel',
+    'notificacao.descartar',
+    'vigilancia.painel',
+    'vigilancia.ciencia',
+    'vigilancia.comunicar',
+    'vigilancia.catalogo',
+    'vigilancia.resumo',
+    'vacinas.ler',
+  ],
+  NUCLEO_VIGILANCIA: [...COMMON, 'notificacao.registrar', 'notificacao.sensivel', 'vigilancia.painel', 'vigilancia.comunicar', 'vacinas.ler'],
 };
 
 export function isRole(value: unknown): value is Role {

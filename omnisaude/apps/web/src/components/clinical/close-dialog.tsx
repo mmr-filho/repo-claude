@@ -6,6 +6,7 @@ import { Dialog } from '@/components/ui/dialog';
 import { Field, Input, Select } from '@/components/ui/input';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
+import type { NotificacaoCriada } from '@/components/vigilancia/types';
 
 const OUTCOMES = [
   ['ALTA', 'Alta'],
@@ -16,7 +17,19 @@ const OUTCOMES = [
   ['EVASAO', 'Evasão'],
 ] as const;
 
-export function CloseEncounterDialog({ encounterId, open, onOpenChange, defaultCid, onClosed }: { encounterId: string; open: boolean; onOpenChange: (o: boolean) => void; defaultCid?: string; onClosed: () => void }) {
+export function CloseEncounterDialog({
+  encounterId,
+  open,
+  onOpenChange,
+  defaultCid,
+  onClosed,
+}: {
+  encounterId: string;
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  defaultCid?: string;
+  onClosed: (notificacoes: NotificacaoCriada[]) => void;
+}) {
   const toast = useToast();
   const [outcome, setOutcome] = useState<(typeof OUTCOMES)[number][0]>('ALTA');
   const [cid, setCid] = useState(defaultCid ?? '');
@@ -33,10 +46,10 @@ export function CloseEncounterDialog({ encounterId, open, onOpenChange, defaultC
           onClick={async () => {
             setBusy(true);
             try {
-              await api.post(`/clinical/encounters/${encounterId}/close`, { outcome, ...(cid.trim() ? { mainCid: cid.trim().toUpperCase().replace('.', '') } : {}) });
+              const r = await api.post<{ notificacoes?: NotificacaoCriada[] }>(`/clinical/encounters/${encounterId}/close`, { outcome, ...(cid.trim() ? { mainCid: cid.trim().toUpperCase().replace('.', '') } : {}) });
               toast.success('Atendimento encerrado');
               onOpenChange(false);
-              onClosed();
+              onClosed(r.notificacoes ?? []);
             } catch (err) {
               toast.error(errorMessage(err));
             } finally {

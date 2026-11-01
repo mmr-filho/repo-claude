@@ -25,6 +25,8 @@ enum UnitType {
   FARMACIA_CENTRAL
   ALMOXARIFADO
   LABORATORIO
+  /// Unidade de Vigilância em Saúde (tipo 50 do CNES, Portaria SAS/MS 758/2014).
+  VIGILANCIA_SAUDE
 }
 
 model Unit {
@@ -65,6 +67,7 @@ model Unit {
   @@map("units")
   ombudsmanCases OmbudsmanCase[]
   surveys        SatisfactionSurvey[]
+  notifications  Notification[]
 }
 
 enum Role {
@@ -78,6 +81,10 @@ enum Role {
   FATURAMENTO
   GESTOR
   ACS
+  /// Vigilância epidemiológica da Secretaria Municipal (alcance de todas as unidades).
+  VIGILANCIA_EPIDEMIOLOGICA
+  /// Núcleo de vigilância do estabelecimento (alcance da unidade da lotação).
+  NUCLEO_VIGILANCIA
 }
 
 /// Profissionais e colaboradores do tenant. O login é por CPF dentro do tenant.
@@ -450,6 +457,7 @@ model Patient {
   assistantConversations AssistantConversation[]
   ombudsmanCases         OmbudsmanCase[]
   surveys                SatisfactionSurvey[]
+  notifications          Notification[]
 
   @@index([nameKey, birthDate])
   @@index([familyId])
@@ -2590,4 +2598,286 @@ model SatisfactionSurvey {
   @@index([unitId, createdAt])
   @@index([patientId, status])
   @@map("satisfaction_surveys")
+}
+
+// ───────────────────────────── Vigilância epidemiológica: notificação compulsória (VIG-1a) ─────────────────────────────
+
+enum ListScope {
+  NACIONAL
+  ESTADUAL
+  MUNICIPAL
+}
+
+enum DiseaseContext {
+  CASO
+  OBITO
+  GESTANTE
+  ANOMALIA_CONGENITA
+  OUTRO
+}
+
+enum NotifyOn {
+  SUSPEITA
+  CONFIRMACAO
+}
+
+enum DeadlineStart {
+  ATENDIMENTO
+  CONHECIMENTO
+  CONFIRMACAO
+}
+
+enum NormativeStatus {
+  VIGENTE
+  EM_REVISAO
+}
+
+enum CodeMapStatus {
+  PROPOSTO
+  HOMOLOGADO
+  INATIVO
+}
+
+enum NotificationStatus {
+  RASCUNHO
+  NOTIFICADA
+  DESCARTADA
+}
+
+enum NotificationOrigin {
+  ATENDIMENTO
+  OBITO
+  INTERNACAO
+  MANUAL
+  VACINA
+  VARREDURA
+}
+
+enum NotificationBasis {
+  SUSPEITA
+  CONFIRMADO
+}
+
+enum Sphere {
+  SMS
+  SES
+  MS
+}
+
+enum CommChannel {
+  SISTEMA
+  TELEFONE
+  EMAIL
+  FORMULARIO
+  PRESENCIAL
+  OUTRO
+}
+
+enum DeadlineKind {
+  IMEDIATA
+  SEMANAL
+}
+
+/// Versão da Lista de Notificação Compulsória: nacional (Anexo 1 do Anexo V da PRC 4/2017) ou complementar estadual/municipal.
+model NotifiableListVersion {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  scope        ListScope
+  /// "NACIONAL", "ESTADUAL:TO" ou "MUNICIPAL:1709500" (único com valid_from).
+  scopeKey     String    @map("scope_key")
+  /// Identificador da versão nacional no catálogo do código (ex.: PRT-GM-MS-11211-2026).
+  nationalId   String?   @unique @map("national_id")
+  uf           String?   @db.Char(2)
+  ibgeCode     String?   @map("ibge_code") @db.Char(7)
+  act          String
+  publishedIn  String?   @map("published_in")
+  actUrl       String?   @map("act_url")
+  sourceUrl    String?   @map("source_url")
+  sourceSha256 String?   @map("source_sha256") @db.Char(64)
+  consultedAt  DateTime? @map("consulted_at") @db.Date
+  validFrom    DateTime  @map("valid_from") @db.Date
+  validTo      DateTime? @map("valid_to") @db.Date
+  notes        String?
+  createdBy    String?   @map("created_by") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  conditions NotifiableCondition[]
+
+  @@unique([scopeKey, validFrom])
+  @@map("notifiable_list_versions")
+}
+
+model NotifiableCondition {
+  id              String          @id @default(uuid(7)) @db.Uuid
+  versionId       String          @map("version_id") @db.Uuid
+  key             String          @db.VarChar(60)
+  groupKey        String          @map("group_key") @db.VarChar(40)
+  item            Int
+  subitem         String?         @db.Char(1)
+  name            String
+  context         DiseaseContext
+  immediateMs     Boolean         @map("immediate_ms")
+  immediateSes    Boolean         @map("immediate_ses")
+  immediateSms    Boolean         @map("immediate_sms")
+  weekly          Boolean
+  notifyOn        NotifyOn        @map("notify_on")
+  deadlineStart   DeadlineStart   @map("deadline_start")
+  sensitive       Boolean         @default(false)
+  /// Notificada uma vez por pessoa (o gatilho não repete).
+  once            Boolean         @default(false)
+  normativeStatus NormativeStatus @default(VIGENTE) @map("normative_status")
+  normativeNote   String?         @map("normative_note")
+  sinanCode       String?         @map("sinan_code") @db.VarChar(5)
+  active          Boolean         @default(true)
+
+  version       NotifiableListVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  notifications Notification[]
+
+  @@unique([versionId, key])
+  @@index([groupKey])
+  @@map("notifiable_conditions")
+}
+
+/// De-para de código (CID-10/CIAP-2) para grupo de agravo; vale o prefixo mais longo.
+model NotifiableCodeMap {
+  id            String          @id @default(uuid(7)) @db.Uuid
+  system        CodeSystem
+  codePrefix    String          @map("code_prefix") @db.VarChar(5)
+  groupKey      String          @map("group_key") @db.VarChar(40)
+  context       DiseaseContext?
+  status        CodeMapStatus   @default(PROPOSTO)
+  source        String
+  homologatedBy String?         @map("homologated_by") @db.Uuid
+  homologatedAt DateTime?       @map("homologated_at")
+  createdBy     String?         @map("created_by") @db.Uuid
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+
+  @@unique([system, codePrefix, groupKey])
+  @@map("notifiable_code_maps")
+}
+
+model Notification {
+  id                    String             @id @default(uuid(7)) @db.Uuid
+  year                  Int
+  seq                   Int
+  /// Numeração interna "AAAA/NNNNNN" (não é o número do Sinan).
+  number                String             @unique
+  status                NotificationStatus @default(RASCUNHO)
+  origin                NotificationOrigin
+  conditionId           String             @map("condition_id") @db.Uuid
+  conditionKey          String             @map("condition_key") @db.VarChar(60)
+  groupKey              String             @map("group_key") @db.VarChar(40)
+  basis                 NotificationBasis  @default(SUSPEITA)
+  codeSystem            CodeSystem?        @map("code_system")
+  code                  String?            @db.VarChar(6)
+  /// Situação do de-para que disparou o rascunho (PROPOSTO mostra o aviso "não homologado").
+  mapStatus             CodeMapStatus?     @map("map_status")
+  patientId             String             @map("patient_id") @db.Uuid
+  encounterId           String?            @map("encounter_id") @db.Uuid
+  noteId                String?            @map("note_id") @db.Uuid
+  admissionId           String?            @map("admission_id") @db.Uuid
+  vaccinationId         String?            @map("vaccination_id") @db.Uuid
+  relatedNotificationId String?            @map("related_notification_id") @db.Uuid
+  unitId                String             @map("unit_id") @db.Uuid
+  notifierId            String             @map("notifier_id") @db.Uuid
+  notifierCbo           String?            @map("notifier_cbo") @db.Char(6)
+  notifierRole          Role               @map("notifier_role")
+  firstCareAt           DateTime?          @map("first_care_at")
+  knownAt               DateTime           @map("known_at")
+  confirmedAt           DateTime?          @map("confirmed_at")
+  deadlineStart         DeadlineStart      @map("deadline_start")
+  deadlineKind          DeadlineKind       @map("deadline_kind")
+  targets               Sphere[]
+  deadlineStartAt       DateTime?          @map("deadline_start_at")
+  dueAt                 DateTime?          @map("due_at")
+  notifiedAt            DateTime?          @map("notified_at")
+  symptomsOnset         DateTime?          @map("symptoms_onset") @db.Date
+  epiWeekNotified       String?            @map("epi_week_notified") @db.Char(6)
+  epiWeekOnset          String?            @map("epi_week_onset") @db.Char(6)
+  sensitive             Boolean            @default(false)
+  /// Retrato dos campos 1 a 33 da Ficha Individual de Notificação do Sinan Net v5.
+  form                  Json               @default("{}")
+  residenceIbge         String?            @map("residence_ibge") @db.Char(7)
+  residenceLat          Float?             @map("residence_lat")
+  residenceLng          Float?             @map("residence_lng")
+  outOfMunicipality     Boolean            @default(false) @map("out_of_municipality")
+  smsReceivedAt         DateTime?          @map("sms_received_at")
+  smsReceivedBy         String?            @map("sms_received_by") @db.Uuid
+  escalatedAt           DateTime?          @map("escalated_at")
+  overdueAt             DateTime?          @map("overdue_at")
+  discardReason         String?            @map("discard_reason")
+  discardedBy           String?            @map("discarded_by") @db.Uuid
+  discardedAt           DateTime?          @map("discarded_at")
+  createdBy             String?            @map("created_by") @db.Uuid
+  createdAt             DateTime           @default(now()) @map("created_at")
+  updatedAt             DateTime           @updatedAt @map("updated_at")
+
+  condition      NotifiableCondition         @relation(fields: [conditionId], references: [id])
+  patient        Patient                     @relation(fields: [patientId], references: [id])
+  unit           Unit                        @relation(fields: [unitId], references: [id])
+  related        Notification?               @relation("NotificationRelated", fields: [relatedNotificationId], references: [id])
+  relatedTo      Notification[]              @relation("NotificationRelated")
+  events         NotificationEvent[]
+  communications NotificationCommunication[]
+
+  @@unique([year, seq])
+  @@index([status, dueAt])
+  @@index([patientId, groupKey, createdAt])
+  @@index([unitId, status])
+  @@index([notifierId, createdAt])
+  @@map("notifications")
+}
+
+model NotificationEvent {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  notificationId String   @map("notification_id") @db.Uuid
+  kind           String
+  at             DateTime @default(now())
+  userId         String?  @map("user_id") @db.Uuid
+  data           Json?
+  notes          String?
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId, at])
+  @@map("notification_events")
+}
+
+model NotificationCommunication {
+  id              String      @id @default(uuid(7)) @db.Uuid
+  notificationId  String      @map("notification_id") @db.Uuid
+  target          Sphere
+  channel         CommChannel
+  communicatedAt  DateTime    @map("communicated_at")
+  counterpartName String      @map("counterpart_name")
+  counterpartOrg  String?     @map("counterpart_org")
+  contactId       String?     @map("contact_id") @db.Uuid
+  contactValue    String?     @map("contact_value")
+  protocol        String?
+  notes           String?
+  userId          String      @map("user_id") @db.Uuid
+  createdAt       DateTime    @default(now()) @map("created_at")
+
+  notification Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId, target])
+  @@map("notification_communications")
+}
+
+/// Contatos para notificação por esfera (art. 9º do Anexo V): CIEVS nacional, estadual e municipal, plantão.
+model SurveillanceContact {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  sphere    Sphere
+  label     String
+  phone     String?
+  email     String?
+  formUrl   String?  @map("form_url")
+  hours     String?
+  onCall    Boolean  @default(false) @map("on_call")
+  active    Boolean  @default(true)
+  sort      Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("surveillance_contacts")
 }

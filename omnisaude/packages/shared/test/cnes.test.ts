@@ -17,7 +17,8 @@ describe('CNES: códigos e sugestões', () => {
     expect(unitTypeFromCnes(42)).toBe('SAMU');
     expect(unitTypeFromCnes(70)).toBe('CAPS');
     expect(unitTypeFromCnes(43)).toBe('FARMACIA_CENTRAL');
-    expect(unitTypeFromCnes(50)).toBeNull();
+    expect(unitTypeFromCnes(50)).toBe('VIGILANCIA_SAUDE');
+    expect(unitTypeFromCnes(68)).toBeNull();
   });
 
   it('sugere o papel pela ocupação e rotula tipos de equipe', () => {

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BedsController } from './beds.controller';
 import { BedsService } from './beds.service';
+import { VigilanciaModule } from '../vigilancia/vigilancia.module';
 
-@Module({ controllers: [BedsController], providers: [BedsService], exports: [BedsService] })
+@Module({ imports: [VigilanciaModule], controllers: [BedsController], providers: [BedsService], exports: [BedsService] })
 export class BedsModule {}

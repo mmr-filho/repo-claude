@@ -130,7 +130,8 @@ const CNES_ESTABELECIMENTOS = [
   {
     codigo_cnes: 549126,
     nome_fantasia: 'COORDENADORIA DE VIGILANCIA EPIDEMIOLOGICA',
-    codigo_tipo_unidade: 50,
+    // Cadastrada como central de gestão em saúde (68), tipo sem sugestão: a gestão escolhe na importação.
+    codigo_tipo_unidade: 68,
     nat: '1244',
     esfera: 'MUNICIPAL',
     tel: '6333150088',

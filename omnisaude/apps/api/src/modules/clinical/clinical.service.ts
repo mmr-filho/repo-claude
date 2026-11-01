@@ -3,6 +3,7 @@ import { analyzePrescription, parseVoiceCommand, structureSoap, suggestCarePathw
 import { ageInYears, roleHasPermission } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import { SatisfactionService } from '../ombudsman/satisfaction.service';
+import { NotificacaoService } from '../vigilancia/notificacao.service';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
 import { DomainError, forbidden, notFound } from '../../core/errors';
@@ -50,6 +51,7 @@ export class ClinicalService {
     private readonly messaging: MessagingService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly satisfaction: SatisfactionService,
+    private readonly vigilancia: NotificacaoService,
   ) {}
 
   private async encounter(ctx: RequestContext, id: string) {
@@ -144,7 +146,7 @@ export class ClinicalService {
     if (n.kind === 'SOAP' && !n.assessment?.trim()) throw new DomainError('AVALIACAO_OBRIGATORIA', 'Preencha a avaliação antes de assinar');
     if (n.kind === 'SOAP' && n.codes.length === 0) throw new DomainError('CID_OBRIGATORIO', 'Informe ao menos um CID-10 ou CIAP-2');
     const e = await this.encounter(ctx, n.encounterId);
-    return ctx.db.$transaction(async (tx) => {
+    const signed = await ctx.db.$transaction(async (tx) => {
       const payload = {
         noteId: n.id,
         encounterId: n.encounterId,
@@ -170,6 +172,9 @@ export class ClinicalService {
       if (n.kind === 'SOAP' && ctx.tenant.settings.rndsEnabled) await this.outbox.enqueue(tx, 'RNDS_RAC', n.id);
       return signed;
     });
+    // Notificação compulsória (VIG-1a): depois da assinatura, sem bloquear o atendimento se falhar.
+    const notificacoes = signed.codes.length ? await this.vigilancia.aoAssinarRegistro(ctx, signed) : [];
+    return { ...signed, notificacoes };
   }
 
   async close(ctx: RequestContext, id: string, input: { outcome: 'ALTA' | 'INTERNACAO' | 'ENCAMINHAMENTO' | 'TRANSFERENCIA' | 'OBITO' | 'EVASAO'; mainCid?: string }) {
@@ -189,7 +194,9 @@ export class ClinicalService {
     });
     // Pesquisa de satisfação (CID-3): depois de alta ou encaminhamento; não em óbito, evasão ou internação.
     if (input.outcome === 'ALTA' || input.outcome === 'ENCAMINHAMENTO') await this.satisfaction.afterEncounterClosed({ tenant: ctx.tenant, db: ctx.db }, id);
-    return updated;
+    // CID principal do encerramento e, no óbito, a notificação do óbito dos agravos já notificados.
+    const notificacoes = updated.mainCid || input.outcome === 'OBITO' ? await this.vigilancia.aoEncerrarAtendimento(ctx, updated) : [];
+    return { ...updated, notificacoes };
   }
 
   async deleteDraft(ctx: RequestContext, id: string) {

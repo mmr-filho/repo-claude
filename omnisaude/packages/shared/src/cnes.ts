@@ -45,12 +45,14 @@ export const CNES_UNIT_TYPES: Record<string, string> = {
 };
 
 /**
- * Tipo do OmniSaúde sugerido para um tipo de estabelecimento do CNES. Sem equivalente direto (vigilância,
- * gestão, hemocentro...), devolve null e a gestão escolhe na importação.
+ * Tipo do OmniSaúde sugerido para um tipo de estabelecimento do CNES. Sem equivalente direto (gestão,
+ * hemocentro...), devolve null e a gestão escolhe na importação. O tipo 50 é a Unidade de Vigilância em Saúde.
  */
 export function unitTypeFromCnes(typeCode: string | number | null | undefined): UnitType | null {
   const code = String(typeCode ?? '').padStart(2, '0');
   switch (code) {
+    case '50':
+      return 'VIGILANCIA_SAUDE';
     case '01':
     case '02':
     case '15':

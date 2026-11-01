@@ -73,7 +73,7 @@ describe.runIf(enabled)('diretório e auditoria', () => {
   it('lista unidades e profissionais e verifica a trilha encadeada', async () => {
     const token = await t.login('gestora', 'UBS Centro', 'GESTOR');
     const dir = await t.http().get('/api/directory').set('authorization', `Bearer ${token}`).expect(200);
-    expect(dir.body.units.length).toBe(8);
+    expect(dir.body.units.length).toBe(9);
     expect(dir.body.professionals.find((p: { name: string }) => p.name.startsWith('Carla')).roles.length).toBe(3);
     const verify = await t.http().get('/api/audit/verify').set('authorization', `Bearer ${token}`).expect(200);
     expect(verify.body.ok).toBe(true);

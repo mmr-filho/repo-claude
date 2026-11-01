@@ -6,6 +6,8 @@ import { Dialog } from '@/components/ui/dialog';
 import { Field, Input, Select, Textarea } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
+import { useToast } from '@/components/ui/toast';
+import type { NotificacaoCriada } from '@/components/vigilancia/types';
 import { PatientSearch } from '@/components/patients/patient-search';
 import { api, errorMessage } from '@/lib/api';
 import { fmtDate, fmtDateTime } from '@/lib/format';
@@ -105,6 +107,7 @@ export function BedStatusDialog({ bed, onClose, onDone }: { bed: BedView; onClos
 }
 
 export function AdmitDialog({ bed, onClose, onDone }: { bed: BedView; onClose: () => void; onDone: () => void }) {
+  const toast = useToast();
   const reserva = bed.reservation;
   const [patient, setPatient] = useState<PatientSummary | null>(
     reserva ? ({ id: reserva.patientId, name: reserva.name, civilName: reserva.name, cns: null, cpf: null, birthDate: '', age: reserva.age, sex: reserva.sex, motherName: null } as PatientSummary) : null,
@@ -132,7 +135,7 @@ export function AdmitDialog({ bed, onClose, onDone }: { bed: BedView; onClose: (
               setPending(true);
               setError(null);
               try {
-                await api.post('/admissions', {
+                const r = await api.post<{ notificacoes?: NotificacaoCriada[] }>('/admissions', {
                   patientId: patient!.id,
                   bedId: bed.id,
                   mainCid: mainCid.trim().toUpperCase().replace('.', ''),
@@ -140,6 +143,8 @@ export function AdmitDialog({ bed, onClose, onDone }: { bed: BedView; onClose: (
                   bedRequestId: reserva?.requestId,
                   isolation,
                 });
+                // Notificação compulsória pelo CID da internação: rascunho aberto para o NIR ou o núcleo completar.
+                for (const n of r.notificacoes ?? []) toast.info(`Notificação compulsória aberta: ${n.agravo} (${n.numero}). Complete em Vigilância.`);
                 onDone();
               } catch (err) {
                 setError(errorMessage(err));

@@ -121,6 +121,13 @@ export const TEMPLATE_DEFINITIONS = [
     buttons: [],
   },
   {
+    name: 'vigilancia_alerta',
+    category: 'UTILITY',
+    language: 'pt_BR',
+    body: 'Alerta da vigilância epidemiológica: a notificação {{1}} ({{2}}), da unidade {{3}}, aguarda ciência. Prazo legal até {{4}}. Abra o painel da vigilância no OmniSaúde.',
+    buttons: [],
+  },
+  {
     name: 'pesquisa_satisfacao',
     category: 'UTILITY',
     language: 'pt_BR',
@@ -299,5 +306,28 @@ export function buildSatisfactionSurveyTemplate(input: SatisfactionSurveyInput):
     languageCode: input.languageCode ?? 'pt_BR',
     bodyParams: [firstName(input.patientName), input.service, input.unitName].map(sanitizeTemplateParam),
     buttons: SURVEY_BUTTON_SCORES.map((score, index) => ({ subType: 'quick_reply' as const, index, payload: encodeAssistantPayload('SURVEY', `${input.surveyId}_${score}`) })),
+  };
+}
+
+export interface SurveillanceAlertInput {
+  number: string;
+  /** Nome do agravo ou "agravo de acesso restrito" (nunca dado do paciente). */
+  condition: string;
+  unitName: string;
+  dueAt: Date | null;
+  timeZone?: string;
+  templateName?: string;
+  languageCode?: string;
+}
+
+/** Alerta ao plantão da vigilância (modelo "vigilancia_alerta"): sem nome, CPF, CNS ou endereço do paciente. */
+export function buildSurveillanceAlertTemplate(input: SurveillanceAlertInput): TemplateMessage {
+  const tz = input.timeZone ?? DEFAULT_TIME_ZONE;
+  const prazo = input.dueAt ? `${formatDayLong(input.dueAt, tz)}, ${formatTime(input.dueAt, tz)}` : 'a definir';
+  return {
+    name: input.templateName ?? 'vigilancia_alerta',
+    languageCode: input.languageCode ?? 'pt_BR',
+    bodyParams: [input.number, input.condition, input.unitName, prazo].map(sanitizeTemplateParam),
+    buttons: [],
   };
 }

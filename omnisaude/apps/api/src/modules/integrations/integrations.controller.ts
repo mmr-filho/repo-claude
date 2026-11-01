@@ -91,7 +91,7 @@ export class JobsController {
     }
     const out: Record<string, unknown> = {};
     for (const name of tasks.split(',').map((t) => t.trim())) {
-      if (name === 'whatsapp' || name === 'rnds' || name === 'sigtap') out[name] = await this.jobs.runForAllTenants(name);
+      if (name === 'whatsapp' || name === 'rnds' || name === 'sigtap' || name === 'vigilancia') out[name] = await this.jobs.runForAllTenants(name);
     }
     return out;
   }

@@ -12,4 +12,5 @@ export const UNIT_TYPE_LABELS: Record<UnitType, string> = {
   FARMACIA_CENTRAL: 'Farmácia central',
   ALMOXARIFADO: 'Almoxarifado',
   LABORATORIO: 'Laboratório',
+  VIGILANCIA_SAUDE: 'Vigilância em saúde',
 };

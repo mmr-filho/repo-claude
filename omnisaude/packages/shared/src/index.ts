@@ -5,6 +5,7 @@ export * from './aps-programas';
 export * from './cbo';
 export * from './cidadao';
 export * from './ouvidoria';
+export * from './vigilancia';
 export * from './clinical';
 export * from './cnes';
 export * from './dates';

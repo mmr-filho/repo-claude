@@ -25,3 +25,6 @@ apps/mobile/android/app/build/
 apps/cloudflare/public/
 .wrangler/
 .dev.vars
+
+# Python
+__pycache__/

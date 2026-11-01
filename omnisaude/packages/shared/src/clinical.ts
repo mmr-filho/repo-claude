@@ -26,18 +26,7 @@ export const SOAP_LABELS: Record<keyof SoapNote, string> = {
 export const ROUTES_OF_ADMINISTRATION = ['ORAL', 'SUBLINGUAL', 'IV', 'IM', 'SC', 'TOPICA', 'INALATORIA', 'RETAL', 'OFTALMICA', 'NASAL'] as const;
 export type RouteOfAdministration = (typeof ROUTES_OF_ADMINISTRATION)[number];
 
-export const UNIT_TYPES = [
-  'UBS',
-  'UPA',
-  'POLICLINICA',
-  'HOSPITAL',
-  'CEO',
-  'SAMU',
-  'CAPS',
-  'FARMACIA_CENTRAL',
-  'ALMOXARIFADO',
-  'LABORATORIO',
-] as const;
+export const UNIT_TYPES = ['UBS', 'UPA', 'POLICLINICA', 'HOSPITAL', 'CEO', 'SAMU', 'CAPS', 'FARMACIA_CENTRAL', 'ALMOXARIFADO', 'LABORATORIO', 'VIGILANCIA_SAUDE'] as const;
 export type UnitType = (typeof UNIT_TYPES)[number];
 
 export const SEXES = ['M', 'F'] as const;

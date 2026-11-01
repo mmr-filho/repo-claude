@@ -30,7 +30,7 @@ describe.runIf(enabled)('importação do CNES', () => {
   it('busca os estabelecimentos do município no DATASUS e concilia com as unidades cadastradas', async () => {
     const res = await t.http().post('/api/admin/cnes/estabelecimentos/previa').set(auth(gestora)).send({ ibgeCode: '1709500' }).expect(200);
     expect(res.body.ibgeCode).toBe('170950');
-    expect(res.body.summary).toMatchObject({ total: 8, publicos: 6, privadosSus: 0, novos: 6, atualizar: 1, inativos: 1, foraDoCnes: 7 });
+    expect(res.body.summary).toMatchObject({ total: 8, publicos: 6, privadosSus: 0, novos: 6, atualizar: 1, inativos: 1, foraDoCnes: 8 });
     const rows = res.body.rows as Row[];
     const ubs = rows.find((r) => r.cnes === '9000011')!;
     expect(ubs).toMatchObject({ action: 'atualizar', name: 'UBS Centro', existing: { name: 'UBS Centro', type: 'UBS' } });
@@ -48,13 +48,13 @@ describe.runIf(enabled)('importação do CNES', () => {
   it('aplica só o selecionado, pede o tipo quando não há sugestão e completa a unidade existente sem renomear', async () => {
     const denied = await apply(importId, { cnes: ['0549126'] }).expect(422);
     expect(denied.body.code).toBe('TIPO_NECESSARIO');
-    const res = await apply(importId, { cnes: ['9000011', '3331326', '2786109', '0549126', '2546523'], types: { '0549126': 'POLICLINICA' } }).expect(200);
+    const res = await apply(importId, { cnes: ['9000011', '3331326', '2786109', '0549126', '2546523'], types: { '0549126': 'VIGILANCIA_SAUDE' } }).expect(200);
     expect([...res.body.created].sort()).toEqual(['Coordenadoria de Vigilância Epidemiológica', 'Hospital Regional de Gurupi', 'UPA Dra. Márcia Mucky']);
     expect(res.body.updated).toEqual(['UBS Centro']);
     const units = (await t.http().get('/api/admin/units').set(auth(gestora)).expect(200)).body as Record<string, unknown>[];
     expect(units.find((u) => u.cnes === '3331326')).toMatchObject({ type: 'UPA', source: 'CNES', openingHours: '24 horas', latitude: -11.74, cnesTypeCode: '73', ibgeCode: '1709500' });
     expect(units.find((u) => u.cnes === '2786109')).toMatchObject({ type: 'HOSPITAL', management: 'E', legalNature: '1023' });
-    expect(units.find((u) => u.cnes === '0549126')).toMatchObject({ type: 'POLICLINICA' });
+    expect(units.find((u) => u.cnes === '0549126')).toMatchObject({ type: 'VIGILANCIA_SAUDE' });
     expect(units.find((u) => u.cnes === '9000011')).toMatchObject({ name: 'UBS Centro', email: 'ubs.centro@gurupi.to.gov.br', cnesTypeCode: '02', susAmbulatory: true });
     expect(units.find((u) => u.cnes === '2546523')).toBeUndefined();
     // A prévia já aplicada não pode ser reaplicada; o histórico guarda o resultado.

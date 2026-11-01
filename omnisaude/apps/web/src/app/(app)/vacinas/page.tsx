@@ -2,6 +2,7 @@
 
 import { componentesDaVacina, GRUPO_LABEL, SITUACAO_VACINAL_LABEL, type SituacaoDose, type SituacaoVacinal } from '@omnisaude/shared';
 import { Download, RefreshCw, Syringe, UserRoundSearch } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { PatientSearch } from '@/components/patients/patient-search';
 import { SignWithCertificate } from '@/components/signatures/sign-button';
@@ -18,6 +19,7 @@ import { api, errorMessage, saveBlob } from '@/lib/api';
 import { fmtDate, fmtDateTime, todayIso } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useSession } from '@/lib/session';
+import type { NotificacaoDetalhe } from '@/components/vigilancia/types';
 import type { PatientSummary } from '@/lib/types';
 
 interface Dose {
@@ -110,6 +112,7 @@ const agora = () => {
 };
 
 export default function VacinasPage() {
+  const router = useRouter();
   const session = useSession();
   const toast = useToast();
   const [tab, setTab] = useState('sala');
@@ -427,6 +430,7 @@ export default function VacinasPage() {
                             <TH>Via / local</TH>
                             <TH>Onde</TH>
                             <TH>Situação</TH>
+                            {session.can('notificacao.registrar') && <TH />}
                           </TR>
                         </THead>
                         <TBody>
@@ -458,6 +462,27 @@ export default function VacinasPage() {
                                   {RNDS_LABEL[d.rnds.status] ?? d.rnds.status}
                                 </Badge>
                               </TD>
+                              {session.can('notificacao.registrar') && (
+                                <TD>
+                                  {!d.transcription && (
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      title="Evento supostamente atribuível à vacinação ou imunização (item 23 da lista, imediata)"
+                                      onClick={async () => {
+                                        try {
+                                          const n = await api.post<NotificacaoDetalhe>('/vigilancia/notificacoes', { patientId: cartao.data!.patient.id, conditionKey: 'esavi', vaccinationId: d.id });
+                                          router.push(`/vigilancia/notificacao?id=${n.id}`);
+                                        } catch (err) {
+                                          toast.error(errorMessage(err));
+                                        }
+                                      }}
+                                    >
+                                      Notificar ESAVI
+                                    </Button>
+                                  )}
+                                </TD>
+                              )}
                             </TR>
                           ))}
                         </TBody>

@@ -22,6 +22,7 @@ import { api, errorMessage } from '@/lib/api';
 import { fmtDate, formatCns, formatCpf, todayIso } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useSession } from '@/lib/session';
+import { NotificacoesDoPaciente } from '@/components/vigilancia/do-paciente';
 
 interface CodigoApp {
   codigo: string;
@@ -192,6 +193,7 @@ function PatientRecord() {
               )}
             </CardBody>
           </Card>
+          <NotificacoesDoPaciente paciente={{ id: p.id, name: p.name }} />
           <Card>
             <CardHeader
               title="Condições e linhas de cuidado"

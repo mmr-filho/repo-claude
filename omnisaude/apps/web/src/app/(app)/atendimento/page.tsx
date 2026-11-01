@@ -235,9 +235,13 @@ function Workspace() {
         open={closing}
         onOpenChange={setClosing}
         defaultCid={lastCid ?? undefined}
-        onClosed={() => {
+        onClosed={(notificacoes) => {
           reload();
-          router.push('/atendimentos');
+          // Óbito ou CID principal notificável: leva à ficha para completar a notificação compulsória.
+          if (notificacoes.length) {
+            toast.info(`Notificação compulsória aberta: ${notificacoes.map((n) => n.agravo).join(', ')}.`);
+            router.push(`/vigilancia/notificacao?id=${notificacoes[0]!.id}`);
+          } else router.push('/atendimentos');
         }}
       />
     </div>

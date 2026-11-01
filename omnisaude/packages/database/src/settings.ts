@@ -20,6 +20,17 @@ export interface TenantSettings {
   assistantName: string;
   /** Perguntas frequentes da instituição que o assistente usa nas respostas. */
   assistantFaq: { pergunta: string; resposta: string }[];
+  /** Vigilância epidemiológica (VIG-1a): parâmetros locais de plantão, sem base normativa federal. */
+  vigilancia: VigilanciaSettings;
+}
+
+export interface VigilanciaSettings {
+  /** Minutos para a vigilância dar ciência de uma notificação imediata antes do escalonamento ao plantão. */
+  ackMinutes: number;
+  /** Telefones do plantão (WhatsApp) que recebem o alerta sem identificação do paciente. */
+  onCallPhones: string[];
+  /** Liga o alerta por WhatsApp (exige o modelo "vigilancia_alerta" aprovado na conta). */
+  whatsappAlerts: boolean;
 }
 
 export const DEFAULT_TENANT_SETTINGS: TenantSettings = {
@@ -33,9 +44,10 @@ export const DEFAULT_TENANT_SETTINGS: TenantSettings = {
   assistantEnabled: false,
   assistantName: 'Assistente de saúde',
   assistantFaq: [],
+  vigilancia: { ackMinutes: 60, onCallPhones: [], whatsappAlerts: false },
 };
 
 export function tenantSettings(raw: unknown): TenantSettings {
   const value = raw && typeof raw === 'object' ? (raw as Partial<TenantSettings>) : {};
-  return { ...DEFAULT_TENANT_SETTINGS, ...value };
+  return { ...DEFAULT_TENANT_SETTINGS, ...value, vigilancia: { ...DEFAULT_TENANT_SETTINGS.vigilancia, ...(value.vigilancia ?? {}) } };
 }

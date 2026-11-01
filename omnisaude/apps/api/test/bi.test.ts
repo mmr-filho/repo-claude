@@ -111,7 +111,7 @@ describe.runIf(enabled)('BI conversacional e Text-to-SQL blindado', () => {
     await expect(pool.query('SELECT * FROM public.users LIMIT 1')).rejects.toThrow(/permission denied/);
     await expect(pool.query("UPDATE bi.unidades SET nome = 'x'")).rejects.toThrow();
     const ok = await pool.query('SELECT count(*)::int AS n FROM unidades');
-    expect(ok.rows[0].n).toBe(8);
+    expect(ok.rows[0].n).toBe(9);
   });
 
   it('respeita a chave da IA e a configuração do tenant', async () => {
