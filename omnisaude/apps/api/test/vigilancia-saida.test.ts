@@ -490,6 +490,29 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
     expect(n1.admissionId).toBe(sug.admissionId);
     expect(n1.unitId).toBe((await db.encounter.findUniqueOrThrow({ where: { id: sug.encounterId } })).unitId);
     expect(n1.unitId).not.toBe(vigUnitId);
+    // Srag encerrada como inconclusiva: o covid-19 detectável depois vai para a Srag (reclassificação no Sivep-Gripe),
+    // sem abrir a SG no e-SUS Notifica.
+    await confirmar(criada.id, vig);
+    await t.http().post(`/api/vigilancia/notificacoes/${criada.id}/encerrar`).set(auth(vig)).send({ investigadaEm: hoje(), classificacao: '8', encerradaEm: hoje() }).expect(200);
+    const encS = await abrir(p1);
+    const [exS] = (
+      await t
+        .http()
+        .post(`/api/clinical/encounters/${encS}/exams`)
+        .set(auth(medica))
+        .send({ items: [{ sigtapCode: '0202020959', name: 'SARS-CoV-2 RT-PCR' }] })
+        .expect(201)
+    ).body;
+    const rS = (
+      await t
+        .http()
+        .post(`/api/clinical/exams/${exS.id}/result`)
+        .set(auth(medica))
+        .send({ examKey: 'covid-rtpcr', qualitative: 'DETECTAVEL', collectedAt: new Date(Date.now() - H).toISOString(), method: 'RT-PCR' })
+        .expect(200)
+    ).body;
+    expect(rS.notificacoes).toEqual([expect.objectContaining({ id: criada.id, efeito: 'ENCERRADA' })]);
+    expect(await db.notification.count({ where: { patientId: p1, groupKey: 'covid' } })).toBe(0);
     // Covid-19 confirmada (U07.1) com SpO2 baixa na internação: só a Srag (Sivep-Gripe).
     const p2 = await novoPaciente('Celso Covid Internado Saida', 'M', '1953-03-03');
     const e2 = await db.encounter.create({ data: { unitId: upa.id, patientId: p2, kind: 'URGENCIA', status: 'TRIADO', createdBy: enfermeiro.id } });
@@ -621,6 +644,7 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
       .expect(200);
     // Violência doméstica (semanal) com exigência policial: o autor também não a tira descartando o rascunho.
     const dom = await notificarComCid('Dora Domestica Saida', 'F', '1990-09-09', 'T74.1');
+    expect((await detalhe(dom.id, medica)).permissoes.descartar).toBe(false);
     await t.http().post(`/api/vigilancia/notificacoes/${dom.id}/descartar`).set(auth(medica)).send({ reason: 'Paciente pediu para não notificar.' }).expect(403);
     // Encerrada sem exigência; agressão registrada depois liga a exigência, e a vigilância dispensa sem reabrir.
     const p3 = await novoPaciente('Elisa Encerrada Saida', 'F', '1993-03-03');

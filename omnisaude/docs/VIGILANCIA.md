@@ -195,7 +195,8 @@ dia anterior; vigências sobrepostas são recusadas), com o ato ou acordo que a 
   da notificação + município + agravo do Sinan, então o mesmo NU_NOTIFIC é aceito em outro agravo, data ou
   município. O agravo segue a divisão do Sinan: as violências são uma ficha só; sífilis adquirida, em gestante
   (campo 12 ou CID) e congênita, tétano acidental e neonatal, toxoplasmose gestacional e congênita, sarampo e
-  rubéola são agravos distintos.
+  rubéola são agravos distintos (sem CID, como na notificação manual, a variante fica desconhecida e casa com
+  qualquer uma do grupo).
 - Só a vigilância municipal **desfaz** a digitação (com motivo, na linha do tempo); a notificação volta à fila.
 - **Descartada** sai da fila e não recebe nem perde número; o número já informado fica como histórico e não
   impede outra notificação de recebê-lo (ex.: caso reclassificado e notificado de novo).
@@ -233,7 +234,7 @@ dia anterior; vigências sobrepostas são recusadas), com o ato ou acordo que a 
 - Encerrada, a ficha não é editada; a vigilância municipal **reabre** com motivo: a conclusão anterior fica no
   evento da linha do tempo, os campos voltam vazios e o critério da notificação volta ao de antes do encerramento.
   Encerrar não cumpre prazo de comunicação nem repasse: a encerrada segue nas pendências enquanto faltarem, e a
-  SMS pode dar ciência nela.
+  SMS pode dar ciência nela (o escalonamento ao plantão e o prazo vencido olham as encerradas dos últimos 7 dias).
 - Prazos de encerramento oportuno por agravo são configuráveis (referência na tela; não vêm ligados; linha mal
   escrita impede salvar) e o painel conta os vencidos.
 
@@ -246,12 +247,13 @@ dia anterior; vigências sobrepostas são recusadas), com o ato ou acordo que a 
   passa a contar do resultado. O aviso na tela do laudo mostra a notificação aberta ou confirmada. Negativo não abre
   nem descarta notificação.
 - Positivo de quem tem a notificação do agravo **encerrada sem confirmação** (ou descartada no mesmo atendimento):
-  não reabre sozinha; o resultado entra na linha do tempo (uma vez por exame, mesmo se a tarefa periódica
-  reprocessar), o aviso mostra a situação e o painel ganha o cartão "Positivo após encerramento ou descarte" (30
+  não reabre sozinha; o resultado entra na linha do tempo (cada exame produz efeito uma vez só, mesmo se a tarefa
+  periódica reprocessar uma falha), o aviso mostra a situação e o painel ganha o cartão "Positivo após encerramento ou descarte" (30
   dias) para a vigilância avaliar a reabertura. Quem lançou o resultado só vê o link da ficha se puder abri-la.
 - Covid-19 de quem tem **Srag** em aberto: o resultado confirma a Srag (Sivep-Gripe) e não abre a SG (e-SUS
-  Notifica). Srag em aberto ou confirmada cobre a SG também na internação e numa evolução assinada depois; Srag
-  descartada ou encerrada sem confirmação não impede a SG.
+  Notifica). Srag em aberto ou encerrada sem descarte (confirmada ou inconclusiva) cobre a SG também na internação
+  e numa evolução assinada depois, e o covid-19 positivo tardio é registrado nela (reclassificação no
+  Sivep-Gripe); Srag descartada, ou encerrada como descartada, não impede a SG.
 - Coleta até 5 minutos no futuro (relógio da estação adiantado) vale como a hora do servidor; além disso, é
   recusada.
 - **Srag**: na internação, CID respiratório agudo **e** um sinal registrado na triagem (SpO2 ≤ 94%, dispneia ou

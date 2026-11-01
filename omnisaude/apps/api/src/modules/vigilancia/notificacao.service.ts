@@ -19,6 +19,7 @@ import {
   GRUPOS_VIOLENCIA,
   autoprovocada,
   agravoSinanDaChave,
+  mesmoAgravoSinan,
   orientacaoViolencia,
   ageInYears,
   numeroOficialValido,
@@ -286,9 +287,9 @@ export class NotificacaoService implements OnModuleInit {
     // Covid-19 de quem tem Srag em aberto: o resultado confirma a Srag (Sivep-Gripe), sem abrir a SG (e-SUS Notifica).
     const grupos = cat.grupo === 'covid' ? ['srag-coronavirus', cat.grupo] : [cat.grupo];
     const janela = { createdAt: { gte: new Date(Date.now() - REPETICAO_DIAS * DIA) } };
-    // O mesmo exame já tocou esta notificação (abriu, confirmou ou foi registrado depois do fechamento): a tarefa
-    // periódica que reprocessa falhas não repete o efeito.
-    const jaTocada = async (notificationId: string) => !!(await sys.db.notificationEvent.findFirst({ where: { notificationId, data: { path: ['examRequestId'], equals: exame.id } }, select: { id: true } }));
+    // O mesmo exame já produziu efeito (abriu, confirmou ou foi registrado depois do fechamento de alguma
+    // notificação): a tarefa periódica que reprocessa falhas não repete nada, nem abre outra se aquela foi descartada.
+    if (await sys.db.notificationEvent.findFirst({ where: { data: { path: ['examRequestId'], equals: exame.id } }, select: { id: true } })) return [];
     const buscarAtiva = async () => {
       const ativas = await sys.db.notification.findMany({
         where: { patientId: exame.patientId, groupKey: { in: grupos }, status: { in: ['RASCUNHO', 'NOTIFICADA'] }, ...janela },
@@ -319,18 +320,23 @@ export class NotificacaoService implements OnModuleInit {
     if (ativa) throw new Error(`Notificação ${ativa.number} mudou durante a confirmação pelo resultado do exame`);
     // Encerrada sem confirmação (ou descartada neste atendimento), do grupo do próprio exame: não reabre sozinha. O
     // resultado fica na linha do tempo, a vigilância é avisada (cartão do painel) e decide se reabre ou reclassifica.
-    // Uma Srag fechada não impede a SG do covid-19 confirmado.
-    const fechada = await sys.db.notification.findFirst({
+    // No covid-19, a Srag encerrada (confirmada ou inconclusiva) recebe o resultado, para a reclassificação no
+    // Sivep-Gripe; Srag descartada, ou encerrada como descartada, não impede a SG.
+    const fechadas = await sys.db.notification.findMany({
       where: {
         patientId: exame.patientId,
-        groupKey: cat.grupo,
-        OR: [{ status: 'ENCERRADA', ...janela }, ...(exame.encounterId ? [{ status: { in: ['ENCERRADA' as const, 'DESCARTADA' as const] }, encounterId: exame.encounterId }] : [])],
+        OR: [
+          { groupKey: cat.grupo, status: 'ENCERRADA', ...janela },
+          ...(exame.encounterId ? [{ groupKey: cat.grupo, status: { in: ['ENCERRADA' as const, 'DESCARTADA' as const] }, encounterId: exame.encounterId }] : []),
+          ...(cat.grupo === 'covid' ? [{ groupKey: 'srag-coronavirus', status: 'ENCERRADA' as const, finalClass: { not: '2' }, ...janela }] : []),
+        ],
       },
       include: { condition: true },
       orderBy: { createdAt: 'desc' },
     });
+    const fechada = fechadas.find((f) => f.groupKey === 'srag-coronavirus') ?? fechadas[0];
     if (fechada) {
-      if ((fechada.status === 'ENCERRADA' && fechada.finalClass === '1') || (await jaTocada(fechada.id))) return [];
+      if (fechada.groupKey === cat.grupo && fechada.status === 'ENCERRADA' && fechada.finalClass === '1') return [];
       await sys.db.notificationEvent.create({ data: { notificationId: fechada.id, kind: 'RESULTADO_APOS_FECHAMENTO', userId: autor.userId, data: { exame: cat.key, examRequestId: exame.id, situacao: fechada.status } } });
       this.avisar(sys, fechada);
       return [this.avisoExistente(fechada, null, fechada.status === 'ENCERRADA' ? 'ENCERRADA' : 'DESCARTADA', autor)];
@@ -532,7 +538,7 @@ export class NotificacaoService implements OnModuleInit {
    * hepatites, por agente).
    */
   private async jaNotificada(sys: SystemContext, c: CondicaoNoRetrato, p: { patientId: string; encounterId?: string | null; codigo: { code: string } | null }) {
-    // Srag em aberto (ou confirmada) da pessoa cobre a SG por covid-19: hospitalizado vai ao Sivep-Gripe, não ao
+    // Srag em aberto ou encerrada sem descarte (confirmada ou inconclusiva) da pessoa cobre a SG por covid-19: hospitalizado vai ao Sivep-Gripe, não ao
     // e-SUS Notifica (NT nº 11/2026), também quando o U07.1 aparece numa evolução depois da internação.
     if (
       c.groupKey === 'covid' &&
@@ -540,7 +546,7 @@ export class NotificacaoService implements OnModuleInit {
         where: {
           patientId: p.patientId,
           groupKey: 'srag-coronavirus',
-          OR: [{ status: { in: ['RASCUNHO', 'NOTIFICADA'] } }, { status: 'ENCERRADA', finalClass: '1' }],
+          OR: [{ status: { in: ['RASCUNHO', 'NOTIFICADA'] } }, { status: 'ENCERRADA', finalClass: { not: '2' } }],
           createdAt: { gte: new Date(Date.now() - REPETICAO_DIAS * DIA) },
         },
         select: { id: true },
@@ -1014,7 +1020,9 @@ export class NotificacaoService implements OnModuleInit {
       permissoes: {
         editar: n.status !== 'DESCARTADA' && n.status !== 'ENCERRADA' && (n.notifierId === ctx.session.userId || ctx.session.role === 'VIGILANCIA_EPIDEMIOLOGICA' || ctx.session.role === 'NUCLEO_VIGILANCIA'),
         confirmar: n.status === 'RASCUNHO',
-        descartar: n.status !== 'DESCARTADA' && (this.pode(ctx, 'notificacao.descartar') || (n.status === 'RASCUNHO' && n.deadlineKind === 'SEMANAL' && n.notifierId === ctx.session.userId)),
+        descartar:
+          n.status !== 'DESCARTADA' &&
+          (this.pode(ctx, 'notificacao.descartar') || (n.status === 'RASCUNHO' && n.deadlineKind === 'SEMANAL' && n.notifierId === ctx.session.userId && !(n.policeRequired && !n.policeWaiver))),
         ciencia: (n.status === 'NOTIFICADA' || n.status === 'ENCERRADA') && !n.smsReceivedAt && this.pode(ctx, 'vigilancia.ciencia'),
         comunicar: (n.status === 'NOTIFICADA' || n.status === 'ENCERRADA') && this.pode(ctx, 'vigilancia.comunicar'),
         comunicarPolicia: n.status !== 'DESCARTADA' && n.policeRequired && !n.policeWaiver,
@@ -1176,7 +1184,12 @@ export class NotificacaoService implements OnModuleInit {
     if (n.status === 'DESCARTADA') throw new DomainError('JA_DESCARTADA', 'Notificação já descartada', HttpStatus.UNPROCESSABLE_ENTITY);
     // Com comunicação policial exigida, o descarte também é da vigilância (quem tem o dever não o tira sozinho).
     const exigeVigilancia = n.status !== 'RASCUNHO' || n.deadlineKind === 'IMEDIATA' || (n.policeRequired && !n.policeWaiver);
-    if (exigeVigilancia && !this.pode(ctx, 'notificacao.descartar')) throw forbidden('Notificação imediata ou já confirmada só é descartada pela vigilância municipal');
+    if (exigeVigilancia && !this.pode(ctx, 'notificacao.descartar'))
+      throw forbidden(
+        n.policeRequired && !n.policeWaiver && n.status === 'RASCUNHO' && n.deadlineKind === 'SEMANAL'
+          ? 'Com a comunicação à autoridade policial exigida, o descarte é decisão da vigilância'
+          : 'Notificação imediata ou já confirmada só é descartada pela vigilância municipal',
+      );
     if (!exigeVigilancia && n.notifierId !== ctx.session.userId && !this.pode(ctx, 'notificacao.descartar')) throw forbidden('Só o autor descarta o próprio rascunho');
     await ctx.db.$transaction(async (tx) => {
       // Sai da fila de digitação (o número já informado fica como histórico).
@@ -1512,17 +1525,20 @@ export class NotificacaoService implements OnModuleInit {
         if (sistema === 'SINAN_NET') {
           // NU_NOTIFIC é da unidade: a chave do Sinan Net é número + data da notificação + município + agravo.
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`sinan-net:${numero}`}))`;
-          const chave = (x: { groupKey: string; code: string | null; form: unknown; notifiedAt: Date | null; knownAt: Date }) => {
+          const chave = (x: { groupKey: string; conditionKey: string; code: string | null; form: unknown; notifiedAt: Date | null; knownAt: Date }) => {
             const f = (x.form ?? {}) as Partial<Ficha>;
-            return [agravoSinanDaChave(x.groupKey, x.code, ['1', '2', '3', '4'].includes(f.CS_GESTANT ?? '')), f.DT_NOTIFIC ?? localDateString(x.notifiedAt ?? x.knownAt, ctx.tenant.timeZone), f.ID_MUNICIP ?? ''].join(
-              '|',
-            );
+            const gestante = ['1', '2', '3', '4'].includes(f.CS_GESTANT ?? '');
+            return { agravo: agravoSinanDaChave(x.groupKey, x.code, gestante, x.conditionKey), resto: [f.DT_NOTIFIC ?? localDateString(x.notifiedAt ?? x.knownAt, ctx.tenant.timeZone), f.ID_MUNICIP ?? ''].join('|') };
           };
           const mesmos = await tx.notification.findMany({
             where: { officialSystem: 'SINAN_NET', officialNumber: numero, id: { not: id }, status: { not: 'DESCARTADA' } },
-            select: { groupKey: true, code: true, form: true, notifiedAt: true, knownAt: true, number: true },
+            select: { groupKey: true, conditionKey: true, code: true, form: true, notifiedAt: true, knownAt: true, number: true },
           });
-          const repetida = mesmos.find((x) => chave(x) === chave(n));
+          const esta = chave(n);
+          const repetida = mesmos.find((x) => {
+            const outra = chave(x);
+            return outra.resto === esta.resto && mesmoAgravoSinan(outra.agravo, esta.agravo);
+          });
           if (repetida) throw conflict(`O NU_NOTIFIC ${numero} já foi informado para a notificação ${repetida.number} (mesmo agravo, data e município)`);
         }
         const { count } = await tx.notification.updateMany({
@@ -1793,7 +1809,15 @@ export class NotificacaoService implements OnModuleInit {
     // 2. Escalonamento: imediata confirmada sem recebimento pela SMS depois de ackMinutes.
     const ack = sys.tenant.settings.vigilancia.ackMinutes;
     const semCiencia = await sys.db.notification.findMany({
-      where: { status: { in: ['NOTIFICADA', 'ENCERRADA'] }, deadlineKind: 'IMEDIATA', smsReceivedAt: null, escalatedAt: null, notifiedAt: { lte: new Date(agora.getTime() - ack * 60_000) }, ...SEM_COMUNICACAO_SMS },
+      where: {
+        // Encerrada só nos últimos 7 dias (as antigas, de antes desta regra, não disparam alerta em rajada).
+        OR: [{ status: 'NOTIFICADA' }, { status: 'ENCERRADA', notifiedAt: { gte: new Date(agora.getTime() - 7 * DIA) } }],
+        deadlineKind: 'IMEDIATA',
+        smsReceivedAt: null,
+        escalatedAt: null,
+        notifiedAt: { lte: new Date(agora.getTime() - ack * 60_000) },
+        ...SEM_COMUNICACAO_SMS,
+      },
       select: { id: true, number: true, unitId: true, status: true, deadlineKind: true, targets: true, dueAt: true, notifiedAt: true, smsReceivedAt: true, sensitive: true, condition: { select: { name: true } } },
     });
     const comSemCiencia = await this.comunicacoesDe(
@@ -1817,7 +1841,11 @@ export class NotificacaoService implements OnModuleInit {
       where: {
         overdueAt: null,
         dueAt: { lt: agora },
-        OR: [{ status: 'RASCUNHO' }, { status: { in: ['NOTIFICADA', 'ENCERRADA'] }, deadlineKind: 'IMEDIATA', smsReceivedAt: null, ...SEM_COMUNICACAO_SMS }],
+        OR: [
+          { status: 'RASCUNHO' },
+          { status: 'NOTIFICADA', deadlineKind: 'IMEDIATA', smsReceivedAt: null, ...SEM_COMUNICACAO_SMS },
+          { status: 'ENCERRADA', deadlineKind: 'IMEDIATA', smsReceivedAt: null, notifiedAt: { gte: new Date(agora.getTime() - 7 * DIA) }, ...SEM_COMUNICACAO_SMS },
+        ],
       },
       select: { id: true, unitId: true, status: true, deadlineKind: true, targets: true, dueAt: true, notifiedAt: true, smsReceivedAt: true },
     });

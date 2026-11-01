@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   agravoSinanDaChave,
+  mesmoAgravoSinan,
   exigeComunicacaoPolicial,
   numeroOficialValido,
   orientacaoViolencia,
@@ -165,13 +166,17 @@ describe('Regras de notificação', () => {
 
   it('chave do Sinan Net: violências num agravo, sífilis, tétano, toxoplasmose e sarampo/rubéola separados', () => {
     expect(agravoSinanDaChave('violencia', 'T741')).toBe(agravoSinanDaChave('violencia-sexual-suicidio', 'X64'));
-    expect(agravoSinanDaChave('sifilis', 'A539')).toBe('sifilis-adquirida');
-    expect(agravoSinanDaChave('sifilis', 'A539', true)).toBe('sifilis-gestante');
-    expect(agravoSinanDaChave('sifilis', 'O98.1')).toBe('sifilis-gestante');
-    expect(agravoSinanDaChave('sifilis', 'A50.9')).toBe('sifilis-congenita');
+    expect(agravoSinanDaChave('sifilis', 'A539')).toBe('sifilis:adquirida');
+    expect(agravoSinanDaChave('sifilis', 'A539', true)).toBe('sifilis:gestante');
+    expect(agravoSinanDaChave('sifilis', 'O98.1')).toBe('sifilis:gestante');
+    expect(agravoSinanDaChave('sifilis', 'A50.9')).toBe('sifilis:congenita');
     expect(agravoSinanDaChave('tetano', 'A33')).not.toBe(agravoSinanDaChave('tetano', 'A35'));
+    expect(agravoSinanDaChave('tetano', null, false, 'tetano-neonatal')).toBe(agravoSinanDaChave('tetano', 'A33'));
     expect(agravoSinanDaChave('toxoplasmose-gestacional-congenita', 'O98.6')).not.toBe(agravoSinanDaChave('toxoplasmose-gestacional-congenita', 'P37.1'));
-    expect(agravoSinanDaChave('sarampo-rubeola', 'B05')).not.toBe(agravoSinanDaChave('sarampo-rubeola', 'B06'));
+    expect(mesmoAgravoSinan(agravoSinanDaChave('sarampo-rubeola', 'B05'), agravoSinanDaChave('sarampo-rubeola', 'B06'))).toBe(false);
+    // Notificação manual sem CID: a variante é desconhecida e casa com qualquer uma do grupo.
+    expect(mesmoAgravoSinan(agravoSinanDaChave('sarampo-rubeola', null), agravoSinanDaChave('sarampo-rubeola', 'B06'))).toBe(true);
+    expect(mesmoAgravoSinan(agravoSinanDaChave('sarampo-rubeola', null), agravoSinanDaChave('dengue', 'A90'))).toBe(false);
     expect(agravoSinanDaChave('dengue', 'A90')).toBe('dengue');
   });
 

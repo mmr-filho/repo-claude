@@ -118,28 +118,40 @@ export function rotaDoAgravo<R extends { groupKey: string; conditionKey: string;
 }
 
 /**
- * Agravo do Sinan Net para a chave do NU_NOTIFIC (número + data + município + agravo). Difere do grupo do
- * OmniSaúde onde o Sinan tem outra divisão: as violências (interpessoal, sexual e tentativa de suicídio) são uma
- * ficha só; a sífilis tem três (adquirida, em gestante e congênita); tétano (acidental e neonatal), toxoplasmose
- * (gestacional e congênita) e sarampo/rubéola são agravos distintos. Gestante pela ficha (campo 12) ou pelo CID.
+ * Agravo do Sinan Net para a chave do NU_NOTIFIC (número + data + município + agravo), como `base` ou
+ * `base:variante`. Difere do grupo do OmniSaúde onde o Sinan tem outra divisão: as violências (interpessoal, sexual
+ * e tentativa de suicídio) são uma ficha só; a sífilis tem três (adquirida, em gestante e congênita); tétano
+ * (acidental e neonatal), toxoplasmose (gestacional e congênita) e sarampo/rubéola são agravos distintos. A variante
+ * vem do CID, do subitem do catálogo ou, na sífilis, da gestação (campo 12); sem nada disso fica só a base
+ * (notificação manual sem CID), que casa com qualquer variante do mesmo grupo.
  */
-export function agravoSinanDaChave(groupKey: string, code: string | null | undefined, gestante = false): string {
+export function agravoSinanDaChave(groupKey: string, code: string | null | undefined, gestante = false, conditionKey?: string | null): string {
   const c = (code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const k = conditionKey ?? '';
+  const com = (base: string, variante: string | null) => (variante ? `${base}:${variante}` : base);
   switch (groupKey) {
     case 'violencia':
     case 'violencia-sexual-suicidio':
       return 'violencia';
     case 'sifilis':
-      return c.startsWith('A50') ? 'sifilis-congenita' : gestante || c.startsWith('O981') ? 'sifilis-gestante' : 'sifilis-adquirida';
+      return com('sifilis', c.startsWith('A50') ? 'congenita' : gestante || c.startsWith('O981') ? 'gestante' : c ? 'adquirida' : null);
     case 'tetano':
-      return c.startsWith('A33') ? 'tetano-neonatal' : 'tetano-acidental';
+      return com('tetano', c.startsWith('A33') || k.endsWith('neonatal') ? 'neonatal' : c || k.endsWith('acidental') ? 'acidental' : null);
     case 'toxoplasmose-gestacional-congenita':
-      return c.startsWith('P371') ? 'toxoplasmose-congenita' : 'toxoplasmose-gestacional';
+      return com('toxoplasmose', c.startsWith('P371') ? 'congenita' : c ? 'gestacional' : null);
     case 'sarampo-rubeola':
-      return c.startsWith('B06') ? 'rubeola' : 'sarampo';
+      return com('sarampo-rubeola', c.startsWith('B06') ? 'rubeola' : c.startsWith('B05') ? 'sarampo' : null);
     default:
       return groupKey;
   }
+}
+
+/** Mesmo agravo do Sinan: iguais, ou da mesma base quando um deles não tem variante conhecida. */
+export function mesmoAgravoSinan(a: string, b: string): boolean {
+  if (a === b) return true;
+  const [ba, va] = a.split(':');
+  const [bb, vb] = b.split(':');
+  return ba === bb && (!va || !vb);
 }
 
 /** Número oficial informado pelo digitador: formato do sistema de destino. */
