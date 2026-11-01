@@ -56,11 +56,23 @@ export function prazoResposta(recebidaEm: Date, dias: number = PRAZO_RESPOSTA_DI
 }
 
 export type SituacaoPrazo = 'NO_PRAZO' | 'VENCE_EM_BREVE' | 'VENCIDA';
+/** A partir de quantos dias para o vencimento a manifestação entra em alerta. */
+export const DIAS_ALERTA_PRAZO = 5;
 
 /** Situação do prazo: vencida, vencendo em até 5 dias ou no prazo. */
 export function situacaoPrazo(venceEm: Date | string, agora: Date = new Date()): { situacao: SituacaoPrazo; diasRestantes: number } {
-  const dias = Math.ceil((new Date(venceEm).getTime() - agora.getTime()) / DIA);
-  return { situacao: dias < 0 ? 'VENCIDA' : dias <= 5 ? 'VENCE_EM_BREVE' : 'NO_PRAZO', diasRestantes: dias };
+  const ms = new Date(venceEm).getTime() - agora.getTime();
+  // Vencida assim que passa do prazo (não só depois de um dia inteiro); dias negativos contam os dias de atraso.
+  const dias = ms < 0 ? Math.floor(ms / DIA) : Math.ceil(ms / DIA);
+  return { situacao: ms < 0 ? 'VENCIDA' : dias <= DIAS_ALERTA_PRAZO ? 'VENCE_EM_BREVE' : 'NO_PRAZO', diasRestantes: dias };
+}
+
+/** Faixas de vencimento em datas (para filtrar no banco com a mesma regra de situacaoPrazo). */
+export function faixaPrazo(situacao: SituacaoPrazo, agora: Date = new Date()): { gte?: Date; lt?: Date } {
+  const limiteAlerta = new Date(agora.getTime() + DIAS_ALERTA_PRAZO * DIA);
+  if (situacao === 'VENCIDA') return { lt: agora };
+  if (situacao === 'VENCE_EM_BREVE') return { gte: agora, lt: limiteAlerta };
+  return { gte: limiteAlerta };
 }
 
 const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
@@ -73,6 +85,26 @@ export function inferirTipoManifestacao(texto: string): TipoManifestacao {
   if (/denunci|assedio|agress|maus[- ]tratos|corrup|cobranca indevida|discrimina|violenc/.test(t)) return 'DENUNCIA';
   if (/informac|gostaria de saber|como faco|qual o|quando/.test(t) && !/reclam/.test(t)) return 'INFORMACAO';
   return 'RECLAMACAO';
+}
+
+const PALAVRAS_DE_ABERTURA = new Set(
+  'quero queria gostaria preciso vou de da do fazer uma um uns umas registrar abrir deixar mandar enviar reclamacao reclamacoes reclamar denuncia denunciar elogio elogiar sugestao sugerir sugiro manifestacao ouvidoria anonima anonimo anonimamente por favor sobre a o as os e para na no com que me minha meu aqui'.split(
+    ' ',
+  ),
+);
+
+/** A mensagem traz o que aconteceu, ou só anuncia ("quero fazer uma reclamação")? */
+export function manifestacaoTemConteudo(texto: string): boolean {
+  const resto = norm(texto)
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w && !PALAVRAS_DE_ABERTURA.has(w));
+  return resto.join('').length >= 10;
+}
+
+/** O cidadão pediu para não ser identificado ("denúncia anônima", "sem me identificar")? */
+export function pedeAnonimato(texto: string): boolean {
+  return /anonim|sem (me )?identificar|nao (quero|vou) me identificar|sem (dizer|falar|informar) (o )?meu nome|sigilo/.test(norm(texto));
 }
 
 export function inferirAssuntoManifestacao(texto: string): string {

@@ -178,6 +178,9 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'odontograma.registrar',
   ],
   SERVICO_SOCIAL: [
+    'ouvidoria.ler',
+    'ouvidoria.registrar',
+    'ouvidoria.gerir',
     'assistente.ler',
     'assistente.responder',
     'leitos_rede.ler',

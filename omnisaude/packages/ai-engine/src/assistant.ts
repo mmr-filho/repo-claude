@@ -104,6 +104,12 @@ const URGENCIA =
 const SINTOMAS =
   /\bdor\b|dores|febre|tosse|vomit|enjoo|nausea|diarreia|sintoma|passando mal|mal estar|machuc|sangr|tontur|gripe|resfriad|garganta|ouvido|coceira|alergia|mancha|inchad|inchaco|cansaco|fraqueza|ardencia|queimacao|corrimento|pressao|glicemia|dengue|covid|dor de cabeca|cabeca doendo|barriga/;
 
+/** O texto descreve sintomas que pedem avaliação ainda hoje (sem sinal de emergência)? */
+export function urgenciaNoTexto(texto: string): boolean {
+  const t = normalizarTexto(texto);
+  return SINTOMAS.test(t) && URGENCIA.test(t);
+}
+
 /** Leitura por regras: menu numérico e palavras-chave. Serve sem IA e como rede de segurança com IA. */
 export function interpretarPorRegras(texto: string): { intencao: Intencao; gravidade: Gravidade | null; sinais: string[] } {
   const t = normalizarTexto(texto);

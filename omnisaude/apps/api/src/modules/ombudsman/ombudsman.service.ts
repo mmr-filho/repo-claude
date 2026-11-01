@@ -1,6 +1,8 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import {
   ASSUNTO_MANIFESTACAO,
+  faixaPrazo,
+  localDateString,
   mascararTelefone,
   numeroProtocoloOuvidoria,
   prazoResposta,
@@ -11,9 +13,11 @@ import {
   TIPO_MANIFESTACAO,
   CANAL_MANIFESTACAO,
   type CanalManifestacao,
+  type SituacaoPrazo,
   type StatusManifestacao,
   type TipoManifestacao,
 } from '@omnisaude/shared';
+import type { TenantPrisma } from '@omnisaude/database';
 import { buildOmbudsmanUpdateTemplate, normalizeBrazilPhone } from '@omnisaude/messaging';
 import { AuditService } from '../../core/audit.service';
 import type { CitizenContext, RequestContext } from '../../core/context';
@@ -49,10 +53,14 @@ export class OmbudsmanService {
     private readonly realtime: RealtimeService,
   ) {}
 
-  private async proximoProtocolo(sys: SystemContext) {
-    const ano = new Date().getFullYear();
+  /** Ano do protocolo no fuso da instituição (uma manifestação de 31/12 à noite não vira do ano seguinte). */
+  private anoLocal(sys: SystemContext) {
+    return Number(localDateString(new Date(), sys.tenant.timeZone).slice(0, 4));
+  }
+
+  private async proximoProtocolo(sys: SystemContext, ano: number, salto = 0) {
     const total = await sys.db.ombudsmanCase.count({ where: { protocol: { startsWith: `OUV-${ano}-` } } });
-    for (let i = 1; i <= 50; i++) {
+    for (let i = 1 + salto; i <= 50 + salto; i++) {
       const candidato = numeroProtocoloOuvidoria(ano, total + i);
       if (!(await sys.db.ombudsmanCase.findUnique({ where: { protocol: candidato }, select: { id: true } }))) return candidato;
     }
@@ -63,27 +71,37 @@ export class OmbudsmanService {
   async registrar(sys: SystemContext, input: NovaManifestacao) {
     if (!ASSUNTO_MANIFESTACAO[input.subject]) throw new DomainError('ASSUNTO_INVALIDO', 'Assunto desconhecido');
     const recebidaEm = new Date();
-    const c = await sys.db.ombudsmanCase.create({
-      data: {
-        protocol: await this.proximoProtocolo(sys),
-        kind: input.kind,
-        channel: input.channel,
-        subject: input.subject,
-        text: input.text.trim(),
-        unitId: input.unitId ?? null,
-        patientId: input.patientId ?? null,
-        anonymous: input.anonymous ?? false,
-        contactName: input.anonymous ? null : (input.contactName ?? null),
-        contactPhone: input.anonymous ? null : (input.contactPhone ?? null),
-        receivedAt: recebidaEm,
-        dueAt: prazoResposta(recebidaEm),
-        assignedUnitId: input.unitId ?? null,
-        createdBy: input.createdBy ?? null,
-        events: { create: { kind: 'RECEBIDA', notes: `Recebida pelo canal ${CANAL_MANIFESTACAO[input.channel].toLowerCase()}`, userId: input.createdBy ?? null } },
-      },
-    });
-    this.realtime.emitToTenant(sys.tenant.id, 'ouvidoria.manifestacao', { id: c.id });
-    return c;
+    const ano = this.anoLocal(sys);
+    // Dois registros ao mesmo tempo podem disputar o mesmo número: tenta o seguinte quando o índice único recusa.
+    for (let tentativa = 0; tentativa < 5; tentativa++) {
+      try {
+        const c = await sys.db.ombudsmanCase.create({
+          data: {
+            protocol: await this.proximoProtocolo(sys, ano, tentativa),
+            kind: input.kind,
+            channel: input.channel,
+            subject: input.subject,
+            text: input.text.trim(),
+            unitId: input.unitId ?? null,
+            patientId: input.patientId ?? null,
+            anonymous: input.anonymous ?? false,
+            contactName: input.anonymous ? null : (input.contactName ?? null),
+            // Anônima: o telefone fica só para o aviso da resposta; publico() nunca o mostra à equipe.
+            contactPhone: input.contactPhone ?? null,
+            receivedAt: recebidaEm,
+            dueAt: prazoResposta(recebidaEm),
+            assignedUnitId: input.unitId ?? null,
+            createdBy: input.createdBy ?? null,
+            events: { create: { kind: 'RECEBIDA', notes: `Recebida pelo canal ${CANAL_MANIFESTACAO[input.channel].toLowerCase()}`, userId: input.createdBy ?? null } },
+          },
+        });
+        this.realtime.emitToTenant(sys.tenant.id, 'ouvidoria.manifestacao', { id: c.id });
+        return c;
+      } catch (err) {
+        if ((err as { code?: string }).code !== 'P2002') throw err;
+      }
+    }
+    throw new DomainError('PROTOCOLO_INDISPONIVEL', 'Não foi possível gerar o número do protocolo; tente de novo');
   }
 
   // ───────────────────────────── equipe ─────────────────────────────
@@ -133,41 +151,52 @@ export class OmbudsmanService {
     };
   }
 
-  async listar(ctx: RequestContext, q: { status?: string; kind?: string; unitId?: string; busca?: string; prazo?: string }) {
+  async listar(ctx: RequestContext, q: { status?: string; kind?: string; unitId?: string; busca?: string; prazo?: SituacaoPrazo }) {
+    const agora = new Date();
+    const soAbertas = q.status === 'ABERTAS' || !!q.prazo;
+    const filtros: TenantPrisma.OmbudsmanCaseWhereInput[] = [];
+    if (soAbertas) filtros.push({ status: { in: [...STATUS_MANIFESTACAO_ABERTA] } });
+    else if (q.status) filtros.push({ status: q.status as StatusManifestacao });
+    if (q.prazo) filtros.push({ dueAt: faixaPrazo(q.prazo, agora) });
+    if (q.kind) filtros.push({ kind: q.kind as TipoManifestacao });
+    if (q.unitId) filtros.push({ OR: [{ unitId: q.unitId }, { assignedUnitId: q.unitId }] });
+    if (q.busca) {
+      filtros.push({
+        OR: [
+          { protocol: { contains: q.busca.toUpperCase() } },
+          { text: { contains: q.busca, mode: 'insensitive' } },
+          // Nome só nas identificadas: a busca por nome não pode revelar a autoria de uma manifestação anônima.
+          { anonymous: false, patient: { name: { contains: q.busca, mode: 'insensitive' } } },
+          { anonymous: false, patient: { socialName: { contains: q.busca, mode: 'insensitive' } } },
+          { anonymous: false, contactName: { contains: q.busca, mode: 'insensitive' } },
+        ],
+      });
+    }
     const rows = await ctx.db.ombudsmanCase.findMany({
-      where: {
-        ...(q.status === 'ABERTAS' ? { status: { in: [...STATUS_MANIFESTACAO_ABERTA] } } : q.status ? { status: q.status as StatusManifestacao } : {}),
-        ...(q.kind ? { kind: q.kind as TipoManifestacao } : {}),
-        ...(q.unitId ? { OR: [{ unitId: q.unitId }, { assignedUnitId: q.unitId }] } : {}),
-        ...(q.busca
-          ? { OR: [{ protocol: { contains: q.busca.toUpperCase() } }, { text: { contains: q.busca, mode: 'insensitive' } }, { patient: { name: { contains: q.busca, mode: 'insensitive' } }, anonymous: false }] }
-          : {}),
-      },
-      orderBy: [{ dueAt: 'asc' }],
+      where: { AND: filtros },
+      // Abertas: as que vencem primeiro no topo; demais listas: as mais recentes primeiro.
+      orderBy: soAbertas ? [{ dueAt: 'asc' }] : [{ receivedAt: 'desc' }],
       take: 200,
       include: { patient: { select: { id: true, name: true, socialName: true } }, unit: { select: { id: true, name: true } } },
     });
-    const agora = new Date();
-    return rows
-      .map((c) => ({
-        id: c.id,
-        protocolo: c.protocol,
-        tipo: c.kind,
-        tipoLabel: TIPO_MANIFESTACAO[c.kind],
-        canal: c.channel,
-        assunto: c.subject,
-        assuntoLabel: ASSUNTO_MANIFESTACAO[c.subject] ?? c.subject,
-        unidade: c.unit ? { id: c.unit.id, nome: c.unit.name } : null,
-        status: c.status,
-        statusLabel: STATUS_MANIFESTACAO[c.status],
-        recebidaEm: c.receivedAt.toISOString(),
-        venceEm: c.dueAt.toISOString(),
-        prazo: STATUS_MANIFESTACAO_ABERTA.includes(c.status) ? situacaoPrazo(c.dueAt, agora) : null,
-        resumo: c.text.slice(0, 160),
-        avaliacao: c.rating,
-        ...this.publico(ctx, c),
-      }))
-      .filter((c) => !q.prazo || c.prazo?.situacao === q.prazo);
+    return rows.map((c) => ({
+      id: c.id,
+      protocolo: c.protocol,
+      tipo: c.kind,
+      tipoLabel: TIPO_MANIFESTACAO[c.kind],
+      canal: c.channel,
+      assunto: c.subject,
+      assuntoLabel: ASSUNTO_MANIFESTACAO[c.subject] ?? c.subject,
+      unidade: c.unit ? { id: c.unit.id, nome: c.unit.name } : null,
+      status: c.status,
+      statusLabel: STATUS_MANIFESTACAO[c.status],
+      recebidaEm: c.receivedAt.toISOString(),
+      venceEm: c.dueAt.toISOString(),
+      prazo: STATUS_MANIFESTACAO_ABERTA.includes(c.status) ? situacaoPrazo(c.dueAt, agora) : null,
+      resumo: c.text.slice(0, 160),
+      avaliacao: c.rating,
+      ...this.publico(ctx, c),
+    }));
   }
 
   async detalhe(ctx: RequestContext, id: string) {
@@ -213,32 +242,53 @@ export class OmbudsmanService {
     return c;
   }
 
+  /**
+   * Grava a transição só se a manifestação ainda estiver no estado esperado (duas pessoas agindo ao mesmo tempo
+   * não se sobrescrevem): a atualização condicional e o evento vão na mesma transação.
+   */
+  private async transicao(ctx: RequestContext, id: string, cond: TenantPrisma.OmbudsmanCaseWhereInput, data: TenantPrisma.OmbudsmanCaseUncheckedUpdateManyInput, evento: { kind: string; notes: string | null }) {
+    const ok = await ctx.db.$transaction(async (tx) => {
+      const r = await tx.ombudsmanCase.updateMany({ where: { id, ...cond }, data });
+      if (r.count === 0) return false;
+      await tx.ombudsmanEvent.create({ data: { caseId: id, kind: evento.kind, notes: evento.notes, userId: ctx.session.userId } });
+      return true;
+    });
+    if (!ok) {
+      const atual = await ctx.db.ombudsmanCase.findUnique({ where: { id }, select: { status: true } });
+      throw new DomainError('MANIFESTACAO_ALTERADA', `A manifestação mudou enquanto você agia (agora: ${atual ? STATUS_MANIFESTACAO[atual.status].toLowerCase() : 'removida'}). Atualize a tela.`, HttpStatus.CONFLICT);
+    }
+  }
+
   async encaminhar(ctx: RequestContext, id: string, input: { unitId?: string | null; userId?: string | null; notes?: string | null }) {
     const c = await this.aberta(ctx, id);
     const unidade = input.unitId ? await ctx.db.unit.findUnique({ where: { id: input.unitId }, select: { name: true } }) : null;
-    await ctx.db.ombudsmanCase.update({
-      where: { id },
-      data: {
-        status: c.status === 'RECEBIDA' ? 'EM_ANALISE' : c.status,
-        assignedUnitId: input.unitId ?? c.assignedUnitId,
-        assignedUserId: input.userId ?? c.assignedUserId,
-        events: { create: { kind: 'ENCAMINHADA', notes: [unidade ? `Encaminhada para ${unidade.name}` : null, input.notes?.trim() || null].filter(Boolean).join('. ') || 'Em análise', userId: ctx.session.userId } },
-      },
-    });
+    if (input.unitId && !unidade) throw notFound('Unidade');
+    await this.transicao(
+      ctx,
+      id,
+      { status: c.status },
+      { ...(c.status === 'RECEBIDA' ? { status: 'EM_ANALISE' } : {}), assignedUnitId: input.unitId ?? c.assignedUnitId, assignedUserId: input.userId ?? c.assignedUserId },
+      { kind: 'ENCAMINHADA', notes: [unidade ? `Encaminhada para ${unidade.name}` : null, input.notes?.trim() || null].filter(Boolean).join('. ') || 'Em análise' },
+    );
     await this.audit.recordStandalone(ctx, { action: 'ouvidoria.encaminhar', entityType: 'OmbudsmanCase', entityId: id, payload: input });
     this.realtime.emitToTenant(ctx.tenant.id, 'ouvidoria.manifestacao', { id });
     return this.detalhe(ctx, id);
   }
 
-  /** Prorrogação única de 30 dias, com justificativa (art. 16 da Lei 13.460/2017). */
+  /** Prorrogação única de 30 dias, com justificativa, enquanto o prazo ainda corre (art. 16 da Lei 13.460/2017). */
   async prorrogar(ctx: RequestContext, id: string, reason: string) {
     const c = await this.aberta(ctx, id);
     if (c.extendedAt) throw new DomainError('JA_PRORROGADA', 'O prazo só pode ser prorrogado uma única vez', HttpStatus.UNPROCESSABLE_ENTITY);
+    const agora = new Date();
+    if (c.dueAt.getTime() < agora.getTime()) throw new DomainError('PRAZO_VENCIDO', 'O prazo já venceu: a prorrogação só vale antes do vencimento. Responda a manifestação.', HttpStatus.UNPROCESSABLE_ENTITY);
     const novoPrazo = new Date(c.dueAt.getTime() + PRORROGACAO_DIAS * DIA);
-    await ctx.db.ombudsmanCase.update({
-      where: { id },
-      data: { status: 'PRORROGADA', dueAt: novoPrazo, extendedAt: new Date(), extensionReason: reason.trim(), events: { create: { kind: 'PRORROGADA', notes: reason.trim(), userId: ctx.session.userId } } },
-    });
+    await this.transicao(
+      ctx,
+      id,
+      { status: c.status, extendedAt: null, dueAt: { gte: agora } },
+      { status: 'PRORROGADA', dueAt: novoPrazo, extendedAt: agora, extensionReason: reason.trim() },
+      { kind: 'PRORROGADA', notes: reason.trim() },
+    );
     await this.notificar({ tenant: ctx.tenant, db: ctx.db }, c, 'PRORROGADA', null);
     await this.audit.recordStandalone(ctx, { action: 'ouvidoria.prorrogar', entityType: 'OmbudsmanCase', entityId: id, payload: { reason, dueAt: novoPrazo } });
     this.realtime.emitToTenant(ctx.tenant.id, 'ouvidoria.manifestacao', { id });
@@ -248,16 +298,13 @@ export class OmbudsmanService {
   /** Resposta conclusiva: encerra o prazo e avisa o cidadão (app e WhatsApp). */
   async responder(ctx: RequestContext, id: string, text: string) {
     const c = await this.aberta(ctx, id);
-    await ctx.db.ombudsmanCase.update({
-      where: { id },
-      data: {
-        status: 'RESPONDIDA',
-        responseText: text.trim(),
-        respondedAt: new Date(),
-        respondedBy: ctx.session.userId,
-        events: { create: { kind: 'RESPONDIDA', notes: text.trim().slice(0, 300), userId: ctx.session.userId } },
-      },
-    });
+    await this.transicao(
+      ctx,
+      id,
+      { status: c.status },
+      { status: 'RESPONDIDA', responseText: text.trim(), respondedAt: new Date(), respondedBy: ctx.session.userId },
+      { kind: 'RESPONDIDA', notes: text.trim().slice(0, 300) },
+    );
     await this.notificar({ tenant: ctx.tenant, db: ctx.db }, c, 'RESPONDIDA', text);
     await this.audit.recordStandalone(ctx, { action: 'ouvidoria.responder', entityType: 'OmbudsmanCase', entityId: id, payload: { tamanho: text.length } });
     this.realtime.emitToTenant(ctx.tenant.id, 'ouvidoria.manifestacao', { id });
@@ -270,14 +317,13 @@ export class OmbudsmanService {
     if (c.status === 'ENCERRADA' || c.status === 'ARQUIVADA') throw new DomainError('MANIFESTACAO_FECHADA', 'Manifestação já encerrada', HttpStatus.UNPROCESSABLE_ENTITY);
     if (input.arquivar && !input.notes?.trim()) throw new DomainError('MOTIVO_OBRIGATORIO', 'Informe o motivo do arquivamento');
     if (!input.arquivar && c.status !== 'RESPONDIDA') throw new DomainError('SEM_RESPOSTA', 'Responda a manifestação antes de encerrar (ou arquive com justificativa)', HttpStatus.UNPROCESSABLE_ENTITY);
-    await ctx.db.ombudsmanCase.update({
-      where: { id },
-      data: {
-        status: input.arquivar ? 'ARQUIVADA' : 'ENCERRADA',
-        closedAt: new Date(),
-        events: { create: { kind: input.arquivar ? 'ARQUIVADA' : 'ENCERRADA', notes: input.notes?.trim() || null, userId: ctx.session.userId } },
-      },
-    });
+    await this.transicao(
+      ctx,
+      id,
+      { status: c.status },
+      { status: input.arquivar ? 'ARQUIVADA' : 'ENCERRADA', closedAt: new Date() },
+      { kind: input.arquivar ? 'ARQUIVADA' : 'ENCERRADA', notes: input.notes?.trim() || null },
+    );
     await this.audit.recordStandalone(ctx, { action: input.arquivar ? 'ouvidoria.arquivar' : 'ouvidoria.encerrar', entityType: 'OmbudsmanCase', entityId: id, payload: input });
     this.realtime.emitToTenant(ctx.tenant.id, 'ouvidoria.manifestacao', { id });
     return this.detalhe(ctx, id);
@@ -320,7 +366,7 @@ export class OmbudsmanService {
       prorrogada: !!m.extendedAt,
       resposta: m.responseText ? { texto: m.responseText, em: m.respondedAt?.toISOString() ?? null } : null,
       avaliacao: m.rating,
-      podeAvaliar: m.status === 'RESPONDIDA' && m.rating == null,
+      podeAvaliar: (m.status === 'RESPONDIDA' || m.status === 'ENCERRADA') && !!m.responseText && m.rating == null,
     }));
   }
 
@@ -329,23 +375,22 @@ export class OmbudsmanService {
     return (await this.minhas(c)).find((m) => m.id === criada.id)!;
   }
 
-  /** O cidadão avalia a resposta recebida (1 a 5). */
+  /** O cidadão avalia a resposta recebida (1 a 5); a avaliação encerra a manifestação. */
   async avaliar(c: CitizenContext, id: string, input: { nota: number; comentario?: string | null }) {
     const m = await c.db.ombudsmanCase.findUnique({ where: { id } });
     if (!m || m.patientId !== c.patientId) throw notFound('Manifestação');
-    if (m.status !== 'RESPONDIDA' && m.status !== 'ENCERRADA') throw new DomainError('SEM_RESPOSTA', 'A manifestação ainda não foi respondida', HttpStatus.UNPROCESSABLE_ENTITY);
+    if ((m.status !== 'RESPONDIDA' && m.status !== 'ENCERRADA') || !m.responseText) throw new DomainError('SEM_RESPOSTA', 'A manifestação ainda não foi respondida', HttpStatus.UNPROCESSABLE_ENTITY);
     if (m.rating != null) throw new DomainError('JA_AVALIADA', 'A resposta já foi avaliada', HttpStatus.UNPROCESSABLE_ENTITY);
-    await c.db.ombudsmanCase.update({
-      where: { id },
-      data: {
-        rating: input.nota,
-        ratingComment: input.comentario?.trim() || null,
-        ratedAt: new Date(),
-        status: 'ENCERRADA',
-        closedAt: m.closedAt ?? new Date(),
-        events: { create: { kind: 'AVALIADA', notes: `Nota ${input.nota}${input.comentario?.trim() ? `: ${input.comentario.trim().slice(0, 200)}` : ''}` } },
-      },
+    const ok = await c.db.$transaction(async (tx) => {
+      const r = await tx.ombudsmanCase.updateMany({
+        where: { id, rating: null, status: { in: ['RESPONDIDA', 'ENCERRADA'] } },
+        data: { rating: input.nota, ratingComment: input.comentario?.trim() || null, ratedAt: new Date(), status: 'ENCERRADA', closedAt: m.closedAt ?? new Date() },
+      });
+      if (r.count === 0) return false;
+      await tx.ombudsmanEvent.create({ data: { caseId: id, kind: 'AVALIADA', notes: `Nota ${input.nota}${input.comentario?.trim() ? `: ${input.comentario.trim().slice(0, 200)}` : ''}` } });
+      return true;
     });
+    if (!ok) throw new DomainError('JA_AVALIADA', 'A resposta já foi avaliada', HttpStatus.UNPROCESSABLE_ENTITY);
     this.realtime.emitToTenant(c.tenant.id, 'ouvidoria.manifestacao', { id });
     return (await this.minhas(c)).find((x) => x.id === id)!;
   }

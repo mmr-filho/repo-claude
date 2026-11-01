@@ -162,6 +162,7 @@ export interface MeuSusDigital {
   enviados: { atendimentos: number; vacinas: number; dispensacoes: number; altas: number; regulacao: number; total: number };
   pendentes: number;
   falhas: number;
+  descartados: number;
   ultimoEnvio: string | null;
   link: string;
 }

@@ -537,6 +537,21 @@ export class PatientsService {
       moved.production = (await tx.productionRecord.updateMany(where)).count;
       moved.messages = (await tx.messageLog.updateMany(where)).count;
       moved.activeSearch = (await tx.activeSearchCase.updateMany(where)).count;
+      // Registros criados nos módulos seguintes (regulação, leitos, TFD, transporte, campo do ACS, programas, e-SUS,
+      // documentos assinados, app do cidadão, assistente, ouvidoria e satisfação) também passam para quem fica.
+      moved.regulationRequests = (await tx.regulationRequest.updateMany(where)).count;
+      moved.bedRequests = (await tx.bedRequest.updateMany(where)).count;
+      moved.aihRequests = (await tx.aihRequest.updateMany(where)).count;
+      moved.tfdProcesses = (await tx.tfdProcess.updateMany(where)).count;
+      moved.transportPassengers = (await tx.transportPassenger.updateMany(where)).count;
+      moved.homeVisits = (await tx.homeVisit.updateMany(where)).count;
+      moved.stratifications = (await tx.riskStratification.updateMany(where)).count;
+      moved.esusRecords = (await tx.esusRecord.updateMany(where)).count;
+      moved.signedDocuments = (await tx.signedDocument.updateMany(where)).count;
+      moved.citizenAccessCodes = (await tx.citizenAccessCode.updateMany(where)).count;
+      moved.assistantConversations = (await tx.assistantConversation.updateMany(where)).count;
+      moved.ombudsmanCases = (await tx.ombudsmanCase.updateMany(where)).count;
+      moved.surveys = (await tx.satisfactionSurvey.updateMany(where)).count;
       await tx.family.updateMany({ where: { responsibleId: d.id }, data: { responsibleId: s.id } });
       await tx.patient.update({
         where: { id: s.id },

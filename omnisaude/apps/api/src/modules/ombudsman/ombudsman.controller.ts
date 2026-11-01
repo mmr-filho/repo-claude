@@ -18,7 +18,7 @@ const registrarSchema = z.object({
   contactPhone: z.string().trim().max(20).nullish(),
 });
 const listarSchema = z.object({
-  status: z.string().max(30).optional(),
+  status: z.enum(['ABERTAS', 'RECEBIDA', 'EM_ANALISE', 'PRORROGADA', 'RESPONDIDA', 'ENCERRADA', 'ARQUIVADA']).optional(),
   kind: tipo.optional(),
   unitId: z.string().uuid().optional(),
   busca: z.string().trim().max(80).optional(),

@@ -50,6 +50,7 @@ export interface SatisfacaoPainel {
   periodo: { de: string; ate: string };
   geral: Resumo;
   porCanal: { whatsapp: number; app: number };
+  totalComentarios: number;
   porUnidade: ({ unitId: string; unidade: string } & Resumo)[];
   porProfissional: ({ id: string; nome: string } & Resumo)[];
   comentarios: { id: string; unidade: string; nota: number | null; comentario: string | null; em: string | null }[];

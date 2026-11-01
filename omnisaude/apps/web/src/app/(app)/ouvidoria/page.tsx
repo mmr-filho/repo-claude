@@ -121,7 +121,8 @@ export default function OmbudsmanPage() {
   }
 
   const p = painel.data;
-  const d = detalhe.data;
+  // Só a manifestação selecionada: enquanto a nova carrega (ou se falhar), não mostra a anterior com as ações apontando para outra.
+  const d = detalhe.data && detalhe.data.id === selecionada ? detalhe.data : null;
   const s = satisfacao.data;
   return (
     <div className="flex flex-col gap-4">
@@ -153,6 +154,38 @@ export default function OmbudsmanPage() {
               <Stat label="Vencidas" value={p.vencidas} tone={p.vencidas ? 'bad' : 'good'} />
               <Stat label="Respondidas (30 d)" value={p.respondidas30d} hint={p.respondidas30d ? `${p.respondidasNoPrazo30d} no prazo · ${p.tempoMedioRespostaDias ?? '—'} dias em média` : undefined} />
               <Stat label="Avaliação da resposta" value={p.avaliacaoMedia != null ? `${p.avaliacaoMedia} / 5` : '—'} hint={`${p.avaliacoes} avaliações`} />
+            </div>
+          )}
+          {p && (p.porTipo.length > 0 || p.porAssunto.length > 0 || p.porUnidade.length > 0) && (
+            <div className="mb-4 grid gap-3 md:grid-cols-3" id="ouv-distribuicoes">
+              {(
+                [
+                  ['Por tipo (30 dias)', p.porTipo.map((t) => ({ k: t.tipo, label: t.label, total: t.total }))],
+                  ['Assuntos mais citados (30 dias)', p.porAssunto.map((a) => ({ k: a.assunto, label: a.label, total: a.total }))],
+                  ['Por unidade (30 dias)', p.porUnidade.map((u) => ({ k: u.unitId ?? u.unidade, label: u.unidade, total: u.total }))],
+                ] as const
+              ).map(([titulo, itens]) => {
+                const max = Math.max(1, ...itens.map((i) => i.total));
+                return (
+                  <Card key={titulo}>
+                    <CardHeader title={titulo} />
+                    <CardBody className="flex flex-col gap-1.5">
+                      {itens.length === 0 && <p className="text-sm text-slate-500">Sem manifestações no período.</p>}
+                      {itens.map((i) => (
+                        <div key={i.k} className="flex items-center gap-2 text-sm">
+                          <span className="w-40 shrink-0 truncate" title={i.label}>
+                            {i.label}
+                          </span>
+                          <div className="h-2.5 flex-1 rounded bg-slate-100">
+                            <div className="h-2.5 rounded bg-brand-500" style={{ width: `${Math.round((i.total / max) * 100)}%` }} />
+                          </div>
+                          <span className="w-8 text-right text-xs text-slate-500">{i.total}</span>
+                        </div>
+                      ))}
+                    </CardBody>
+                  </Card>
+                );
+              })}
             </div>
           )}
           <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
@@ -212,7 +245,12 @@ export default function OmbudsmanPage() {
                   <EmptyState title="Escolha uma manifestação" description="Texto completo, linha do tempo, encaminhamento, prorrogação e resposta." />
                 </CardBody>
               )}
-              {selecionada && detalhe.loading && !d && <Spinner />}
+              {selecionada && !d && !detalhe.error && <Spinner />}
+              {selecionada && detalhe.error && (
+                <CardBody>
+                  <Alert tone="error">{detalhe.error}</Alert>
+                </CardBody>
+              )}
               {d && (
                 <>
                   <CardHeader
@@ -237,7 +275,7 @@ export default function OmbudsmanPage() {
                           >
                             <Forward className="h-4 w-4" /> Encaminhar
                           </Button>
-                          {!d.prorrogada && (
+                          {!d.prorrogada && d.prazo.situacao !== 'VENCIDA' && (
                             <Button
                               size="sm"
                               variant="secondary"
@@ -337,7 +375,7 @@ export default function OmbudsmanPage() {
                 <Stat label="Taxa de resposta" value={s.geral.taxaResposta != null ? `${s.geral.taxaResposta}%` : '—'} />
                 <Stat label="Nota média" value={s.geral.media != null ? `${s.geral.media} / 5` : '—'} tone={s.geral.media != null ? (s.geral.media >= 4 ? 'good' : s.geral.media >= 3 ? 'warn' : 'bad') : 'default'} />
                 <Stat label="NPS" value={s.geral.nps != null ? s.geral.nps : '—'} hint="recomendaria a unidade (0 a 10)" />
-                <Stat label="Comentários" value={s.comentarios.length} />
+                <Stat label="Comentários" value={s.totalComentarios} hint={s.totalComentarios > s.comentarios.length ? `${s.comentarios.length} mais recentes abaixo` : undefined} />
               </div>
               <Card>
                 <CardHeader title="Distribuição das notas" />

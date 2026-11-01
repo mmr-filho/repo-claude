@@ -10,7 +10,10 @@ export interface ResumoMeuSusDigital {
   /** Registros deste cidadão enviados à RNDS por tipo (é deles que o Meu SUS Digital se alimenta). */
   enviados: { atendimentos: number; vacinas: number; dispensacoes: number; altas: number; regulacao: number; total: number };
   pendentes: number;
+  /** Registros com erro temporário (nova tentativa automática). */
   falhas: number;
+  /** Registros recusados de vez (dado faltando ou rejeição da RNDS): precisam de correção no cadastro ou no registro. */
+  descartados: number;
   ultimoEnvio: string | null;
   link: string;
 }
@@ -64,6 +67,7 @@ export async function resumoMeuSusDigital(db: TenantClient, tenant: TenantInfo, 
     },
     pendentes: outbox.filter((o) => o.status === 'PENDENTE').length,
     falhas: outbox.filter((o) => o.status === 'ERRO').length,
+    descartados: outbox.filter((o) => o.status === 'DESCARTADO').length,
     ultimoEnvio: ultimo?.toISOString() ?? null,
     link: MEU_SUS_DIGITAL_URL,
   };

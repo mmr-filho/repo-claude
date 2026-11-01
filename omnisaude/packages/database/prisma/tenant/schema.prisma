@@ -2259,6 +2259,7 @@ model OutboxMessage {
   createdAt   DateTime     @default(now()) @map("created_at")
 
   @@index([status, notBefore])
+  @@index([aggregateId, kind])
   @@map("outbox_messages")
 }
 

@@ -11,7 +11,8 @@ A equipe acompanha tudo na tela **Assistente WhatsApp** e assume a conversa quan
    remarcação. Agora toda mensagem de texto e os botões `ASSIST:*` vão para o `AssistantService`.
 2. **Quem está falando**: o telefone é procurado nos cadastros com **WhatsApp autorizado** (consentimento
    registrado na recepção). Sem cadastro ou sem autorização, o assistente só dá informações gerais (unidades,
-   horários, orientação sobre sintomas) e explica como autorizar. Quando o mesmo número está em mais de um
+   horários, orientação sobre sintomas), registra manifestações na ouvidoria identificadas pelo telefone e explica
+   como autorizar. Quando o mesmo número está em mais de um
    cadastro (família), pergunta de quem se trata (botões) e lembra a escolha por 24 horas.
 3. **Entendimento**: primeiro as **regras** (menu numérico 1 a 9 e palavras-chave, em
    `packages/ai-engine/src/assistant.ts`), que funcionam sem chave de IA. Com a IA ativada na instituição
@@ -61,6 +62,13 @@ ou telefone, transcrição com a intenção reconhecida em cada mensagem, respos
 - Tudo o que o modelo recebe: unidades, FAQ, um resumo do cidadão identificado (nome, próxima consulta,
   contagens) e as últimas 6 mensagens. Com `aiEnabled` desligado nada sai para o provedor.
 
+## Ouvidoria e pesquisa de satisfação (semana 22)
+
+- Intenção **OUVIDORIA** (reclamação, denúncia, elogio, sugestão): registra a manifestação com protocolo e prazo
+  legal; detalhes em `docs/OUVIDORIA.md` (anonimato pedido no texto, abertura curta, urgência).
+- Botões **`ASSIST:SURVEY:<pesquisa>_<nota>`** da pesquisa de satisfação enviada depois do atendimento: a nota entra
+  na hora e a mensagem seguinte, em até 30 minutos, vira comentário.
+
 ## Testes
 
 - `packages/ai-engine/test/assistant.test.ts`: regras, sinais de alerta, orientação de triagem, menu, prompt e
@@ -69,7 +77,8 @@ ou telefone, transcrição com a intenção reconhecida em cada mensagem, respos
   identificado (menu, agenda, marcação por botões com cota da agenda, confirmação, cancelamento liberando a vaga,
   exames, vacinas, remédios, fila, senha), pedido de atendente com resposta pela tela e encerramento, painel,
   permissão negada ao médico, e o caminho com IA (modelo falso): resposta livre, sinal de alerta prevalecendo,
-  intenção transacional respondida com dados e sinalização de humano.
+  intenção transacional respondida com dados e sinalização de humano. A ouvidoria e a pesquisa pelo WhatsApp
+  têm testes próprios em `apps/api/test/ombudsman.test.ts`.
 
 ## Demonstração
 
@@ -80,4 +89,3 @@ WhatsApp autorizado e veja a resposta em `GET <mocks>/whatsapp/_sent`. A tela `/
 
 - Em produção, cadastrar o webhook na conta do WhatsApp Business (`WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`).
 - Áudio e imagens recebidos são ignorados (respondemos pedindo texto); transcrição de áudio pode vir depois.
-- CID-3/CID-4 (semana 22): ouvidoria, pesquisa de satisfação e compatibilidade com o Meu SUS Digital.

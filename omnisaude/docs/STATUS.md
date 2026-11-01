@@ -44,8 +44,9 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | Painel de crônicos em atraso e busca ativa pelo serviço social | ✅ | |
 | App do cidadão: acesso por código (WhatsApp ou recepção), agenda com confirmação/cancelamento e lembretes, exames, cartão de vacinas e certificado, remédios e estoque na rede, fila da regulação, leitos, TFD, senha do dia e unidades | ✅ | CID-1 (`docs/CIDADAO.md`); modelo `codigo_acesso` a aprovar na conta do WhatsApp |
 | Assistente do cidadão no WhatsApp: entende por regras e por modelo (saída estruturada), responde com dados reais, marca/confirma/cancela/remarca por conversa, triagem com sinais de alerta, passagem para atendente | ✅ | CID-2 (`docs/ASSISTENTE-WHATSAPP.md`); áudio e imagem recebidos não são lidos |
-| Ouvidoria (manifestação com protocolo, prazo legal de 30 dias prorrogável uma vez, anonimato, encaminhamento, resposta com aviso por WhatsApp, avaliação) e pesquisa de satisfação após o atendimento (WhatsApp com botões, app com NPS, painel) | ✅ | CID-3 (`docs/OUVIDORIA.md`); modelos `ouvidoria_resposta` e `pesquisa_satisfacao` a aprovar |
-| Meu SUS Digital: prontidão por CPF/CNS e registros enviados à RNDS por tipo na ficha do paciente e no app do cidadão | ✅ | CID-4; depende do credenciamento na RNDS para valer em produção |
+| Ouvidoria (manifestação com protocolo, prazo legal de 30 dias prorrogável uma vez, anonimato, encaminhamento, resposta com aviso por WhatsApp, avaliação) e pesquisa de satisfação após o atendimento (WhatsApp com botões, app com NPS, painel) | ✅ | CID-3 (`docs/OUVIDORIA.md`); revisado por seis frentes com verificação cruzada (35 achados corrigidos); modelos `ouvidoria_resposta` e `pesquisa_satisfacao` a aprovar |
+| Meu SUS Digital: prontidão por CPF/CNS e registros enviados à RNDS por tipo (com fila, erro temporário e recusados) na ficha do paciente e no app do cidadão | ✅ | CID-4; depende do credenciamento na RNDS para valer em produção |
+| Unificação de cadastros move também regulação, leitos, AIH, TFD, transporte, visitas do ACS, estratificações, fichas e-SUS, documentos assinados, códigos e conversas do app/assistente, ouvidoria e pesquisas | ✅ | corrigido na revisão da semana 22 (antes só movia os registros dos módulos iniciais) |
 
 ## 5. Gestão e BI
 

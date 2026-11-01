@@ -134,7 +134,7 @@ export default function CitizenHomePage() {
                 <MessageSquareText className="h-6 w-6 text-brand-600" />
                 <div>
                   <p className="font-medium">Reclamar, sugerir, elogiar ou denunciar</p>
-                  <p className="text-xs text-slate-500">Protocolo na hora e resposta em até 30 dias.</p>
+                  <p className="text-xs text-slate-500">Protocolo na hora; resposta em até 30 dias, prorrogáveis uma vez com justificativa.</p>
                 </div>
               </CardItem>
             </Link>
@@ -143,14 +143,8 @@ export default function CitizenHomePage() {
           {msd.data && (
             <Section title="Meu SUS Digital">
               <CardItem>
-                <p className="text-sm text-slate-700">
-                  {msd.data.enviados.total > 0
-                    ? `${msd.data.enviados.total} registro${msd.data.enviados.total > 1 ? 's' : ''} seu${msd.data.enviados.total > 1 ? 's' : ''} já ${msd.data.enviados.total > 1 ? 'foram enviados' : 'foi enviado'} à Rede Nacional de Dados em Saúde`
-                    : 'Seus registros nesta rede são enviados à Rede Nacional de Dados em Saúde'}
-                  {msd.data.enviados.total > 0
-                    ? ` (${[msd.data.enviados.atendimentos ? `${msd.data.enviados.atendimentos} atendimentos` : null, msd.data.enviados.vacinas ? `${msd.data.enviados.vacinas} vacinas` : null, msd.data.enviados.dispensacoes ? `${msd.data.enviados.dispensacoes} retiradas de remédio` : null, msd.data.enviados.altas ? `${msd.data.enviados.altas} internações` : null].filter(Boolean).join(', ')})`
-                    : ''}{' '}
-                  e aparecem no app do Ministério da Saúde, com sua conta gov.br.
+                <p className="text-sm text-slate-700" id="cid-msd-resumo">
+                  {textoMeuSus(msd.data)}
                 </p>
                 {!msd.data.prontidao.pronto && (
                   <ul className="mt-2 list-disc pl-5 text-xs text-amber-800">
@@ -169,4 +163,21 @@ export default function CitizenHomePage() {
       )}
     </CitizenShell>
   );
+}
+
+/** Frase do cartão do Meu SUS Digital: total enviado com a divisão por tipo (sem parênteses vazios). */
+function textoMeuSus(m: MeuSusDigital): string {
+  if (!m.prontidao.rndsAtiva) return 'Esta rede ainda não envia registros à Rede Nacional de Dados em Saúde. Quando enviar, eles aparecem no app do Ministério da Saúde, com sua conta gov.br.';
+  const e = m.enviados;
+  if (e.total === 0) return 'Seus registros nesta rede são enviados à Rede Nacional de Dados em Saúde e aparecem no app do Ministério da Saúde, com sua conta gov.br.';
+  const plural = (n: number, um: string, varios: string) => (n === 1 ? `1 ${um}` : `${n} ${varios}`);
+  const partes = [
+    e.atendimentos ? plural(e.atendimentos, 'atendimento', 'atendimentos') : null,
+    e.vacinas ? plural(e.vacinas, 'vacina', 'vacinas') : null,
+    e.dispensacoes ? plural(e.dispensacoes, 'retirada de remédio', 'retiradas de remédio') : null,
+    e.altas ? plural(e.altas, 'internação', 'internações') : null,
+    e.regulacao ? plural(e.regulacao, 'atualização de encaminhamento', 'atualizações de encaminhamento') : null,
+  ].filter(Boolean);
+  const total = e.total === 1 ? '1 registro seu já foi enviado' : `${e.total} registros seus já foram enviados`;
+  return `${total} à Rede Nacional de Dados em Saúde${partes.length ? ` (${partes.join(', ')})` : ''} e aparece${e.total === 1 ? '' : 'm'} no app do Ministério da Saúde, com sua conta gov.br.`;
 }

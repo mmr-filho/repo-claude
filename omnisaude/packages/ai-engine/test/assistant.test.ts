@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assistantOutputSchema, buildAssistantSystemPrompt, gravidadeFinal, interpretarPorRegras, orientacaoTriagem, sinaisDeAlerta, textoMenu } from '../src/assistant';
+import { assistantOutputSchema, buildAssistantSystemPrompt, gravidadeFinal, interpretarPorRegras, orientacaoTriagem, sinaisDeAlerta, textoMenu, urgenciaNoTexto } from '../src/assistant';
 
 describe('Assistente do WhatsApp: regras sem IA', () => {
   it('reconhece menu numérico e palavras-chave', () => {
@@ -24,6 +24,8 @@ describe('Assistente do WhatsApp: regras sem IA', () => {
     expect(gravidadeFinal('febre de 39 e vômito que não para', null).gravidade).toBe('URGENCIA');
     expect(gravidadeFinal('dor de garganta há dois dias', null).gravidade).toBe('POUCO_URGENTE');
     expect(interpretarPorRegras('tosse e febre desde ontem')).toMatchObject({ intencao: 'TRIAGEM', gravidade: 'POUCO_URGENTE' });
+    expect(urgenciaNoTexto('estou com febre alta e vomitando sem parar e a UBS não quis me atender')).toBe(true);
+    expect(urgenciaNoTexto('quero reclamar da demora na recepção')).toBe(false);
   });
 
   it('orientação de triagem cita 192 na emergência e a UPA na urgência', () => {

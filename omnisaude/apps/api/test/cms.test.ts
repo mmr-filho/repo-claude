@@ -40,6 +40,9 @@ describe('assinatura CMS/PAdES: certificado, PDF e verificação (sem banco)', (
   });
 
   it('gera o PDF, assina em PAdES e detecta adulteração', async () => {
+    // Datas relativas à execução: o certificado de teste é gerado valendo a partir de "agora menos um dia".
+    const assinadoEm = new Date(Math.floor(Date.now() / 1000) * 1000 - 60_000);
+    const emitidoEm = new Date(assinadoEm.getTime() - 5_000);
     const parsed = parsePfx(test.pfx, 'abc123');
     const unsigned = await renderDocument(
       {
@@ -57,7 +60,7 @@ describe('assinatura CMS/PAdES: certificado, PDF e verificação (sem banco)', (
           cbo: '225125',
           roleLabel: 'Corpo Clínico / Médico',
         },
-        issuedAt: new Date('2026-10-31T12:00:00Z'),
+        issuedAt: emitidoEm,
         timeZone: 'America/Araguaina',
         sections: [
           {
@@ -79,7 +82,7 @@ describe('assinatura CMS/PAdES: certificado, PDF e verificação (sem banco)', (
       },
     );
     expect(unsigned.subarray(0, 5).toString()).toBe('%PDF-');
-    const { pdf, cms } = await signPdf(unsigned, parsed, new Date('2026-10-31T12:00:05Z'));
+    const { pdf, cms } = await signPdf(unsigned, parsed, assinadoEm);
     expect(cms.length).toBeGreaterThan(1000);
     const found = extractPdfSignatures(pdf);
     expect(found).toHaveLength(1);
@@ -95,7 +98,7 @@ describe('assinatura CMS/PAdES: certificado, PDF e verificação (sem banco)', (
       digestAlgorithm: 'SHA256',
       certificates: 2,
     });
-    expect(check!.signingTime?.toISOString()).toBe('2026-10-31T12:00:05.000Z');
+    expect(check!.signingTime?.toISOString()).toBe(assinadoEm.toISOString());
 
     const tampered = Buffer.from(pdf);
     tampered[200] ^= 0x01;

@@ -289,8 +289,8 @@ export interface SatisfactionSurveyInput {
   languageCode?: string;
 }
 
-/** Notas dos três botões da pesquisa (Ótimo, Regular, Ruim) na escala de 1 a 5. */
-export const SURVEY_BUTTON_SCORES = [5, 3, 1] as const;
+/** Notas dos três botões da pesquisa (Ótimo, Regular, Ruim) na escala de 1 a 5 (5 = Ótimo, 3 = Regular, 2 = Ruim). */
+export const SURVEY_BUTTON_SCORES = [5, 3, 2] as const;
 
 /** Pesquisa de satisfação após o atendimento (modelo "pesquisa_satisfacao", botões de resposta rápida tratados pelo assistente). */
 export function buildSatisfactionSurveyTemplate(input: SatisfactionSurveyInput): TemplateMessage {

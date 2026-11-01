@@ -29,8 +29,16 @@ export class SatisfactionService {
         data: { patientId: e.patientId, encounterId, unitId: e.unitId, professionalId: nota?.authorId ?? null, expiresAt: new Date(Date.now() + VALIDADE_PESQUISA_DIAS * DIA) },
       });
       const phone = e.patient.phone ? normalizeBrazilPhone(e.patient.phone) : null;
-      if (sys.tenant.settings.whatsappEnabled && e.patient.whatsappOptIn && phone) {
-        const template = buildSatisfactionSurveyTemplate({ surveyId: survey.id, patientName: e.patient.socialName ?? e.patient.name, service: e.kind === 'URGENCIA' ? 'urgência' : 'hoje', unitName: e.unit.name });
+      // Os botões da pesquisa são lidos pelo assistente do WhatsApp: sem ele ligado, a resposta se perderia.
+      // Nesse caso a pesquisa fica só no app do cidadão.
+      if (sys.tenant.settings.whatsappEnabled && sys.tenant.settings.assistantEnabled && e.patient.whatsappOptIn && phone) {
+        const dia = new Intl.DateTimeFormat('pt-BR', { timeZone: sys.tenant.timeZone, day: '2-digit', month: '2-digit' }).format(e.startedAt);
+        const template = buildSatisfactionSurveyTemplate({
+          surveyId: survey.id,
+          patientName: e.patient.socialName ?? e.patient.name,
+          service: `${e.kind === 'URGENCIA' ? 'urgência' : 'consulta'} do dia ${dia}`,
+          unitName: e.unit.name,
+        });
         await this.messaging.scheduleTemplate(sys, { patientId: e.patientId, phone, template, refId: survey.id, at: new Date(Date.now() + 2 * HORA) });
         await sys.db.satisfactionSurvey.update({ where: { id: survey.id }, data: { sentAt: new Date() } });
       }
@@ -47,10 +55,15 @@ export class SatisfactionService {
     if (!s || (input.patientId && s.patientId !== input.patientId)) throw notFound('Pesquisa');
     if (s.status === 'RESPONDIDA') throw new DomainError('JA_RESPONDIDA', 'Esta pesquisa já foi respondida', HttpStatus.UNPROCESSABLE_ENTITY);
     if (s.expiresAt.getTime() < Date.now()) throw new DomainError('PESQUISA_EXPIRADA', 'O prazo desta pesquisa terminou', HttpStatus.UNPROCESSABLE_ENTITY);
-    return sys.db.satisfactionSurvey.update({
-      where: { id },
+    // Condicional: duas respostas simultâneas (botão e app) não se sobrescrevem.
+    const r = await sys.db.satisfactionSurvey.updateMany({
+      where: { id, status: 'PENDENTE' },
       data: { status: 'RESPONDIDA', score: input.score, recommend: input.recommend ?? null, comment: input.comment?.trim() || null, channel: input.channel, answeredAt: new Date() },
     });
+    if (r.count === 0) throw new DomainError('JA_RESPONDIDA', 'Esta pesquisa já foi respondida', HttpStatus.UNPROCESSABLE_ENTITY);
+    // Respondida pelo app antes do envio: o WhatsApp agendado não sai mais.
+    await this.messaging.cancelScheduled(sys, id);
+    return sys.db.satisfactionSurvey.findUniqueOrThrow({ where: { id } });
   }
 
   /** Comentário livre enviado depois da nota (WhatsApp). */
@@ -122,6 +135,7 @@ export class SatisfactionService {
             .filter((p) => p.respondidas > 0)
             .sort((a, b) => (b.media ?? 0) - (a.media ?? 0))
         : [],
+      totalComentarios: rows.filter((r) => r.comment).length,
       comentarios: rows
         .filter((r) => r.comment)
         .slice(0, 20)

@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto';
 import { cnsFromBase, completeCpf } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TenantsService } from '../src/core/database';
+import { AiService } from '../src/modules/integrations/ai.service';
 import { RndsService } from '../src/modules/integrations/rnds.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 import { startMocks } from './mocks';
@@ -60,6 +61,8 @@ describe.runIf(enabled)('Ouvidoria, pesquisa de satisfação e Meu SUS Digital (
         .send({ name: 'Olinda Ouvidoria Teste', birthDate, sex: 'F', cpf, cns: cnsFromBase('27900000901'), motherName: 'Mae Olinda Teste', phone: '(63) 97777-0901', whatsappOptIn: true, address })
         .expect(201)
     ).body.id;
+    // Sem modelo de linguagem real, mesmo que a máquina tenha ANTHROPIC_API_KEY: as respostas seguem as regras.
+    t.app.get(AiService).client = null;
     unitId = (await t.http().get('/api/auth/me').set(auth(recepcao)).expect(200)).body.context.unitId;
     const cod = (await t.http().post('/api/cidadao/codigos').set(auth(recepcao)).send({ patientId: pacienteId }).expect(201)).body.codigo;
     cidadao = (await t.http().post('/api/cidadao/acesso/confirmar').send({ tenant: t.slug, cpf, birthDate, codigo: cod }).expect(200)).body.token;
@@ -131,7 +134,7 @@ describe.runIf(enabled)('Ouvidoria, pesquisa de satisfação e Meu SUS Digital (
     const tenants = t.app.get(TenantsService);
     const tenant = await tenants.resolve(t.slug);
     const db = await tenants.client(tenant.id);
-    const avisos = await db.messageLog.findMany({ where: { refId: manifestacaoId } });
+    const avisos = await db.messageLog.findMany({ where: { refId: manifestacaoId }, orderBy: { createdAt: 'asc' } });
     expect(avisos.map((a) => (a.payload as { template: { name: string } }).template.name)).toEqual(['ouvidoria_resposta', 'ouvidoria_resposta']);
     expect((avisos.at(-1)!.payload as { template: { bodyParams: string[] } }).template.bodyParams[2]).toBe('respondida');
     const minha = (await t.http().get('/api/cidadao/ouvidoria').set(auth(cidadao)).expect(200)).body.find((m: { id: string }) => m.id === manifestacaoId);
@@ -185,14 +188,15 @@ describe.runIf(enabled)('Ouvidoria, pesquisa de satisfação e Meu SUS Digital (
     const log = await db.messageLog.findFirstOrThrow({ where: { refId: surveyId } });
     const tpl = (log.payload as { template: { name: string; buttons: { payload: string }[] } }).template;
     expect(tpl.name).toBe('pesquisa_satisfacao');
-    expect(tpl.buttons.map((b) => b.payload)).toEqual([`ASSIST:SURVEY:${surveyId}_5`, `ASSIST:SURVEY:${surveyId}_3`, `ASSIST:SURVEY:${surveyId}_1`]);
+    expect(tpl.buttons.map((b) => b.payload)).toEqual([`ASSIST:SURVEY:${surveyId}_5`, `ASSIST:SURVEY:${surveyId}_3`, `ASSIST:SURVEY:${surveyId}_2`]);
+    expect((log.payload as { template: { bodyParams: string[] } }).template.bodyParams[1]).toMatch(/^consulta do dia \d{2}\/\d{2}$/);
     expect(log.scheduledFor.getTime()).toBeGreaterThan(Date.now() + 60 * 60_000);
     // Resposta pelo botão do WhatsApp (modelo de resposta rápida) e comentário na mensagem seguinte.
     await postWebhook(FONE, { type: 'button', button: { payload: `ASSIST:SURVEY:${surveyId}_5`, text: 'Ótimo' } });
     expect(textoDe(ultimaParaFone())).toContain('Obrigado pela avaliação (ótimo)');
     await postWebhook(FONE, { type: 'text', text: { body: 'A doutora explicou tudo com calma e fui atendida rápido.' } });
     expect(textoDe(ultimaParaFone())).toContain('comentário foi registrado');
-    await postWebhook(FONE, { type: 'button', button: { payload: `ASSIST:SURVEY:${surveyId}_1`, text: 'Ruim' } });
+    await postWebhook(FONE, { type: 'button', button: { payload: `ASSIST:SURVEY:${surveyId}_2`, text: 'Ruim' } });
     expect(textoDe(ultimaParaFone())).toContain('Já recebemos sua avaliação');
     const respondida = (await t.http().get('/api/cidadao/avaliacoes').set(auth(cidadao)).expect(200)).body[0];
     expect(respondida).toMatchObject({ status: 'RESPONDIDA', nota: 5, notaLabel: 'Ótimo', comentario: 'A doutora explicou tudo com calma e fui atendida rápido.' });
@@ -246,5 +250,208 @@ describe.runIf(enabled)('Ouvidoria, pesquisa de satisfação e Meu SUS Digital (
     const pend = (await t.http().get(`/api/patients/${semCpf.id}/meu-sus-digital`).set(auth(recepcao)).expect(200)).body;
     expect(pend.prontidao.pronto).toBe(false);
     expect(pend.prontidao.pendencias[0]).toContain('CPF');
+  });
+
+  // ───────────────────────────── correções da revisão ─────────────────────────────
+
+  const db = async () => {
+    const tenants = t.app.get(TenantsService);
+    const tenant = await tenants.resolve(t.slug);
+    return tenants.client(tenant.id);
+  };
+  const atendimento = async (patientId: string, outcome: string) => {
+    const enc = (await t.http().post('/api/reception/check-in').set(auth(recepcao)).send({ patientId, kind: 'AMBULATORIAL' }).expect(201)).body;
+    await t.http().post(`/api/clinical/encounters/${enc.id}/start`).set(auth(medica)).expect(200);
+    const note = (
+      await t
+        .http()
+        .post(`/api/clinical/encounters/${enc.id}/notes`)
+        .set(auth(medica))
+        .send({ kind: 'SOAP', subjective: 'Queixa.', objective: 'Exame.', assessment: 'Avaliação.', plan: 'Plano.', codes: [{ system: 'CID10', code: 'R51' }] })
+        .expect(201)
+    ).body;
+    await t.http().post(`/api/clinical/notes/${note.id}/sign`).set(auth(medica)).expect(200);
+    await t.http().post(`/api/clinical/encounters/${enc.id}/close`).set(auth(medica)).send({ outcome }).expect(200);
+    return enc.id as string;
+  };
+  const conversaDaOlinda = async () => {
+    const lista = (await t.http().get('/api/assistente/conversas?busca=Olinda').set(auth(recepcao)).expect(200)).body as { id: string }[];
+    return (await t.http().get(`/api/assistente/conversas/${lista[0]!.id}`).set(auth(recepcao)).expect(200)).body as { id: string; status: string; mensagens: { texto: string; direcao: string }[] };
+  };
+
+  it('serviço social gere a ouvidoria; prazo vencido filtra no banco e não aceita prorrogação; o cidadão avalia depois de encerrada', async () => {
+    const social = await t.login('social', 'UBS Centro', 'SERVICO_SOCIAL');
+    const x = (
+      await t
+        .http()
+        .post('/api/ouvidoria/manifestacoes')
+        .set(auth(social))
+        .send({ kind: 'RECLAMACAO', channel: 'TELEFONE', subject: 'AGENDAMENTO', text: 'Não consigo marcar consulta com o clínico há duas semanas.', unitId, patientId: pacienteId })
+        .expect(201)
+    ).body;
+    await (await db()).ombudsmanCase.update({ where: { id: x.id }, data: { dueAt: new Date(Date.now() - 60 * 60_000) } });
+    const vencidas = (await t.http().get('/api/ouvidoria/manifestacoes?prazo=VENCIDA').set(auth(social)).expect(200)).body as { id: string; prazo: { situacao: string; diasRestantes: number } }[];
+    expect(vencidas.find((m) => m.id === x.id)?.prazo).toEqual({ situacao: 'VENCIDA', diasRestantes: -1 });
+    const noPrazo = (await t.http().get('/api/ouvidoria/manifestacoes?prazo=NO_PRAZO').set(auth(social)).expect(200)).body as { id: string }[];
+    expect(noPrazo.map((m) => m.id)).not.toContain(x.id);
+    const pror = await t.http().post(`/api/ouvidoria/manifestacoes/${x.id}/prorrogar`).set(auth(social)).send({ reason: 'Tentativa depois do vencimento do prazo.' }).expect(422);
+    expect(pror.body.code).toBe('PRAZO_VENCIDO');
+    expect((await t.http().get('/api/ouvidoria/painel').set(auth(social)).expect(200)).body.vencidas).toBeGreaterThanOrEqual(1);
+    await t.http().post(`/api/ouvidoria/manifestacoes/${x.id}/responder`).set(auth(social)).send({ text: 'Abrimos vagas extras de clínico às quintas-feiras.' }).expect(200);
+    await t.http().post(`/api/ouvidoria/manifestacoes/${x.id}/encerrar`).set(auth(social)).send({}).expect(200);
+    const minha = (await t.http().get('/api/cidadao/ouvidoria').set(auth(cidadao)).expect(200)).body.find((m: { id: string }) => m.id === x.id);
+    expect(minha).toMatchObject({ status: 'ENCERRADA', podeAvaliar: true });
+    await t.http().post(`/api/cidadao/ouvidoria/${x.id}/avaliar`).set(auth(cidadao)).send({ nota: 3 }).expect(200);
+    // Ação sobre manifestação já encerrada não reabre.
+    await t.http().post(`/api/ouvidoria/manifestacoes/${x.id}/responder`).set(auth(social)).send({ text: 'Segunda resposta não permitida.' }).expect(422);
+    await t.http().get('/api/ouvidoria/manifestacoes?status=ABERTA').set(auth(social)).expect(400);
+  });
+
+  it('busca combina unidade e texto, encontra o nome do contato e registros simultâneos recebem protocolos distintos', async () => {
+    const unidades = (await t.http().get('/api/ouvidoria/unidades').set(auth(gestora)).expect(200)).body as { id: string; name: string }[];
+    const upa = unidades.find((u) => u.name === 'UPA 24h Norte')!;
+    await t
+      .http()
+      .post('/api/ouvidoria/manifestacoes')
+      .set(auth(recepcao))
+      .send({ kind: 'RECLAMACAO', channel: 'PRESENCIAL', subject: 'TEMPO_ESPERA', text: 'Longa espera de horas na classificação de risco da UPA.', unitId: upa.id, contactName: 'João Ribeiro Contato' })
+      .expect(201);
+    const daUbs = (await t.http().get(`/api/ouvidoria/manifestacoes?unitId=${unitId}&busca=horas`).set(auth(gestora)).expect(200)).body as { unidade: { id: string } | null }[];
+    expect(daUbs.length).toBeGreaterThan(0);
+    expect(daUbs.every((m) => m.unidade?.id === unitId)).toBe(true);
+    const todas = (await t.http().get('/api/ouvidoria/manifestacoes?busca=horas').set(auth(gestora)).expect(200)).body as { unidade: { id: string } | null }[];
+    expect(todas.some((m) => m.unidade?.id === upa.id)).toBe(true);
+    const porContato = (await t.http().get('/api/ouvidoria/manifestacoes?busca=Ribeiro').set(auth(gestora)).expect(200)).body as { pessoa: { nome: string } | null }[];
+    expect(porContato[0]?.pessoa?.nome).toBe('João Ribeiro Contato');
+    const juntas = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        t
+          .http()
+          .post('/api/ouvidoria/manifestacoes')
+          .set(auth(recepcao))
+          .send({ kind: 'SUGESTAO', channel: 'SITE', subject: 'OUTRO', text: `Sugestão simultânea número ${i + 1} para a rede.` }),
+      ),
+    );
+    expect(juntas.map((r) => r.status)).toEqual([201, 201, 201, 201, 201]);
+    expect(new Set(juntas.map((r) => r.body.protocolo)).size).toBe(5);
+  });
+
+  it('WhatsApp: anonimato pedido no texto, remetente desconhecido com retorno, abertura curta e urgência com orientação', async () => {
+    mocks.state.whatsapp.length = 0;
+    await postWebhook(FONE, { type: 'text', text: { body: 'Quero fazer uma denúncia anônima: o funcionário da farmácia cobra para entregar remédio.' } });
+    const resp = textoDe(ultimaParaFone());
+    expect(resp).toContain('sem identificação para a equipe');
+    const protocolo = /OUV-\d{4}-\d{6}/.exec(resp)![0];
+    const anon = (await t.http().get(`/api/ouvidoria/manifestacoes?busca=${protocolo}`).set(auth(gestora)).expect(200)).body[0];
+    expect(anon).toMatchObject({ tipo: 'DENUNCIA', canal: 'WHATSAPP', identificado: false, pessoa: null, contato: null });
+    const conversa = await conversaDaOlinda();
+    const transcricao = conversa.mensagens.map((m) => m.texto).join('\n');
+    expect(transcricao).not.toContain('cobra para entregar');
+    expect(transcricao).not.toContain(protocolo);
+    // O cidadão continua vendo a própria manifestação anônima no app.
+    expect((await t.http().get('/api/cidadao/ouvidoria').set(auth(cidadao)).expect(200)).body.some((m: { protocolo: string; anonima: boolean }) => m.protocolo === protocolo && m.anonima)).toBe(true);
+
+    const DESCONHECIDO = '5563966660001';
+    await postWebhook(DESCONHECIDO, { type: 'text', text: { body: 'Quero reclamar: esperei quatro horas na UPA ontem e ninguém informou nada.' } });
+    const prot2 = /OUV-\d{4}-\d{6}/.exec(textoDe(mocks.state.whatsapp.filter((m) => m.to === DESCONHECIDO).at(-1)!))![0];
+    const desc = (await t.http().get(`/api/ouvidoria/manifestacoes?busca=${prot2}`).set(auth(gestora)).expect(200)).body[0];
+    expect(desc).toMatchObject({ identificado: true, pessoa: null, contato: '(63) *****-0001' });
+
+    await postWebhook(FONE, { type: 'text', text: { body: 'Quero fazer uma reclamação' } });
+    expect(textoDe(ultimaParaFone())).toContain('Conte com suas palavras');
+    await postWebhook(FONE, { type: 'text', text: { body: 'O médico me tratou mal hoje de manhã na UBS Centro.' } });
+    const prot3 = /OUV-\d{4}-\d{6}/.exec(textoDe(ultimaParaFone()))![0];
+    const det = (await t.http().get(`/api/ouvidoria/manifestacoes?busca=${prot3}`).set(auth(gestora)).expect(200)).body[0];
+    const completo = (await t.http().get(`/api/ouvidoria/manifestacoes/${det.id}`).set(auth(gestora)).expect(200)).body;
+    expect(completo.texto).toContain('Quero fazer uma reclamação');
+    expect(completo.texto).toContain('me tratou mal');
+
+    await postWebhook(FONE, { type: 'text', text: { body: 'Estou com febre alta e vomitando sem parar e a UBS não quis me atender, quero reclamar.' } });
+    const urg = textoDe(ultimaParaFone());
+    expect(urg).toContain('UPA 24h Norte');
+    expect(urg).toMatch(/Protocolo OUV-\d{4}-\d{6}/);
+    expect((await conversaDaOlinda()).status).toBe('AGUARDANDO_ATENDENTE');
+  });
+
+  it('pesquisa: reclamação depois do botão vira manifestação, a janela do comentário expira e qualquer outra mensagem a encerra', async () => {
+    const pendente = async () => (await t.http().get('/api/cidadao/avaliacoes').set(auth(cidadao)).expect(200)).body.find((p: { status: string }) => p.status === 'PENDENTE') as { id: string };
+    await atendimento(pacienteId, 'ALTA');
+    const s1 = await pendente();
+    await postWebhook(FONE, { type: 'button', button: { payload: `ASSIST:SURVEY:${s1.id}_3`, text: 'Regular' } });
+    await postWebhook(FONE, { type: 'text', text: { body: 'Quero fazer uma reclamação: a recepção demorou demais para me chamar hoje.' } });
+    expect(textoDe(ultimaParaFone())).toMatch(/Registrei sua reclamação/);
+    expect((await (await db()).satisfactionSurvey.findUniqueOrThrow({ where: { id: s1.id } })).comment).toBeNull();
+
+    await atendimento(pacienteId, 'ALTA');
+    const s2 = await pendente();
+    await postWebhook(FONE, { type: 'button', button: { payload: `ASSIST:SURVEY:${s2.id}_5`, text: 'Ótimo' } });
+    const conv = await conversaDaOlinda();
+    const banco = await db();
+    const atual = await banco.assistantConversation.findUniqueOrThrow({ where: { id: conv.id } });
+    await banco.assistantConversation.update({ where: { id: conv.id }, data: { context: { ...(atual.context as object), pesquisaComentarioAte: new Date(Date.now() - 60_000).toISOString() } } });
+    await postWebhook(FONE, { type: 'text', text: { body: 'zzz palavras soltas sem intenção nenhuma' } });
+    expect(textoDe(ultimaParaFone())).not.toContain('comentário foi registrado');
+    expect((await banco.satisfactionSurvey.findUniqueOrThrow({ where: { id: s2.id } })).comment).toBeNull();
+
+    await atendimento(pacienteId, 'ALTA');
+    const s3 = await pendente();
+    await postWebhook(FONE, { type: 'button', button: { payload: `ASSIST:SURVEY:${s3.id}_5`, text: 'Ótimo' } });
+    await postWebhook(FONE, { type: 'text', text: { body: '1' } });
+    await postWebhook(FONE, { type: 'text', text: { body: 'zzz outra mensagem solta sem intenção' } });
+    expect((await banco.satisfactionSurvey.findUniqueOrThrow({ where: { id: s3.id } })).comment).toBeNull();
+  });
+
+  it('pesquisa: só após alta ou encaminhamento; sem assistente fica só no app; respondida no app cancela o WhatsApp agendado', async () => {
+    const banco = await db();
+    const semTelefone = (
+      await t
+        .http()
+        .post('/api/patients')
+        .set(auth(recepcao))
+        .send({ name: 'Paciente Desfecho Teste', birthDate: '1950-05-05', sex: 'M', cpf: completeCpf('479000902'), cns: cnsFromBase('27900000902'), motherName: 'Mae Desfecho Teste', address })
+        .expect(201)
+    ).body.id;
+    const obito = await atendimento(semTelefone, 'OBITO');
+    expect(await banco.satisfactionSurvey.findUnique({ where: { encounterId: obito } })).toBeNull();
+    const encaminhado = await atendimento(semTelefone, 'ENCAMINHAMENTO');
+    expect(await banco.satisfactionSurvey.findUnique({ where: { encounterId: encaminhado } })).not.toBeNull();
+
+    const tenants = t.app.get(TenantsService);
+    const original = (await tenants.master.tenant.findUniqueOrThrow({ where: { slug: t.slug } })).settings as Record<string, unknown>;
+    await tenants.master.tenant.update({ where: { slug: t.slug }, data: { settings: { ...original, assistantEnabled: false } } });
+    tenants.connections.invalidate();
+    try {
+      const enc = await atendimento(pacienteId, 'ALTA');
+      const s = await banco.satisfactionSurvey.findUniqueOrThrow({ where: { encounterId: enc } });
+      expect(s.sentAt).toBeNull();
+      expect(await banco.messageLog.count({ where: { refId: s.id } })).toBe(0);
+      await t.http().post(`/api/cidadao/avaliacoes/${s.id}`).set(auth(cidadao)).send({ nota: 4 }).expect(200);
+    } finally {
+      await tenants.master.tenant.update({ where: { slug: t.slug }, data: { settings: original as object } });
+      tenants.connections.invalidate();
+    }
+    const enc2 = await atendimento(pacienteId, 'ALTA');
+    const s2 = await banco.satisfactionSurvey.findUniqueOrThrow({ where: { encounterId: enc2 } });
+    expect((await banco.messageLog.findFirstOrThrow({ where: { refId: s2.id } })).status).toBe('AGENDADA');
+    await t.http().post(`/api/cidadao/avaliacoes/${s2.id}`).set(auth(cidadao)).send({ nota: 5 }).expect(200);
+    expect((await banco.messageLog.findFirstOrThrow({ where: { refId: s2.id } })).status).toBe('CANCELADA');
+  });
+
+  it('unificação de cadastros leva as manifestações e pesquisas do duplicado', async () => {
+    const dup = (await t.http().post('/api/patients').set(auth(recepcao)).send({ name: 'Olinda Ouvidoria Teste Dup', birthDate, sex: 'F', motherName: 'Mae Olinda Teste', address, confirmNotDuplicate: true }).expect(201))
+      .body.id;
+    const caso = (
+      await t
+        .http()
+        .post('/api/ouvidoria/manifestacoes')
+        .set(auth(recepcao))
+        .send({ kind: 'ELOGIO', channel: 'PRESENCIAL', subject: 'ATENDIMENTO', text: 'Elogio registrado no cadastro duplicado.', patientId: dup })
+        .expect(201)
+    ).body;
+    const enc = await atendimento(dup, 'ALTA');
+    const r = (await t.http().post(`/api/patients/${pacienteId}/merge`).set(auth(recepcao)).send({ duplicateId: dup }).expect(201)).body;
+    expect(r.moved).toMatchObject({ ombudsmanCases: 1, surveys: 1 });
+    expect((await t.http().get('/api/cidadao/ouvidoria').set(auth(cidadao)).expect(200)).body.some((m: { id: string }) => m.id === caso.id)).toBe(true);
+    expect((await (await db()).satisfactionSurvey.findUniqueOrThrow({ where: { encounterId: enc } })).patientId).toBe(pacienteId);
   });
 });

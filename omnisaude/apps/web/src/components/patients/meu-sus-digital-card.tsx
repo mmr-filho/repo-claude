@@ -12,6 +12,7 @@ interface Resumo {
   enviados: { atendimentos: number; vacinas: number; dispensacoes: number; altas: number; regulacao: number; total: number };
   pendentes: number;
   falhas: number;
+  descartados: number;
   ultimoEnvio: string | null;
   link: string;
 }
@@ -45,9 +46,12 @@ export function MeuSusDigitalCard({ patientId }: { patientId: string }) {
               ))}
             </div>
             <p className="mt-2 flex items-center gap-1 text-xs text-slate-500">
-              <CloudUpload className="h-3.5 w-3.5" /> {data.enviados.total} enviados · {data.pendentes} na fila · {data.falhas} com erro
+              <CloudUpload className="h-3.5 w-3.5" /> {data.enviados.total} enviados · {data.pendentes} na fila · {data.falhas} com erro temporário · {data.descartados} recusados
               {data.ultimoEnvio ? ` · último envio ${fmtDateTime(data.ultimoEnvio)}` : ''}
             </p>
+            {data.descartados > 0 && (
+              <p className="mt-1 text-xs text-red-700">Há registros recusados de vez (dado faltando ou rejeição da RNDS): confira em Administração &gt; Integrações e corrija o cadastro ou o registro.</p>
+            )}
             {data.prontidao.pendencias.length > 0 && (
               <ul className="mt-2 list-disc pl-5 text-xs text-amber-800">
                 {data.prontidao.pendencias.map((p) => (

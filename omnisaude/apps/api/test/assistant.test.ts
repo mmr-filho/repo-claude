@@ -121,6 +121,14 @@ describe.runIf(enabled)('Assistente do cidadão no WhatsApp (CID-2)', () => {
     expect(textoDe(ultima())).toContain('já venceu');
     await enviar(FONE, 'confirmo');
     expect(textoDe(ultima())).toContain('Presença confirmada');
+    // Nova oferta não traz o mesmo dia na mesma agenda (a agenda aceita um horário por pessoa por dia).
+    const marcada = (await t.http().get(`/api/scheduling/appointments?patientId=${pacienteId}`).set(auth(recepcao)).expect(200)).body[0] as { scheduleId: string; startsAt: string };
+    const dia = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(d);
+    await enviar(FONE, 'quero marcar outra consulta');
+    for (const b of botoesDe(ultima())) {
+      const [, scheduleId, epoch] = /^ASSIST:SLOT:([0-9a-f-]{36})_(\d+)$/.exec(b.id)!;
+      if (scheduleId === marcada.scheduleId) expect(dia(new Date(Number(epoch) * 1000))).not.toBe(dia(new Date(marcada.startsAt)));
+    }
     await enviar(FONE, '1');
     const agenda = ultima();
     expect(textoDe(agenda)).toContain('Suas próximas consultas');

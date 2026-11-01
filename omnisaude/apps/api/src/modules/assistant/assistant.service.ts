@@ -11,13 +11,14 @@ import {
   TEXTO_DESPEDIDA,
   TEXTO_NAO_IDENTIFICADO,
   textoMenu,
+  urgenciaNoTexto,
   type AssistantOutput,
   type AssistantUnidade,
   type Gravidade,
   type Intencao,
 } from '@omnisaude/ai-engine';
 import { encodeAssistantPayload, normalizeBrazilPhone, type InteractiveButtonsMessage } from '@omnisaude/messaging';
-import { ESCALA_SATISFACAO, inferirAssuntoManifestacao, inferirTipoManifestacao, mascararTelefone, TIPO_MANIFESTACAO, UNIT_TYPE_LABELS } from '@omnisaude/shared';
+import { ESCALA_SATISFACAO, inferirAssuntoManifestacao, localDateString, inferirTipoManifestacao, manifestacaoTemConteudo, mascararTelefone, pedeAnonimato, TIPO_MANIFESTACAO, UNIT_TYPE_LABELS } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { CitizenContext, RequestContext } from '../../core/context';
 import { DomainError, notFound } from '../../core/errors';
@@ -39,9 +40,17 @@ interface Contexto {
   patientId?: string;
   chosenAt?: string;
   ofertas?: { scheduleId: string; startsAt: string }[];
-  /** Pesquisa respondida por botão: a próxima mensagem livre vira comentário. */
+  /** Pesquisa respondida por botão: a próxima mensagem livre (até o prazo) vira comentário. */
   pesquisaComentario?: string;
+  pesquisaComentarioAte?: string;
+  /** O cidadão anunciou uma manifestação sem contar o que houve: a próxima mensagem (até o prazo) traz os detalhes. */
+  ouvidoriaAbertura?: string;
+  ouvidoriaPendenteAte?: string;
 }
+
+/** Janela para o comentário da pesquisa ou os detalhes da manifestação. */
+const JANELA_COMPLEMENTO_MS = 30 * 60_000;
+const TEXTO_ANONIMA_NA_CONVERSA = '[Manifestação anônima enviada à ouvidoria: o conteúdo fica só na ouvidoria, sem identificação]';
 
 interface Pessoa {
   id: string;
@@ -50,7 +59,12 @@ interface Pessoa {
   phone: string | null;
 }
 
-type Resposta = { texto: string; intent: string; extra?: Record<string, unknown> } | { botoes: InteractiveButtonsMessage; intent: string; extra?: Record<string, unknown> };
+type Resposta = ({ texto: string } | { botoes: InteractiveButtonsMessage }) & {
+  intent: string;
+  extra?: Record<string, unknown>;
+  /** O que fica na transcrição vista pela equipe, quando não pode ser o texto enviado (manifestação anônima). */
+  registro?: string;
+};
 
 /**
  * Assistente do cidadão no WhatsApp (CID-2): identifica a pessoa pelo telefone (só com WhatsApp autorizado),
@@ -140,15 +154,29 @@ export class AssistantService implements OnModuleInit {
 
   private async texto(sys: SystemContext, conversationId: string, ctx: Contexto, pessoa: Pessoa | null, candidatos: Pessoa[], texto: string): Promise<Resposta> {
     const regras = interpretarPorRegras(texto);
-    if (ctx.pesquisaComentario && (regras.intencao === 'OUTRO' || regras.intencao === 'DESPEDIDA' || regras.intencao === 'OUVIDORIA')) {
+    const agora = Date.now();
+    // Comentário da pesquisa: só a mensagem seguinte ao botão, em até 30 minutos, e nunca uma reclamação ou denúncia
+    // (essas vão para a ouvidoria, com protocolo e prazo legal). Qualquer outra mensagem encerra a janela.
+    if (ctx.pesquisaComentario) {
       const id = ctx.pesquisaComentario;
-      await this.salvarContexto(sys, conversationId, ctx, { pesquisaComentario: undefined });
-      await this.satisfaction.comentar(sys, id, texto);
-      return {
-        texto: 'Obrigado! Seu comentário foi registrado junto com a avaliação e vai para a gestão da unidade. Se precisar de algo mais, responda 0 para ver o menu.',
-        intent: 'PESQUISA_COMENTARIO',
-        extra: { surveyId: id },
-      };
+      const valida = !!ctx.pesquisaComentarioAte && Date.parse(ctx.pesquisaComentarioAte) > agora;
+      await this.salvarContexto(sys, conversationId, ctx, { pesquisaComentario: undefined, pesquisaComentarioAte: undefined });
+      if (valida && (regras.intencao === 'OUTRO' || regras.intencao === 'DESPEDIDA')) {
+        await this.satisfaction.comentar(sys, id, texto);
+        return {
+          texto: 'Obrigado! Seu comentário foi registrado junto com a avaliação e vai para a gestão da unidade. Se precisar de algo mais, responda 0 para ver o menu.',
+          intent: 'PESQUISA_COMENTARIO',
+          extra: { surveyId: id },
+        };
+      }
+    }
+    // Detalhes de uma manifestação anunciada na mensagem anterior ("quero fazer uma reclamação").
+    if (ctx.ouvidoriaPendenteAte) {
+      const abertura = ctx.ouvidoriaAbertura ?? '';
+      const valida = Date.parse(ctx.ouvidoriaPendenteAte) > agora;
+      await this.salvarContexto(sys, conversationId, ctx, { ouvidoriaAbertura: undefined, ouvidoriaPendenteAte: undefined });
+      const desvio = regras.gravidade === 'EMERGENCIA' || regras.intencao === 'MENU' || regras.intencao === 'ATENDENTE' || /^\d$/.test(texto.trim());
+      if (valida && !desvio && texto.trim().length >= 10) return this.ouvidoria(sys, conversationId, ctx, pessoa, `${abertura}\n${texto}`.trim(), true);
     }
     let intencao: Intencao = regras.intencao;
     let gravidade: Gravidade | null = regras.gravidade;
@@ -205,7 +233,7 @@ export class AssistantService implements OnModuleInit {
         return { texto: TEXTO_ATENDENTE(unidade), intent: 'ATENDENTE' };
       }
       case 'OUVIDORIA':
-        return this.ouvidoria(sys, conversationId, pessoa, o.texto);
+        return this.ouvidoria(sys, conversationId, ctx, pessoa, o.texto, false);
       case 'TRIAGEM':
         return this.triagem(sys, conversationId, pessoa, o.texto, o.gravidade, o.modelo);
       case 'UNIDADES':
@@ -244,6 +272,8 @@ export class AssistantService implements OnModuleInit {
 
   private async botao(sys: SystemContext, conversationId: string, ctx: Contexto, pessoa: Pessoa | null, candidatos: Pessoa[], ev: Extract<AssistantEvent, { type: 'button' }>): Promise<Resposta> {
     const nome = pessoa ? (pessoa.socialName ?? pessoa.name).split(' ')[0] : null;
+    if (ctx.pesquisaComentario || ctx.ouvidoriaPendenteAte)
+      await this.salvarContexto(sys, conversationId, ctx, { pesquisaComentario: undefined, pesquisaComentarioAte: undefined, ouvidoriaAbertura: undefined, ouvidoriaPendenteAte: undefined });
     switch (ev.action) {
       case 'PESSOA': {
         const escolhida = candidatos.find((c) => c.id === ev.arg);
@@ -322,9 +352,18 @@ export class AssistantService implements OnModuleInit {
         (await sys.db.user.findMany({ where: { id: { in: [...new Set(schedules.map((s) => s.professionalId))] } }, select: { id: true, name: true, socialName: true } })).map((u) => [u.id, u.socialName ?? u.name]),
       );
       const ordenadas = [...schedules].sort((a, b) => Number(b.cbo.startsWith('2251')) - Number(a.cbo.startsWith('2251')));
+      // A agenda aceita um horário por pessoa por dia: não oferece dias em que ela já tem consulta naquela agenda.
+      const ocupados = new Set(
+        (
+          await sys.db.appointment.findMany({
+            where: { patientId: pessoa.id, scheduleId: { in: schedules.map((x) => x.id) }, status: { in: ['AGENDADO', 'CONFIRMADO'] }, startsAt: { gte: new Date() } },
+            select: { scheduleId: true, startsAt: true },
+          })
+        ).map((a) => `${a.scheduleId}|${localDateString(a.startsAt, sys.tenant.timeZone)}`),
+      );
       const ofertas: { scheduleId: string; startsAt: Date; profissional: string; servico: string }[] = [];
       for (const s of ordenadas.slice(0, 4)) {
-        const slots = await this.scheduling.nextFreeSlots(sys, s.id, 2);
+        const slots = (await this.scheduling.nextFreeSlots(sys, s.id, 8)).filter((slot) => !ocupados.has(`${s.id}|${localDateString(slot.startsAt, sys.tenant.timeZone)}`)).slice(0, 2);
         for (const slot of slots) ofertas.push({ scheduleId: s.id, startsAt: slot.startsAt, profissional: profissionais.get(s.professionalId) ?? 'profissional da unidade', servico: s.name });
       }
       ofertas.sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
@@ -530,27 +569,57 @@ export class AssistantService implements OnModuleInit {
 
   // ───────────────────────────── ouvidoria e pesquisa ─────────────────────────────
 
-  /** Registra a manifestação com o texto da mensagem (tipo e assunto inferidos) e devolve o protocolo. */
-  private async ouvidoria(sys: SystemContext, conversationId: string, pessoa: Pessoa | null, texto: string): Promise<Resposta> {
-    if (texto.trim().length < 10)
-      return { texto: 'Conte com suas palavras o que aconteceu (ou o elogio/sugestão), com unidade e data se souber, que eu registro na ouvidoria com protocolo.', intent: 'OUVIDORIA_PEDIR_TEXTO' };
+  /**
+   * Registra a manifestação com o texto da mensagem (tipo e assunto inferidos) e devolve o protocolo.
+   * Anonimato só quando o cidadão pede: a manifestação guarda o cadastro para ele acompanhar pelo app, mas a equipe
+   * não vê a autoria, e a transcrição da conversa (tela do assistente) não guarda o conteúdo nem o protocolo.
+   * Remetente não identificado: registro identificado pelo telefone, para a resposta chegar por aqui.
+   */
+  private async ouvidoria(sys: SystemContext, conversationId: string, ctx: Contexto, pessoa: Pessoa | null, texto: string, detalhado: boolean): Promise<Resposta> {
+    const t = texto.trim();
+    if (!detalhado && !manifestacaoTemConteudo(t)) {
+      await this.salvarContexto(sys, conversationId, ctx, { ouvidoriaAbertura: t, ouvidoriaPendenteAte: new Date(Date.now() + JANELA_COMPLEMENTO_MS).toISOString() });
+      return {
+        texto: 'Certo. Conte com suas palavras o que aconteceu (ou o elogio/sugestão), com a unidade e a data se souber, que eu registro na ouvidoria com protocolo. Se não quiser se identificar, diga "anônima".',
+        intent: 'OUVIDORIA_PEDIR_TEXTO',
+      };
+    }
+    const anonima = pedeAnonimato(t);
     const conv = await sys.db.assistantConversation.findUniqueOrThrow({ where: { id: conversationId }, select: { phone: true } });
     const unidade = pessoa ? (await this.citizen.eu(this.cctx(sys, pessoa.id))).unidadeReferencia : null;
-    const kind = inferirTipoManifestacao(texto);
+    const kind = inferirTipoManifestacao(t);
     const c = await this.ombudsman.registrar(sys, {
       kind,
       channel: 'WHATSAPP',
-      subject: inferirAssuntoManifestacao(texto),
-      text: texto,
+      subject: inferirAssuntoManifestacao(t),
+      text: t,
       unitId: unidade?.id ?? null,
       patientId: pessoa?.id ?? null,
-      anonymous: !pessoa,
+      anonymous: anonima,
       contactPhone: conv.phone,
     });
+    const prazo = 'em até 30 dias, prorrogáveis uma vez por igual período com justificativa (Lei 13.460/2017)';
+    const partes = [
+      `Registrei sua ${TIPO_MANIFESTACAO[kind].toLowerCase()} na ouvidoria${anonima ? ', sem identificação para a equipe' : ''}. Protocolo ${c.protocol}.`,
+      `A resposta chega por aqui${pessoa ? ' e no app do cidadão' : ''} ${prazo}. Se quiser falar com alguém agora, responda 9.`,
+    ];
+    // Sintomas que pedem atendimento hoje: a manifestação não substitui a orientação.
+    if (urgenciaNoTexto(t)) {
+      const unidades = await this.unidadesPublicas(sys);
+      const upa = unidades.find((u) => u.type === 'UPA') ?? unidades.find((u) => u.type === 'HOSPITAL') ?? null;
+      partes.unshift(orientacaoTriagem('URGENCIA', { upa }));
+      await sys.db.assistantConversation.update({ where: { id: conversationId }, data: { lastTriage: 'URGENCIA' } });
+      await this.pedirAtendente(sys, conversationId, 'URGENCIA');
+    }
+    if (anonima) {
+      const textos = [t, ...t.split('\n')].filter(Boolean);
+      await sys.db.assistantMessage.updateMany({ where: { conversationId, direction: 'ENTRADA', text: { in: textos } }, data: { text: TEXTO_ANONIMA_NA_CONVERSA } });
+    }
     return {
-      texto: `Registrei sua ${TIPO_MANIFESTACAO[kind].toLowerCase()} na ouvidoria. Protocolo ${c.protocol}. A resposta chega por aqui${pessoa ? ' e no app do cidadão' : ''} em até 30 dias (prazo da Lei 13.460/2017). Se quiser falar com alguém agora, responda 9.`,
+      texto: partes.join('\n'),
       intent: 'OUVIDORIA',
-      extra: { protocolo: c.protocol, tipo: kind },
+      extra: anonima ? { tipo: kind, anonima: true } : { protocolo: c.protocol, tipo: kind },
+      ...(anonima ? { registro: `Manifestação anônima registrada na ouvidoria (protocolo informado ao cidadão).${urgenciaNoTexto(t) ? ' Orientado a procurar atendimento hoje.' : ''}` } : {}),
     };
   }
 
@@ -569,7 +638,12 @@ export class AssistantService implements OnModuleInit {
         intent: 'PESQUISA_INDISPONIVEL',
       };
     }
-    await this.salvarContexto(sys, conversationId, ctx, { pesquisaComentario: m[1]! });
+    await this.salvarContexto(sys, conversationId, ctx, {
+      pesquisaComentario: m[1]!,
+      pesquisaComentarioAte: new Date(Date.now() + JANELA_COMPLEMENTO_MS).toISOString(),
+      ouvidoriaAbertura: undefined,
+      ouvidoriaPendenteAte: undefined,
+    });
     return {
       texto: `Obrigado pela avaliação (${ESCALA_SATISFACAO[Number(m[2])]?.toLowerCase()})! Se quiser contar mais sobre o atendimento, é só responder com sua mensagem.`,
       intent: 'PESQUISA_RESPONDIDA',
@@ -617,7 +691,7 @@ export class AssistantService implements OnModuleInit {
   // ───────────────────────────── saída ─────────────────────────────
 
   private async enviar(sys: SystemContext, conversationId: string, phone: string, patientId: string | null, r: Resposta) {
-    const texto = 'texto' in r ? r.texto : `${r.botoes.body}\n[${r.botoes.buttons.map((b) => b.title).join(' | ')}]`;
+    const texto = r.registro ?? ('texto' in r ? r.texto : `${r.botoes.body}\n[${r.botoes.buttons.map((b) => b.title).join(' | ')}]`);
     const log =
       'texto' in r
         ? await this.messaging.sendTextNow(sys, patientId, phone, r.texto, conversationId)
