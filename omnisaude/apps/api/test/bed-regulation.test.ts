@@ -424,6 +424,35 @@ describe.runIf(enabled)('Central de leitos da rede e AIH', () => {
       expect(lista.every((l: { status: string }) => l.status === 'AUTORIZADA')).toBe(true);
     });
   });
+
+  describe('Concorrência', () => {
+    it('solicitações simultâneas recebem protocolos distintos', async () => {
+      // Uma solicitação em andamento por pessoa: cinco pessoas novas.
+      const pessoas: string[] = [];
+      for (const [i, nome] of ['Alice', 'Bruna', 'Clara', 'Diana', 'Elisa'].entries()) {
+        const p = await t
+          .http()
+          .post('/api/patients')
+          .set(auth(recepcao))
+          .send({ name: `${nome} Simultanea Leitos`, birthDate: '1958-03-03', sex: 'F', cpf: completeCpf(`47700051${i}`), cns: cnsFromBase(`2770000051${i}`), motherName: 'Mae Leitos Teste', address })
+          .expect(201);
+        pessoas.push(p.body.id);
+      }
+      const juntas = await Promise.all(
+        pessoas.map((patientId) =>
+          t
+            .http()
+            .post('/api/regulacao-leitos/solicitacoes')
+            .set(auth(medica))
+            .send({ patientId, bedKind: 'CLINICA_MEDICA', specialty: 'Clínica médica', clinicalSummary: 'Pneumonia comunitária com necessidade de internação para antibiótico venoso.' }),
+        ),
+      );
+      expect(juntas.map((r) => r.status)).toEqual([201, 201, 201, 201, 201]);
+      const protocolos = juntas.map((r) => r.body.protocol as string);
+      expect(protocolos.every((p) => /^LEI-\d{4}-\d{6}$/.test(p))).toBe(true);
+      expect(new Set(protocolos).size).toBe(5);
+    });
+  });
 });
 
 function binaryParser(res: NodeJS.ReadableStream, cb: (err: Error | null, body: Buffer) => void) {

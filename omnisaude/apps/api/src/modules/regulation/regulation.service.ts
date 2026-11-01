@@ -32,6 +32,7 @@ import { AuditService } from '../../core/audit.service';
 import { OutboxService } from '../../core/outbox.service';
 import type { RequestContext } from '../../core/context';
 import { conflict, DomainError, forbidden, notFound } from '../../core/errors';
+import { anoDoProtocolo, gravarComProtocolo } from '../../core/protocolo';
 import { RealtimeService } from '../../core/realtime.service';
 import { MessagingService } from '../integrations/messaging.service';
 import { patientSummary } from '../patients/patients.service';
@@ -171,10 +172,9 @@ export class RegulationService {
     if (docs !== new Set(ids).size) throw new DomainError('ANEXO_INVALIDO', 'Anexo não pertence ao paciente', HttpStatus.UNPROCESSABLE_ENTITY);
   }
 
-  private async proximoProtocolo(ctx: RequestContext): Promise<string> {
-    const ano = new Date().getUTCFullYear();
+  private async proximoProtocolo(ctx: RequestContext, ano: number, salto = 0): Promise<string> {
     const total = await ctx.db.regulationRequest.count({ where: { protocol: { startsWith: `REG-${ano}-` } } });
-    for (let i = 1; i <= 50; i++) {
+    for (let i = 1 + salto; i <= 50 + salto; i++) {
       const candidato = numeroProtocolo(ano, total + i);
       if (!(await ctx.db.regulationRequest.findUnique({ where: { protocol: candidato }, select: { id: true } }))) return candidato;
     }
@@ -201,47 +201,52 @@ export class RegulationService {
       { tipo: input.kind, codigo: input.specialty, criterios: input.criteria, prioridade: input.priority, justificativa: input.priorityJustification },
       await this.examesDoPaciente(ctx, input.patientId),
     );
-    const protocol = await this.proximoProtocolo(ctx);
-    const created = await ctx.db.$transaction(async (tx) => {
-      const r = await tx.regulationRequest.create({
-        data: {
-          protocol,
-          kind: input.kind,
-          specialty: input.specialty,
-          procedureCode: def.sigtapCode,
-          procedureName: def.nome,
-          patientId: input.patientId,
-          encounterId: input.encounterId ?? null,
-          unitId: ctx.session.unitId,
-          requesterId: ctx.session.userId,
-          requesterCbo: ctx.cbo,
-          priority: input.priority,
-          requestedPriority: input.priority,
-          priorityJustification: input.priorityJustification?.trim() || null,
-          clinicalSummary: input.clinicalSummary.trim(),
-          criteria: input.criteria,
-          cid: input.cid?.toUpperCase().replace('.', '') || null,
-          protocolIssues: verificacao.pendencias,
-          events: {
-            create: {
-              kind: 'CRIADA',
-              toStatus: 'PENDENTE',
-              userId: ctx.session.userId,
-              role: ctx.session.role,
-              notes: verificacao.pendencias.length ? `Pendências do protocolo: ${verificacao.pendencias.join('; ')}` : null,
+    const gravar = (protocol: string) =>
+      ctx.db.$transaction(async (tx) => {
+        const r = await tx.regulationRequest.create({
+          data: {
+            protocol,
+            kind: input.kind,
+            specialty: input.specialty,
+            procedureCode: def.sigtapCode,
+            procedureName: def.nome,
+            patientId: input.patientId,
+            encounterId: input.encounterId ?? null,
+            unitId: ctx.session.unitId,
+            requesterId: ctx.session.userId,
+            requesterCbo: ctx.cbo,
+            priority: input.priority,
+            requestedPriority: input.priority,
+            priorityJustification: input.priorityJustification?.trim() || null,
+            clinicalSummary: input.clinicalSummary.trim(),
+            criteria: input.criteria,
+            cid: input.cid?.toUpperCase().replace('.', '') || null,
+            protocolIssues: verificacao.pendencias,
+            events: {
+              create: {
+                kind: 'CRIADA',
+                toStatus: 'PENDENTE',
+                userId: ctx.session.userId,
+                role: ctx.session.role,
+                notes: verificacao.pendencias.length ? `Pendências do protocolo: ${verificacao.pendencias.join('; ')}` : null,
+              },
             },
+            attachments: { create: attachmentIds.map((documentId) => ({ documentId })) },
           },
-          attachments: { create: attachmentIds.map((documentId) => ({ documentId })) },
-        },
+        });
+        await this.audit.record(ctx, tx, {
+          action: 'regulacao.solicitar',
+          entityType: 'RegulationRequest',
+          entityId: r.id,
+          payload: { protocol, kind: input.kind, specialty: input.specialty, priority: input.priority, patientId: input.patientId, pendencias: verificacao.pendencias },
+        });
+        await this.rnds(ctx, tx, r.id, 'PENDENTE', 'CRIADA');
+        return r;
       });
-      await this.audit.record(ctx, tx, {
-        action: 'regulacao.solicitar',
-        entityType: 'RegulationRequest',
-        entityId: r.id,
-        payload: { protocol, kind: input.kind, specialty: input.specialty, priority: input.priority, patientId: input.patientId, pendencias: verificacao.pendencias },
-      });
-      await this.rnds(ctx, tx, r.id, 'PENDENTE', 'CRIADA');
-      return r;
+    // Dois pedidos ao mesmo tempo podem disputar o mesmo número: tenta o seguinte quando o índice único recusa.
+    const ano = anoDoProtocolo(ctx.tenant.timeZone);
+    const created = await gravarComProtocolo((salto) => this.proximoProtocolo(ctx, ano, salto), gravar, {
+      mensagem: 'Não foi possível gerar o número de protocolo; tente de novo',
     });
     this.realtime.emitToUnit(ctx.tenant.id, ctx.session.unitId, 'regulacao.atualizada', { id: created.id, status: created.status });
     return this.detalhe(ctx, created.id);

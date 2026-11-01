@@ -16,6 +16,7 @@ import {
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { DomainError, forbidden, notFound } from '../../core/errors';
+import { anoDoProtocolo, gravarComProtocolo } from '../../core/protocolo';
 import { RealtimeService } from '../../core/realtime.service';
 import { patientSummary } from '../patients/patients.service';
 import { formatDate, formatDateTime, maskCpf, renderDocument, type DocumentModel } from '../signatures/pdf';
@@ -91,10 +92,9 @@ export class TfdService {
     };
   }
 
-  private async proximoProtocolo(ctx: RequestContext) {
-    const ano = new Date().getUTCFullYear();
+  private async proximoProtocolo(ctx: RequestContext, ano: number, salto = 0) {
     const total = await ctx.db.tfdProcess.count({ where: { protocol: { startsWith: `TFD-${ano}-` } } });
-    for (let i = 1; i <= 50; i++) {
+    for (let i = 1 + salto; i <= 50 + salto; i++) {
       const candidato = numeroProcessoTfd(ano, total + i);
       if (!(await ctx.db.tfdProcess.findUnique({ where: { protocol: candidato }, select: { id: true } }))) return candidato;
     }
@@ -110,27 +110,32 @@ export class TfdService {
     }
     const aberto = await ctx.db.tfdProcess.findFirst({ where: { patientId: input.patientId, status: { in: STATUS_TFD_ABERTOS } }, select: { protocol: true } });
     if (aberto) throw new DomainError('TFD_ABERTO', `Esta pessoa já tem um processo de TFD em andamento (${aberto.protocol})`, HttpStatus.CONFLICT);
-    const protocol = await this.proximoProtocolo(ctx);
-    const p = await ctx.db.$transaction(async (tx) => {
-      const created = await tx.tfdProcess.create({
-        data: {
-          ...this.laudoData(input),
-          protocol,
-          patientId: input.patientId,
-          requestId: input.requestId ?? null,
-          unitId: ctx.session.unitId,
-          requesterId: ctx.session.userId,
-          requesterCbo: ctx.cbo,
-          events: { create: { kind: 'ABERTO', toStatus: 'ABERTO', userId: ctx.session.userId, role: ctx.session.role } },
-        },
+    const gravar = (protocol: string) =>
+      ctx.db.$transaction(async (tx) => {
+        const created = await tx.tfdProcess.create({
+          data: {
+            ...this.laudoData(input),
+            protocol,
+            patientId: input.patientId,
+            requestId: input.requestId ?? null,
+            unitId: ctx.session.unitId,
+            requesterId: ctx.session.userId,
+            requesterCbo: ctx.cbo,
+            events: { create: { kind: 'ABERTO', toStatus: 'ABERTO', userId: ctx.session.userId, role: ctx.session.role } },
+          },
+        });
+        await this.audit.record(ctx, tx, {
+          action: 'tfd.abrir',
+          entityType: 'TfdProcess',
+          entityId: created.id,
+          payload: { protocol, patientId: input.patientId, destino: `${input.destinationCity}/${input.destinationUf}` },
+        });
+        return created;
       });
-      await this.audit.record(ctx, tx, {
-        action: 'tfd.abrir',
-        entityType: 'TfdProcess',
-        entityId: created.id,
-        payload: { protocol, patientId: input.patientId, destino: `${input.destinationCity}/${input.destinationUf}` },
-      });
-      return created;
+    // Dois pedidos ao mesmo tempo podem disputar o mesmo número: tenta o seguinte quando o índice único recusa.
+    const ano = anoDoProtocolo(ctx.tenant.timeZone);
+    const p = await gravarComProtocolo((salto) => this.proximoProtocolo(ctx, ano, salto), gravar, {
+      mensagem: 'Não foi possível gerar o número do processo; tente de novo',
     });
     return this.detalhe(ctx, p.id);
   }

@@ -271,4 +271,22 @@ describe.runIf(enabled)('Regulação ambulatorial: solicitação, protocolo, fil
     const todas = (await t.http().get('/api/regulacao/solicitacoes?escopo=central&status=PENDENTE').set(auth(nir)).expect(200)).body;
     expect(todas.every((x: { status: string }) => x.status === 'PENDENTE')).toBe(true);
   });
+
+  it('solicitações simultâneas recebem protocolos distintos', async () => {
+    // Especialidades diferentes: a mesma pessoa pode ter uma solicitação aberta por especialidade.
+    const especialidades = ['ENDOCRINOLOGIA', 'NEFROLOGIA', 'NEUROLOGIA', 'OFTALMOLOGIA', 'ORTOPEDIA'];
+    const juntas = await Promise.all(
+      especialidades.map((specialty) =>
+        t
+          .http()
+          .post('/api/regulacao/solicitacoes')
+          .set(auth(medica))
+          .send({ patientId: pacienteId, kind: 'CONSULTA', specialty, priority: 'AZUL', clinicalSummary: `Avaliação especializada eletiva em ${specialty.toLowerCase()}.`, criteria: [] }),
+      ),
+    );
+    expect(juntas.map((r) => r.status)).toEqual([201, 201, 201, 201, 201]);
+    const protocolos = juntas.map((r) => r.body.protocol as string);
+    expect(protocolos.every((p) => /^REG-\d{4}-\d{6}$/.test(p))).toBe(true);
+    expect(new Set(protocolos).size).toBe(5);
+  });
 });
