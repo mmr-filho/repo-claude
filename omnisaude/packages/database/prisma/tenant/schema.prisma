@@ -445,6 +445,7 @@ model Patient {
   bedRequests BedRequest[]
   aihRequests AihRequest[]
   accessCodes CitizenAccessCode[]
+  assistantConversations AssistantConversation[]
 
   @@index([nameKey, birthDate])
   @@index([familyId])
@@ -2261,6 +2262,7 @@ enum MessageKind {
   LEMBRETE_MEDICACAO
   REMARCACAO
   AVISO
+  ASSISTENTE
 }
 
 enum MessageStatus {
@@ -2405,4 +2407,62 @@ model AuditEntry {
   @@index([entityType, entityId])
   @@index([userId, at])
   @@map("audit_entries")
+}
+
+// ───────────────────────────── Assistente do cidadão no WhatsApp (CID-2) ─────────────────────────────
+
+enum AssistantConversationStatus {
+  ABERTA
+  AGUARDANDO_ATENDENTE
+  ENCERRADA
+}
+
+enum AssistantDirection {
+  ENTRADA
+  SAIDA
+}
+
+/// Uma conversa por telefone; o contexto guarda a pessoa escolhida (telefone compartilhado) e as ofertas pendentes.
+model AssistantConversation {
+  id             String                      @id @default(uuid(7)) @db.Uuid
+  phone          String
+  patientId      String?                     @map("patient_id") @db.Uuid
+  status         AssistantConversationStatus @default(ABERTA)
+  context        Json                        @default("{}")
+  /// Gravidade da última triagem de sintomas (EMERGENCIA, URGENCIA, POUCO_URGENTE, NAO_URGENTE).
+  lastTriage     String?                     @map("last_triage")
+  handoffReason  String?                     @map("handoff_reason")
+  messagesCount  Int                         @default(0) @map("messages_count")
+  lastInboundAt  DateTime                    @map("last_inbound_at")
+  lastOutboundAt DateTime?                   @map("last_outbound_at")
+  closedAt       DateTime?                   @map("closed_at")
+  createdAt      DateTime                    @default(now()) @map("created_at")
+  updatedAt      DateTime                    @updatedAt @map("updated_at")
+
+  patient  Patient?           @relation(fields: [patientId], references: [id])
+  messages AssistantMessage[]
+
+  @@index([phone, status])
+  @@index([status, lastInboundAt])
+  @@map("assistant_conversations")
+}
+
+model AssistantMessage {
+  id                String             @id @default(uuid(7)) @db.Uuid
+  conversationId    String             @map("conversation_id") @db.Uuid
+  direction         AssistantDirection
+  text              String
+  /// Intenção reconhecida (mensagens recebidas) ou tipo da resposta (enviadas).
+  intent            String?
+  /// Detalhes: botões oferecidos, modelo de IA usado, gravidade, erros.
+  payload           Json?
+  providerMessageId String?            @map("provider_message_id")
+  /// Profissional que respondeu pela tela (mensagens enviadas por pessoa).
+  authorId          String?            @map("author_id") @db.Uuid
+  createdAt         DateTime           @default(now()) @map("created_at")
+
+  conversation AssistantConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("assistant_messages")
 }

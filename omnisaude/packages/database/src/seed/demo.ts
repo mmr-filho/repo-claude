@@ -58,7 +58,7 @@ export async function seedDemo(opts: SeedOptions) {
     primaryPort: opts.primaryPort,
     replicaHost: opts.replicaHost,
     replicaPort: opts.replicaPort,
-    settings: { aiEnabled: true, whatsappEnabled: true, rndsEnabled: true, ...opts.settings },
+    settings: { aiEnabled: true, whatsappEnabled: true, rndsEnabled: true, assistantEnabled: true, assistantName: 'Vida', ...opts.settings },
   });
 
   await opts.master.license.deleteMany({ where: { tenantId } });

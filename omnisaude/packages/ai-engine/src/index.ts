@@ -14,3 +14,4 @@ export * from './speech-to-soap';
 export * from './stt';
 export * from './voice-commands';
 export { wordsToNumbers } from './text';
+export * from './assistant';

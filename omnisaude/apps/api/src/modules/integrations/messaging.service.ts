@@ -27,15 +27,21 @@ export interface SystemContext {
   db: TenantClient;
 }
 
-type StoredPayload = { type: 'template'; template: TemplateMessage } | { type: 'interactive'; message: InteractiveButtonsMessage };
+type StoredPayload = { type: 'template'; template: TemplateMessage } | { type: 'interactive'; message: InteractiveButtonsMessage } | { type: 'text'; text: string };
 
 export type AppointmentReply = Extract<WebhookEvent, { type: 'appointment_reply' }>;
 type ReplyHandler = (sys: SystemContext, reply: AppointmentReply) => Promise<void>;
+/** Mensagens livres e botões do assistente do cidadão (CID-2). */
+export type AssistantEvent =
+  | { type: 'text'; text: string; from: string; profileName?: string; messageId: string; timestamp: Date }
+  | { type: 'button'; action: string; arg: string; title?: string; from: string; messageId: string; timestamp: Date };
+type AssistantHandler = (sys: SystemContext, event: AssistantEvent) => Promise<void>;
 
 @Injectable()
 export class MessagingService {
   private readonly logger = new Logger('WhatsApp');
   private replyHandler?: ReplyHandler;
+  private assistantHandler?: AssistantHandler;
 
   constructor(
     private readonly integrations: IntegrationConfigService,
@@ -43,6 +49,10 @@ export class MessagingService {
   ) {}
 
   /** A agenda registra aqui o tratamento das respostas (confirmar, cancelar, remarcar). */
+  onAssistantEvent(handler: AssistantHandler) {
+    this.assistantHandler = handler;
+  }
+
   onAppointmentReply(handler: ReplyHandler) {
     this.replyHandler = handler;
   }
@@ -161,7 +171,7 @@ export class MessagingService {
     for (const msg of due) {
       const payload = msg.payload as unknown as StoredPayload;
       try {
-        const id = payload.type === 'template' ? await client.sendTemplate(msg.phone, payload.template) : await client.sendInteractiveButtons(msg.phone, payload.message);
+        const id = await sendStored(client, msg.phone, payload);
         await sys.db.messageLog.update({ where: { id: msg.id }, data: { status: 'ENVIADA', sentAt: new Date(), providerMessageId: id } });
         result.sent++;
       } catch (err) {
@@ -176,6 +186,22 @@ export class MessagingService {
   async sendTemplateNow(sys: SystemContext, patientId: string | null, phone: string, template: TemplateMessage, refId?: string) {
     const log = await sys.db.messageLog.create({
       data: { patientId, phone, kind: 'AVISO', refId: refId ?? null, scheduledFor: new Date(), payload: { type: 'template', template } satisfies StoredPayload as object },
+    });
+    return this.dispatchOne(sys, log.id);
+  }
+
+  /** Texto simples imediato (assistente do cidadão: resposta a uma mensagem recebida, dentro da janela de 24h). */
+  async sendTextNow(sys: SystemContext, patientId: string | null, phone: string, text: string, refId?: string) {
+    const log = await sys.db.messageLog.create({
+      data: { patientId, phone, kind: 'ASSISTENTE', refId: refId ?? null, scheduledFor: new Date(), payload: { type: 'text', text } satisfies StoredPayload as object },
+    });
+    return this.dispatchOne(sys, log.id);
+  }
+
+  /** Botões imediatos do assistente do cidadão. */
+  async sendAssistantButtonsNow(sys: SystemContext, patientId: string | null, phone: string, message: InteractiveButtonsMessage, refId?: string) {
+    const log = await sys.db.messageLog.create({
+      data: { patientId, phone, kind: 'ASSISTENTE', refId: refId ?? null, scheduledFor: new Date(), payload: { type: 'interactive', message } satisfies StoredPayload as object },
     });
     return this.dispatchOne(sys, log.id);
   }
@@ -195,7 +221,7 @@ export class MessagingService {
     const client = new WhatsAppCloudClient({ phoneNumberId: cfg.phoneNumberId, accessToken: cfg.accessToken, baseUrl: cfg.baseUrl, apiVersion: cfg.apiVersion });
     const payload = msg.payload as unknown as StoredPayload;
     try {
-      const pid = payload.type === 'template' ? await client.sendTemplate(msg.phone, payload.template) : await client.sendInteractiveButtons(msg.phone, payload.message);
+      const pid = await sendStored(client, msg.phone, payload);
       return sys.db.messageLog.update({ where: { id }, data: { status: 'ENVIADA', sentAt: new Date(), providerMessageId: pid } });
     } catch (err) {
       return sys.db.messageLog.update({ where: { id }, data: { status: 'FALHOU', error: (err as Error).message.slice(0, 500) } });
@@ -240,10 +266,23 @@ export class MessagingService {
         handled++;
       } else if (event.type === 'button_reply' && event.decoded?.kind === 'ADHERENCE') {
         handled++;
+      } else if (event.type === 'button_reply' && event.decoded?.kind === 'ASSISTANT') {
+        if (this.assistantHandler)
+          await this.assistantHandler(sys, { type: 'button', action: event.decoded.action, arg: event.decoded.arg, title: event.title, from: event.from, messageId: event.messageId, timestamp: event.timestamp });
+        handled++;
+      } else if (event.type === 'text') {
+        if (this.assistantHandler) await this.assistantHandler(sys, { type: 'text', text: event.text, from: event.from, profileName: event.profileName, messageId: event.messageId, timestamp: event.timestamp });
+        handled++;
       } else {
         this.logger.debug(`Evento ignorado: ${event.type}`);
       }
     }
     return { handled };
   }
+}
+
+function sendStored(client: WhatsAppCloudClient, phone: string, payload: StoredPayload): Promise<string> {
+  if (payload.type === 'template') return client.sendTemplate(phone, payload.template);
+  if (payload.type === 'interactive') return client.sendInteractiveButtons(phone, payload.message);
+  return client.sendText(phone, payload.text);
 }

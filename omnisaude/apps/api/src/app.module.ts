@@ -23,6 +23,7 @@ import { RegulationModule } from './modules/regulation/regulation.module';
 import { SchedulingModule } from './modules/scheduling/scheduling.module';
 import { SignaturesModule } from './modules/signatures/signatures.module';
 import { BedRegulationModule } from './modules/bed-regulation/bed-regulation.module';
+import { AssistantModule } from './modules/assistant/assistant.module';
 import { CitizenModule } from './modules/citizen/citizen.module';
 import { TfdModule } from './modules/tfd/tfd.module';
 import { TransportModule } from './modules/transport/transport.module';
@@ -51,6 +52,7 @@ import { TriageModule } from './modules/triage/triage.module';
     TfdModule,
     BedRegulationModule,
     CitizenModule,
+    AssistantModule,
     PharmacyModule,
     BedsModule,
     PopsModule,

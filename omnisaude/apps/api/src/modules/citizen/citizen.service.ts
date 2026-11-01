@@ -68,8 +68,13 @@ export class CitizenService {
     // Unidade de referência: a do domicílio; sem domicílio vinculado, a do último atendimento ou agendamento.
     let unitId = p.family?.household.unitId ?? null;
     if (!unitId) {
-      const ultimo = await c.db.encounter.findFirst({ where: { patientId: p.id }, orderBy: { startedAt: 'desc' }, select: { unitId: true } });
-      unitId = ultimo?.unitId ?? (await c.db.appointment.findFirst({ where: { patientId: p.id }, orderBy: { startsAt: 'desc' }, select: { schedule: { select: { unitId: true } } } }))?.schedule.unitId ?? null;
+      // Prefere uma UBS (porta de entrada); UPA e hospital só se não houver outra passagem pela rede.
+      const [encs, appts] = await Promise.all([
+        c.db.encounter.findMany({ where: { patientId: p.id }, orderBy: { startedAt: 'desc' }, take: 10, select: { unit: { select: { id: true, type: true } } } }),
+        c.db.appointment.findMany({ where: { patientId: p.id }, orderBy: { startsAt: 'desc' }, take: 10, select: { schedule: { select: { unit: { select: { id: true, type: true } } } } } }),
+      ]);
+      const vistas = [...encs.map((e) => e.unit), ...appts.map((a) => a.schedule.unit)];
+      unitId = vistas.find((u) => u.type === 'UBS')?.id ?? vistas[0]?.id ?? null;
     }
     const [unidade, proximo, examesNovos, vacinas, regAbertas, leitosAbertos, tfdAbertos, senha] = await Promise.all([
       unitId ? c.db.unit.findUnique({ where: { id: unitId }, select: { id: true, name: true, address: true, phone: true, openingHours: true } }) : null,

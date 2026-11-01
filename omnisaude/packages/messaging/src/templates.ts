@@ -12,7 +12,8 @@ export const APPOINTMENT_ACTIONS: readonly AppointmentAction[] = ['CONFIRM', 'CA
 export type DecodedPayload =
   | { kind: 'APPOINTMENT'; action: AppointmentAction; appointmentId: string }
   | { kind: 'APPOINTMENT_SLOT'; appointmentId: string; slotId: string }
-  | { kind: 'ADHERENCE'; action: 'TAKEN'; reminderId: string };
+  | { kind: 'ADHERENCE'; action: 'TAKEN'; reminderId: string }
+  | { kind: 'ASSISTANT'; action: string; arg: string };
 
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
 
@@ -33,8 +34,17 @@ export function encodeAdherencePayload(reminderId: string): string {
   return `ADH:TAKEN:${checkId(reminderId)}`;
 }
 
+/** Botões do assistente do cidadão: "ASSIST:<ação>:<argumento>" (ids de agenda e horário separados por "_"). */
+export function encodeAssistantPayload(action: string, arg: string): string {
+  if (!/^[A-Z_]{1,20}$/.test(action) || !/^[A-Za-z0-9_-]{1,120}$/.test(arg)) throw new Error('Payload do assistente inválido');
+  return `ASSIST:${action}:${arg}`;
+}
+
 export function decodeButtonPayload(payload: string): DecodedPayload | null {
   const parts = payload.split(':');
+  if (parts[0] === 'ASSIST' && parts.length === 3 && /^[A-Z_]{1,20}$/.test(parts[1]!) && /^[A-Za-z0-9_-]{1,120}$/.test(parts[2]!)) {
+    return { kind: 'ASSISTANT', action: parts[1]!, arg: parts[2]! };
+  }
   if (parts[0] === 'APPT' && parts.length === 3 && (APPOINTMENT_ACTIONS as string[]).includes(parts[1]!) && ID.test(parts[2]!)) {
     return { kind: 'APPOINTMENT', action: parts[1] as AppointmentAction, appointmentId: parts[2]! };
   }

@@ -43,6 +43,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | Janela de silêncio 22h–06h, adiando para 06h01 | ✅ | fuso por tenant |
 | Painel de crônicos em atraso e busca ativa pelo serviço social | ✅ | |
 | App do cidadão: acesso por código (WhatsApp ou recepção), agenda com confirmação/cancelamento e lembretes, exames, cartão de vacinas e certificado, remédios e estoque na rede, fila da regulação, leitos, TFD, senha do dia e unidades | ✅ | CID-1 (`docs/CIDADAO.md`); modelo `codigo_acesso` a aprovar na conta do WhatsApp |
+| Assistente do cidadão no WhatsApp: entende por regras e por modelo (saída estruturada), responde com dados reais, marca/confirma/cancela/remarca por conversa, triagem com sinais de alerta, passagem para atendente | ✅ | CID-2 (`docs/ASSISTENTE-WHATSAPP.md`); áudio e imagem recebidos não são lidos |
 
 ## 5. Gestão e BI
 
@@ -116,6 +117,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | AIH: laudo médico (SIGTAP, CIDs, especialidade do leito, caráter, sinais, condições, provas), autorização com número da faixa do gestor ou manual com dígito verificador, validade, negativa, cancelamento, faixas numéricas, PDF e número no espelho de faturamento | ✅ | REG-7; lote SISAIH01 fica em FAT-2 (`docs/REGULACAO-LEITOS.md`) |
 | Cadastro completo do cidadão: documentos (RG, NIS), dados sociais (escolaridade, trabalho, ocupação, situação de rua), endereço com CEP automático, domicílio e família (cadastro domiciliar do e-SUS), unificação de cadastros duplicados | ✅ | NUC-1; o cadastro unificado redireciona para o que ficou e leva o histórico junto |
 | App do cidadão (`/cidadao`, celular): entrada por CPF, nascimento e código de 6 dígitos; início com senha do dia, próximo compromisso e pendências; agenda (confirmar, cancelar, salvar .ics, lembretes WhatsApp); exames; vacinas com próximas doses e certificado PDF; remédios com posologia simples e onde há estoque; fila da regulação com posição, leitos e TFD; unidades com "como chegar"; botão "Código do app" na ficha do paciente | ✅ | CID-1; sessão própria (localStorage), rotas `/api/cidadao/*` isoladas por token |
+| Assistente WhatsApp (`/assistente`): painel (conversas, aguardando atendente, consultas marcadas por conversa, triagens), lista com filtro e busca, transcrição com intenção por mensagem, resposta humana pelo mesmo número e encerramento | ✅ | CID-2; atualiza em tempo real |
 | Recepção (OCR, CADSUS, duplicidade, senhas, acolhimento, pulseira) | ✅ | |
 | Painel de chamada (TV) com voz | ✅ | exige um clique para liberar o som (regra dos navegadores) |
 | Classificação de risco com mapa corporal 2D e escala 0–10 | ✅ | |
@@ -150,6 +152,9 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
   presença, salva o .ics, cancela com motivo, percorre exames, vacinas (certificado em PDF), remédios, fila com
   posição e unidades, sai e entra de novo com o código da recepção; o token do cidadão é recusado nas rotas de
   profissional.
+- Assistente do WhatsApp no navegador: conversa simulada pelo webhook (saudação, agenda, oferta de horários e
+  marcação por botão, triagem com emergência, pedido de atendente) aparece na tela da recepção com a intenção de
+  cada mensagem; a recepção responde pela tela e a mensagem sai pelo WhatsApp simulado.
 - Imagem Docker da API construída e executada: migrações, login com contexto e consulta de BI na conexão
   somente leitura.
 - Exportação estática do front-end e `cap sync android` concluídos.

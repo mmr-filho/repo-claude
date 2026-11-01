@@ -25,6 +25,12 @@ const updateSchema = z.object({
       icpBrasilEnabled: z.boolean().optional(),
       appointmentReminderHours: z.number().int().min(1).max(168).optional(),
       accrMaxWaitMinutes: z.record(z.enum(['VERMELHO', 'LARANJA', 'AMARELO', 'VERDE', 'AZUL']), z.number().int().min(0)).optional(),
+      assistantEnabled: z.boolean().optional(),
+      assistantName: z.string().trim().min(2).max(40).optional(),
+      assistantFaq: z
+        .array(z.object({ pergunta: z.string().trim().min(3).max(200), resposta: z.string().trim().min(3).max(1000) }))
+        .max(50)
+        .optional(),
     })
     .optional(),
 });

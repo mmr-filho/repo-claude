@@ -4,5 +4,5 @@ import { CitizenAuthService } from './citizen-auth.service';
 import { CitizenController } from './citizen.controller';
 import { CitizenService } from './citizen.service';
 
-@Module({ imports: [SchedulingModule], controllers: [CitizenController], providers: [CitizenAuthService, CitizenService] })
+@Module({ imports: [SchedulingModule], controllers: [CitizenController], providers: [CitizenAuthService, CitizenService], exports: [CitizenService] })
 export class CitizenModule {}
