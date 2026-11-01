@@ -54,9 +54,32 @@ de visita no e-SUS; visitas nos indicadores e programas (`docs/ACS.md`).
 | 21 ✅ entregue em 31/10 | CID-2 | Assistente no WhatsApp: identificação pelo telefone com consentimento, menu e palavras-chave sem IA, modelo com saída estruturada quando a IA está ativa, agenda por conversa (marcar, confirmar, cancelar, remarcar), exames, vacinas, remédios, fila/TFD, senha, unidades, triagem com sinais de alerta que prevalecem, passagem para atendente e tela da equipe (`docs/ASSISTENTE-WHATSAPP.md`) |
 | 22 ✅ entregue em 01/11 | CID-3, CID-4 | Ouvidoria (Lei 13.460/2017: protocolo, prazo de 30 dias prorrogável uma vez, anonimato, encaminhamento, resposta com aviso, avaliação, painel) pelos canais app, WhatsApp e balcão; pesquisa de satisfação após o atendimento (WhatsApp com botões e app com NPS, painel por unidade e profissional); Meu SUS Digital (prontidão por CPF/CNS e registros enviados à RNDS na ficha e no app) (`docs/OUVIDORIA.md`) |
 
+## Fase 5 (semanas 23 a 30): onda 4, vigilância em saúde
+
+Plano feito em 01/11/2026 a partir de fontes oficiais conferidas no texto (compilado da PRC GM/MS nº 4/2017 na
+BVS, Portaria GM/MS nº 11.211/2026, notas técnicas do Ministério de 2024 a 2026, calendários do portal Sinan,
+manuais do e-SUS Sinan e do e-SUS Notifica). Nenhum sistema federal da vigilância (Sinan Net, Sinan Online,
+e-SUS Sinan, e-SUS Notifica, Sivep-Gripe) tem API de escrita confirmada: o caminho é registrar no OmniSaúde,
+cumprir os prazos legais e entregar a fila de digitação e as exportações; a RNDS só recebe resultados de
+laboratório de covid-19 e mpox (REL).
+
+| Semana | Código | Entrega | Pronto quando | Precisa de você |
+|---|---|---|---|---|
+| 23 (6 a 10/4/2027) | VIG-1a | **Notificação compulsória a partir do atendimento**: papéis de vigilância municipal e de núcleo do estabelecimento; semana epidemiológica; catálogo da Lista Nacional (Anexo 1 do Anexo V da PRC 4/2017) versionado e gerado do texto oficial (PRT 11.211/2026 e a anterior, 10.175/2026), com versões estadual e municipal; de-para CID-10/CIAP-2 → agravo; rascunho da ficha individual aberto sozinho ao assinar o registro com código notificável, no óbito e na internação, sem bloquear o atendimento; prazos de 24 h e 7 dias, ciência da SMS e repasse à SES e ao MS em 24 h; contatos do CIEVS; painel em tempo real e escalonamento; sigilo dos agravos sensíveis com leitura auditada | O catálogo reproduz as 81 linhas e 66 itens da redação vigente; a semana epidemiológica bate com os calendários oficiais; um SOAP com coqueluche gera um único rascunho imediato com prazo de 24 h; a vigilância dá ciência e registra o repasse à SES; uma notificação de HIV não abre para outro médico | Técnicos da vigilância e dos núcleos hospitalares; contatos do CIEVS municipal e estadual e escala de plantão; lista complementar estadual ou municipal, se houver; um técnico para homologar o de-para de códigos |
+| 24 (13 a 17/4) | VIG-1b, INT-4a | **Investigação, encerramento e saída para os sistemas oficiais**: tabela agravo → sistema de destino com vigência (Sinan Net, Sinan Online para dengue e chikungunya, e-SUS Sinan, e-SUS Notifica, Sivep-Gripe); fila "pendente de digitação" com o número oficial; espelho e PDF da ficha; exportação no dicionário de dados; encerramento genérico; gatilho por resultado de exame e por Srag; REL de covid-19 e mpox à RNDS; prazo de 24 h para comunicar a polícia na violência contra a mulher | Cada agravo cai na fila do sistema certo; informar o número oficial tira da fila; o REL é aceito pelo simulador | Acordo com a SES sobre quem digita em cada sistema; contas dos digitadores; credenciamento na RNDS; autoridade policial de referência |
+| 25 (20 a 24/4) | PLT-3 | **Território georreferenciado e mapa de casos**: localidade, bairro, quarteirão e imóvel únicos (servem ao ACS, ao ACE e à vigilância sanitária); importação de malha GeoJSON; editor de quarteirões; geocodificação com nível de precisão; mapa de casos só para a vigilância | Importar a malha liga cada domicílio ao seu quarteirão; um raio de 150 m devolve os quarteirões atingidos | Malha de bairros e quarteirões (ou aceite de desenhar no editor) |
+| 26 (27/4 a 1/5) | VIG-3a | **Agente de combate às endemias em campo**: papéis ACE, supervisor e coordenador; visita no app sem internet (depósitos, focos, tratamento com baixa do larvicida por lote, pendências); bloqueio de transmissão aberto pelas notificações de dengue, chikungunya e Zika (raio de 150 m); ficha de visita do e-SUS APS | Duas notificações próximas geram uma única ordem de bloqueio; o ACE trabalha sem rede e nada duplica ao sincronizar | ACE no CNES (CBO 515140); larvicida e estoque por lote; código de posturas; celulares com GPS |
+| 27 (4 a 8/5) | VIG-1c | **Consolidação e detecção de surto**: importação e conciliação das exportações do Sinan e do e-SUS Notifica; diagrama de controle por agravo e território; estágios do plano de contingência; notificação de surto; notificação negativa semanal com atesto do responsável | O DBF do município importa sem duplicar; o diagrama bate com a planilha; a unidade silenciosa aparece | Exportações dos últimos 5 anos; plano municipal de contingência de arboviroses |
+| 28 (11 a 15/5) | VIG-3b | **Ovitrampas, laboratório de entomologia e pontos estratégicos**: instalação e recolhimento, contagem de ovos, IPO/IDO/IDV, envio ao Conta Ovos; pontos estratégicos e imóveis especiais com periodicidade por risco | Os índices batem com o cálculo manual; o envio ao Conta Ovos (simulador) não duplica | Convite e chave do Conta Ovos; laboratorista; cadastro de pontos estratégicos |
+| 29 (18 a 22/5) | VIG-4a | **Raiva, observação do animal, rumores e epizootias**: atendimento antirrábico com a conduta das notas técnicas vigentes, soro e vacina com aprazamento, observação de 10 dias do animal no app de campo, rumores vindos da ouvidoria, epizootias de notificação imediata | Cão observável não leva profilaxia; morcego indica soro e 4 doses com volume certo; epizootia vira notificação imediata | Nota estadual sobre soro e profilaxia; médico-veterinário; laboratório de referência |
+| 30 (25 a 29/5) | VIG-2a | **Vigilância sanitária orientada a risco**: papéis de fiscal e coordenador; estabelecimento sobre o imóvel único; risco por CNAE (IN 66/2020 e normas locais); denúncia da ouvidoria vira ordem de serviço; roteiro de inspeção sem internet; termo de intimação e auto de infração assinados (Lei 6.437/1977); produção no BPA-C | Denúncia anônima vira ordem de serviço; o fiscal lavra o auto sem rede e o PDF assinado é validado | Código sanitário municipal e modelos de termo e auto; fiscais designados com certificado |
+
+Depois da Fase 5, a **Onda 4b** (3 a 4 semanas) completa o que depende de atos locais ou de layouts ainda não
+publicados: LIRAa/LIA, licenciamento sanitário e processo administrativo completo, livros da Portaria 344 e da
+óptica, campanha antirrábica animal, leishmaniose visceral canina e unidade de vigilância de zoonoses.
+
 ## Depois (trimestres seguintes)
 
-- **Onda 4, vigilância** (epidemiológica/SINAN, sanitária, endemias, zoonoses): 8 semanas.
 - **Onda 5, hospital e faturamento** (AIH/APAC/RAAS, centro cirúrgico, CCIH, prestadores): 8 semanas.
 - **Onda 6, diagnóstico, farmácia estendida e gestão** (LIS, imagem, Hórus, SNCR, sala de situação, consórcio,
   CAPS, telessaúde): 10 semanas.
@@ -66,6 +89,17 @@ de visita no e-SUS; visitas nos indicadores e programas (`docs/ACS.md`).
 
 | Insumo | Para | Situação |
 |---|---|---|
+| Técnicos da vigilância municipal e dos núcleos hospitalares (CPF, CBO, unidade); a vigilância tem CNES tipo 50? | VIG-1a (semana 23) | aguardando |
+| Contatos do CIEVS municipal e estadual (SES-TO) e escala de plantão | VIG-1a (semana 23) | aguardando; o CIEVS Nacional já vem cadastrado |
+| Lista complementar de notificação estadual ou municipal | VIG-1a (semana 23) | aguardando, se houver |
+| Homologação do de-para CID-10/CIAP-2 → agravo por um técnico da vigilância | VIG-1a (semana 23) | aguardando; até lá os mapeamentos ficam "propostos" e geram rascunho com aviso |
+| Acordo com a SES sobre quem digita em cada sistema oficial e contas dos digitadores | VIG-1b (semana 24) | aguardando |
+| Malha de bairros e quarteirões (GeoJSON ou shapefile) | PLT-3 (semana 25) | aguardando |
+| ACE no CNES, larvicida e estoque, código de posturas | VIG-3a (semana 26) | aguardando |
+| Exportações do Sinan e do e-SUS Notifica (5 anos) e plano de contingência de arboviroses | VIG-1c (semana 27) | aguardando |
+| Convite e chave do Conta Ovos | VIG-3b (semana 28) | aguardando |
+| Nota estadual sobre profilaxia da raiva, médico-veterinário e laboratório de referência | VIG-4a (semana 29) | aguardando |
+| Código sanitário municipal, modelos de termo e auto, fiscais com certificado | VIG-2a (semana 30) | aguardando |
 | Papéis com 2FA obrigatório | NUC-6 (semana 1) | a gestão define em Administração > Segurança (padrão: nenhum, para não travar a demonstração) |
 | Código IBGE do município de teste | NUC-2/3 (semana 2) | recebido: 1709500 (Gurupi/TO) |
 | Arquivo "XML e-SUS AB" do CNES (área do gestor do CNES → Recebimento de Arquivos) | NUC-2/3: profissionais e equipes oficiais | aguardando um exemplo; até lá, planilha |
