@@ -1,7 +1,7 @@
 import { HttpStatus, Injectable, UnauthorizedException, type CanActivate, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { roleHasPermission, type Permission } from '@omnisaude/shared';
-import { AUTHENTICATED_KEY, clientIp, PERMISSION_KEY, PROVISIONAL_OK_KEY, PUBLIC_KEY, type ContextRequest } from './context';
+import { AUTHENTICATED_KEY, CITIZEN_KEY, clientIp, PERMISSION_KEY, PROVISIONAL_OK_KEY, PUBLIC_KEY, type ContextRequest } from './context';
 import { TenantsService } from './database';
 import { DomainError, forbidden } from './errors';
 import { TokenService } from './tokens';
@@ -24,12 +24,22 @@ export class AuthGuard implements CanActivate {
     if (this.reflector.getAllAndOverride<boolean>(PUBLIC_KEY, targets)) return true;
     const permissions = this.reflector.getAllAndOverride<Permission[]>(PERMISSION_KEY, targets);
     const authenticated = this.reflector.getAllAndOverride<boolean>(AUTHENTICATED_KEY, targets);
-    if (!permissions && !authenticated) throw forbidden('Rota sem política de acesso declarada');
+    const citizen = this.reflector.getAllAndOverride<boolean>(CITIZEN_KEY, targets);
+    if (!permissions && !authenticated && !citizen) throw forbidden('Rota sem política de acesso declarada');
 
     const req = context.switchToHttp().getRequest<ContextRequest>();
     const header = req.headers.authorization ?? '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : undefined;
     const claims = token ? await this.tokens.verify(token) : null;
+    if (citizen) {
+      if (!claims || claims.stage !== 'citizen') throw new UnauthorizedException('Sessão do cidadão inválida ou expirada');
+      const tenant = await this.tenants.resolve(claims.tid);
+      const db = await this.tenants.client(tenant.id);
+      const patient = await db.patient.findUnique({ where: { id: claims.sub }, select: { id: true, mergedIntoId: true } });
+      if (!patient || patient.mergedIntoId) throw new UnauthorizedException('Cadastro indisponível');
+      req.citizen = { tenant, db, patientId: patient.id, ip: clientIp(req) };
+      return true;
+    }
     if (!claims || claims.stage !== 'access') throw new UnauthorizedException('Sessão inválida ou expirada');
 
     const tenant = await this.tenants.resolve(claims.tid);

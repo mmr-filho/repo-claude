@@ -67,7 +67,10 @@ const schema = z.object({
   /** UF do estabelecimento (produção usa um EHR por estado, ex.: to-ehr-services.saude.gov.br). */
   RNDS_UF: z.string().length(2).optional(),
   /** CNES do estabelecimento regulador (central de regulação) autor dos registros de regulação assistencial enviados à RNDS. */
-  RNDS_REGULATOR_CNES: z.string().regex(/^\d{7}$/).optional(),
+  RNDS_REGULATOR_CNES: z
+    .string()
+    .regex(/^\d{7}$/)
+    .optional(),
   SEFAZ_URL: z.string().optional(),
   SIGTAP_ZIP_URL: z.string().optional(),
   /** API de dados abertos do Ministério da Saúde (estabelecimentos do CNES); os testes apontam para o simulador. */

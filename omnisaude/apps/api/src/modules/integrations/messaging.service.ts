@@ -172,6 +172,14 @@ export class MessagingService {
     return result;
   }
 
+  /** Template enviado na hora (código de acesso do cidadão: categoria de autenticação, fora da janela de silêncio). */
+  async sendTemplateNow(sys: SystemContext, patientId: string | null, phone: string, template: TemplateMessage, refId?: string) {
+    const log = await sys.db.messageLog.create({
+      data: { patientId, phone, kind: 'AVISO', refId: refId ?? null, scheduledFor: new Date(), payload: { type: 'template', template } satisfies StoredPayload as object },
+    });
+    return this.dispatchOne(sys, log.id);
+  }
+
   /** Mensagem interativa imediata (resposta a um pedido do paciente, dentro da janela de 24h). */
   async sendInteractiveNow(sys: SystemContext, patientId: string | null, phone: string, message: InteractiveButtonsMessage, refId?: string) {
     const log = await sys.db.messageLog.create({

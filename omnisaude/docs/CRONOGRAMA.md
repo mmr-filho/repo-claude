@@ -50,7 +50,7 @@ de visita no e-SUS; visitas nos indicadores e programas (`docs/ACS.md`).
 
 | Semana | Código | Entrega |
 |---|---|---|
-| 19 e 20 | CID-1 | App do cidadão: agenda e lembretes, cancelamento, exames, cartão de vacinas, medicamentos, fila e TFD |
+| 19 e 20 ✅ entregue em 31/10 | CID-1 | App do cidadão em `/cidadao`: acesso por CPF, nascimento e código (WhatsApp ou recepção), agenda com confirmação, cancelamento, .ics e lembretes, exames, cartão de vacinas com certificado, remédios com estoque na rede, fila da regulação com posição, leitos, TFD, senha do dia e unidades (`docs/CIDADAO.md`) |
 | 21 | CID-2 | Assistente com IA no WhatsApp: dúvidas, orientação, agendamento por conversa, triagem |
 | 22 | CID-3, CID-4 | Ouvidoria, pesquisa de satisfação, compatibilidade com o Meu SUS Digital |
 

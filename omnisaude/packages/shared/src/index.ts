@@ -3,6 +3,7 @@ export * from './acs';
 export * from './aps-indicadores';
 export * from './aps-programas';
 export * from './cbo';
+export * from './cidadao';
 export * from './clinical';
 export * from './cnes';
 export * from './dates';

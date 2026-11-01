@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, Pencil, Plus, Printer } from 'lucide-react';
+import { AlertTriangle, Pencil, Plus, Printer, Smartphone } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useState } from 'react';
 import { FamilyCard } from '@/components/patients/family-card';
@@ -21,6 +21,13 @@ import { api, errorMessage } from '@/lib/api';
 import { fmtDate, formatCns, formatCpf, todayIso } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useSession } from '@/lib/session';
+
+interface CodigoApp {
+  codigo: string;
+  validoAte: string;
+  validadeHoras: number;
+  instrucoes: string;
+}
 
 const LINES = [
   ['', 'Nenhuma'],
@@ -82,6 +89,7 @@ function PatientRecord() {
   const [condition, setCondition] = useState({ open: false, system: 'CID10', code: '', description: '', lineOfCare: '', onsetAt: '' });
   const [resolve, setResolve] = useState<{ open: boolean; id: string; code: string; description: string; resolvedAt: string }>({ open: false, id: '', code: '', description: '', resolvedAt: todayIso() });
   const [band, setBand] = useState<Wristband | null>(null);
+  const [codigoApp, setCodigoApp] = useState<CodigoApp | null>(null);
 
   if (!id) return <Alert tone="error">Paciente não informado.</Alert>;
   if (patient.error) return <Alert tone="error">{patient.error}</Alert>;
@@ -121,6 +129,21 @@ function PatientRecord() {
             {session.can('paciente.cadastrar') && (
               <Button variant="secondary" onClick={() => setEditing(toForm(p))}>
                 <Pencil className="h-4 w-4" /> Editar cadastro
+              </Button>
+            )}
+            {session.can('paciente.cadastrar') && (
+              <Button
+                variant="secondary"
+                id="btn-codigo-app"
+                onClick={async () => {
+                  try {
+                    setCodigoApp(await api.post<CodigoApp>('/cidadao/codigos', { patientId: p.id }));
+                  } catch (err) {
+                    toast.error(errorMessage(err));
+                  }
+                }}
+              >
+                <Smartphone className="h-4 w-4" /> Código do app
               </Button>
             )}
             {session.can('pulseira.emitir') && (
@@ -354,6 +377,17 @@ function PatientRecord() {
             </Select>
           </Field>
         </div>
+      </Dialog>
+      <Dialog open={!!codigoApp} onOpenChange={(o) => !o && setCodigoApp(null)} title="Código de acesso ao app do cidadão" description="Entregue ao cidadão. Vale uma vez, por 24 horas." size="sm">
+        {codigoApp && (
+          <div className="flex flex-col gap-3 text-center">
+            <p className="text-4xl font-bold tracking-[0.3em]" id="codigo-app-valor">
+              {codigoApp.codigo}
+            </p>
+            <p className="text-sm text-slate-600">{codigoApp.instrucoes}</p>
+            <p className="text-xs text-slate-500">Válido até {fmtDate(codigoApp.validoAte)}. O código fica registrado na auditoria em nome de quem o emitiu.</p>
+          </div>
+        )}
       </Dialog>
       {band && (
         <PrintPortal>

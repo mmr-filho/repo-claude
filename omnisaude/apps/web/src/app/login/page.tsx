@@ -1,5 +1,7 @@
 'use client';
 
+import Link from 'next/link';
+
 import { HeartPulse, ShieldCheck } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
@@ -78,7 +80,9 @@ export default function LoginPage() {
           )}
           {error && <Alert tone="error">{error}</Alert>}
           <Button type="submit" size="lg" loading={pending}>
-            {stage === 'credentials' ? 'Entrar' : (
+            {stage === 'credentials' ? (
+              'Entrar'
+            ) : (
               <>
                 <ShieldCheck className="h-4 w-4" /> Verificar
               </>
@@ -86,6 +90,11 @@ export default function LoginPage() {
           </Button>
         </form>
         <p className="mt-6 text-center text-xs text-slate-400">Acesso restrito a profissionais da rede. Todas as ações são registradas.</p>
+        <p className="mt-2 text-center text-sm">
+          <Link href="/cidadao" className="text-brand-700 underline" id="link-cidadao">
+            Sou cidadão: acessar minha saúde
+          </Link>
+        </p>
       </div>
     </main>
   );

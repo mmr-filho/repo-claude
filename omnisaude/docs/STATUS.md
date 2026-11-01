@@ -42,6 +42,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | Lembretes de adesão sincronizados com a prescrição | ✅ | |
 | Janela de silêncio 22h–06h, adiando para 06h01 | ✅ | fuso por tenant |
 | Painel de crônicos em atraso e busca ativa pelo serviço social | ✅ | |
+| App do cidadão: acesso por código (WhatsApp ou recepção), agenda com confirmação/cancelamento e lembretes, exames, cartão de vacinas e certificado, remédios e estoque na rede, fila da regulação, leitos, TFD, senha do dia e unidades | ✅ | CID-1 (`docs/CIDADAO.md`); modelo `codigo_acesso` a aprovar na conta do WhatsApp |
 
 ## 5. Gestão e BI
 
@@ -114,6 +115,7 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 | Central de leitos da rede: mapa de leitos de hospitais e UPAs, solicitação de vaga com sinais vitais (NEWS2), suporte e prioridade sugerida, fila por prioridade e tempo, análise, devolução/complementação, segunda avaliação por outro regulador, autorização com destino e reserva de leito (status Reservado no censo), transferência com transporte, internação pela central ou pelo censo, negativa, cancelamento, ficha PDF, painel e linha do tempo | ✅ | REG-7; sem integração com SISREG/CROSS (`docs/REGULACAO-LEITOS.md`) |
 | AIH: laudo médico (SIGTAP, CIDs, especialidade do leito, caráter, sinais, condições, provas), autorização com número da faixa do gestor ou manual com dígito verificador, validade, negativa, cancelamento, faixas numéricas, PDF e número no espelho de faturamento | ✅ | REG-7; lote SISAIH01 fica em FAT-2 (`docs/REGULACAO-LEITOS.md`) |
 | Cadastro completo do cidadão: documentos (RG, NIS), dados sociais (escolaridade, trabalho, ocupação, situação de rua), endereço com CEP automático, domicílio e família (cadastro domiciliar do e-SUS), unificação de cadastros duplicados | ✅ | NUC-1; o cadastro unificado redireciona para o que ficou e leva o histórico junto |
+| App do cidadão (`/cidadao`, celular): entrada por CPF, nascimento e código de 6 dígitos; início com senha do dia, próximo compromisso e pendências; agenda (confirmar, cancelar, salvar .ics, lembretes WhatsApp); exames; vacinas com próximas doses e certificado PDF; remédios com posologia simples e onde há estoque; fila da regulação com posição, leitos e TFD; unidades com "como chegar"; botão "Código do app" na ficha do paciente | ✅ | CID-1; sessão própria (localStorage), rotas `/api/cidadao/*` isoladas por token |
 | Recepção (OCR, CADSUS, duplicidade, senhas, acolhimento, pulseira) | ✅ | |
 | Painel de chamada (TV) com voz | ✅ | exige um clique para liberar o som (regra dos navegadores) |
 | Classificação de risco com mapa corporal 2D e escala 0–10 | ✅ | |
@@ -143,6 +145,11 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
   o certificado (PDF baixado), receita assinada e o PDF validado em "Validar documento" (adulteração detectada)
 - Cidadão no navegador: domicílio criado a partir do endereço, membro incluído com parentesco, condições de
   moradia editadas, CEP preenchendo logradouro, município, UF e IBGE, e dois cadastros duplicados unificados.
+- App do cidadão no navegador (viewport de celular): recepção emite o código na ficha do paciente; o cidadão pede o
+  código pelo WhatsApp (simulador), erra uma vez, entra, vê senha do dia, próximo compromisso e pendências, confirma
+  presença, salva o .ics, cancela com motivo, percorre exames, vacinas (certificado em PDF), remédios, fila com
+  posição e unidades, sai e entra de novo com o código da recepção; o token do cidadão é recusado nas rotas de
+  profissional.
 - Imagem Docker da API construída e executada: migrações, login com contexto e consulta de BI na conexão
   somente leitura.
 - Exportação estática do front-end e `cap sync android` concluídos.

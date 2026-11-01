@@ -21,7 +21,12 @@ export function recordProduction(
       professionalId: ctx.session.userId,
       cbo: ctx.cbo,
       procedureCode: input.procedureCode,
-      cid: input.cid ? input.cid.replace(/^(CID10|CIAP2):/, '').replace('.', '').slice(0, 4) : null,
+      cid: input.cid
+        ? input.cid
+            .replace(/^(CID10|CIAP2):/, '')
+            .replace('.', '')
+            .slice(0, 4)
+        : null,
       quantity: input.quantity ?? 1,
       performedAt: at,
       instrument: input.instrument,

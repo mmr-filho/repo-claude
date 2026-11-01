@@ -90,6 +90,13 @@ export const TEMPLATE_DEFINITIONS = [
     buttons: ['Já tomei'],
   },
   {
+    name: 'codigo_acesso',
+    category: 'AUTHENTICATION',
+    language: 'pt_BR',
+    body: 'Olá, {{1}}! Seu código de acesso ao app da saúde é {{2}}. Ele vale por {{3}} minutos. Não compartilhe este código com ninguém.',
+    buttons: [],
+  },
+  {
     name: 'regulacao_atualizacao',
     category: 'UTILITY',
     language: 'pt_BR',
@@ -206,6 +213,24 @@ export function buildRegulationUpdateTemplate(input: RegulationUpdateInput): Tem
     name: input.templateName ?? 'regulacao_atualizacao',
     languageCode: input.languageCode ?? 'pt_BR',
     bodyParams: [firstName(input.patientName), input.procedureName, input.protocol, REGULATION_STATUS_TEXT[input.status], (input.detail ?? '').trim() || 'Acompanhe pela unidade.'].map(sanitizeTemplateParam),
+    buttons: [],
+  };
+}
+
+export interface AccessCodeInput {
+  patientName: string;
+  code: string;
+  validMinutes: number;
+  templateName?: string;
+  languageCode?: string;
+}
+
+/** Código de acesso do cidadão ao app (modelo "codigo_acesso", categoria AUTHENTICATION, sem botões). */
+export function buildAccessCodeTemplate(input: AccessCodeInput): TemplateMessage {
+  return {
+    name: input.templateName ?? 'codigo_acesso',
+    languageCode: input.languageCode ?? 'pt_BR',
+    bodyParams: [firstName(input.patientName), input.code, String(input.validMinutes)].map(sanitizeTemplateParam),
     buttons: [],
   };
 }

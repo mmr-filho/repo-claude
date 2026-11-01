@@ -35,10 +35,7 @@ export class TenantsService implements OnModuleDestroy {
 
 @Global()
 @Module({
-  providers: [
-    { provide: MASTER_DB, useFactory: (config: AppConfig) => createMasterClient(config.MASTER_DATABASE_URL), inject: [APP_CONFIG] },
-    TenantsService,
-  ],
+  providers: [{ provide: MASTER_DB, useFactory: (config: AppConfig) => createMasterClient(config.MASTER_DATABASE_URL), inject: [APP_CONFIG] }, TenantsService],
   exports: [MASTER_DB, TenantsService],
 })
 export class DatabaseModule {}

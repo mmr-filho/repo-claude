@@ -444,6 +444,7 @@ model Patient {
   transportPassengers TransportPassenger[]
   bedRequests BedRequest[]
   aihRequests AihRequest[]
+  accessCodes CitizenAccessCode[]
 
   @@index([nameKey, birthDate])
   @@index([familyId])
@@ -1141,6 +1142,29 @@ model AihRange {
 
   @@index([active, unitId])
   @@map("aih_ranges")
+}
+
+// ───────────────────────────── App do cidadão (CID-1) ─────────────────────────────
+
+/// Código de acesso de uso único do cidadão ao app: enviado por WhatsApp ou entregue pela recepção.
+model CitizenAccessCode {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  patientId String    @map("patient_id") @db.Uuid
+  codeHash  String    @map("code_hash") @db.Char(64)
+  /// WHATSAPP ou RECEPCAO.
+  channel   String
+  phone     String?
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  attempts  Int       @default(0)
+  createdBy String?   @map("created_by") @db.Uuid
+  ip        String?
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  patient Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+
+  @@index([patientId, createdAt])
+  @@map("citizen_access_codes")
 }
 
 enum VehicleKind {

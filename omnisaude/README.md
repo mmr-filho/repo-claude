@@ -27,6 +27,8 @@ e BI conversacional).
   **TFD** e **transporte sanitário** com frota, rotas, viagens e roteiro do dia ([`docs/TFD-TRANSPORTE.md`](docs/TFD-TRANSPORTE.md));
   **central de leitos** da rede com NEWS2, reserva de leito e **AIH** ([`docs/REGULACAO-LEITOS.md`](docs/REGULACAO-LEITOS.md));
   envio da regulação à **RNDS** (Portaria 6.656/2025, guia RIRA/MIRA) com conferência e reenvio ([`docs/RNDS.md`](docs/RNDS.md)).
+- **App do cidadão** em `/cidadao`: acesso por CPF, nascimento e código (WhatsApp ou recepção), agenda com confirmação e
+  cancelamento, exames, cartão de vacinas, remédios, fila da regulação, TFD e senha do dia ([`docs/CIDADAO.md`](docs/CIDADAO.md)).
 - **Leitos/NIR**, **POPs** (hard e soft gates), **faturamento** (SIGTAP, crítica pré-glosa, BPA-I/BPA-C),
   **BI conversacional** com Text-to-SQL blindado, **gestão** (produtividade, SLAs, pautas) e **busca ativa**.
 - **Acessibilidade**: VLibras e chamada de intérprete de Libras por vídeo (WebRTC).
@@ -42,7 +44,7 @@ sistemas do mercado (Celk, Inovadora, MV) e o plano de melhorias por ondas estã
 
 ```
 apps/api               NestJS: REST, WebSockets (Socket.IO), filas BullMQ e worker
-apps/web               Next.js 16: desktop, tablet e mobile web (também exportado para o app); tela do ACS funciona sem internet
+apps/web               Next.js 16: desktop, tablet e mobile web (também exportado para o app); tela do ACS funciona sem internet; app do cidadão em /cidadao
 apps/mobile            Capacitor 8: app Android (smartphones e tablets)
 apps/cloudflare        publicação na Cloudflare: Worker (telas estáticas, rota da API, jobs) e container da API
 packages/shared        papéis/permissões, CPF/CNS, ACCR, GS1, datas, indicadores e programas da APS, calendário vacinal, campo do ACS, protocolos de regulação

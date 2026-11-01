@@ -13,7 +13,21 @@ export interface RequestContext {
   cbo: string;
 }
 
-export type ContextRequest = Request & { ctx?: RequestContext };
+/** Sessão do cidadão no app: o paciente autenticado por código de acesso, o tenant e o banco. */
+export interface CitizenContext {
+  tenant: TenantInfo;
+  db: TenantClient;
+  patientId: string;
+  ip: string;
+}
+
+export type ContextRequest = Request & { ctx?: RequestContext; citizen?: CitizenContext };
+
+export const CitizenCtx = createParamDecorator((_data: unknown, host: ExecutionContext): CitizenContext => {
+  const req = host.switchToHttp().getRequest<ContextRequest>();
+  if (!req.citizen) throw new Error('Sessão do cidadão ausente');
+  return req.citizen;
+});
 
 export const Ctx = createParamDecorator((_data: unknown, host: ExecutionContext): RequestContext => {
   const req = host.switchToHttp().getRequest<ContextRequest>();
@@ -25,6 +39,7 @@ export const PUBLIC_KEY = 'omni:public';
 export const PERMISSION_KEY = 'omni:permission';
 export const AUTHENTICATED_KEY = 'omni:authenticated';
 export const PROVISIONAL_OK_KEY = 'omni:provisional-ok';
+export const CITIZEN_KEY = 'omni:citizen';
 
 /** Rota sem autenticação (login, webhooks com assinatura própria, saúde). */
 export const Public = () => SetMetadata(PUBLIC_KEY, true);
@@ -32,6 +47,9 @@ export const Public = () => SetMetadata(PUBLIC_KEY, true);
 export const RequirePermission = (...permissions: Permission[]) => SetMetadata(PERMISSION_KEY, permissions);
 /** Qualquer usuário com contexto ativo (ex.: /auth/me). */
 export const Authenticated = () => SetMetadata(AUTHENTICATED_KEY, true);
+/** Rota do app do cidadão: exige o token "citizen" (sessão do paciente), nunca o de profissional. */
+export const CitizenRoute = () => SetMetadata(CITIZEN_KEY, true);
+
 /** Rotas que continuam acessíveis a quem ainda precisa trocar a senha provisória (conta e senha). */
 export const AllowProvisionalPassword = () => SetMetadata(PROVISIONAL_OK_KEY, true);
 

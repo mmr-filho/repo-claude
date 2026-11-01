@@ -6,9 +6,9 @@ import { APP_CONFIG, type AppConfig } from './config';
 /**
  * Etapas do login: "mfa" (aguardando o código TOTP), "context" (autenticado, escolhendo unidade e papel)
  * e "access" (contexto ativo). Só o token "access" abre a API. "panel" é o token somente leitura
- * da TV do painel de chamadas de uma unidade.
+ * da TV do painel de chamadas de uma unidade. "citizen" é a sessão do cidadão no app (sub = id do paciente).
  */
-export type TokenStage = 'mfa' | 'context' | 'access' | 'panel';
+export type TokenStage = 'mfa' | 'context' | 'access' | 'panel' | 'citizen';
 
 export interface TokenClaims {
   stage: TokenStage;
@@ -30,22 +30,16 @@ export class TokenService {
   }
 
   async sign(claims: TokenClaims): Promise<string> {
-    const ttl = claims.stage === 'access' ? `${this.config.SESSION_HOURS}h` : claims.stage === 'panel' ? '30d' : '10m';
+    const ttl = claims.stage === 'access' ? `${this.config.SESSION_HOURS}h` : claims.stage === 'panel' ? '30d' : claims.stage === 'citizen' ? '12h' : '10m';
     const { sub, ...rest } = claims;
-    return new SignJWT({ ...rest })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setSubject(sub)
-      .setIssuer('omnisaude')
-      .setIssuedAt()
-      .setExpirationTime(ttl)
-      .sign(this.key);
+    return new SignJWT({ ...rest }).setProtectedHeader({ alg: 'HS256' }).setSubject(sub).setIssuer('omnisaude').setIssuedAt().setExpirationTime(ttl).sign(this.key);
   }
 
   async verify(token: string): Promise<TokenClaims | null> {
     try {
       const { payload } = await jwtVerify(token, this.key, { issuer: 'omnisaude', algorithms: ['HS256'] });
       const stage = payload.stage;
-      if (stage !== 'mfa' && stage !== 'context' && stage !== 'access' && stage !== 'panel') return null;
+      if (stage !== 'mfa' && stage !== 'context' && stage !== 'access' && stage !== 'panel' && stage !== 'citizen') return null;
       if (typeof payload.tid !== 'string' || typeof payload.sub !== 'string') return null;
       const claims: TokenClaims = {
         stage,
