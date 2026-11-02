@@ -144,9 +144,16 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 
 ## Verificação feita
 
-- 304 testes automatizados passando: 201 nas bibliotecas, no simulador e no Worker da Cloudflare e 103 da API (integração contra o Postgres, criptografia da assinatura e layout do BPA)
-  contra PostgreSQL real.
-- Teste de fumaça com Playwright (`e2e/smoke.e2e.mjs`) percorrendo 13 telas com 8 papéis no build de produção.
+- 546 testes automatizados em 76 arquivos (bibliotecas, simulador, Worker da Cloudflare e API contra PostgreSQL
+  real), na rodada de 02/11/2026 às 03h02 UTC: 544 passando. Os 2 restantes (devolutiva da regulação e do TFD por
+  WhatsApp) e outros 11 que falham entre 21h e meia-noite de Brasília dependem da hora do relógio (janela de silêncio
+  do WhatsApp e data UTC contra data local nos próprios testes); passam fora dessas janelas.
+- Teste de fumaça com Playwright (`e2e/smoke.e2e.mjs`) percorrendo 15 telas com 8 papéis no build de produção.
+- Território no navegador (semana 25): localidade e bairros com apelido, importação de 30 quarteirões em GeoJSON com
+  os 11 imóveis ligados, raio de 150 m, quarteirão desenhado no editor (rascunho visível e editável antes de salvar),
+  base do CNEFE importada, imóveis localizados pelo endereço e marcados no mapa, endereço com HTML exibido como texto
+  (sem executar), mapa de casos da vigilância com o raio do caso e os pontos clicáveis por cima da malha; a médica
+  não vê a aba nem o menu e a API responde 403.
 - Fluxo de administração no navegador: a gestora cadastra uma unidade e um profissional, recebe a senha
   provisória, o profissional entra, só vê "Minha conta" até trocar a senha e depois acessa a Recepção.
 - Importação do CNES no navegador contra a API real do DATASUS: os 293 estabelecimentos de Gurupi/TO
