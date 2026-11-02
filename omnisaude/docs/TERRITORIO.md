@@ -53,7 +53,12 @@ elas vão para os geo campos 1 e 2 da ficha de notificação.
   domicílio e na visita do ACS; o app só manda coordenada quando há leitura nova no aparelho.
 - Endereço corrigido sem leitura nova apaga a posição que tinha vindo do endereço antigo (base do IBGE, centro de
   rua ou de bairro); GPS e marcação no mapa ficam.
-- A visita do ACS com GPS num imóvel sem posição grava a posição como GPS em campo e liga o imóvel ao quarteirão.
+- A visita do ACS com GPS num imóvel sem posição, ou com posição aproximada (rua ou bairro), grava a posição como
+  GPS em campo e liga o imóvel ao quarteirão; o app avisa quando a posição é aproximada.
+- A ficha de cadastro domiciliar do e-SUS leva latitude e longitude só com precisão do imóvel (as quatro primeiras);
+  ligar ou desligar o quarteirão não altera o cadastro e não reenvia a ficha.
+- No mapa de casos vale a residência registrada na ficha (a notificada); sem ela, o domicílio atual do paciente,
+  seguindo a unificação de cadastros duplicados.
 
 ### Importação da malha
 
@@ -65,15 +70,16 @@ elas vão para os geo campos 1 e 2 da ficha de notificação.
   reprojetado para SIRGAS 2000 no QGIS antes. Coordenada fora do Brasil, arquivo em metros sem sistema e shapefile
   sem .prj (sem escolher o sistema na tela) são recusados.
 - **Prévia sem efeito**: lê, valida cada feição (anel fechado, sem autointerseção, sem vértice repetido, com área,
-  sentido corrigido, furos dentro do contorno) e sugere qual coluna é o número, o nome, a localidade e o bairro. Só
-  "Aplicar" muda o território.
-- **Aplicação**: localidades por código, bairros por nome, quarteirões por localidade (+ bairro, na numeração por
-  bairro) + número, este em forma única ("012" é o 12, como no editor). O bairro do quarteirão vem da coluna, do
-  bairro fixo ou do contorno do bairro; se o arquivo não diz, fica o que o quarteirão já tinha. Número repetido no
-  arquivo, número inválido, bairro repetido e quarteirões sobrepostos são listados. Opção "malha completa" desativa
-  os quarteirões que não vieram, mas só se nenhuma feição teve erro. Uma importação por vez (trava no banco), e a
-  aplicação interrompida pela queda do servidor pode ser refeita depois de 20 minutos. Ao fim, **todos os imóveis
-  com posição são religados ao quarteirão**.
+  sentido corrigido, furos dentro do contorno; lascas de recorte e furos minúsculos saem com aviso) e sugere qual
+  coluna é o número, o nome, a localidade e o bairro. Só "Aplicar" muda o território.
+- **Aplicação**: localidades por código, bairros por nome ou apelido, quarteirões por localidade (+ bairro, na
+  numeração por bairro) + número, este em forma única ("012" é o 12 e "12A" é o 12-A, como no editor); o código da
+  localidade também ("0001" é o 1). O bairro do quarteirão vem da coluna, do bairro fixo ou do contorno do bairro;
+  se o arquivo não diz, fica o que o quarteirão já tinha. Número repetido no arquivo, número inválido, bairro
+  repetido e quarteirões sobrepostos são listados. Opção "malha completa" desativa os quarteirões que não vieram,
+  mas só se nenhuma feição teve erro. Uma importação por vez (trava no banco; quem salva no editor durante uma
+  importação recebe aviso para tentar de novo), e a aplicação interrompida pela queda do servidor pode ser refeita
+  depois de 20 minutos. Ao fim, **todos os imóveis com posição são religados ao quarteirão**.
 - **CNEFE**: o CSV do município (ou o .zip do IBGE) substitui a base de endereços daquele município.
 
 ### Editor de quarteirões
@@ -89,8 +95,8 @@ entorno.
 "Localizar pelo endereço" tenta, em ordem: rua e número no CNEFE → quadra e lote (endereço "S/N, QD 12 LT 7") →
 rua sem número (mediana da rua, se os pontos estão concentrados) → centro do quarteirão → centro do bairro ou da
 localidade (pelo nome ou apelido). Candidatos são filtrados pelo município, CEP e bairro; imóvel de outro
-município não recebe posição daqui. Os pendentes são percorridos por ordem (até 20 mil por execução), sem repetir
-sempre os mesmos. Tudo roda no servidor do OmniSaúde; cada execução é auditada.
+município não recebe posição daqui, e nome de bairro que existe em duas localidades não posiciona ninguém. Os
+pendentes são percorridos por ordem, em lotes de até 20 mil que a tela encadeia, sem repetir sempre os mesmos. Tudo roda no servidor do OmniSaúde; cada execução é auditada.
 
 ### Telas
 
@@ -108,8 +114,10 @@ sempre os mesmos. Tudo roda no servidor do OmniSaúde; cada execução é audita
 
 - O ACS marca a posição só dos imóveis da sua equipe e microárea (e dos ainda sem equipe da sua unidade) e vê só
   esses na fila de pendências; a sequência do reconhecimento geográfico é de quem edita o território.
-- Localidade com quarteirões ou bairros ativos não é extinta, bairro com quarteirões ativos não é desativado, e não
-  se cadastra bairro com o nome (sem acento) ou apelido de outro bairro ativo da localidade.
+- O ACS também não muda a posição de imóvel fora da sua área pela edição do domicílio ou pela sincronização do app
+  (o cadastro é atualizado; a posição, não).
+- Localidade com quarteirões ativos não é extinta (sem eles, os bairros saem junto); bairro com quarteirões ativos
+  não é desativado; bairro novo só em localidade ativa e sem o nome (sem acento) ou apelido de outro bairro ativo.
 
 - O mapa de casos não mostra nome nem endereço; agravo sigiloso só entra para quem pode abrir a ficha (os demais
   aparecem apenas como contagem), e cada consulta é auditada com as sigilosas exibidas.
