@@ -108,8 +108,11 @@ export function HouseholdForm({
   // Precisão da leitura feita agora; sem leitura nova, a posição gravada no servidor não é tocada.
   const [leitura, setLeitura] = useState<{ precisao: number | null } | null>(null);
 
+  // Reinicia só ao abrir o diálogo ou trocar de domicílio: a página do ACS renderiza de novo a cada mudança de rede ou
+  // da fila (e o município chega como objeto novo), e isso não pode apagar o que o agente digitou nem a leitura do GPS.
+  const abertura = aberto ? (existente?.id ?? 'novo') : null;
   useEffect(() => {
-    if (!aberto) return;
+    if (!abertura) return;
     setF(existente ? deExistente(existente) : { ...vazio(microAreaPadrao), city: municipio?.city ?? '', uf: municipio?.uf ?? '', ibgeCode: municipio?.ibgeCode ?? '' });
     setResponsavel('novo');
     setPessoa(pessoaVazia());
@@ -117,7 +120,8 @@ export function HouseholdForm({
     setErro(null);
     // Leitura do GPS vale só para o domicílio em que foi feita.
     setLeitura(null);
-  }, [aberto, existente, microAreaPadrao, municipio]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [abertura]);
 
   const set = (k: keyof Form, v: string) => setF((x) => ({ ...x, [k]: v }));
 

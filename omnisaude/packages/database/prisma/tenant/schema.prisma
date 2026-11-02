@@ -585,6 +585,8 @@ model Neighborhood {
   centerLat  Float?   @map("center_lat")
   centerLng  Float?   @map("center_lng")
   active     Boolean  @default(true)
+  /// Desativado pela extinção da localidade (volta quando ela é reativada).
+  inactivatedWithLocality Boolean @default(false) @map("inactivated_with_locality")
   source     String   @default("MANUAL")
   createdAt  DateTime @default(now()) @map("created_at")
   updatedAt  DateTime @updatedAt @map("updated_at")

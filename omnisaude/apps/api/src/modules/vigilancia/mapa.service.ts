@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { fromZonedParts, PRECISAO_INFO, type PrecisaoGeo } from '@omnisaude/shared';
+import { distanciaM, fromZonedParts, ORDEM_PRECISAO, PRECISAO_INFO, type PrecisaoGeo } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { LocalizadorService } from '../territorio/localizador.service';
@@ -38,7 +38,7 @@ export class MapaCasosService {
    */
   private async residencias(ctx: RequestContext, ns: { id: string; patientId: string; residenceLat: number | null; residenceLng: number | null; residencePrecision: string | null }[]) {
     const casaDe = new Map<string, { latitude: number | null; longitude: number | null; geoPrecision: string | null; blockId: string | null } | null>();
-    let pendentes = [...new Set(ns.filter((n) => n.residenceLat == null || n.residenceLng == null).map((n) => n.patientId))];
+    let pendentes = [...new Set(ns.map((n) => n.patientId))];
     const destino = new Map(pendentes.map((id) => [id, id]));
     // Até 5 saltos de unificação (duplicado → sobrevivente).
     for (let salto = 0; salto < 5 && pendentes.length; salto++) {
@@ -58,10 +58,20 @@ export class MapaCasosService {
     }
     return new Map<string, Residencia | null>(
       ns.map((n): [string, Residencia | null] => {
-        if (n.residenceLat != null && n.residenceLng != null)
-          // Ficha anterior à semana 25 sem a precisão: naquela época a posição do domicílio só vinha do GPS.
-          return [n.id, { lat: n.residenceLat, lng: n.residenceLng, precisao: (n.residencePrecision ?? 'GPS_CAMPO') as PrecisaoGeo, blockId: null, fonte: 'ficha' as const }];
         const h = casaDe.get(n.patientId);
+        if (n.residenceLat != null && n.residenceLng != null) {
+          // Ficha anterior à semana 25 sem a precisão: naquela época a posição do domicílio só vinha do GPS.
+          const ficha: Residencia = { lat: n.residenceLat, lng: n.residenceLng, precisao: (n.residencePrecision ?? 'GPS_CAMPO') as PrecisaoGeo, blockId: null, fonte: 'ficha' };
+          // O mesmo imóvel confirmado depois em campo (posição melhor, a até 100 m do retrato) vale mais que o retrato;
+          // longe dele é outra casa (mudança de família) e fica a residência notificada.
+          const melhor =
+            h?.latitude != null &&
+            h.longitude != null &&
+            !!h.geoPrecision &&
+            ORDEM_PRECISAO[h.geoPrecision as PrecisaoGeo] < ORDEM_PRECISAO[ficha.precisao] &&
+            distanciaM([h.longitude, h.latitude], [ficha.lng, ficha.lat]) <= 100;
+          return [n.id, melhor ? { lat: h!.latitude!, lng: h!.longitude!, precisao: h!.geoPrecision as PrecisaoGeo, blockId: h!.blockId, fonte: 'cadastro' } : ficha];
+        }
         if (h?.latitude != null && h.longitude != null) return [n.id, { lat: h.latitude, lng: h.longitude, precisao: (h.geoPrecision ?? 'MUNICIPIO') as PrecisaoGeo, blockId: h.blockId, fonte: 'cadastro' as const }];
         return [n.id, null];
       }),

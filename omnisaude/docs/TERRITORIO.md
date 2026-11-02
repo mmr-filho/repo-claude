@@ -25,7 +25,8 @@ polígonos de quadra. Por isso a malha vem do município (planejamento urbano, e
 
 ### Modelo de dados (migração `0025_territorio`)
 
-- `localities` (código único entre as ativas), `neighborhoods` (nome único na localidade, apelidos), `blocks`
+- `localities` (código único entre as ativas), `neighborhoods` (nome único na localidade, apelidos; a migração
+  `0026_bairro_com_localidade` marca os que saem com a extinção da localidade), `blocks`
   (quarteirão: contorno GeoJSON normalizado, caixa envolvente, centro e área), `address_points` (CNEFE) e
   `territory_imports` (prévia e aplicação de cada arquivo).
 - O imóvel (`households`) ganha quarteirão, sequência do reconhecimento geográfico, zona, **precisão da posição**,
@@ -56,7 +57,8 @@ elas vão para os geo campos 1 e 2 da ficha de notificação.
   GPS em campo e liga o imóvel ao quarteirão; o app avisa quando a posição é aproximada.
 - A ficha de cadastro domiciliar do e-SUS leva latitude e longitude só com precisão do imóvel (as quatro primeiras);
   ligar ou desligar o quarteirão não altera o cadastro e não reenvia a ficha.
-- No mapa de casos vale a residência registrada na ficha (a notificada); sem ela, o domicílio atual do paciente,
+- No mapa de casos vale a residência registrada na ficha (a notificada), a não ser que o mesmo imóvel tenha sido
+  confirmado depois em campo (posição melhor a até 100 m do retrato); sem retrato, vale o domicílio atual do paciente,
   seguindo a unificação de cadastros duplicados.
 
 ### Importação da malha
@@ -77,7 +79,7 @@ elas vão para os geo campos 1 e 2 da ficha de notificação.
   se o arquivo não diz, fica o que o quarteirão já tinha. Número repetido no arquivo, número inválido, bairro
   repetido e quarteirões sobrepostos são listados. Opção "malha completa" desativa os quarteirões que não vieram,
   mas só se nenhuma feição teve erro. Uma importação por vez (trava no banco; quem salva no editor durante uma
-  importação recebe aviso para tentar de novo), e a aplicação interrompida pela queda do servidor pode ser refeita
+  importação espera até 3 s e, passando disso, recebe aviso para tentar de novo), e a aplicação interrompida pela queda do servidor pode ser refeita
   depois de 20 minutos. Ao fim, **todos os imóveis com posição são religados ao quarteirão**.
 - **CNEFE**: o CSV do município (ou o .zip do IBGE) substitui a base de endereços daquele município.
 
@@ -116,8 +118,8 @@ execução é auditada.
   esses na fila de pendências; a sequência do reconhecimento geográfico é de quem edita o território.
 - O ACS também não muda a posição de imóvel fora da sua área pela edição do domicílio ou pela sincronização do app
   (o cadastro é atualizado; a posição, não).
-- Localidade com quarteirões ativos não é extinta (sem eles, os bairros saem junto); bairro com quarteirões ativos
-  não é desativado; bairro novo só em localidade ativa e sem o nome (sem acento) ou apelido de outro bairro ativo.
+- Localidade com quarteirões ativos não é extinta (sem eles, os bairros saem junto, com confirmação na tela, e voltam
+  se a localidade for reativada); bairro com quarteirões ativos não é desativado; bairro novo só em localidade ativa e sem o nome (sem acento) ou apelido de outro bairro ativo.
 
 - O mapa de casos não mostra nome nem endereço; agravo sigiloso só entra para quem pode abrir a ficha (os demais
   aparecem apenas como contagem), e cada consulta é auditada com as sigilosas exibidas.

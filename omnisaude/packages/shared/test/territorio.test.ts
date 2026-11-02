@@ -220,6 +220,25 @@ describe('geometria do território', () => {
     expect(falsos).toBe(0);
   });
 
+  it('cunha real entre vizinhos (canto quase encaixado, lado que entra 2 m) continua sendo sobreposição', () => {
+    const o: Posicao = [-49.07, -11.73];
+    const m = metrosPorGrau(o[1]);
+    const ang = (-20 * Math.PI) / 180;
+    const g = (x: number, y: number): Posicao => [o[0] + (x * Math.cos(ang) - y * Math.sin(ang)) / m.lng, o[1] + (x * Math.sin(ang) + y * Math.cos(ang)) / m.lat];
+    const A = normalizarArea({ type: 'Polygon', coordinates: [[g(0, 0.14), g(100.1, -2), g(100.1, 50), g(0, 50), g(0, 0.14)]] });
+    const B = normalizarArea({ type: 'Polygon', coordinates: [[g(0, 0), g(0, -50), g(100, -50), g(100, 0), g(0, 0)]] });
+    expect(areasSobrepoem(A, B)).toBe(true);
+    expect(areasSobrepoem(B, A)).toBe(true);
+  });
+
+  it('furo encostado no contorno que atravessa o vão de um quarteirão em U é recusado', () => {
+    const o: Posicao = [-49.07, -11.73];
+    const m = metrosPorGrau(o[1]);
+    const d = (x: number, y: number): Posicao => [o[0] + x / m.lng, o[1] + y / m.lat];
+    const u = [d(0, 0), d(100, 0), d(100, 100), d(70, 100), d(70, 40), d(30, 40), d(30, 100), d(0, 100), d(0, 0)];
+    expect(() => normalizarArea({ type: 'Polygon', coordinates: [u, [d(0, 70), d(90, 60), d(90, 80), d(0, 70)]] })).toThrow(/fora do contorno/);
+  });
+
   it('lasca estreita com muitos vértices (faixa de 1 cm) sai como lasca, sem recusar a feição', () => {
     const o: Posicao = [-49.07, -11.73];
     const m = metrosPorGrau(o[1]);

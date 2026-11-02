@@ -239,9 +239,10 @@ export class TerritorioService {
           await this.travarQuarteiroes(tx);
           const quarteiroes = await tx.block.count({ where: { localityId: id, active: true } });
           if (quarteiroes) throw new DomainError('LOCALIDADE_COM_MALHA', `A localidade tem ${quarteiroes} quarteirão(ões) ativo(s): desative-os antes de extinguir`, HttpStatus.UNPROCESSABLE_ENTITY);
-          // Os bairros, sem quarteirões, saem junto.
-          await tx.neighborhood.updateMany({ where: { localityId: id, active: true }, data: { active: false } });
+          // Os bairros, sem quarteirões, saem junto, marcados para voltar se a localidade for reativada.
+          await tx.neighborhood.updateMany({ where: { localityId: id, active: true }, data: { active: false, inactivatedWithLocality: true } });
         }
+        if (id && input.status === 'ATIVA') await tx.neighborhood.updateMany({ where: { localityId: id, inactivatedWithLocality: true }, data: { active: true, inactivatedWithLocality: false } });
         const r = id ? await tx.locality.update({ where: { id }, data }) : await tx.locality.create({ data: { code: codigo!, name: input.name!.trim(), ...data, source: 'MANUAL', createdBy: ctx.session.userId } });
         await this.audit.record(ctx, tx, {
           action: id ? 'territorio.localidade_editar' : 'territorio.localidade_criar',
@@ -364,9 +365,15 @@ export class TerritorioService {
    * Trava das gravações de quarteirão sem esperar: com uma importação grande em curso (até 5 min), quem salva no
    * editor recebe um aviso em vez de estourar o tempo da transação.
    */
-  private async travarQuarteiroes(tx: { $queryRaw: RequestContext['db']['$queryRaw'] }) {
-    const [r] = await tx.$queryRaw<{ ok: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtext(${TRAVA_QUARTEIROES})) AS ok`;
-    if (!r?.ok) throw conflict('Há uma importação de quarteirões em andamento: tente de novo em instantes');
+  private async travarQuarteiroes(tx: { $executeRaw: RequestContext['db']['$executeRaw']; $executeRawUnsafe: RequestContext['db']['$executeRawUnsafe'] }) {
+    // Espera curta (outra gravação do editor leva milissegundos); passando de 3 s, é uma importação grande.
+    await tx.$executeRawUnsafe(`SET LOCAL lock_timeout = '3s'`);
+    try {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${TRAVA_QUARTEIROES}))`;
+    } catch (err) {
+      if (/55P03|lock timeout/i.test(String((err as Error).message))) throw conflict('Outra gravação de quarteirões (ou uma importação da malha) está em andamento: tente de novo em instantes');
+      throw err;
+    }
   }
 
   async salvarQuarteirao(ctx: RequestContext, id: string | null, input: { localityId?: string; neighborhoodId?: string | null; number?: string; geometry?: unknown; notes?: string | null; versao?: string }) {

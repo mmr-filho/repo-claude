@@ -120,7 +120,11 @@ export function MapaTerritorio({
         else grupos.current.rotulos.remove();
       };
       const aoClicar = (e: LeafletMouseEvent) => {
-        if (cb.current.modo === 'clicar') cb.current.onClicar?.(e.latlng.lat, e.latlng.lng);
+        if (cb.current.modo !== 'clicar') return;
+        // Posição do mouse, e não a do alvo: clicando sobre um marcador pequeno, o Leaflet entrega o ponto do marcador
+        // (a marcação do imóvel copiaria a coordenada do vizinho ou a antiga).
+        const ll = m.mouseEventToLatLng(e.originalEvent);
+        cb.current.onClicar?.(ll.lat, ll.lng);
       };
       const aoDesenhar = (e: unknown) => {
         const camada = (e as { layer: CamadaGeoJSON }).layer;

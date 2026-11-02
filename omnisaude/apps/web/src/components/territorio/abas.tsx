@@ -76,9 +76,15 @@ export function AbaLocalidades({ podeEditar, onAlterado }: { podeEditar: boolean
   }
 
   async function alternarStatus(l: Localidade) {
+    // Extinguir leva os bairros junto (eles voltam se a localidade for reativada): confirma antes.
+    if (
+      l.status === 'ATIVA' &&
+      !window.confirm(`Extinguir a localidade ${l.code} · ${l.name}? ${l._count.neighborhoods ? `Os ${l._count.neighborhoods} bairro(s) dela saem junto e voltam se ela for reativada.` : ''}`.trim())
+    )
+      return;
     try {
       await api.patch(`/territorio/localidades/${l.id}`, { status: l.status === 'ATIVA' ? 'EXTINTA' : 'ATIVA' });
-      await localidades.reload();
+      await Promise.all([localidades.reload(), bairros.reload()]);
       onAlterado?.();
     } catch (err) {
       toast.error(errorMessage(err));

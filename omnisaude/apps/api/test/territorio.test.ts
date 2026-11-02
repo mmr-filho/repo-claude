@@ -157,6 +157,10 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     await t.http().patch(`/api/territorio/localidades/${extinguivel.id}`).set(auth(gestora)).send({ status: 'EXTINTA' }).expect(200);
     expect((await db.neighborhood.findUniqueOrThrow({ where: { id: bairroExtinto } })).active).toBe(false);
     await t.http().post('/api/territorio/bairros').set(auth(gestora)).send({ localityId: extinguivel.id, name: 'Bairro Novo' }).expect(404);
+    // Reativada, a localidade traz de volta os bairros que saíram com ela.
+    await t.http().patch(`/api/territorio/localidades/${extinguivel.id}`).set(auth(gestora)).send({ status: 'ATIVA' }).expect(200);
+    expect(await db.neighborhood.findUniqueOrThrow({ where: { id: bairroExtinto } })).toMatchObject({ active: true, inactivatedWithLocality: false });
+    await t.http().patch(`/api/territorio/localidades/${extinguivel.id}`).set(auth(gestora)).send({ status: 'EXTINTA' }).expect(200);
   });
 
   it('importar a malha em GeoJSON liga cada domicílio ao seu quarteirão', async () => {
@@ -536,7 +540,7 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
           .set(auth(gestora))
           .send({ localityId: localidade, number: '12', geometry: quadrado(desloca(livre, 0, 1200)) })
           .expect(409);
-        expect(ocupado.body.message).toMatch(/importação/);
+        expect(ocupado.body.message).toMatch(/andamento/);
       },
       { timeout: 20_000 },
     );
@@ -901,6 +905,17 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     expect(JSON.stringify(raio)).not.toMatch(/Diego|483111001|Rua da Saída/);
     // O retrato da ficha guarda a precisão da residência.
     expect((await db.notification.findUniqueOrThrow({ where: { id: n.id } })).residencePrecision).toBe('GPS_CAMPO');
+    // Residência notificada com posição aproximada (face de quadra) e confirmada depois em campo, a poucos metros: no
+    // mapa vale a confirmação; a ficha guarda o retrato.
+    const casaMapa = await db.household.findFirstOrThrow({ where: { street: 'Rua Mapa' } });
+    await db.household.update({ where: { id: casaMapa.id }, data: { geoPrecision: 'FACE' } });
+    const faceAntes = (await t.http().post('/api/vigilancia/notificacoes').set(auth(medica)).send({ patientId: paciente, conditionKey: 'chikungunya' }).expect(201)).body;
+    expect((await db.notification.findUniqueOrThrow({ where: { id: faceAntes.id } })).residencePrecision).toBe('FACE');
+    const confirmada = desloca(C, 20, 0);
+    await db.household.update({ where: { id: casaMapa.id }, data: { latitude: confirmada[1], longitude: confirmada[0], geoPrecision: 'GPS_CAMPO' } });
+    const raioFace = (await t.http().get(`/api/vigilancia/notificacoes/${faceAntes.id}/quarteiroes`).set(auth(vig)).expect(200)).body;
+    expect(raioFace).toMatchObject({ precisao: 'GPS_CAMPO', fonte: 'cadastro', regra: 'AUTOMATICO' });
+
     // Posição no centro do bairro não vai para os geo campos da ficha (não é a residência).
     const outro = (
       await t

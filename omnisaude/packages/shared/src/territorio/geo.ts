@@ -91,6 +91,14 @@ function distanciaAoSegmento(p: Posicao, a: Posicao, b: Posicao, m: { lat: numbe
   return Math.sqrt(x * x + y * y);
 }
 
+/** Distância em metros do ponto à reta AB (infinita). */
+function distanciaAReta(p: Posicao, a: Posicao, b: Posicao, m: { lat: number; lng: number }): number {
+  const [ax, ay] = [(a[0] - p[0]) * m.lng, (a[1] - p[1]) * m.lat];
+  const [bx, by] = [(b[0] - p[0]) * m.lng, (b[1] - p[1]) * m.lat];
+  const len = Math.hypot(bx - ax, by - ay);
+  return len === 0 ? Math.hypot(ax, ay) : Math.abs(ax * by - ay * bx) / len;
+}
+
 /** Distância em metros do ponto à área: zero dentro ou na borda; fora, até a borda mais próxima. */
 export function distanciaAteArea(p: Posicao, a: Area): number {
   if (pontoNaArea(p, a)) return 0;
@@ -229,12 +237,22 @@ export function areasSobrepoem(a: Area, b: Area): boolean {
           const d = (u: Posicao, s1: Posicao, s2: Posicao) => distanciaAoSegmento(u, s1, s2, m) <= FOLGA_M;
           // Um lado inteiro sobre o outro (os dois extremos colados) ...
           if ((d(p1, p3, p4) && d(p2, p3, p4)) || (d(p3, p1, p2) && d(p4, p1, p2))) continue;
-          // ... ou em escada (um começa no meio do outro e segue além): um extremo de cada colado no outro.
-          if ((d(p1, p3, p4) || d(p2, p3, p4)) && (d(p3, p1, p2) || d(p4, p1, p2))) continue;
+          // ... ou em escada (um começa no meio do outro e segue além): um extremo de cada colado no outro E os quatro
+          // extremos sobre a mesma reta (colineares dentro da folga). Sem a colinearidade, dois lados que saem do mesmo
+          // canto em ângulo aberto passariam, escondendo uma cunha de área real.
+          const naReta = (u: Posicao, s1: Posicao, s2: Posicao) => distanciaAReta(u, s1, s2, m) <= FOLGA_M;
+          const colineares = naReta(p1, p3, p4) && naReta(p2, p3, p4) && naReta(p3, p1, p2) && naReta(p4, p1, p2);
+          if (colineares && (d(p1, p3, p4) || d(p2, p3, p4)) && (d(p3, p1, p2) || d(p4, p1, p2))) continue;
           return true;
         }
   const dentroEstrito = (p: Posicao, x: Area) => pontoNaArea(p, x) && distanciaAteBorda(p, x) > FOLGA_M;
-  if (poligonos(a).some((pol) => (pol[0] ?? []).some((p) => dentroEstrito(p, b))) || poligonos(b).some((pol) => (pol[0] ?? []).some((p) => dentroEstrito(p, a)))) return true;
+  // Vértices e pontos ao longo dos lados (1/4, 1/2, 3/4): um canto encaixado pode esconder um lado que entra no outro.
+  const amostras = (x: Area) =>
+    poligonos(x).flatMap((pol) => {
+      const anel = pol[0] ?? [];
+      return anel.flatMap((v, i) => (i === 0 ? [v] : [0.25, 0.5, 0.75].map((t): Posicao => [anel[i - 1]![0] + t * (v[0] - anel[i - 1]![0]), anel[i - 1]![1] + t * (v[1] - anel[i - 1]![1])]).concat([v])));
+    });
+  if (amostras(a).some((p) => dentroEstrito(p, b)) || amostras(b).some((p) => dentroEstrito(p, a))) return true;
   // Bordas alinhadas (vértice sobre a borda do outro) escapam dos testes acima: amostra a interseção das caixas.
   const [ca, cb] = [caixaDe(a), caixaDe(b)];
   const [x0, y0, x1, y1] = [Math.max(ca[0], cb[0]), Math.max(ca[1], cb[1]), Math.min(ca[2], cb[2]), Math.min(ca[3], cb[3])];
@@ -316,7 +334,17 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
       const m = metrosPorGrau(externo[0]![1]);
       const naBordaExterna = (q: Posicao) => externo.some((_, i) => i > 0 && distanciaAoSegmento(q, externo[i - 1]!, externo[i]!, m) <= FOLGA_M);
       const fora = furo.some((q) => !pontoNoAnel(q, externo) && !naBordaExterna(q));
-      const cruza = furo.some((_, i) => i > 0 && externo.some((__, j) => j > 0 && segmentosCruzam(furo[i - 1]!, furo[i]!, externo[j - 1]!, externo[j]!)) && !(naBordaExterna(furo[i - 1]!) || naBordaExterna(furo[i]!)));
+      // Cruzar o contorno só é tolerado junto do vértice que encosta nele (arredondamento); longe dele, o lado do furo
+      // atravessa para fora (ex.: o vão de um quarteirão em U).
+      const cruza = furo.some(
+        (_, i) =>
+          i > 0 &&
+          externo.some((__, j) => {
+            if (j === 0 || !segmentosCruzam(furo[i - 1]!, furo[i]!, externo[j - 1]!, externo[j]!)) return false;
+            const x = cruzamento(furo[i - 1]!, furo[i]!, externo[j - 1]!, externo[j]!);
+            return ![furo[i - 1]!, furo[i]!].some((v) => naBordaExterna(v) && distanciaM(x, v) <= FOLGA_M);
+          }),
+      );
       if (fora || cruza) throw new GeometriaInvalida('Há um anel fora do contorno externo: partes separadas vão como MultiPolygon');
       furos.push(furo);
     }
