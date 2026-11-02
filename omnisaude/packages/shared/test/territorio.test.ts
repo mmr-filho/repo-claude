@@ -256,6 +256,24 @@ describe('geometria do território', () => {
       expect(avisos[0]).toMatch(/descartado/);
     }
     expect(normalizarArea({ type: 'Polygon', coordinates: [quarteirao, oito.map(([x, y]) => [x - 0.0012, y + 0.0002] as Posicao)] }).coordinates).toHaveLength(1);
+
+    // Lascas que se cruzam e não são retas: em L, dobrada 1 grau, em lente; e um furo em L torcido.
+    const emL = [d(0, -0.02), d(50, -0.02), d(60, 0), d(100.02, -0.02), d(100.02, 55), d(100, 55), d(100, 0), d(60, -0.02), d(50, 0), d(0, 0)];
+    const dobra = (x: number) => (x <= 50 ? 0 : (x - 50) * Math.tan(Math.PI / 180));
+    const dobrada = [d(200, 0), d(240, 0.02), d(260, -0.02 + dobra(260 - 200 + 0)), d(300, dobra(300 - 200)), d(300, dobra(100) + 0.02), d(260, dobra(60)), d(240, -0.0), d(200, 0.02), d(200, 0)];
+    const lente: Posicao[] = [];
+    for (let x = 0; x <= 100; x += 10) lente.push(d(400 + x, (0.25 * (1 - Math.abs((2 * x) / 100 - 1))) / 2));
+    for (let x = 90; x >= 10; x -= 10) lente.push(d(400 + x, -(0.25 * (1 - Math.abs((2 * x) / 100 - 1))) / 2));
+    lente[1] = d(410, -0.026);
+    for (const lasca of [emL, dobrada, lente]) {
+      const avisos: string[] = [];
+      expect(normalizarArea({ type: 'MultiPolygon', coordinates: [[quarteirao], [lasca]] }, avisos).type).toBe('Polygon');
+      expect(avisos[0]).toMatch(/descartado/);
+    }
+    const grande = [d(-10, -10), d(120, -10), d(120, 70), d(-10, 70), d(-10, -10)];
+    expect(normalizarArea({ type: 'Polygon', coordinates: [grande, emL] }).coordinates).toHaveLength(1);
+    // A gravata de 100 x 50 m continua recusada.
+    expect(() => normalizarArea({ type: 'MultiPolygon', coordinates: [[quarteirao], [[d(200, 0), d(300, 0), d(200, 50), d(300, 50), d(200, 0)]]] })).toThrow(/cruza a si mesmo/);
   });
 
   it('cunha real entre vizinhos (canto quase encaixado, lado que entra 2 m) continua sendo sobreposição', () => {

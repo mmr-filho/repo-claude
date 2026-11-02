@@ -274,33 +274,33 @@ function distanciaAteBorda(p: Posicao, a: Area): number {
 
 export class GeometriaInvalida extends Error {}
 
-/** Largura mínima (em metros) do fecho convexo dos pontos: quanto o anel tem de "espessura" na direção mais estreita. */
-function larguraMinima(pts: Anel, m: { lat: number; lng: number }): number {
-  const xy = pts.map((p) => [p[0] * m.lng, p[1] * m.lat] as [number, number]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  const cruz = (o: [number, number], a: [number, number], b: [number, number]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
-  const baixo: [number, number][] = [];
-  for (const p of xy) {
-    while (baixo.length >= 2 && cruz(baixo[baixo.length - 2]!, baixo[baixo.length - 1]!, p) <= 0) baixo.pop();
-    baixo.push(p);
-  }
-  const cima: [number, number][] = [];
-  for (const p of [...xy].reverse()) {
-    while (cima.length >= 2 && cruz(cima[cima.length - 2]!, cima[cima.length - 1]!, p) <= 0) cima.pop();
-    cima.push(p);
-  }
-  const fecho = [...baixo.slice(0, -1), ...cima.slice(0, -1)];
-  if (fecho.length < 3) return 0;
-  let menor = Infinity;
-  for (let i = 0; i < fecho.length; i++) {
-    const a = fecho[i]!;
-    const b = fecho[(i + 1) % fecho.length]!;
-    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    if (!len) continue;
-    let maior = 0;
-    for (const p of fecho) maior = Math.max(maior, Math.abs(cruz(a, b, p)) / len);
-    menor = Math.min(menor, maior);
-  }
-  return menor;
+/**
+ * Laços simples de um anel que se cruza ou passa duas vezes pelo mesmo vértice: corta no primeiro cruzamento (ou
+ * vértice repetido) e repete em cada parte. Serve para medir a área real de um anel torcido (na gravata, as áreas com
+ * sinal dos dois laços se anulam).
+ */
+function lacos(anel: Anel, profundidade = 0): Anel[] {
+  const n = anel.length - 1;
+  if (n < 3 || profundidade > 30) return [anel];
+  const fechar = (pts: Posicao[]): Anel => [...pts, pts[0]!];
+  for (let i = 0; i < n; i++)
+    for (let j = i + 1; j < n; j++) {
+      if (anel[i]![0] === anel[j]![0] && anel[i]![1] === anel[j]![1]) return [...lacos(fechar(anel.slice(i, j)), profundidade + 1), ...lacos(fechar([...anel.slice(j, n), ...anel.slice(0, i)]), profundidade + 1)];
+      if (j === i + 1 || (i === 0 && j === n - 1)) continue;
+      if (segmentosCruzam(anel[i]!, anel[i + 1]!, anel[j]!, anel[j + 1]!)) {
+        const x = cruzamento(anel[i]!, anel[i + 1]!, anel[j]!, anel[j + 1]!);
+        return [...lacos(fechar([x, ...anel.slice(i + 1, j + 1)]), profundidade + 1), ...lacos(fechar([x, ...anel.slice(j + 1, n), ...anel.slice(0, i + 1)]), profundidade + 1)];
+      }
+    }
+  return [anel];
+}
+
+/** Espessura média (em metros) do anel: 2·(área real, somando os laços)/perímetro. Numa faixa, é a largura dela. */
+function espessuraMedia(anel: Anel, m: { lat: number; lng: number }): { area: number; espessura: number } {
+  const area = lacos(anel).reduce((s, l) => s + Math.abs(areaDoAnelM2(l, m, anel[0]![1], anel[0]![0])), 0);
+  let perimetro = 0;
+  for (let i = 1; i < anel.length; i++) perimetro += Math.hypot((anel[i]![0] - anel[i - 1]![0]) * m.lng, (anel[i]![1] - anel[i - 1]![1]) * m.lat);
+  return { area, espessura: perimetro ? (2 * area) / perimetro : 0 };
 }
 
 /**
@@ -336,7 +336,8 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
     orig.length = 0;
     orig.push(...fundido, [fundido[0]![0], fundido[0]![1]]);
     // 2) Defeitos do desenho original são do arquivo ("oito" pelo mesmo vértice, gravata, laço) e recusam a feição,
-    // a não ser que o anel seja uma agulha (largura mínima menor que 15 cm): aí é lasca de recorte e sai com aviso.
+    // a não ser que o anel seja uma lasca pelo mesmo critério do passo 3, medido nos laços (a área com sinal de um anel
+    // torcido se anula): aí sai com aviso.
     const vistos = new Set<string>();
     let repetido = false;
     for (const q of orig.slice(0, -1)) {
@@ -346,15 +347,14 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
     }
     const cruzado = !repetido && anelAutointersecta(orig);
     if (repetido || cruzado) {
-      if (larguraMinima(orig, m0) < 0.15) return null;
+      const { area, espessura } = espessuraMedia(orig, m0);
+      if (area < 1 || espessura < 0.15) return null;
       throw new GeometriaInvalida(repetido ? 'O contorno passa duas vezes pelo mesmo vértice' : 'O contorno cruza a si mesmo');
     }
     // 3) Lasca de recorte: menos de 1 m² ou mais fina que a resolução do arredondamento (espessura média 2·área/perímetro
     // abaixo de 15 cm). Sai com aviso, sem recusar a feição.
-    const area0 = Math.abs(areaDoAnelM2(orig, m0, orig[0]![1], orig[0]![0]));
-    let perimetro = 0;
-    for (let i = 1; i < orig.length; i++) perimetro += Math.hypot((orig[i]![0] - orig[i - 1]![0]) * m0.lng, (orig[i]![1] - orig[i - 1]![1]) * m0.lat);
-    if (area0 < 1 || (2 * area0) / perimetro < 0.15) return null;
+    const { area: area0, espessura } = espessuraMedia(orig, m0);
+    if (area0 < 1 || espessura < 0.15) return null;
     // 4) Arredonda a 6 casas (~10 cm). Se só o arredondamento estraga o anel, o problema é um trecho fino demais.
     const pts: Anel = [];
     for (const q0 of orig) {
