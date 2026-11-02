@@ -99,7 +99,8 @@ export function obterPosicao(): Promise<Posicao> {
     navigator.geolocation.getCurrentPosition(
       (p) => resolve({ latitude: Number(p.coords.latitude.toFixed(6)), longitude: Number(p.coords.longitude.toFixed(6)), precisao: p.coords.accuracy ? Math.round(p.coords.accuracy) : null }),
       (e) => reject(new Error(e.code === 1 ? 'Permissão de localização negada' : 'Não foi possível obter a localização')),
-      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 60_000 },
+      // Leitura nova: posição em cache seria a da casa anterior e viraria a posição deste imóvel.
+      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 0 },
     );
   });
 }

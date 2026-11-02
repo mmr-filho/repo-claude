@@ -651,7 +651,7 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
         </Card>
       )}
 
-      {session.can('vigilancia.mapa') && d.status !== 'DESCARTADA' && <BloqueioDoCaso id={id} />}
+      {session.can('vigilancia.mapa') && d.status !== 'DESCARTADA' && <BloqueioDoCaso key={id} id={id} />}
 
       <Card>
         <CardHeader title="Ficha Individual de Notificação (Sinan Net v5)" description="Campos 1 a 16 e 20 a 33. Retrato tirado do cadastro na abertura da notificação." />

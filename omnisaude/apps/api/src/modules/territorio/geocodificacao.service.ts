@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { distanciaM, normalizarLogradouro, normalizarNome, normalizarNumero, quadraLote, type PrecisaoGeo, type Posicao } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
-import { LocalizadorService, posicaoMelhorOuIgual } from './localizador.service';
+import { LocalizadorService, posicaoMelhorOuIgual, PRECISAO_LIGA_QUARTEIRAO } from './localizador.service';
 
 /** Precisão pelo nível de geocodificação do CNEFE (NV_GEO_COORD). */
 function precisaoDoNivel(nivel: number): PrecisaoGeo {
@@ -123,7 +123,15 @@ export class GeocodificacaoService {
         if (!posicaoMelhorOuIgual(r.precisao, h.geoPrecision as PrecisaoGeo | null)) continue;
         // Mesma precisão: só troca quando pedida para este imóvel (endereço corrigido) e o ponto mudou.
         if (h.geoPrecision === r.precisao && h.latitude != null && (!explicito || (h.latitude === r.lat && h.longitude === r.lng))) continue;
-        await ctx.db.household.update({ where: { id: h.id }, data: { latitude: r.lat, longitude: r.lng, geoPrecision: r.precisao, geoSource: r.fonte, geoAccuracyM: null, geoAt: new Date() } });
+        if (PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao)) {
+          // Posição do imóvel: muda o cadastro (vai na ficha domiciliar do e-SUS).
+          await ctx.db.household.update({ where: { id: h.id }, data: { latitude: r.lat, longitude: r.lng, geoPrecision: r.precisao, geoSource: r.fonte, geoAccuracyM: null, geoAt: new Date() } });
+        } else {
+          // Posição aproximada (rua, quarteirão, bairro) não vai ao e-SUS: grava sem mexer em updated_at, para não
+          // gerar uma ficha de atualização igual à anterior.
+          await ctx.db
+            .$executeRaw`UPDATE households SET latitude = ${r.lat}, longitude = ${r.lng}, geo_precision = ${r.precisao}::"GeoPrecision", geo_source = ${r.fonte}, geo_accuracy_m = NULL, geo_at = now() WHERE id = ${h.id}::uuid`;
+        }
         await this.localizador.vincularImovel(ctx.db, h.id);
         resumo[r.precisao] = (resumo[r.precisao] ?? 0) + 1;
         atualizados++;

@@ -188,6 +188,7 @@ export function AbaMapa({
           camadas={camadas.data}
           modo={modo}
           quarteiraoSelecionado={selQ}
+          ocultar={ferramenta === 'editar' ? selQ : null}
           imovelSelecionado={selImovel}
           destaque={destaque}
           raio={raio}

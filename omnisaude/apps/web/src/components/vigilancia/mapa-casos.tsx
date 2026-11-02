@@ -3,7 +3,7 @@
 import { PRECISAO_INFO, type PrecisaoGeo } from '@omnisaude/shared';
 import { Lock, Radius, X } from 'lucide-react';
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { MapaTerritorio, type PontoCaso } from '@/components/territorio/mapa-territorio';
 import type { CamadasMapa } from '@/components/territorio/types';
 import { Badge } from '@/components/ui/badge';
@@ -63,6 +63,9 @@ export function MapaCasosTab() {
   // A API aceita de 10 a 2.000 m; enquanto digita, vale o limite mais próximo.
   const raioM = Math.min(2000, Math.max(10, Number(metros) || dados.data?.raioBloqueioM || 150));
   const bloqueio = useApi<QuarteiroesDoCaso>(sel ? `/vigilancia/notificacoes/${sel}/quarteiroes?metros=${raioM}` : null, [sel, raioM]);
+  // Trocou o caso ou o raio: a lista anterior não vale para o novo (nem enquanto ele carrega, nem se der erro).
+  const { setData: limparBloqueio } = bloqueio;
+  useEffect(() => limparBloqueio(null), [sel, raioM, limparBloqueio]);
 
   const agravos = useMemo(() => {
     const cont = new Map<string, number>();
@@ -176,7 +179,7 @@ export function MapaCasosTab() {
                       <p className="flex items-center gap-1 text-sm font-medium">
                         <Radius className="h-4 w-4" /> Quarteirões a até {raioM} m
                       </p>
-                      {bloqueio.loading && !bloqueio.data ? <Spinner /> : bloqueio.data && <ListaBloqueio q={bloqueio.data} />}
+                      {bloqueio.error ? <Alert tone="error">{bloqueio.error}</Alert> : bloqueio.loading && !bloqueio.data ? <Spinner /> : bloqueio.data && <ListaBloqueio q={bloqueio.data} />}
                       <Link href={`/vigilancia/notificacao?id=${caso.id}`} className="text-sm font-medium text-brand-700 hover:underline">
                         Abrir a ficha
                       </Link>

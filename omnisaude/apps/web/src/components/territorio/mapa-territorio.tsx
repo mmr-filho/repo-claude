@@ -2,7 +2,7 @@
 
 import 'leaflet/dist/leaflet.css';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
-import type { GeoJSON as CamadaGeoJSON, LayerGroup, Map as LeafletMap } from 'leaflet';
+import type { GeoJSON as CamadaGeoJSON, LayerGroup, LeafletMouseEvent, Map as LeafletMap } from 'leaflet';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { COR_PRECISAO, type CamadasMapa, type Geometria } from './types';
@@ -19,6 +19,9 @@ export interface PontoCaso {
   incerto?: boolean;
 }
 
+/** Ordem das camadas (z-index dos panes do Leaflet). */
+const PANES = { 'terr-base': 350, 'terr-quarteiroes': 360, 'terr-imoveis': 450, 'terr-raio': 455, 'terr-casos': 460 } as const;
+
 export type ModoMapa = 'navegar' | 'clicar' | 'desenhar' | 'editar';
 
 /**
@@ -33,6 +36,7 @@ export function MapaTerritorio({
   destaque,
   raio,
   quarteiraoSelecionado,
+  ocultar,
   imovelSelecionado,
   modo = 'navegar',
   geometriaEdicao,
@@ -50,6 +54,8 @@ export function MapaTerritorio({
   destaque?: string[];
   raio?: { lat: number; lng: number; metros: number } | null;
   quarteiraoSelecionado?: string | null;
+  /** Quarteirão cujo contorno está sendo editado (sai da camada enquanto isso). */
+  ocultar?: string | null;
   imovelSelecionado?: string | null;
   modo?: ModoMapa;
   geometriaEdicao?: Geometria | null;
@@ -67,6 +73,9 @@ export function MapaTerritorio({
   const lib = useRef<L | null>(null);
   const grupos = useRef<Record<'base' | 'quarteiroes' | 'rotulos' | 'imoveis' | 'casos' | 'raio' | 'edicao', LayerGroup> | null>(null);
   const ajustado = useRef(false);
+  const proprios = useRef<(() => void) | null>(null);
+  // O centro inicial só vale na criação: guardado num ref, não redesenha nada quando muda de identidade.
+  const centro = useRef(centroInicial);
   const [pronto, setPronto] = useState(false);
   const cb = useRef({ onMover, onClicar, onQuarteirao, onImovel, onCaso, onGeometria, modo });
   cb.current = { onMover, onClicar, onQuarteirao, onImovel, onCaso, onGeometria, modo };
@@ -81,8 +90,11 @@ export function MapaTerritorio({
       await import('@geoman-io/leaflet-geoman-free');
       if (cancelado || !div.current || mapa.current) return;
       lib.current = L;
-      const m = L.map(div.current, { zoomControl: true, attributionControl: true }).setView(centroInicial ?? [-15.78, -47.93], centroInicial ? 15 : 4);
+      const m = L.map(div.current, { zoomControl: true, attributionControl: true }).setView(centro.current ?? [-15.78, -47.93], centro.current ? 15 : 4);
       L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 20, maxNativeZoom: 19, attribution: '© OpenStreetMap' }).addTo(m);
+      // Camadas em panes com ordem fixa: redesenhar os quarteirões não os põe por cima dos imóveis e dos casos (que
+      // deixariam de responder ao clique). A edição do Geoman fica no overlayPane (400), entre os dois.
+      for (const [nome, z] of Object.entries(PANES)) m.createPane(nome).style.zIndex = String(z);
       grupos.current = {
         base: L.layerGroup().addTo(m),
         quarteiroes: L.layerGroup().addTo(m),
@@ -97,24 +109,35 @@ export function MapaTerritorio({
         const b = m.getBounds();
         cb.current.onMover?.([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
       };
-      m.on('moveend', () => {
+      const aoMover = () => {
         clearTimeout(espera);
         espera = setTimeout(avisar, 250);
-      });
-      m.on('zoomend', () => {
+      };
+      const aoZoom = () => {
         if (!grupos.current) return;
         if (m.getZoom() >= 17) grupos.current.rotulos.addTo(m);
         else grupos.current.rotulos.remove();
-      });
-      m.on('click', (e) => {
+      };
+      const aoClicar = (e: LeafletMouseEvent) => {
         if (cb.current.modo === 'clicar') cb.current.onClicar?.(e.latlng.lat, e.latlng.lng);
-      });
-      m.on('pm:create', (e) => {
-        const camada = (e as unknown as { layer: CamadaGeoJSON }).layer;
+      };
+      const aoDesenhar = (e: unknown) => {
+        const camada = (e as { layer: CamadaGeoJSON }).layer;
         const g = (camada.toGeoJSON() as unknown as { geometry: Geometria }).geometry;
         camada.remove();
         cb.current.onGeometria?.(g);
-      });
+      };
+      m.on('moveend', aoMover);
+      m.on('zoomend', aoZoom);
+      m.on('click', aoClicar);
+      m.on('pm:create', aoDesenhar);
+      // Só os ouvintes próprios saem na limpeza: o 'unload' do Geoman (que solta o teclado no document) tem de ficar.
+      proprios.current = () => {
+        m.off('moveend', aoMover);
+        m.off('zoomend', aoZoom);
+        m.off('click', aoClicar);
+        m.off('pm:create', aoDesenhar);
+      };
       mapa.current = m;
       setPronto(true);
       avisar();
@@ -125,7 +148,7 @@ export function MapaTerritorio({
       mapa.current = null;
       if (m) {
         // Ouvintes fora antes de remover: parar uma animação dispara 'moveend', e o aviso atrasado leria o mapa desmontado.
-        m.off();
+        proprios.current?.();
         m.eachLayer((l) => {
           l.closeTooltip();
           l.off();
@@ -152,14 +175,16 @@ export function MapaTerritorio({
     g.quarteiroes.clearLayers();
     g.rotulos.clearLayers();
     if (!camadas) return;
-    for (const l of camadas.localidades) if (l.geometry) L.geoJSON(l.geometry as never, { style: { color: '#475569', weight: 2, dashArray: '6 6', fill: false }, interactive: false }).addTo(g.base);
-    for (const b of camadas.bairros) if (b.geometry) L.geoJSON(b.geometry as never, { style: { color: '#7c3aed', weight: 1.5, dashArray: b.official ? undefined : '4 4', fill: false }, interactive: false }).addTo(g.base);
+    for (const l of camadas.localidades) if (l.geometry) L.geoJSON(l.geometry as never, { pane: 'terr-base', style: { color: '#475569', weight: 2, dashArray: '6 6', fill: false }, interactive: false }).addTo(g.base);
+    for (const b of camadas.bairros)
+      if (b.geometry) L.geoJSON(b.geometry as never, { pane: 'terr-base', style: { color: '#7c3aed', weight: 1.5, dashArray: b.official ? undefined : '4 4', fill: false }, interactive: false }).addTo(g.base);
     const realce = new Set(destaque ?? []);
     for (const q of camadas.quarteiroes) {
       const selecionado = q.id === quarteiraoSelecionado;
       // Em edição, o contorno original sai do mapa: o vértice arrastado não "gruda" de volta nele.
-      if (selecionado && modo === 'editar') continue;
+      if (q.id === ocultar) continue;
       const camada = L.geoJSON(q.geometry as never, {
+        pane: 'terr-quarteiroes',
         style: {
           color: selecionado ? '#1567ed' : realce.has(q.id) ? '#dc2626' : '#334155',
           weight: selecionado ? 3 : realce.has(q.id) ? 2.5 : 1,
@@ -177,12 +202,12 @@ export function MapaTerritorio({
       L.marker([q.centerLat, q.centerLng], { icon: L.divIcon({ className: 'rotulo-quarteirao', html: `<span>${escapar(q.number)}</span>`, iconSize: [40, 16] }), interactive: false }).addTo(g.rotulos);
     }
     if (m.getZoom() >= 17) g.rotulos.addTo(m);
-    if (!ajustado.current && camadas.quarteiroes.length && !centroInicial) {
+    if (!ajustado.current && camadas.quarteiroes.length && !centro.current) {
       const b = L.latLngBounds(camadas.quarteiroes.map((q) => [q.centerLat, q.centerLng] as [number, number]));
       m.fitBounds(b.pad(0.1), { maxZoom: 17 });
       ajustado.current = true;
     }
-  }, [pronto, camadas, destaque, quarteiraoSelecionado, centroInicial, modo]);
+  }, [pronto, camadas, destaque, quarteiraoSelecionado, ocultar]);
 
   // Imóveis (sem moradores): cor pela precisão da posição.
   useEffect(() => {
@@ -192,7 +217,14 @@ export function MapaTerritorio({
     g.imoveis.clearLayers();
     for (const h of camadas?.imoveis ?? []) {
       const sel = h.id === imovelSelecionado;
-      const c = L.circleMarker([h.lat, h.lng], { radius: sel ? 8 : 5, color: sel ? '#1567ed' : '#ffffff', weight: sel ? 3 : 1, fillColor: COR_PRECISAO[h.precisao ?? ''] ?? '#64748b', fillOpacity: 0.95 });
+      const c = L.circleMarker([h.lat, h.lng], {
+        pane: 'terr-imoveis',
+        radius: sel ? 8 : 5,
+        color: sel ? '#1567ed' : '#ffffff',
+        weight: sel ? 3 : 1,
+        fillColor: COR_PRECISAO[h.precisao ?? ''] ?? '#64748b',
+        fillOpacity: 0.95,
+      });
       c.bindTooltip(escapar(`${h.endereco || 'Imóvel'}${h.sequencia ? ` · seq. ${h.sequencia}` : ''}`));
       c.on('click', (e) => {
         if (cb.current.modo !== 'navegar') return;
@@ -211,7 +243,7 @@ export function MapaTerritorio({
     if (!pronto || !L || !m || !g) return;
     g.casos.clearLayers();
     for (const p of casos ?? []) {
-      const c = L.circleMarker([p.lat, p.lng], { radius: 7, color: '#111827', weight: 1.5, dashArray: p.incerto ? '3 3' : undefined, fillColor: p.cor, fillOpacity: 0.9 });
+      const c = L.circleMarker([p.lat, p.lng], { pane: 'terr-casos', radius: 7, color: '#111827', weight: 1.5, dashArray: p.incerto ? '3 3' : undefined, fillColor: p.cor, fillOpacity: 0.9 });
       c.bindTooltip(escapar(p.titulo));
       c.on('click', (e) => {
         L.DomEvent.stopPropagation(e);
@@ -232,8 +264,8 @@ export function MapaTerritorio({
     if (!pronto || !L || !g) return;
     g.raio.clearLayers();
     if (!raio) return;
-    L.circle([raio.lat, raio.lng], { radius: raio.metros, color: '#dc2626', weight: 2, dashArray: '6 4', fillOpacity: 0.05, interactive: false }).addTo(g.raio);
-    L.circleMarker([raio.lat, raio.lng], { radius: 5, color: '#dc2626', fillColor: '#dc2626', fillOpacity: 1, interactive: false }).addTo(g.raio);
+    L.circle([raio.lat, raio.lng], { pane: 'terr-raio', radius: raio.metros, color: '#dc2626', weight: 2, dashArray: '6 4', fillOpacity: 0.05, interactive: false }).addTo(g.raio);
+    L.circleMarker([raio.lat, raio.lng], { pane: 'terr-raio', radius: 5, color: '#dc2626', fillColor: '#dc2626', fillOpacity: 1, interactive: false }).addTo(g.raio);
   }, [pronto, raio]);
 
   // Modo: clicar (raio, posição do imóvel), desenhar ou editar o contorno.

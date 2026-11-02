@@ -1,6 +1,6 @@
 'use client';
 
-import { DESFECHO_VISITA, MOTIVOS_VISITA, TIPO_GLICEMIA, TIPO_IMOVEL, turnoDaHora, type OperacaoCampo, type VisitaCampo } from '@omnisaude/shared';
+import { avaliarGps, DESFECHO_VISITA, MOTIVOS_VISITA, TIPO_GLICEMIA, TIPO_IMOVEL, turnoDaHora, type OperacaoCampo, type VisitaCampo } from '@omnisaude/shared';
 import { LocateFixed } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -267,7 +267,7 @@ export function VisitForm({
           </Button>
           <span className="text-sm text-slate-600">
             {posicao
-              ? `${posicao.latitude}, ${posicao.longitude}${posicao.precisao ? ` (±${posicao.precisao} m)` : ''}`
+              ? `${posicao.latitude}, ${posicao.longitude}${posicao.precisao ? ` (±${posicao.precisao} m)` : ''}${posicao.precisao != null && avaliarGps(posicao.precisao) === 'NOVA_LEITURA' ? ' · acima de 50 m: fica na visita, mas não posiciona o domicílio' : ''}`
               : domicilio?.latitude && !domicilio.posicaoAproximada
                 ? 'Domicílio já tem posição no mapa'
                 : domicilio?.latitude

@@ -13,6 +13,7 @@ import {
   UFS,
   type DomicilioCampo,
   type OperacaoCampo,
+  avaliarGps,
 } from '@omnisaude/shared';
 import { LocateFixed } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -135,6 +136,12 @@ export function HouseholdForm({
     setLocalizando(true);
     try {
       const p = await obterPosicao();
+      // Acima de 50 m (rede, ambiente fechado) a leitura não serve ao imóvel: pede outra enquanto o agente está lá.
+      if (p.precisao != null && avaliarGps(p.precisao) === 'NOVA_LEITURA') {
+        setErro(`Precisão do GPS de ${p.precisao} m: faça nova leitura ao ar livre, perto da frente do imóvel (aceito até 50 m).`);
+        return;
+      }
+      setErro(null);
       setF((x) => ({ ...x, latitude: String(p.latitude), longitude: String(p.longitude) }));
       setLeitura({ precisao: p.precisao });
     } catch (e) {
@@ -263,7 +270,10 @@ export function HouseholdForm({
           <Button variant="secondary" type="button" onClick={localizar} loading={localizando}>
             <LocateFixed className="mr-1 h-4 w-4" /> Marcar posição no mapa
           </Button>
-          <span className="text-sm text-slate-600">{f.latitude ? `${f.latitude}, ${f.longitude}` : 'Sem posição ainda'}</span>
+          <span className="text-sm text-slate-600">
+            {f.latitude ? `${f.latitude}, ${f.longitude}${leitura?.precisao ? ` (±${leitura.precisao} m)` : ''}` : 'Sem posição ainda'}
+            {leitura?.precisao != null && avaliarGps(leitura.precisao) === 'ALERTA' && <span className="ml-1 text-amber-700">· precisão baixa: confira no mapa</span>}
+          </span>
         </div>
         <details className="rounded-lg border border-slate-200 p-3" open={!existente}>
           <summary className="cursor-pointer text-sm font-medium">Condições de moradia</summary>
