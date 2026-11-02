@@ -261,7 +261,21 @@ describe('geometria do território', () => {
     // recusa a feição (sai como lasca quando só sobram laços-lasca, ou fica como parte válida).
     for (const g of [0.005, 0.01, 0.02, 0.04])
       for (let dy = 0; dy <= 0.07; dy += 0.01) {
-        const h = [d(0, dy), d(0.95, dy), d(0.95, 0.46 + dy), d(1.95, 0.46 + dy), d(1.95, dy), d(2.9, dy), d(2.9, 0.95 + dy), d(1.95, 0.95 + dy), d(1.95, 0.46 + g + dy), d(0.95, 0.46 + g + dy), d(0.95, 0.95 + dy), d(0, 0.95 + dy), d(0, dy)];
+        const h = [
+          d(0, dy),
+          d(0.95, dy),
+          d(0.95, 0.46 + dy),
+          d(1.95, 0.46 + dy),
+          d(1.95, dy),
+          d(2.9, dy),
+          d(2.9, 0.95 + dy),
+          d(1.95, 0.95 + dy),
+          d(1.95, 0.46 + g + dy),
+          d(0.95, 0.46 + g + dy),
+          d(0.95, 0.95 + dy),
+          d(0, 0.95 + dy),
+          d(0, dy),
+        ];
         expect(() => normalizarArea({ type: 'MultiPolygon', coordinates: [[[d(-200, 0), d(-100, 0), d(-100, 55), d(-200, 55), d(-200, 0)]], [h]] })).not.toThrow();
       }
     // Clique 8 cm além do canto (nó de centímetros que se cruza): corrigido com aviso, sem recusar o quarteirão.
