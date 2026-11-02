@@ -122,6 +122,8 @@ export interface DomicilioCampo {
   ibgeCode?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  /** Precisão da leitura do GPS do aparelho em metros (95% de confiança, como informa o navegador). */
+  geoAccuracyM?: number | null;
   propertyType?: string | null;
   dwellingType?: string | null;
   tenure?: string | null;
@@ -154,6 +156,8 @@ export interface VisitaCampo {
   tipoGlicemia?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  /** Precisão da leitura do GPS em metros (95% de confiança). */
+  precisaoGps?: number | null;
   observacoes?: string | null;
 }
 

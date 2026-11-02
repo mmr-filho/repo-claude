@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { onlyDigits, type PrecisaoGeo } from '@omnisaude/shared';
+import { avaliarGps, onlyDigits, type PrecisaoGeo } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { DomainError, notFound } from '../../core/errors';
@@ -17,8 +17,9 @@ export interface HouseholdInput {
   ibgeCode?: string | null;
   latitude?: number | null;
   longitude?: number | null;
-  /** Precisão da posição enviada; sem ela, GPS em campo (o cadastro de domicílio só recebe posição do GPS do aparelho do ACS). */
+  /** Precisão da posição enviada; sem ela, GPS em campo (o cadastro de domicílio só recebe posição do GPS do aparelho). */
   geoPrecision?: PrecisaoGeo | null;
+  /** Precisão da leitura do GPS em metros (95% de confiança): acima de 50 m a leitura não é gravada. */
   geoAccuracyM?: number | null;
   propertyType?: string | null;
   dwellingType?: string | null;
@@ -48,6 +49,26 @@ const familyInclude = {
   members: { where: { mergedIntoId: null }, orderBy: { birthDate: 'asc' as const } },
 };
 const householdInclude = { families: { where: { active: true }, include: familyInclude }, unit: { select: { id: true, name: true } }, team: { select: { id: true, ine: true, name: true } } };
+
+/** Posições que são do imóvel (lidas ou marcadas), e não derivadas do endereço. */
+const POSICAO_DE_CAMPO: PrecisaoGeo[] = ['GPS_CAMPO', 'MAPA'];
+
+interface AtualGeo {
+  latitude: number | null;
+  longitude: number | null;
+  geoPrecision: string | null;
+  street: string | null;
+  number: string | null;
+  complement: string | null;
+  district: string | null;
+  cep: string | null;
+  ibgeCode: string | null;
+}
+
+/** Algum campo do endereço enviado difere do gravado. */
+function enderecoAlterado(novo: { street?: string | null; number?: string | null; complement?: string | null; district?: string | null; cep?: string | null; ibgeCode?: string | null }, atual: AtualGeo) {
+  return (['street', 'number', 'complement', 'district', 'cep', 'ibgeCode'] as const).some((k) => novo[k] !== undefined && (novo[k] ?? null) !== (atual[k] ?? null));
+}
 
 /** Domicílios e famílias: um paciente pertence a uma família, que vive num domicílio (base do cadastro domiciliar do e-SUS). */
 @Injectable()
@@ -111,13 +132,21 @@ export class HouseholdsService {
    * Precisão da posição quando ela muda: a enviada (o app do ACS manda o raio do GPS) ou GPS em campo. Sem posição,
    * a precisão e o quarteirão saem junto.
    */
-  private geo(input: HouseholdInput, atual: { latitude: number | null; longitude: number | null } | null) {
-    if (input.latitude === undefined && input.longitude === undefined) return {};
+  private geo(input: HouseholdInput, atual: AtualGeo | null) {
+    const semPosicao = { latitude: null, longitude: null, geoPrecision: null, geoSource: null, geoAccuracyM: null, geoAt: null, blockId: null };
+    const naoMuda = { latitude: undefined, longitude: undefined };
+    // Endereço corrigido sem leitura nova: a posição que veio do endereço antigo (base do IBGE, centro de rua ou de
+    // bairro) deixa de valer; GPS e marcação no mapa são do imóvel e ficam.
+    const posicaoDoEndereco = !!atual && atual.latitude != null && !!atual.geoPrecision && !POSICAO_DE_CAMPO.includes(atual.geoPrecision as PrecisaoGeo);
+    const enderecoMudou = !!atual && enderecoAlterado(this.data(input), atual);
+    if (input.latitude === undefined && input.longitude === undefined) return posicaoDoEndereco && enderecoMudou ? semPosicao : {};
     // Só uma das coordenadas no corpo: a outra continua a atual.
     const lat = input.latitude !== undefined ? input.latitude : (atual?.latitude ?? null);
     const lng = input.longitude !== undefined ? input.longitude : (atual?.longitude ?? null);
-    if (lat == null || lng == null) return atual?.latitude != null ? { geoPrecision: null, geoSource: null, geoAccuracyM: null, geoAt: null, blockId: null } : {};
-    if (atual && atual.latitude === lat && atual.longitude === lng && input.geoPrecision === undefined) return {};
+    if (lat == null || lng == null) return atual?.latitude != null ? semPosicao : {};
+    if (atual && atual.latitude === lat && atual.longitude === lng && input.geoPrecision === undefined) return posicaoDoEndereco && enderecoMudou ? semPosicao : naoMuda;
+    // Leitura do GPS acima de 50 m (rede ou ambiente fechado) não serve à posição do imóvel: não é gravada.
+    if (input.geoAccuracyM != null && avaliarGps(input.geoAccuracyM) === 'NOVA_LEITURA') return naoMuda;
     return { geoPrecision: input.geoPrecision ?? ('GPS_CAMPO' as const), geoSource: 'cadastro', geoAccuracyM: input.geoAccuracyM ?? null, geoAt: new Date() };
   }
 

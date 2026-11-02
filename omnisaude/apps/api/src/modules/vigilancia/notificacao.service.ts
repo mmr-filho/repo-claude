@@ -11,6 +11,7 @@ import {
   exameVigilancia,
   POSITIVO,
   sinaisDeSrag,
+  type PrecisaoGeo,
   type ResultadoQualitativo,
   EVOLUCAO_CASO,
   numeracaoConclusao,
@@ -54,6 +55,7 @@ import { MASTER_DB, TenantsService } from '../../core/database';
 import { conflict, DomainError, forbidden, notFound } from '../../core/errors';
 import { RealtimeService } from '../../core/realtime.service';
 import { JobsService } from '../integrations/jobs.service';
+import { PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
 import { MessagingService, type SystemContext } from '../integrations/messaging.service';
 import { CatalogoVigilanciaService, type CondicaoNoRetrato } from './catalogo.service';
 import { CAMPOS_EDITAVEIS, montarFicha, semanasDaFicha, validarFicha, type Ficha } from './ficha';
@@ -116,6 +118,12 @@ export interface RascunhoCriado {
  * - sigilo (art. 7º) para HIV, sífilis e violências: só o autor e a vigilância abrem, e cada leitura é auditada.
  * Não há envio automático aos sistemas federais: o registro no Sinan e nos demais é a fila de digitação (semana 24).
  */
+/** Posição do imóvel que pode ir para a ficha (ID_GEO1/ID_GEO2). */
+function posicaoDaResidencia(h: { latitude: number | null; longitude: number | null; geoPrecision: string | null } | null): { lat: number | null; lng: number | null } {
+  if (!h || h.latitude == null || h.longitude == null || !h.geoPrecision || !PRECISAO_LIGA_QUARTEIRAO.includes(h.geoPrecision as PrecisaoGeo)) return { lat: null, lng: null };
+  return { lat: h.latitude, lng: h.longitude };
+}
+
 @Injectable()
 export class NotificacaoService implements OnModuleInit {
   private readonly logger = new Logger('Vigilancia');
@@ -647,7 +655,9 @@ export class NotificacaoService implements OnModuleInit {
         phone: patient.phone,
       },
       gestante: p.gestante,
-      residencia: { lat: household?.family?.household.latitude ?? null, lng: household?.family?.household.longitude ?? null },
+      // Geo campos 1 e 2 só com a posição do imóvel (GPS, mapa ou endereço da base do IBGE): centro de rua ou de bairro
+      // levaria ao Sinan um ponto que não é a residência.
+      residencia: posicaoDaResidencia(household?.family?.household ?? null),
       notificador: { nome: autor.socialName ?? autor.name, cbo: p.autor.cbo, funcao: p.autor.role },
       referencia: p.conhecimento,
     });

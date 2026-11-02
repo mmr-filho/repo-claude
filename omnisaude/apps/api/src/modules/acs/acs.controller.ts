@@ -84,6 +84,7 @@ const domicilioSchema = z.object({
       .nullish(),
     latitude: z.number().min(-90).max(90).nullish(),
     longitude: z.number().min(-180).max(180).nullish(),
+    geoAccuracyM: z.number().min(0).max(100_000).nullish(),
     propertyType: z.enum(codeIn(TIPO_IMOVEL)).nullish(),
     dwellingType: z.enum(codeIn(TIPO_DOMICILIO)).nullish(),
     tenure: z.enum(codeIn(SITUACAO_MORADIA)).nullish(),
@@ -127,6 +128,7 @@ const visitaSchema = z.object({
     tipoGlicemia: z.enum(['1', '2', '3', '4']).nullish(),
     latitude: z.number().min(-90).max(90).nullish(),
     longitude: z.number().min(-180).max(180).nullish(),
+    precisaoGps: z.number().min(0).max(100_000).nullish(),
     observacoes: text(1000),
   }),
 });

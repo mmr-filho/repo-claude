@@ -19,9 +19,14 @@ const householdSchema = z.object({
   district: text(80),
   city: text(80),
   uf: z.enum(UFS).nullish(),
-  ibgeCode: z.string().regex(/^\d{6,7}$/).nullish(),
+  ibgeCode: z
+    .string()
+    .regex(/^\d{6,7}$/)
+    .nullish(),
   latitude: z.number().min(-90).max(90).nullish(),
   longitude: z.number().min(-180).max(180).nullish(),
+  /** Precisão da leitura do GPS em metros (95% de confiança). */
+  geoAccuracyM: z.number().min(0).max(100_000).nullish(),
   propertyType: z.enum(codeIn(TIPO_IMOVEL)).nullish(),
   dwellingType: z.enum(codeIn(TIPO_DOMICILIO)).nullish(),
   tenure: z.enum(codeIn(SITUACAO_MORADIA)).nullish(),

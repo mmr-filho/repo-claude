@@ -51,7 +51,7 @@ const posicaoSchema = z.object({
   confianca: z.union([z.literal(68), z.literal(95)]).optional(),
   sequencia: z.string().trim().max(12).nullish(),
 });
-const geocodificarSchema = z.object({ ids: z.array(z.string().uuid()).max(5000).optional(), limite: z.number().int().min(1).max(5000).optional() });
+const geocodificarSchema = z.object({ ids: z.array(z.string().uuid()).max(5000).optional(), limite: z.number().int().min(1).max(50_000).optional() });
 const previaSchema = z.object({
   tipo: z.enum(['LOCALIDADES', 'BAIRROS', 'QUARTEIROES', 'ENDERECOS']),
   nomeArquivo: z.string().trim().min(3).max(200),

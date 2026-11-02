@@ -118,6 +118,7 @@ export function VisitForm({
       tipoGlicemia: num(med.glicemia) !== null ? med.tipoGlicemia : null,
       latitude: posicao?.latitude ?? null,
       longitude: posicao?.longitude ?? null,
+      precisaoGps: posicao?.precisao ?? null,
       observacoes: obs.trim() || null,
     };
     const op: OperacaoCampo = {

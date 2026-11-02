@@ -4,6 +4,7 @@ import {
   areaM2,
   areasSobrepoem,
   avaliarGps,
+  roleHasPermission,
   normalizarNumeroQuarteirao,
   caixaDe,
   centroDe,
@@ -23,7 +24,7 @@ import {
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { MASTER_DB, TenantsService } from '../../core/database';
-import { conflict, DomainError, notFound } from '../../core/errors';
+import { conflict, DomainError, forbidden, notFound } from '../../core/errors';
 import { LocalizadorService, PRECISAO_LIGA_QUARTEIRAO } from './localizador.service';
 
 /** Trava transacional das gravações de quarteirões (editor e importação). */
@@ -97,8 +98,9 @@ export class TerritorioService {
           : q.situacao === 'BAIXA_PRECISAO'
             ? { active: true, geoPrecision: { in: baixa } }
             : { active: true, blockId: q.blockId ?? '00000000-0000-0000-0000-000000000000' };
+    const escopo = q.situacao === 'QUARTEIRAO' ? null : await this.escopoDeCampo(ctx);
     const rows = await ctx.db.household.findMany({
-      where,
+      where: escopo ? { AND: [where, { OR: escopo }] } : where,
       orderBy: q.situacao === 'QUARTEIRAO' ? [{ rgSequence: 'asc' }, { number: 'asc' }] : [{ district: 'asc' }, { street: 'asc' }],
       take: Math.min(q.take ?? 200, 1000),
       select: {
@@ -225,6 +227,12 @@ export class TerritorioService {
     };
     try {
       const l = await ctx.db.$transaction(async (tx) => {
+        if (id && input.status === 'EXTINTA') {
+          // Extinguir com malha ativa deixaria quarteirões no mapa e no raio sem poder editá-los.
+          const [quarteiroes, bairros] = await Promise.all([tx.block.count({ where: { localityId: id, active: true } }), tx.neighborhood.count({ where: { localityId: id, active: true } })]);
+          if (quarteiroes || bairros)
+            throw new DomainError('LOCALIDADE_COM_MALHA', `A localidade tem ${quarteiroes} quarteirão(ões) e ${bairros} bairro(s) ativos: desative-os antes de extinguir`, HttpStatus.UNPROCESSABLE_ENTITY);
+        }
         const r = id
           ? await tx.locality.update({ where: { id }, data })
           : await tx.locality.create({ data: { code: input.code!.trim(), name: input.name!.trim(), ...data, source: 'MANUAL', createdBy: ctx.session.userId } });
@@ -271,6 +279,16 @@ export class TerritorioService {
     try {
       return await ctx.db.$transaction(async (tx) => {
         if (!id && !(await tx.locality.findUnique({ where: { id: input.localityId! } }))) throw notFound('Localidade');
+        const atual = id ? await tx.neighborhood.findUnique({ where: { id }, select: { localityId: true, name: true, aliases: true } }) : null;
+        if (id && !atual) throw notFound('Bairro');
+        if (id && input.active === false && (await tx.block.count({ where: { neighborhoodId: id, active: true } })))
+          throw new DomainError('BAIRRO_COM_QUARTEIROES', 'O bairro tem quarteirões ativos: passe-os a outro bairro antes de desativar', HttpStatus.UNPROCESSABLE_ENTITY);
+        // Mesmo nome (sem acento e caixa) ou apelido de outro bairro ativo da localidade: seria o mesmo bairro duas vezes.
+        const localityId = atual?.localityId ?? input.localityId!;
+        const nomes = [input.name ?? atual?.name ?? '', ...(aliases ?? [])].map((n) => normalizarNome(n)).filter(Boolean);
+        const outros = await tx.neighborhood.findMany({ where: { localityId, active: true, ...(id ? { id: { not: id } } : {}) }, select: { name: true, aliases: true } });
+        const repetido = input.active === false ? undefined : outros.find((o) => [o.name, ...o.aliases].some((n) => nomes.includes(normalizarNome(n))));
+        if (repetido) throw conflict(`Já existe o bairro ${repetido.name} nessa localidade (mesmo nome ou apelido)`);
         const r = id ? await tx.neighborhood.update({ where: { id }, data }) : await tx.neighborhood.create({ data: { localityId: input.localityId!, name: input.name!.trim(), ...data } });
         await this.audit.record(ctx, tx, { action: id ? 'territorio.bairro_editar' : 'territorio.bairro_criar', entityType: 'Neighborhood', entityId: r.id, payload: { name: r.name, official: r.official } });
         return r;
@@ -406,12 +424,28 @@ export class TerritorioService {
   // ───────────── imóvel ─────────────
 
   /**
+   * Imóveis que o papel sem 'territorio.editar' (o ACS) alcança: os da sua equipe e microárea e os ainda sem equipe da
+   * unidade do contexto (cadastrados na recepção). null = todos (quem edita o território).
+   */
+  private async escopoDeCampo(ctx: RequestContext) {
+    if (roleHasPermission(ctx.session.role, 'territorio.editar') || ctx.session.role !== 'ACS') return null;
+    const lotacoes = await ctx.db.teamMember.findMany({ where: { userId: ctx.session.userId, active: true, team: { unitId: ctx.session.unitId, active: true } }, select: { teamId: true, microArea: true } });
+    return [...lotacoes.map((l) => ({ teamId: l.teamId, ...(l.microArea ? { microArea: l.microArea } : {}) })), { teamId: null, unitId: ctx.session.unitId }];
+  }
+
+  /**
    * Posição do imóvel marcada no mapa ou lida do GPS do aparelho. O GPS guarda o raio normalizado para 95% de
    * confiança e é recusado acima de 50 m (nova leitura). Marcar no mapa vale como precisão "MAPA".
    */
   async posicionarImovel(ctx: RequestContext, id: string, input: { lat: number; lng: number; origem: 'MAPA' | 'GPS'; accuracyM?: number | null; confianca?: 68 | 95; sequencia?: string | null }) {
     const h = await ctx.db.household.findUnique({ where: { id }, select: { id: true, active: true, latitude: true, longitude: true, geoPrecision: true } });
     if (!h || !h.active) throw notFound('Imóvel');
+    const escopo = await this.escopoDeCampo(ctx);
+    if (escopo) {
+      // ACS: só imóveis da sua área; a sequência do reconhecimento geográfico é de quem edita o território.
+      if (!(await ctx.db.household.count({ where: { id, OR: escopo } }))) throw forbidden('Imóvel fora da sua equipe e microárea');
+      if (input.sequencia !== undefined) throw forbidden('A sequência do imóvel é definida por quem edita o território');
+    }
     let acc: number | null = null;
     if (input.origem === 'GPS') {
       if (input.accuracyM == null) throw new DomainError('GPS_SEM_PRECISAO', 'Leitura de GPS sem a precisão do aparelho', HttpStatus.BAD_REQUEST);

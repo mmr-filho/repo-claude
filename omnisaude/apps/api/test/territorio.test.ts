@@ -146,6 +146,11 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     ).body;
     expect(bairro).toMatchObject({ name: 'Setor Central', aliases: ['CENTRO'] });
     await t.http().post('/api/territorio/localidades').set(auth(acs)).send({ code: '3', name: 'ACS não edita' }).expect(403);
+    // Mesmo nome sem acento ou igual a um apelido de outro bairro ativo: é o mesmo bairro.
+    await t.http().post('/api/territorio/bairros').set(auth(gestora)).send({ localityId: localidade, name: 'Sétor Central' }).expect(409);
+    await t.http().post('/api/territorio/bairros').set(auth(gestora)).send({ localityId: localidade, name: 'Centro' }).expect(409);
+    // Localidade com bairro ativo não é extinta (a malha ficaria órfã).
+    await t.http().patch(`/api/territorio/localidades/${localidade}`).set(auth(gestora)).send({ status: 'EXTINTA' }).expect(422);
   });
 
   it('importar a malha em GeoJSON liga cada domicílio ao seu quarteirão', async () => {
@@ -432,6 +437,16 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     const pend = (await t.http().get('/api/territorio/imoveis?situacao=SEM_POSICAO').set(auth(acs)).expect(200)).body as { id: string }[];
     expect(pend.map((x) => x.id)).not.toContain(casa);
 
+    // O ACS não mexe em imóvel de outra unidade (fora da sua área) nem na sequência do reconhecimento geográfico.
+    const outraUnidade = await db.unit.findFirstOrThrow({ where: { name: { not: 'UBS Centro' } } });
+    const alheia = (await t.http().post('/api/households').set(auth(recepcao)).send({ street: 'Rua de Outra Unidade', number: '1' }).expect(201)).body.id;
+    await db.household.update({ where: { id: alheia }, data: { unitId: outraUnidade.id } });
+    await t.http().post(`/api/territorio/imoveis/${alheia}/posicao`).set(auth(acs)).send({ lat: p[1], lng: p[0], origem: 'MAPA' }).expect(403);
+    await t.http().post(`/api/territorio/imoveis/${casa}/posicao`).set(auth(acs)).send({ lat: p[1], lng: p[0], origem: 'MAPA', sequencia: '9' }).expect(403);
+    const doAcs = (await t.http().get('/api/territorio/imoveis?situacao=SEM_POSICAO').set(auth(acs)).expect(200)).body as { id: string }[];
+    expect(doAcs.map((x) => x.id)).not.toContain(alheia);
+    expect(((await t.http().get('/api/territorio/imoveis?situacao=SEM_POSICAO').set(auth(gestora)).expect(200)).body as { id: string }[]).map((x) => x.id)).toContain(alheia);
+
     // Visita do ACS com GPS num imóvel sem posição: a posição entra como GPS em campo e o imóvel vai ao quarteirão.
     const visitada = (await t.http().post('/api/households').set(auth(recepcao)).send({ street: 'Rua da Visita', number: '3' }).expect(201)).body.id;
     const pv = desloca(C, -100, 100);
@@ -540,6 +555,30 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     expect(await h(porBairro)).toMatchObject({ geoPrecision: 'LOCALIDADE', geoSource: 'centro-do-bairro', blockId: null });
     // GPS em campo não é trocado por posição pior.
     expect(await h(comGps)).toMatchObject({ geoPrecision: 'GPS_CAMPO', latitude: C[1] });
+
+    // Endereço corrigido sem leitura nova: a posição do endereço antigo deixa de valer; a do GPS fica.
+    await t.http().patch(`/api/households/${porEndereco}`).set(auth(recepcao)).send({ street: 'Rua Trocada', number: '10' }).expect(200);
+    expect(await h(porEndereco)).toMatchObject({ latitude: null, geoPrecision: null, blockId: null });
+    await t.http().patch(`/api/households/${comGps}`).set(auth(recepcao)).send({ number: '1501' }).expect(200);
+    expect(await h(comGps)).toMatchObject({ geoPrecision: 'GPS_CAMPO', latitude: C[1] });
+    // Imóvel de outro município, com bairro de mesmo nome, não recebe o centro do bairro daqui.
+    const deFora = await cria({ street: 'Rua Desconhecida', number: '2', district: 'Centro', ibgeCode: '1709302' });
+    expect(
+      (
+        await t
+          .http()
+          .post('/api/territorio/imoveis/geocodificar')
+          .set(auth(gestora))
+          .send({ ids: [deFora] })
+          .expect(200)
+      ).body.atualizados,
+    ).toBe(0);
+    expect((await h(deFora)).latitude).toBeNull();
+    // Leitura do GPS acima de 50 m (rede, ambiente fechado) não vira a posição do imóvel.
+    const leituraRuim = await cria({ street: 'Rua do Sinal Fraco', number: '3', latitude: C[1], longitude: C[0], geoAccuracyM: 120 });
+    expect(await h(leituraRuim)).toMatchObject({ latitude: null, geoPrecision: null });
+    const leituraBoa = await cria({ street: 'Rua do Sinal Bom', number: '4', latitude: C[1], longitude: C[0], geoAccuracyM: 8 });
+    expect(await h(leituraBoa)).toMatchObject({ geoPrecision: 'GPS_CAMPO', geoAccuracyM: 8 });
   });
 
   it('mapa de casos só para a vigilância, com o quarteirão do caso e os quarteirões no raio do bloqueio', async () => {
@@ -581,6 +620,35 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     await t.http().get(`/api/vigilancia/notificacoes/${n.id}/quarteiroes`).set(auth(medica)).expect(403);
     // O retrato da ficha guarda a precisão da residência.
     expect((await db.notification.findUniqueOrThrow({ where: { id: n.id } })).residencePrecision).toBe('GPS_CAMPO');
+    // Posição no centro do bairro não vai para os geo campos da ficha (não é a residência).
+    const outro = (
+      await t
+        .http()
+        .post('/api/patients')
+        .set(auth(recepcao))
+        .send({
+          name: 'Elisa Dengue Territorio',
+          birthDate: '1990-04-04',
+          sex: 'F',
+          cpf: completeCpf('483111002'),
+          cns: cnsFromBase('28311100200'),
+          motherName: 'Mae da Elisa',
+          phone: '(63) 97777-2626',
+          address: { cep: '77405070', street: 'Rua da Saída', number: '26', district: 'Centro', city: 'Gurupi', uf: 'TO', ibgeCode: '1709500' },
+        })
+        .expect(201)
+    ).body.id;
+    const casaDoBairro = (
+      await t
+        .http()
+        .post('/api/households')
+        .set(auth(recepcao))
+        .send({ street: 'Rua Sem Número Conhecido', number: '1', family: { responsibleId: outro } })
+        .expect(201)
+    ).body.id;
+    await db.household.update({ where: { id: casaDoBairro }, data: { latitude: C[1], longitude: C[0], geoPrecision: 'LOCALIDADE', geoSource: 'centro-do-bairro' } });
+    const n2 = (await t.http().post('/api/vigilancia/notificacoes').set(auth(medica)).send({ patientId: outro, conditionKey: 'dengue' }).expect(201)).body;
+    expect(await db.notification.findUniqueOrThrow({ where: { id: n2.id } })).toMatchObject({ residenceLat: null, residenceLng: null, residencePrecision: null });
   });
 
   it('configuração: raio do bloqueio e numeração por bairro (exige quarteirões ligados a bairros)', async () => {

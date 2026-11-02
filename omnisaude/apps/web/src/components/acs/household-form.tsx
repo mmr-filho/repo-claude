@@ -28,7 +28,7 @@ export interface DomicilioExistente extends DomicilioCampo {
   id: string;
 }
 
-type Form = Required<{ [K in keyof DomicilioCampo]: string }> & { electricity: string; rooms: string };
+type Form = Required<{ [K in Exclude<keyof DomicilioCampo, 'geoAccuracyM'>]: string }> & { electricity: string; rooms: string };
 
 const vazio = (microArea: string | null): Form => ({
   cep: '',
@@ -102,6 +102,8 @@ export function HouseholdForm({
   const [erro, setErro] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [localizando, setLocalizando] = useState(false);
+  // Precisão da leitura feita agora; sem leitura nova, a posição gravada no servidor não é tocada.
+  const [leitura, setLeitura] = useState<{ precisao: number | null } | null>(null);
 
   useEffect(() => {
     if (!aberto) return;
@@ -130,6 +132,7 @@ export function HouseholdForm({
     try {
       const p = await obterPosicao();
       setF((x) => ({ ...x, latitude: String(p.latitude), longitude: String(p.longitude) }));
+      setLeitura({ precisao: p.precisao });
     } catch (e) {
       setErro((e as Error).message);
     } finally {
@@ -151,8 +154,9 @@ export function HouseholdForm({
       city: texto(f.city),
       uf: texto(f.uf),
       ibgeCode: texto(f.ibgeCode),
-      latitude: f.latitude ? Number(f.latitude) : null,
-      longitude: f.longitude ? Number(f.longitude) : null,
+      latitude: leitura && f.latitude ? Number(f.latitude) : null,
+      longitude: leitura && f.longitude ? Number(f.longitude) : null,
+      geoAccuracyM: leitura?.precisao ?? null,
       propertyType: texto(f.propertyType),
       dwellingType: texto(f.dwellingType),
       tenure: texto(f.tenure),

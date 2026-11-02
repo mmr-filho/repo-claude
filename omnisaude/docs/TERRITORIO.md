@@ -46,7 +46,14 @@ polígonos de quadra. Por isso a malha vem do município (planejamento urbano, e
 | Logradouro, localidade/bairro, setor, CEP, município | rua sem o número, centro do bairro etc. | só depois de confirmar em campo |
 
 Uma posição nova só substitui a atual se for de precisão igual ou melhor: a geocodificação nunca desfaz um GPS.
-Só as quatro primeiras ligam o imóvel ao quarteirão (tolerância de 15 m da borda, para o ponto na calçada).
+Só as quatro primeiras ligam o imóvel ao quarteirão (tolerância de 15 m da borda, para o ponto na calçada) e só
+elas vão para os geo campos 1 e 2 da ficha de notificação.
+
+- Leitura do GPS com precisão pior que 50 m (rede, ambiente fechado) não vira a posição do imóvel, no cadastro do
+  domicílio e na visita do ACS; o app só manda coordenada quando há leitura nova no aparelho.
+- Endereço corrigido sem leitura nova apaga a posição que tinha vindo do endereço antigo (base do IBGE, centro de
+  rua ou de bairro); GPS e marcação no mapa ficam.
+- A visita do ACS com GPS num imóvel sem posição grava a posição como GPS em campo e liga o imóvel ao quarteirão.
 
 ### Importação da malha
 
@@ -81,8 +88,9 @@ entorno.
 
 "Localizar pelo endereço" tenta, em ordem: rua e número no CNEFE → quadra e lote (endereço "S/N, QD 12 LT 7") →
 rua sem número (mediana da rua, se os pontos estão concentrados) → centro do quarteirão → centro do bairro ou da
-localidade (pelo nome ou apelido). Candidatos são filtrados pelo município, CEP e bairro. Tudo roda no servidor do
-OmniSaúde; cada execução é auditada.
+localidade (pelo nome ou apelido). Candidatos são filtrados pelo município, CEP e bairro; imóvel de outro
+município não recebe posição daqui. Os pendentes são percorridos por ordem (até 20 mil por execução), sem repetir
+sempre os mesmos. Tudo roda no servidor do OmniSaúde; cada execução é auditada.
 
 ### Telas
 
@@ -97,6 +105,11 @@ OmniSaúde; cada execução é auditada.
 - **Ficha da notificação**: cartão "Quarteirões no raio do bloqueio" (base da ordem de bloqueio da semana 26).
 
 ### Sigilo e acesso
+
+- O ACS marca a posição só dos imóveis da sua equipe e microárea (e dos ainda sem equipe da sua unidade) e vê só
+  esses na fila de pendências; a sequência do reconhecimento geográfico é de quem edita o território.
+- Localidade com quarteirões ou bairros ativos não é extinta, bairro com quarteirões ativos não é desativado, e não
+  se cadastra bairro com o nome (sem acento) ou apelido de outro bairro ativo da localidade.
 
 - O mapa de casos não mostra nome nem endereço; agravo sigiloso só entra para quem pode abrir a ficha (os demais
   aparecem apenas como contagem), e cada consulta é auditada com as sigilosas exibidas.

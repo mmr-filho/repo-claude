@@ -173,6 +173,10 @@ export async function seedDemo(opts: SeedOptions) {
           ibgeCode: DEMO_TENANT.ibgeCode,
           latitude: -11.7292 + (i % 4) * 0.0012 - 0.002,
           longitude: -49.0686 + Math.floor(i / 4) * 0.0015 - 0.002,
+          // Posição lida em campo (território, semana 25): liga ao quarteirão quando a malha for importada.
+          geoPrecision: 'GPS_CAMPO',
+          geoSource: 'seed',
+          geoAt: new Date(),
           dwellingType: '01',
           tenure: '01',
           waterSupply: '01',

@@ -57,13 +57,11 @@ export class GeocodificacaoService {
   ) {}
 
   async geocodificar(ctx: RequestContext, input: { ids?: string[]; limite?: number }) {
-    const limite = Math.min(input.limite ?? 2000, 5000);
+    // Teto de imóveis analisados por chamada; os pendentes são percorridos por id, sem repetir sempre os mesmos.
+    const limite = Math.min(input.limite ?? 20_000, 50_000);
+    const explicito = !!input.ids?.length;
     const piores: PrecisaoGeo[] = ['LOGRADOURO', 'QUARTEIRAO', 'LOCALIDADE', 'SETOR', 'CEP', 'MUNICIPIO', 'FACE'];
-    const imoveis = await ctx.db.household.findMany({
-      where: { active: true, ...(input.ids?.length ? { id: { in: input.ids } } : { OR: [{ latitude: null }, { longitude: null }, { geoPrecision: null }, { geoPrecision: { in: piores } }] }) },
-      select: { id: true, street: true, number: true, complement: true, district: true, cep: true, ibgeCode: true, latitude: true, longitude: true, geoPrecision: true, blockId: true },
-      take: limite,
-    });
+    const select = { id: true, street: true, number: true, complement: true, district: true, cep: true, ibgeCode: true, latitude: true, longitude: true, geoPrecision: true, blockId: true } as const;
     // Base inteira na memória (um município: dezenas de milhares de endereços) em índices por chave.
     const base = await ctx.db.addressPoint.findMany({ select: { latitude: true, longitude: true, level: true, locality: true, cep: true, ibgeCode: true, streetKey: true, number: true, quadraKey: true, loteKey: true } });
     const porRuaNumero = new Map<string, Ponto[]>();
@@ -80,28 +78,49 @@ export class GeocodificacaoService {
       ctx.db.neighborhood.findMany({ where: { active: true, centerLat: { not: null } }, select: { name: true, aliases: true, centerLat: true, centerLng: true } }),
       ctx.db.locality.findMany({ where: { status: 'ATIVA', centerLat: { not: null } }, select: { name: true, centerLat: true, centerLng: true } }),
     ]);
+    // Municípios do território (unidades e base de endereços): imóvel de outro município não ganha posição daqui.
+    const municipios = new Set([...(await ctx.db.unit.findMany({ select: { ibgeCode: true } })).map((u) => u.ibgeCode), ...base.map((p) => p.ibgeCode)].map((c) => (c ?? '').slice(0, 6)).filter(Boolean));
     const centroBloco = new Map(blocos.map((b) => [b.id, b]));
     const centroNome = new Map<string, { lat: number; lng: number }>();
     for (const l of localidades) centroNome.set(normalizarNome(l.name), { lat: l.centerLat!, lng: l.centerLng! });
     for (const b of bairros) for (const n of [b.name, ...b.aliases]) centroNome.set(normalizarNome(n), { lat: b.centerLat!, lng: b.centerLng! });
 
     const resumo: Record<string, number> = {};
+    let analisados = 0;
     let atualizados = 0;
     let semResultado = 0;
-    for (const h of imoveis) {
-      const r = this.tentar(h, { porRuaNumero, porQuadraLote, porRua, centroBloco, centroNome });
-      if (!r) {
-        semResultado++;
-        continue;
+    let cursor: string | undefined;
+    while (analisados < limite) {
+      const imoveis = await ctx.db.household.findMany({
+        where: {
+          active: true,
+          ...(explicito ? { id: { in: input.ids } } : { OR: [{ latitude: null }, { longitude: null }, { geoPrecision: null }, { geoPrecision: { in: piores } }] }),
+          ...(cursor ? { id: { gt: cursor, ...(explicito ? { in: input.ids } : {}) } } : {}),
+        },
+        select,
+        orderBy: { id: 'asc' },
+        take: Math.min(1000, limite - analisados),
+      });
+      if (!imoveis.length) break;
+      cursor = imoveis[imoveis.length - 1]!.id;
+      for (const h of imoveis) {
+        analisados++;
+        const r = this.tentar(h, { porRuaNumero, porQuadraLote, porRua, centroBloco, centroNome, municipios });
+        if (!r) {
+          semResultado++;
+          continue;
+        }
+        if (!posicaoMelhorOuIgual(r.precisao, h.geoPrecision as PrecisaoGeo | null)) continue;
+        // Mesma precisão: só troca quando pedida para este imóvel (endereço corrigido) e o ponto mudou.
+        if (h.geoPrecision === r.precisao && h.latitude != null && (!explicito || (h.latitude === r.lat && h.longitude === r.lng))) continue;
+        await ctx.db.household.update({ where: { id: h.id }, data: { latitude: r.lat, longitude: r.lng, geoPrecision: r.precisao, geoSource: r.fonte, geoAccuracyM: null, geoAt: new Date() } });
+        await this.localizador.vincularImovel(ctx.db, h.id);
+        resumo[r.precisao] = (resumo[r.precisao] ?? 0) + 1;
+        atualizados++;
       }
-      if (!posicaoMelhorOuIgual(r.precisao, h.geoPrecision as PrecisaoGeo | null) || (h.geoPrecision === r.precisao && h.latitude != null)) continue;
-      await ctx.db.household.update({ where: { id: h.id }, data: { latitude: r.lat, longitude: r.lng, geoPrecision: r.precisao, geoSource: r.fonte, geoAccuracyM: null, geoAt: new Date() } });
-      await this.localizador.vincularImovel(ctx.db, h.id);
-      resumo[r.precisao] = (resumo[r.precisao] ?? 0) + 1;
-      atualizados++;
     }
-    await this.audit.recordStandalone(ctx, { action: 'territorio.geocodificar', entityType: 'Household', payload: { analisados: imoveis.length, atualizados, resumo } });
-    return { analisados: imoveis.length, atualizados, semResultado, porPrecisao: resumo, baseDeEnderecos: base.length };
+    await this.audit.recordStandalone(ctx, { action: 'territorio.geocodificar', entityType: 'Household', payload: { analisados, atualizados, resumo } });
+    return { analisados, atualizados, semResultado, porPrecisao: resumo, baseDeEnderecos: base.length };
   }
 
   private tentar(
@@ -112,16 +131,19 @@ export class GeocodificacaoService {
       porRua: Map<string, Ponto[]>;
       centroBloco: Map<string, { centerLat: number; centerLng: number }>;
       centroNome: Map<string, { lat: number; lng: number }>;
+      municipios: Set<string>;
     },
   ): Resultado | null {
     const rua = normalizarLogradouro(h.street);
     const numero = normalizarNumero(h.number);
     const cep = (h.cep ?? '').replace(/\D/g, '');
     const bairro = normalizarNome(h.district);
-    const ibge = (h.ibgeCode ?? '').slice(0, 7);
+    // IBGE com 6 ou 7 dígitos (o cadastro aceita os dois): compara pelos 6 primeiros.
+    const ibge = (h.ibgeCode ?? '').replace(/\D/g, '').slice(0, 6);
+    if (ibge.length === 6 && idx.municipios.size && !idx.municipios.has(ibge)) return null;
     // Vários candidatos (mesma rua em bairros diferentes): estreita pelo município, pelo CEP e pela localidade.
     const filtrar = (pts: Ponto[]) => {
-      let c = ibge.length === 7 ? pts.filter((p) => p.ibgeCode === ibge) : pts;
+      let c = ibge.length === 6 ? pts.filter((p) => p.ibgeCode.slice(0, 6) === ibge) : pts;
       if (cep.length === 8 && c.some((p) => p.cep === cep)) c = c.filter((p) => p.cep === cep);
       if (bairro && c.some((p) => normalizarNome(p.locality) === bairro)) c = c.filter((p) => normalizarNome(p.locality) === bairro);
       return c;

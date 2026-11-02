@@ -1,6 +1,7 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import {
   ageInYears,
+  avaliarGps,
   DESFECHO_VISITA,
   MOTIVO_VISITA_LABEL,
   ordenarOperacoes,
@@ -472,7 +473,15 @@ export class AcsService {
     const microArea = v.microArea ?? household?.microArea ?? ref.lot?.microArea ?? null;
     const dec = (x: number | null | undefined) => (x === null || x === undefined ? null : x);
     // Domicílio sem posição recebe a do GPS da visita (precisão de GPS em campo) e é ligado ao quarteirão (PLT-3).
-    const posiciona = !!household && household.latitude === null && v.latitude !== null && v.latitude !== undefined && v.longitude !== null && v.longitude !== undefined;
+    // Leitura acima de 50 m (rede, ambiente fechado) fica só na visita, sem virar a posição do imóvel.
+    const posiciona =
+      !!household &&
+      household.latitude === null &&
+      v.latitude !== null &&
+      v.latitude !== undefined &&
+      v.longitude !== null &&
+      v.longitude !== undefined &&
+      (v.precisaoGps == null || avaliarGps(v.precisaoGps) !== 'NOVA_LEITURA');
     const visitId = await ctx.db.$transaction(async (tx) => {
       const visit = await tx.homeVisit.create({
         data: {
@@ -507,7 +516,7 @@ export class AcsService {
       if (posiciona) {
         await tx.household.update({
           where: { id: household!.id },
-          data: { latitude: v.latitude, longitude: v.longitude, geoPrecision: 'GPS_CAMPO', geoSource: 'visita', geoAccuracyM: null, geoAt: visitedAt },
+          data: { latitude: v.latitude, longitude: v.longitude, geoPrecision: 'GPS_CAMPO', geoSource: 'visita', geoAccuracyM: v.precisaoGps ?? null, geoAt: visitedAt },
         });
       }
       if (patientId && v.desfecho === '1') await tx.activeSearchCase.updateMany({ where: { patientId, status: { not: 'ENCERRADO' } }, data: { lastVisitAt: visitedAt } });
