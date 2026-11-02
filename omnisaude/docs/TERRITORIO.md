@@ -42,7 +42,6 @@ polígonos de quadra. Por isso a malha vem do município (planejamento urbano, e
 | Marcado no mapa | clique no mapa do território | sim |
 | Endereço (base do IBGE) | CNEFE níveis 1 a 3 (rua e número, ou quadra e lote) | sim |
 | Face de quadra | CNEFE nível 4 | com aviso |
-| Centro do quarteirão | quarteirão informado, sem ponto | com aviso |
 | Logradouro, localidade/bairro, setor, CEP, município | rua sem o número, centro do bairro etc. | só depois de confirmar em campo |
 
 Uma posição nova só substitui a atual se for de precisão igual ou melhor: a geocodificação nunca desfaz um GPS.
@@ -93,10 +92,11 @@ entorno.
 ### Geocodificação local
 
 "Localizar pelo endereço" tenta, em ordem: rua e número no CNEFE → quadra e lote (endereço "S/N, QD 12 LT 7") →
-rua sem número (mediana da rua, se os pontos estão concentrados) → centro do quarteirão → centro do bairro ou da
-localidade (pelo nome ou apelido). Candidatos são filtrados pelo município, CEP e bairro; imóvel de outro
-município não recebe posição daqui, e nome de bairro que existe em duas localidades não posiciona ninguém. Os
-pendentes são percorridos por ordem, em lotes de até 20 mil que a tela encadeia, sem repetir sempre os mesmos. Tudo roda no servidor do OmniSaúde; cada execução é auditada.
+rua sem número (mediana da rua, se os pontos estão concentrados) → centro do bairro ou da localidade (pelo nome ou
+apelido). Candidatos são filtrados pelo município, CEP e bairro; imóvel de outro município não recebe posição daqui,
+e nome de bairro que existe em duas localidades não posiciona ninguém. Os pendentes são percorridos por ordem, em
+lotes de até 20 mil que a tela encadeia, sem repetir sempre os mesmos. Tudo roda no servidor do OmniSaúde; cada
+execução é auditada.
 
 ### Telas
 

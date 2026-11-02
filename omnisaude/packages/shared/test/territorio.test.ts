@@ -6,6 +6,7 @@ import {
   centroDe,
   distanciaAteArea,
   distanciaM,
+  escaparHtml,
   epsgSirgasUtmSul,
   fusoUtm,
   GeometriaInvalida,
@@ -203,6 +204,35 @@ describe('geometria do território', () => {
     expect(falsos).toBe(0);
   });
 
+  it('lado encaixado em escada (começa no meio do lado do vizinho e segue além) não é sobreposição', () => {
+    const P: Posicao = [-49.068712, -11.730113];
+    const Q: Posicao = [-49.068291, -11.729177];
+    const oeste = (p: Posicao): Posicao => [p[0] - 0.0008, p[1]];
+    const leste = (p: Posicao): Posicao => [p[0] + 0.0008, p[1]];
+    const A = normalizarArea({ type: 'Polygon', coordinates: [[P, Q, oeste(Q), oeste(P), P]] });
+    const S2: Posicao = [Q[0] + 0.5 * (Q[0] - P[0]), Q[1] + 0.5 * (Q[1] - P[1])];
+    let falsos = 0;
+    for (let i = 1; i < 150; i++) {
+      const t = i / 150;
+      const S1: Posicao = [P[0] + t * (Q[0] - P[0]), P[1] + t * (Q[1] - P[1])];
+      if (areasSobrepoem(A, normalizarArea({ type: 'Polygon', coordinates: [[S1, leste(S1), leste(S2), S2, S1]] }))) falsos++;
+    }
+    expect(falsos).toBe(0);
+  });
+
+  it('lasca estreita com muitos vértices (faixa de 1 cm) sai como lasca, sem recusar a feição', () => {
+    const o: Posicao = [-49.07, -11.73];
+    const m = metrosPorGrau(o[1]);
+    const d = (xm: number, ym: number): Posicao => [o[0] + xm / m.lng, o[1] + ym / m.lat];
+    const grande = [d(0, 0), d(200, 0), d(200, 200), d(0, 200), d(0, 0)];
+    const cima = Array.from({ length: 8 }, (_, i) => d(300 + i * 5, 0.01));
+    const baixo = Array.from({ length: 8 }, (_, i) => d(335 - i * 5, 0));
+    const lasca = [...cima, ...baixo, cima[0]!];
+    const avisos: string[] = [];
+    expect(normalizarArea({ type: 'MultiPolygon', coordinates: [[grande], [lasca]] }, avisos).type).toBe('Polygon');
+    expect(avisos[0]).toMatch(/descartado/);
+  });
+
   it('lascas de recorte saem sem recusar a feição; furo que toca o contorno é aceito', () => {
     const o: Posicao = [-49.07, -11.73];
     const d = (x: number, y: number): Posicao => [o[0] + x * 0.0001, o[1] + y * 0.0001];
@@ -253,6 +283,11 @@ describe('regras do território', () => {
     // Uma posição nunca é trocada por outra de regra pior: a ordem acompanha automático → com aviso → confirmar em campo.
     for (let i = 1; i < PRECISOES.length; i++) expect(peso[PRECISAO_INFO[PRECISOES[i]!].bloqueio]).toBeGreaterThanOrEqual(peso[PRECISAO_INFO[PRECISOES[i - 1]!].bloqueio]);
     expect(ORDEM_PRECISAO.QUARTEIRAO).toBeLessThan(ORDEM_PRECISAO.LOGRADOURO);
+  });
+
+  it('texto do cadastro vai às dicas do mapa como texto, nunca como HTML', () => {
+    expect(escaparHtml('<img src=x onerror="alert(1)">')).toBe('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;');
+    expect(escaparHtml("Rua D'Ávila & Cia")).toBe('Rua D&#39;Ávila &amp; Cia');
   });
 
   it('número do quarteirão em forma única (editor e importação)', () => {

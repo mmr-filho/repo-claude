@@ -3,6 +3,7 @@
 import 'leaflet/dist/leaflet.css';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import type { GeoJSON as CamadaGeoJSON, LayerGroup, LeafletMouseEvent, Map as LeafletMap } from 'leaflet';
+import { escaparHtml } from '@omnisaude/shared';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/cn';
 import { COR_PRECISAO, type CamadasMapa, type Geometria } from './types';
@@ -197,9 +198,9 @@ export function MapaTerritorio({
         L.DomEvent.stopPropagation(e);
         cb.current.onQuarteirao?.(q.id);
       });
-      camada.bindTooltip(`Quarteirão ${escapar(q.number)} · ${q.imoveis} imóvel(is)`, { sticky: true });
+      camada.bindTooltip(`Quarteirão ${escaparHtml(q.number)} · ${q.imoveis} imóvel(is)`, { sticky: true });
       camada.addTo(g.quarteiroes);
-      L.marker([q.centerLat, q.centerLng], { icon: L.divIcon({ className: 'rotulo-quarteirao', html: `<span>${escapar(q.number)}</span>`, iconSize: [40, 16] }), interactive: false }).addTo(g.rotulos);
+      L.marker([q.centerLat, q.centerLng], { icon: L.divIcon({ className: 'rotulo-quarteirao', html: `<span>${escaparHtml(q.number)}</span>`, iconSize: [40, 16] }), interactive: false }).addTo(g.rotulos);
     }
     if (m.getZoom() >= 17) g.rotulos.addTo(m);
     if (!ajustado.current && camadas.quarteiroes.length && !centro.current) {
@@ -225,7 +226,7 @@ export function MapaTerritorio({
         fillColor: COR_PRECISAO[h.precisao ?? ''] ?? '#64748b',
         fillOpacity: 0.95,
       });
-      c.bindTooltip(escapar(`${h.endereco || 'Imóvel'}${h.sequencia ? ` · seq. ${h.sequencia}` : ''}`));
+      c.bindTooltip(escaparHtml(`${h.endereco || 'Imóvel'}${h.sequencia ? ` · seq. ${h.sequencia}` : ''}`));
       c.on('click', (e) => {
         if (cb.current.modo !== 'navegar') return;
         L.DomEvent.stopPropagation(e);
@@ -244,7 +245,7 @@ export function MapaTerritorio({
     g.casos.clearLayers();
     for (const p of casos ?? []) {
       const c = L.circleMarker([p.lat, p.lng], { pane: 'terr-casos', radius: 7, color: '#111827', weight: 1.5, dashArray: p.incerto ? '3 3' : undefined, fillColor: p.cor, fillOpacity: 0.9 });
-      c.bindTooltip(escapar(p.titulo));
+      c.bindTooltip(escaparHtml(p.titulo));
       c.on('click', (e) => {
         L.DomEvent.stopPropagation(e);
         cb.current.onCaso?.(p.id);
@@ -290,9 +291,4 @@ export function MapaTerritorio({
   }, [pronto, modo, geometriaEdicao]);
 
   return <div ref={div} className={cn('z-0 h-[560px] w-full overflow-hidden rounded-lg border border-slate-200', className)} role="region" aria-label="Mapa do território" />;
-}
-
-/** O Leaflet põe o texto da dica como HTML: endereço e nomes vêm de campos livres e precisam ser escapados. */
-function escapar(s: string) {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }

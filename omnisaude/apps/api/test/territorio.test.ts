@@ -221,6 +221,29 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     expect(r50.quarteiroes.map((q: { numero: string }) => q.numero)).toEqual(['5']);
     // Padrão da instituição: 150 m.
     expect((await t.http().get(`/api/territorio/raio?lat=${C[1]}&lng=${C[0]}`).set(auth(acs)).expect(200)).body.raioM).toBe(150);
+    // Controle da regra "até a borda": borda a 145 m entra (centro a 185 m); canto a 151,8 m fica fora, embora a caixa
+    // envolvente encoste na do raio.
+    const P0 = desloca(C, 0, -3000);
+    const retangulo = (x0: number, y0: number, x1: number, y1: number) => {
+      const a = desloca(P0, x0, y0);
+      const b = desloca(P0, x1, y1);
+      return { type: 'Polygon' as const, coordinates: [[a, [b[0], a[1]], b, [a[0], b[1]], a]] };
+    };
+    await t
+      .http()
+      .post('/api/territorio/quarteiroes')
+      .set(auth(gestora))
+      .send({ localityId: localidade, number: '90', geometry: retangulo(145, -40, 225, 40) })
+      .expect(201);
+    await t
+      .http()
+      .post('/api/territorio/quarteiroes')
+      .set(auth(gestora))
+      .send({ localityId: localidade, number: '91', geometry: retangulo(145, 45, 225, 125) })
+      .expect(201);
+    const controle = (await t.http().get(`/api/territorio/raio?lat=${P0[1]}&lng=${P0[0]}&metros=150`).set(auth(acs)).expect(200)).body;
+    expect(controle.quarteiroes.map((q: { numero: string }) => q.numero)).toEqual(['90']);
+    expect(controle.quarteiroes[0].distanciaM).toBeCloseTo(145, 0);
   });
 
   it('shapefile em SIRGAS 2000 / UTM 22S é reprojetado pela .prj; sem .prj ou em SAD 69 é recusado', async () => {
@@ -331,8 +354,12 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     const praia = (await t.http().post('/api/territorio/bairros').set(auth(gestora)).send({ localityId: localidade2, name: 'Praia' }).expect(201)).body.id;
     const q1 = await quarteiraoPorNumero(localidade2, '1');
     await t.http().patch(`/api/territorio/quarteiroes/${q1.id}`).set(auth(gestora)).send({ neighborhoodId: praia }).expect(200);
-    // Arquivo com BOM, "001" (é o 1) e uma feição com número inválido, marcado como malha completa.
-    const fc = { type: 'FeatureCollection', features: [feicao('001', g1!.centro), feicao('2', g2!.centro), feicao('X?', desloca(origem, 0, 400))] };
+    // Um imóvel com GPS dentro do quarteirão 2 da localidade 2.
+    const casaNo2 = (await t.http().post('/api/households').set(auth(recepcao)).send({ street: 'Rua do Quarteirão Dois', number: '2', latitude: g2!.centro[1], longitude: g2!.centro[0] }).expect(201)).body.id;
+    expect((await db.household.findUniqueOrThrow({ where: { id: casaNo2 } })).blockId).toBe((await quarteiraoPorNumero(localidade2, '2')).id);
+    // Arquivo com BOM, "001" (é o 1) e uma feição com número inválido, marcado como malha completa: o 2 não veio, mas
+    // como houve erro, nada é desativado.
+    const fc = { type: 'FeatureCollection', features: [feicao('001', g1!.centro), feicao('X?', desloca(origem, 0, 400))] };
     const comBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(JSON.stringify(fc))]);
     const previa = (
       await t
@@ -350,9 +377,30 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
         .send({ mapeamento: { numero: 'NUM' }, localidadeFixa: localidade2, desativarAusentes: true })
         .expect(200)
     ).body;
-    expect(r).toMatchObject({ criados: 0, atualizados: 2, desativados: 0, totalErros: 1 });
+    expect(r).toMatchObject({ criados: 0, atualizados: 1, desativados: 0, totalErros: 1 });
     expect(r.avisos[0]).toMatch(/Nenhum quarteirão foi desativado/);
+    expect((await quarteiraoPorNumero(localidade2, '2')).active).toBe(true);
     expect((await quarteiraoPorNumero(localidade2, '1')).neighborhoodId).toBe(praia);
+    // Sem erro, a malha completa desativa o 2 e solta o imóvel dele.
+    const so1 = (
+      await t
+        .http()
+        .post('/api/territorio/importacoes/previa')
+        .set(auth(vig))
+        .send({ tipo: 'QUARTEIROES', nomeArquivo: 'q1.geojson', arquivoBase64: b64(JSON.stringify({ type: 'FeatureCollection', features: [feicao('1', g1!.centro)] })) })
+        .expect(200)
+    ).body;
+    const rd = (
+      await t
+        .http()
+        .post(`/api/territorio/importacoes/${so1.id}/aplicar`)
+        .set(auth(vig))
+        .send({ mapeamento: { numero: 'NUM' }, localidadeFixa: localidade2, desativarAusentes: true })
+        .expect(200)
+    ).body;
+    expect(rd).toMatchObject({ atualizados: 1, desativados: 1, totalErros: 0 });
+    expect(await db.block.count({ where: { localityId: localidade2, number: '2', active: true } })).toBe(0);
+    expect((await db.household.findUniqueOrThrow({ where: { id: casaNo2 } })).blockId).toBeNull();
 
     // Bairro em duas feições com o mesmo nome: a segunda é erro, não sobrescreve a primeira.
     const bairros = {
@@ -505,6 +553,19 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     expect(noMapa.find((x) => x.id === alheia)?.campo).toBe(false);
     expect(noMapa.find((x) => x.id === casa)?.campo).toBe(true);
     await db.household.update({ where: { id: alheia }, data: { latitude: null, longitude: null, geoPrecision: null } });
+    // Nem pela visita com GPS: a visita fica gravada, a posição do imóvel não.
+    const vf = (
+      await t
+        .http()
+        .post('/api/acs/sync')
+        .set(auth(acs))
+        .send({
+          operacoes: [{ tipo: 'VISITA', clientId: randomUUID(), registradoEm: new Date().toISOString(), householdId: alheia, visita: { motivos: ['1'], desfecho: '3', latitude: p[1], longitude: p[0], precisaoGps: 5 } }],
+        })
+        .expect(200)
+    ).body;
+    expect(vf.resultados[0]).toMatchObject({ status: 'OK' });
+    expect((await db.household.findUniqueOrThrow({ where: { id: alheia } })).latitude).toBeNull();
     // Pela edição do domicílio o ACS também não posiciona imóvel fora da sua área: o cadastro muda, a posição não.
     await t.http().patch(`/api/households/${alheia}`).set(auth(acs)).send({ complement: 'Fundos', latitude: p[1], longitude: p[0], geoAccuracyM: 5 }).expect(200);
     expect(await db.household.findUniqueOrThrow({ where: { id: alheia } })).toMatchObject({ complement: 'Fundos', latitude: null, geoPrecision: null });
@@ -654,9 +715,12 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
       .send({ ids: [doEndereco] })
       .expect(200);
     expect((await h(doEndereco)).geoPrecision).toBe('ENDERECO');
+    // Na área do ACS (equipe e microárea dele), o imóvel vem no retrato do app com o IBGE e a precisão.
+    const lotacao = await db.teamMember.findFirstOrThrow({ where: { active: true, microArea: '01', team: { unit: { name: 'UBS Centro' } } }, select: { teamId: true } });
+    await db.household.update({ where: { id: doEndereco }, data: { teamId: lotacao.teamId, microArea: '01' } });
     const territorioAcs = (await t.http().get('/api/acs/territorio').set(auth(acs)).expect(200)).body;
     const retrato = territorioAcs.domicilios.find((d: { id: string }) => d.id === doEndereco);
-    if (retrato) expect(retrato).toMatchObject({ ibgeCode: '1709500', geoPrecision: 'ENDERECO' });
+    expect(retrato).toMatchObject({ ibgeCode: '1709500', geoPrecision: 'ENDERECO' });
     const sinc = (
       await t
         .http()
@@ -752,15 +816,25 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     const ontem = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
     await t.http().get(`/api/vigilancia/mapa?de=${ontem}&ate=${hoje}`).set(auth(medica)).expect(403);
     await t.http().get(`/api/vigilancia/mapa?de=${ontem}&ate=${hoje}`).set(auth(acs)).expect(403);
+    await t.http().get(`/api/vigilancia/mapa?de=${ontem}&ate=${hoje}`).set(auth(gestora)).expect(403);
+    const auditadas = await db.auditEntry.count({ where: { action: 'vigilancia.mapa_casos' } });
     const mapa = (await t.http().get(`/api/vigilancia/mapa?de=${ontem}&ate=${hoje}`).set(auth(vig)).expect(200)).body;
+    // Sem nome, documento nem endereço; cada consulta auditada.
+    expect(JSON.stringify(mapa)).not.toMatch(/Diego|483111001|28311100100|Rua da Saída|Rua Mapa/);
+    expect(await db.auditEntry.count({ where: { action: 'vigilancia.mapa_casos' } })).toBe(auditadas + 1);
+    // O núcleo de vigilância de outra unidade (hospital) não vê o caso da UBS.
+    const nucleo = await t.login('nucleo', 'Hospital Municipal São Lucas', 'NUCLEO_VIGILANCIA');
+    const doNucleo = (await t.http().get(`/api/vigilancia/mapa?de=${ontem}&ate=${hoje}`).set(auth(nucleo)).expect(200)).body;
+    expect(doNucleo.pontos.map((p: { id: string }) => p.id)).not.toContain(n.id);
     const ponto = mapa.pontos.find((p: { id: string }) => p.id === n.id);
     // A residência notificada (retrato da ficha, com GPS) é a usada no mapa.
     expect(ponto).toMatchObject({ precisao: 'GPS_CAMPO', fonte: 'ficha', blockId: (await quarteiraoPorNumero(localidade, '5')).id });
     expect(mapa.porQuarteirao.find((q: { numero: string }) => q.numero === '5').casos).toBeGreaterThanOrEqual(1);
     const raio = (await t.http().get(`/api/vigilancia/notificacoes/${n.id}/quarteiroes`).set(auth(vig)).expect(200)).body;
     expect(raio).toMatchObject({ regra: 'AUTOMATICO', raioM: 150, precisao: 'GPS_CAMPO' });
-    expect(raio.quarteiroes.map((q: { numero: string }) => q.numero)).toEqual(expect.arrayContaining(['5', '1', '9']));
+    expect(raio.quarteiroes.map((q: { numero: string }) => q.numero).sort()).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9']);
     await t.http().get(`/api/vigilancia/notificacoes/${n.id}/quarteiroes`).set(auth(medica)).expect(403);
+    expect(JSON.stringify(raio)).not.toMatch(/Diego|483111001|Rua da Saída/);
     // O retrato da ficha guarda a precisão da residência.
     expect((await db.notification.findUniqueOrThrow({ where: { id: n.id } })).residencePrecision).toBe('GPS_CAMPO');
     // Posição no centro do bairro não vai para os geo campos da ficha (não é a residência).
@@ -795,12 +869,16 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
   });
 
   it('configuração: raio do bloqueio e numeração por bairro (exige quarteirões ligados a bairros)', async () => {
+    // Com malha: a localidade não é extinta e o bairro com quarteirões não é desativado.
+    await t.http().patch(`/api/territorio/localidades/${localidade}`).set(auth(gestora)).send({ status: 'EXTINTA' }).expect(422);
+    const setorCentral = await db.neighborhood.findFirstOrThrow({ where: { localityId: localidade, name: 'Setor Central', active: true } });
+    await t.http().patch(`/api/territorio/bairros/${setorCentral.id}`).set(auth(gestora)).send({ active: false }).expect(422);
     await t.http().patch('/api/territorio/configuracoes').set(auth(gestora)).send({ raioBloqueioM: 30 }).expect(400);
     expect((await t.http().patch('/api/territorio/configuracoes').set(auth(gestora)).send({ raioBloqueioM: 200 }).expect(200)).body.raioBloqueioM).toBe(200);
     await t.http().patch('/api/territorio/configuracoes').set(auth(gestora)).send({ numeracaoQuarteirao: 'BAIRRO' }).expect(422);
     await t.http().patch('/api/territorio/configuracoes').set(auth(acs)).send({ raioBloqueioM: 300 }).expect(403);
     const resumo = (await t.http().get('/api/territorio/resumo').set(auth(acs)).expect(200)).body;
-    expect(resumo).toMatchObject({ localidades: 2, quarteiroes: 12, baseDeEnderecos: 5, config: { raioBloqueioM: 200 } });
+    expect(resumo).toMatchObject({ localidades: 2, quarteiroes: 13, baseDeEnderecos: 5, config: { raioBloqueioM: 200 } });
 
     // Com todos os quarteirões em bairros, numera por bairro; o mesmo número em outro bairro impede voltar à localidade.
     const semBairro = await db.block.findMany({ where: { active: true, neighborhoodId: null }, select: { localityId: true } });

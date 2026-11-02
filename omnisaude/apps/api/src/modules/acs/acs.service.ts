@@ -480,8 +480,16 @@ export class AcsService {
     // Domicílio sem posição, ou com posição aproximada (centro de rua ou de bairro, que pede confirmação em campo),
     // recebe a do GPS da visita e é ligado ao quarteirão (PLT-3). Leitura acima de 50 m fica só na visita.
     const posicaoBoa = !!household?.geoPrecision && household.latitude !== null && PRECISAO_LIGA_QUARTEIRAO.includes(household.geoPrecision as PrecisaoGeo);
+    // Fora da equipe e microárea do ACS a visita é gravada, mas a posição do imóvel não muda (mesma regra do mapa).
     const posiciona =
-      !!household && !posicaoBoa && v.latitude !== null && v.latitude !== undefined && v.longitude !== null && v.longitude !== undefined && (v.precisaoGps == null || avaliarGps(v.precisaoGps) !== 'NOVA_LEITURA');
+      !!household &&
+      !posicaoBoa &&
+      v.latitude !== null &&
+      v.latitude !== undefined &&
+      v.longitude !== null &&
+      v.longitude !== undefined &&
+      (v.precisaoGps == null || avaliarGps(v.precisaoGps) !== 'NOVA_LEITURA') &&
+      (await this.households.noEscopoDeCampo(ctx, household.id));
     const visitId = await ctx.db.$transaction(async (tx) => {
       const visit = await tx.homeVisit.create({
         data: {

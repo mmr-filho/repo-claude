@@ -226,8 +226,11 @@ export function areasSobrepoem(a: Area, b: Area): boolean {
           // Lado encaixado ao longo do lado do vizinho (junção em T): os dois extremos de um ficam a menos da folga
           // do outro; o arredondamento faz os dois "se cruzarem" no meio sem haver área em comum.
           const m = metrosPorGrau(x[1]);
-          const colado = (u: Posicao, v: Posicao, s1: Posicao, s2: Posicao) => distanciaAoSegmento(u, s1, s2, m) <= FOLGA_M && distanciaAoSegmento(v, s1, s2, m) <= FOLGA_M;
-          if (colado(p1, p2, p3, p4) || colado(p3, p4, p1, p2)) continue;
+          const d = (u: Posicao, s1: Posicao, s2: Posicao) => distanciaAoSegmento(u, s1, s2, m) <= FOLGA_M;
+          // Um lado inteiro sobre o outro (os dois extremos colados) ...
+          if ((d(p1, p3, p4) && d(p2, p3, p4)) || (d(p3, p1, p2) && d(p4, p1, p2))) continue;
+          // ... ou em escada (um começa no meio do outro e segue além): um extremo de cada colado no outro.
+          if ((d(p1, p3, p4) || d(p2, p3, p4)) && (d(p3, p1, p2) || d(p4, p1, p2))) continue;
           return true;
         }
   const dentroEstrito = (p: Posicao, x: Area) => pontoNaArea(p, x) && distanciaAteBorda(p, x) > FOLGA_M;
@@ -264,6 +267,13 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
   /** Anel normalizado, ou null quando colapsa (menos de 3 vértices depois de arredondar, ou menos de 1 m²). */
   const anel = (r: unknown, externo: boolean): Anel | null => {
     if (!Array.isArray(r)) throw new GeometriaInvalida('Anel inválido');
+    // Área sobre as coordenadas originais, antes de arredondar: a lasca estreita (faixa de 1 cm) vira "oito" ao
+    // arredondar, e tem de sair como lasca, não recusar a feição inteira.
+    const orig = r.filter((p): p is number[] => Array.isArray(p) && p.length >= 2).map((p) => [Number(p[0]), Number(p[1])] as Posicao);
+    if (orig.length >= 3 && orig.every((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]) && Math.abs(p[1]) <= 90)) {
+      const m0 = metrosPorGrau(orig[0]![1]);
+      if (Math.abs(areaDoAnelM2(orig, m0, orig[0]![1], orig[0]![0])) < 1) return null;
+    }
     const pts: Anel = [];
     for (const p of r) {
       if (!Array.isArray(p) || p.length < 2) throw new GeometriaInvalida('Posição inválida');

@@ -131,6 +131,11 @@ export class HouseholdsService {
     return this.view(await ctx.db.household.findUniqueOrThrow({ where: { id }, include: householdInclude }));
   }
 
+  /** O imóvel está na área do ACS (equipe e microárea); verdadeiro para os demais papéis. */
+  noEscopoDeCampo(ctx: RequestContext, id: string) {
+    return this.localizador.noEscopoDeCampo(ctx, id);
+  }
+
   /** Liga o imóvel ao quarteirão que contém a posição dele (ou desliga, se ficou sem posição ou fora da malha). */
   ligarAoQuarteirao(db: Parameters<LocalizadorService['vincularImovel']>[0], id: string) {
     return this.localizador.vincularImovel(db, id);

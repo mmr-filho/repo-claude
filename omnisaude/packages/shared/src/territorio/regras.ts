@@ -202,3 +202,8 @@ export function normalizarNome(s: string | null | undefined): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/** Texto para HTML (dicas e rótulos do Leaflet recebem HTML): endereços e nomes vêm de campos livres do cadastro. */
+export function escaparHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
