@@ -144,10 +144,11 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 
 ## Verificação feita
 
-- 546 testes automatizados em 76 arquivos (bibliotecas, simulador, Worker da Cloudflare e API contra PostgreSQL
-  real), na rodada de 02/11/2026 às 03h02 UTC: 544 passando. Os 2 restantes (devolutiva da regulação e do TFD por
-  WhatsApp) e outros 11 que falham entre 21h e meia-noite de Brasília dependem da hora do relógio (janela de silêncio
-  do WhatsApp e data UTC contra data local nos próprios testes); passam fora dessas janelas.
+- 550 testes automatizados em 76 arquivos (bibliotecas, simulador, Worker da Cloudflare e API contra PostgreSQL
+  real), na rodada de 02/11/2026 às 05h30 UTC: 548 passando. Os 2 restantes (devolutiva da regulação e do TFD por
+  WhatsApp, das 22h às 6h locais) e outros 11 que falham entre 21h e meia-noite de Brasília dependem da hora do
+  relógio (janela de silêncio do WhatsApp e data UTC contra data local nos próprios testes); passam fora dessas
+  janelas.
 - Teste de fumaça com Playwright (`e2e/smoke.e2e.mjs`) percorrendo 16 telas com 9 papéis no build de produção.
 - Território no navegador (semana 25): localidade e bairros com apelido, importação de 30 quarteirões em GeoJSON com
   os 11 imóveis ligados, raio de 150 m, quarteirão desenhado no editor (rascunho visível e editável antes de salvar),
