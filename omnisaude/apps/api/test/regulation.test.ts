@@ -2,6 +2,7 @@ import { cnsFromBase, completeCpf } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 import { startMocks } from './mocks';
+import { comRelogio, foraDaJanelaDeSilencio } from './relogio';
 
 const enabled = await pgAvailable();
 
@@ -214,15 +215,15 @@ describe.runIf(enabled)('Regulação ambulatorial: solicitação, protocolo, fil
       .body;
     expect(autorizada).toMatchObject({ status: 'AUTORIZADA', priority: 'VERDE', requestedPriority: 'AMARELA', providerUnit: { name: 'Policlínica Municipal' }, regulator: { name: 'Fábio Teixeira NIR' } });
     expect(autorizada.eventos.at(-1).notes).toContain('reclassificada de urgência para prioridade');
-    // Devolutiva ao cidadão por WhatsApp (modelo regulacao_atualizacao), enviada pelo disparo dos jobs.
-    const disparo = (await t.http().post('/api/integrations/dispatch').set(auth(gestora)).expect(200)).body;
-    expect(disparo.whatsapp.sent + disparo.whatsapp.postponed).toBeGreaterThanOrEqual(1);
-    if (disparo.whatsapp.sent >= 1) {
-      const enviadas = (await (await fetch(`${mocks.url}/whatsapp/_sent`)).json()) as { to: string; payload: { template?: { name: string } } }[];
-      const msg = enviadas.find((m) => m.payload.template?.name === 'regulacao_atualizacao');
-      expect(msg).toBeDefined();
-      expect(msg!.to.endsWith('999990201')).toBe(true);
-    }
+    // Devolutiva ao cidadão por WhatsApp (modelo regulacao_atualizacao), enviada pelo disparo dos jobs. Das 22h às 6h
+    // (hora local) a rotina fica para depois da janela de silêncio: o disparo roda com o relógio no primeiro instante permitido.
+    const disparo = (await comRelogio(foraDaJanelaDeSilencio(), () => t.http().post('/api/integrations/dispatch').set(auth(gestora)).expect(200))).body;
+    expect(disparo.whatsapp).toMatchObject({ postponed: 0 });
+    expect(disparo.whatsapp.sent).toBeGreaterThanOrEqual(1);
+    const enviadas = (await (await fetch(`${mocks.url}/whatsapp/_sent`)).json()) as { to: string; payload: { template?: { name: string } } }[];
+    const msg = enviadas.find((m) => m.payload.template?.name === 'regulacao_atualizacao');
+    expect(msg).toBeDefined();
+    expect(msg!.to.endsWith('999990201')).toBe(true);
     const detalhe = (await t.http().get(`/api/regulacao/solicitacoes/${solicitacaoId}`).set(auth(recepcao)).expect(200)).body;
     expect(detalhe.status).toBe('AUTORIZADA');
     // Autorizada não volta para a fila nem é autorizada de novo.

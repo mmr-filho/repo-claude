@@ -1,19 +1,19 @@
 import { createHmac } from 'node:crypto';
-import { localDateString } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TenantsService } from '../src/core/database';
 import { MessagingService } from '../src/modules/integrations/messaging.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 import { startMocks } from './mocks';
+import { diaDaSemana, hoje, somarDias } from './relogio';
 
 const enabled = await pgAvailable();
 const APP_SECRET = 'segredo-do-app-whatsapp';
 
-/** Próximo dia útil (seg-sex) a pelo menos `minDays` de hoje. */
+/** Próximo dia útil (seg-sex) a pelo menos `minDays` de hoje, no calendário da instituição (como a agenda). */
 function nextWeekday(minDays: number) {
-  const d = new Date(Date.now() + minDays * 86_400_000);
-  while ([0, 6].includes(d.getUTCDay())) d.setUTCDate(d.getUTCDate() + 1);
-  return localDateString(d);
+  let date = somarDias(hoje(), minDays);
+  while ([0, 6].includes(diaDaSemana(date))) date = somarDias(date, 1);
+  return date;
 }
 
 describe.runIf(enabled)('agenda e confirmação por WhatsApp', () => {

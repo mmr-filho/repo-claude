@@ -8,6 +8,7 @@ import { CatalogoVigilanciaService } from '../src/modules/vigilancia/catalogo.se
 import { NotificacaoService } from '../src/modules/vigilancia/notificacao.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 import { startMocks } from './mocks';
+import { hoje, somarDias } from './relogio';
 
 const enabled = await pgAvailable();
 const H = 3_600_000;
@@ -41,7 +42,6 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
   const ids: Record<string, string> = {};
   const auth = (tk: string) => ({ authorization: `Bearer ${tk}` });
   const address = { cep: '77405070', street: 'Rua da Saída', number: '24', district: 'Centro', city: 'Gurupi', uf: 'TO', ibgeCode: '1709500' };
-  const hoje = () => new Date().toISOString().slice(0, 10);
 
   const novoPaciente = async (name: string, sex: 'M' | 'F', birthDate: string) => {
     seq++;
@@ -130,7 +130,7 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
   });
 
   it('anomalia congênita não vai à fila: vira lembrete da Declaração de Nascido Vivo', async () => {
-    const bebe = await novoPaciente('Bebe Anomalia Saida', 'F', new Date(Date.now() - 3 * 24 * H).toISOString().slice(0, 10));
+    const bebe = await novoPaciente('Bebe Anomalia Saida', 'F', somarDias(hoje(), -3));
     const d = (await t.http().post('/api/vigilancia/notificacoes').set(auth(medica)).send({ patientId: bebe, conditionKey: 'anomalias-congenitas' }).expect(201)).body;
     const c = await confirmar(d.id);
     ids.lembrete = c.numero;
@@ -403,7 +403,7 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
     const homem = await notificarComCid('Hilton Homem Saida', 'M', '1992-12-12', 'T74.1');
     expect((await detalhe(homem.id, medica)).policial).toBeNull();
     // Art. 14-A, parágrafo único: menina segue o ECA (Conselho Tutelar) e idosa o Estatuto da Pessoa Idosa.
-    const menina = await notificarComCid('Marta Menina Saida', 'F', `${new Date().getUTCFullYear() - 14}-03-03`, 'T74.1');
+    const menina = await notificarComCid('Marta Menina Saida', 'F', `${Number(hoje().slice(0, 4)) - 14}-03-03`, 'T74.1');
     const dm = await detalhe(menina.id, medica);
     expect(dm.policial).toBeNull();
     expect(dm.orientacaoViolencia).toContain('Conselho Tutelar');

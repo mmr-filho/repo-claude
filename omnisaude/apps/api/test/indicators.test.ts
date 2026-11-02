@@ -2,6 +2,7 @@ import { cnsFromBase, completeCpf } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 import { startMocks } from './mocks';
+import { comRelogio, instanteLocal } from './relogio';
 
 const enabled = await pgAvailable();
 const DIA = 86_400_000;
@@ -166,7 +167,10 @@ describe.runIf(enabled)('Indicadores do cofinanciamento da APS: cálculo manual 
       .set(auth(medica))
       .send({ system: 'CID10', code: 'Z34', description: 'Supervisão de gravidez normal', lineOfCare: 'GESTANTE', onsetAt: mais(hoje, -336) })
       .expect(201);
-    await consulta(gestante, { codes: [{ system: 'CID10', code: 'Z39.2' }] });
+    // A DUM é data sem hora (meia-noite UTC), então o puerpério acaba às 21h de hoje no horário local (UTC-3). Depois disso,
+    // a consulta "de hoje" já ficaria fora dele: ela é registrada com o relógio em, no máximo, 12h de hoje.
+    const noPuerperio = new Date(Math.min(Date.now(), instanteLocal(hoje, '12:00').getTime()));
+    await comRelogio(noPuerperio, () => consulta(gestante, { codes: [{ system: 'CID10', code: 'Z39.2' }] }));
     // Mulher de 30 anos: consulta agendada (demanda programada) com CID de saúde sexual e reprodutiva e citopatológico solicitado.
     const mulher = await pessoa({ name: 'Mulher Trinta Indicadores Teste', birthDate: '1996-07-07', sex: 'F' });
     const schedule = (

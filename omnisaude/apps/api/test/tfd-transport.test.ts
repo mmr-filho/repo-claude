@@ -2,8 +2,11 @@ import { cnsFromBase, completeCpf } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 import { startMocks } from './mocks';
+import { comRelogio, foraDaJanelaDeSilencio } from './relogio';
 
 const enabled = await pgAvailable();
+// Calendário UTC de propósito, o mesmo da viagem da carga de demonstração (daysAhead(2)): no calendário local, das 21h
+// à meia-noite a viagem de teste (dia + 3) cairia no mesmo dia da viagem da demonstração e o roteiro do dia teria duas.
 const diaMais = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
 
 describe.runIf(enabled)('TFD e transporte sanitário', () => {
@@ -353,16 +356,16 @@ describe.runIf(enabled)('TFD e transporte sanitário', () => {
       const det = (await t.http().get(`/api/tfd/processos/${processoId}`).set(auth(recepcao)).expect(200)).body;
       expect(det.allowance.paidAt).toBeTruthy();
       expect(det.eventos.map((e: { kind: string }) => e.kind)).toEqual(expect.arrayContaining(['ABERTO', 'ENVIADO', 'DEFERIDO', 'AGENDADO', 'AJUDA_CUSTO', 'AJUDA_PAGA']));
-      // Devolutiva ao cidadão (parecer deferido + agendamento) pelo mesmo modelo da regulação; fora da janela de silêncio fica adiada.
-      const disparo = (await t.http().post('/api/integrations/dispatch').set(auth(gestora)).expect(200)).body;
-      expect(disparo.whatsapp.sent + disparo.whatsapp.postponed).toBeGreaterThanOrEqual(2);
-      if (disparo.whatsapp.sent >= 2) {
-        const sent = (await fetch(`${mocks.url}/whatsapp/_sent`).then((r) => r.json())) as { to: string; payload: { template?: { name: string } } }[];
-        const avisos = sent.filter((m) => m.payload.template?.name === 'regulacao_atualizacao' && JSON.stringify(m.payload).includes(protocolo));
-        expect(avisos.length).toBeGreaterThanOrEqual(2);
-        expect(JSON.stringify(avisos)).toContain('radioterapia');
-        expect(avisos.every((m) => m.to.endsWith('999990401'))).toBe(true);
-      }
+      // Devolutiva ao cidadão (parecer deferido + agendamento) pelo mesmo modelo da regulação. Das 22h às 6h (hora local)
+      // a rotina fica para depois da janela de silêncio: o disparo roda com o relógio no primeiro instante permitido.
+      const disparo = (await comRelogio(foraDaJanelaDeSilencio(), () => t.http().post('/api/integrations/dispatch').set(auth(gestora)).expect(200))).body;
+      expect(disparo.whatsapp).toMatchObject({ postponed: 0 });
+      expect(disparo.whatsapp.sent).toBeGreaterThanOrEqual(2);
+      const sent = (await fetch(`${mocks.url}/whatsapp/_sent`).then((r) => r.json())) as { to: string; payload: { template?: { name: string } } }[];
+      const avisos = sent.filter((m) => m.payload.template?.name === 'regulacao_atualizacao' && JSON.stringify(m.payload).includes(protocolo));
+      expect(avisos.length).toBeGreaterThanOrEqual(2);
+      expect(JSON.stringify(avisos)).toContain('radioterapia');
+      expect(avisos.every((m) => m.to.endsWith('999990401'))).toBe(true);
     });
 
     it('não aceita ajuda para acompanhante quando o laudo não prevê', async () => {
