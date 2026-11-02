@@ -285,35 +285,42 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
   /** Anel normalizado, ou null quando colapsa (menos de 3 vértices depois de arredondar, ou menos de 1 m²). */
   const anel = (r: unknown, externo: boolean): Anel | null => {
     if (!Array.isArray(r)) throw new GeometriaInvalida('Anel inválido');
-    // Área sobre as coordenadas originais, antes de arredondar: a lasca estreita (faixa de 1 cm) vira "oito" ao
-    // arredondar, e tem de sair como lasca, não recusar a feição inteira.
-    const orig = r.filter((p): p is number[] => Array.isArray(p) && p.length >= 2).map((p) => [Number(p[0]), Number(p[1])] as Posicao);
-    if (orig.length >= 3 && orig.every((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]) && Math.abs(p[1]) <= 90)) {
-      const m0 = metrosPorGrau(orig[0]![1]);
-      if (Math.abs(areaDoAnelM2(orig, m0, orig[0]![1], orig[0]![0])) < 1) return null;
-    }
-    const pts: Anel = [];
+    // 1) Coordenadas originais validadas, sem repetição seguida, anel fechado.
+    const orig: Anel = [];
     for (const p of r) {
       if (!Array.isArray(p) || p.length < 2) throw new GeometriaInvalida('Posição inválida');
       const lng = Number(p[0]);
       const lat = Number(p[1]);
       if (!Number.isFinite(lng) || !Number.isFinite(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90) throw new GeometriaInvalida('Coordenada fora de longitude/latitude: confira o sistema de referência');
-      const q: Posicao = [arred(lng), arred(lat)];
-      const ult = pts[pts.length - 1];
-      if (!ult || ult[0] !== q[0] || ult[1] !== q[1]) pts.push(q);
+      const ult = orig[orig.length - 1];
+      if (!ult || ult[0] !== lng || ult[1] !== lat) orig.push([lng, lat]);
     }
-    if (pts.length > 1 && (pts[0]![0] !== pts[pts.length - 1]![0] || pts[0]![1] !== pts[pts.length - 1]![1])) pts.push([pts[0]![0], pts[0]![1]]);
-    if (pts.length < 4) return null;
-    // Vértice repetido fora do fechamento: o contorno passa duas vezes pelo mesmo ponto (um "oito").
+    if (orig.length > 1 && (orig[0]![0] !== orig[orig.length - 1]![0] || orig[0]![1] !== orig[orig.length - 1]![1])) orig.push([orig[0]![0], orig[0]![1]]);
+    if (orig.length < 4) return null;
+    // 2) Defeitos do desenho original são do arquivo: recusa ("oito" pelo mesmo vértice, gravata, laço).
     const vistos = new Set<string>();
-    for (const q of pts.slice(0, -1)) {
+    for (const q of orig.slice(0, -1)) {
       const k = `${q[0]},${q[1]}`;
       if (vistos.has(k)) throw new GeometriaInvalida('O contorno passa duas vezes pelo mesmo vértice');
       vistos.add(k);
     }
-    if (anelAutointersecta(pts)) throw new GeometriaInvalida('O contorno cruza a si mesmo');
-    const m = metrosPorGrau(pts[0]![1]);
-    if (Math.abs(areaDoAnelM2(pts, m, pts[0]![1], pts[0]![0])) < 1) return null;
+    if (anelAutointersecta(orig)) throw new GeometriaInvalida('O contorno cruza a si mesmo');
+    // 3) Lasca de recorte: menos de 1 m² ou mais fina que a resolução do arredondamento (espessura média 2·área/perímetro
+    // abaixo de 15 cm). Sai com aviso, sem recusar a feição.
+    const m0 = metrosPorGrau(orig[0]![1]);
+    const area0 = Math.abs(areaDoAnelM2(orig, m0, orig[0]![1], orig[0]![0]));
+    let perimetro = 0;
+    for (let i = 1; i < orig.length; i++) perimetro += Math.hypot((orig[i]![0] - orig[i - 1]![0]) * m0.lng, (orig[i]![1] - orig[i - 1]![1]) * m0.lat);
+    if (area0 < 1 || (2 * area0) / perimetro < 0.15) return null;
+    // 4) Arredonda a 6 casas (~10 cm). Se só o arredondamento estraga o anel, o problema é um trecho fino demais.
+    const pts: Anel = [];
+    for (const q0 of orig) {
+      const q: Posicao = [arred(q0[0]), arred(q0[1])];
+      const ult = pts[pts.length - 1];
+      if (!ult || ult[0] !== q[0] || ult[1] !== q[1]) pts.push(q);
+    }
+    const repetido = new Set(pts.slice(0, -1).map((q) => `${q[0]},${q[1]}`)).size !== pts.length - 1;
+    if (pts.length < 4 || repetido || anelAutointersecta(pts)) throw new GeometriaInvalida('O contorno tem um trecho mais fino que 10 cm e fica inválido com a precisão de 6 casas decimais: simplifique esse trecho');
     return sentidoHorario(pts) === externo ? pts.reverse() : pts;
   };
   let descartados = 0;

@@ -123,6 +123,20 @@ export function HouseholdForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [abertura]);
 
+  // Domicílio novo aberto antes de o território carregar: município e microárea chegam depois e preenchem só os campos
+  // ainda vazios (nada do que o agente digitou é trocado).
+  useEffect(() => {
+    if (!aberto || existente) return;
+    setF((x) => ({
+      ...x,
+      city: x.city || municipio?.city || '',
+      uf: x.uf || municipio?.uf || '',
+      ibgeCode: x.ibgeCode || municipio?.ibgeCode || '',
+      microArea: x.microArea || microAreaPadrao || '',
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aberto, existente?.id, municipio?.city, municipio?.uf, municipio?.ibgeCode, microAreaPadrao]);
+
   const set = (k: keyof Form, v: string) => setF((x) => ({ ...x, [k]: v }));
 
   async function buscarCep(cep: string) {

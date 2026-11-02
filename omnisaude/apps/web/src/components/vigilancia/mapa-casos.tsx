@@ -179,7 +179,7 @@ export function MapaCasosTab() {
                       <p className="flex items-center gap-1 text-sm font-medium">
                         <Radius className="h-4 w-4" /> Quarteirões a até {raioM} m
                       </p>
-                      {bloqueio.error ? <Alert tone="error">{bloqueio.error}</Alert> : bloqueio.loading && !bloqueio.data ? <Spinner /> : bloqueio.data && <ListaBloqueio q={bloqueio.data} />}
+                      {bloqueio.loading ? <Spinner /> : bloqueio.error ? <Alert tone="error">{bloqueio.error}</Alert> : bloqueio.data && <ListaBloqueio q={bloqueio.data} />}
                       <Link href={`/vigilancia/notificacao?id=${caso.id}`} className="text-sm font-medium text-brand-700 hover:underline">
                         Abrir a ficha
                       </Link>

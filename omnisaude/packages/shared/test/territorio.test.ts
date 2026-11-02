@@ -220,6 +220,22 @@ describe('geometria do território', () => {
     expect(falsos).toBe(0);
   });
 
+  it('lasca é decidida pela espessura: faixa de 2 cm com mais de 1 m² sai; gravata (vértices trocados) é recusada', () => {
+    const o: Posicao = [-49.07, -11.73];
+    const m = metrosPorGrau(o[1]);
+    const d = (x: number, y: number): Posicao => [o[0] + x / m.lng, o[1] + y / m.lat];
+    const quarteirao = [d(0, 0), d(100, 0), d(100, 55), d(0, 55), d(0, 0)];
+    // Faixa de 2,2 cm x 119 m (2,6 m²), com vértice no meio de cada lado.
+    const faixa = [d(150, 0), d(150, 59.5), d(150, 119), d(150.022, 119), d(150.022, 59.5), d(150.022, 0), d(150, 0)];
+    const avisos: string[] = [];
+    expect(normalizarArea({ type: 'MultiPolygon', coordinates: [[quarteirao], [faixa]] }, avisos).type).toBe('Polygon');
+    expect(avisos[0]).toMatch(/descartado/);
+    // Retângulo de 100 x 50 m com dois vértices trocados: área com sinal zero, mas não é lasca.
+    const gravata = [d(200, 0), d(300, 0), d(200, 50), d(300, 50), d(200, 0)];
+    expect(() => normalizarArea({ type: 'MultiPolygon', coordinates: [[quarteirao], [gravata]] })).toThrow(/cruza a si mesmo/);
+    expect(() => normalizarArea({ type: 'Polygon', coordinates: [quarteirao, [d(20, 10), d(80, 10), d(20, 40), d(80, 40), d(20, 10)]] })).toThrow(/cruza a si mesmo/);
+  });
+
   it('cunha real entre vizinhos (canto quase encaixado, lado que entra 2 m) continua sendo sobreposição', () => {
     const o: Posicao = [-49.07, -11.73];
     const m = metrosPorGrau(o[1]);
