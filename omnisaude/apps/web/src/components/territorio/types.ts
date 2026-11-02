@@ -6,7 +6,8 @@ export interface CamadasMapa {
   localidades: { id: string; code: string; name: string; category: string; zone: string; geometry: Geometria | null; centerLat: number | null; centerLng: number | null }[];
   bairros: { id: string; localityId: string; name: string; official: boolean; geometry: Geometria | null }[];
   quarteiroes: { id: string; localityId: string; neighborhoodId: string | null; number: string; geometry: Geometria; centerLat: number; centerLng: number; areaM2: number; imoveis: number }[];
-  imoveis: { id: string; lat: number; lng: number; precisao: PrecisaoGeo | null; blockId: string | null; sequencia: string | null; endereco: string; tipo: string | null }[];
+  /** campo: o usuário pode marcar a posição (quem edita o território, ou o ACS na sua equipe e microárea). */
+  imoveis: { id: string; lat: number; lng: number; precisao: PrecisaoGeo | null; blockId: string | null; sequencia: string | null; endereco: string; tipo: string | null; campo: boolean }[];
   limitado: boolean;
 }
 

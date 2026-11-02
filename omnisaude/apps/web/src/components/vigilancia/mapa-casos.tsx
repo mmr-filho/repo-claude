@@ -70,16 +70,32 @@ export function MapaCasosTab() {
     return [...cont.entries()].sort((a, b) => b[1] - a[1]);
   }, [dados.data]);
   const cor = useMemo(() => new Map(agravos.slice(0, CORES.length).map(([a], i) => [a, CORES[i]!])), [agravos]);
-  const visiveis = (dados.data?.pontos ?? []).filter((p) => !agravo || p.agravo === agravo);
-  const casos: PontoCaso[] = visiveis.map((p) => ({
-    id: p.id,
-    lat: p.lat,
-    lng: p.lng,
-    cor: cor.get(p.agravo) ?? '#64748b',
-    incerto: PRECISAO_INFO[p.precisao].bloqueio === 'CONFIRMAR_EM_CAMPO',
-    titulo: `${p.agravo} · ${STATUS[p.status] ?? p.status} · ${fmtDate(p.conhecimento)} · ${p.precisaoLabel}`,
-  }));
+  const visiveis = useMemo(() => (dados.data?.pontos ?? []).filter((p) => !agravo || p.agravo === agravo), [dados.data, agravo]);
+  // Memorizado: o mapa só redesenha os pontos quando os casos mudam.
+  const casos: PontoCaso[] = useMemo(
+    () =>
+      visiveis.map((p) => ({
+        id: p.id,
+        lat: p.lat,
+        lng: p.lng,
+        cor: cor.get(p.agravo) ?? '#64748b',
+        incerto: PRECISAO_INFO[p.precisao].bloqueio === 'CONFIRMAR_EM_CAMPO',
+        titulo: `${p.agravo} · ${STATUS[p.status] ?? p.status} · ${fmtDate(p.conhecimento)} · ${p.precisaoLabel}`,
+      })),
+    [visiveis, cor],
+  );
   const caso = visiveis.find((p) => p.id === sel) ?? null;
+  const destaque = useMemo(() => (caso ? bloqueio.data?.quarteiroes.map((q) => q.id) : undefined), [caso, bloqueio.data]);
+  // Quarteirões com mais casos recontados com o filtro de agravo da tela (a API conta todos os agravos do período).
+  const porQuarteirao = useMemo(() => {
+    const nomes = new Map((dados.data?.porQuarteirao ?? []).map((q) => [q.id, q]));
+    const cont = new Map<string, number>();
+    for (const p of visiveis) if (p.blockId) cont.set(p.blockId, (cont.get(p.blockId) ?? 0) + 1);
+    return [...cont.entries()]
+      .map(([id, casos]) => ({ ...nomes.get(id)!, casos }))
+      .filter((q) => q.id)
+      .sort((a, b) => b.casos - a.casos);
+  }, [dados.data, visiveis]);
 
   return (
     <div className="flex flex-col gap-4" id="vig-mapa-casos">
@@ -126,8 +142,8 @@ export function MapaCasosTab() {
                 <MapaTerritorio
                   camadas={camadas.data}
                   casos={casos}
-                  destaque={sel ? bloqueio.data?.quarteiroes.map((q) => q.id) : undefined}
-                  raio={sel && bloqueio.data?.ponto ? { ...bloqueio.data.ponto, metros: bloqueio.data.raioM } : null}
+                  destaque={destaque}
+                  raio={caso && bloqueio.data?.ponto ? { ...bloqueio.data.ponto, metros: bloqueio.data.raioM } : null}
                   onMover={(b) => setBbox(b.map((n) => n.toFixed(5)).join(','))}
                   onCaso={setSel}
                   className="h-[600px]"
@@ -172,11 +188,11 @@ export function MapaCasosTab() {
                 <Card>
                   <CardHeader title="Quarteirões com mais casos" description="No período e filtro do mapa." />
                   <CardBody className="max-h-96 overflow-auto p-0">
-                    {dados.data.porQuarteirao.length === 0 ? (
+                    {porQuarteirao.length === 0 ? (
                       <p className="p-4 text-sm text-slate-500">Nenhum caso ligado a quarteirão.</p>
                     ) : (
                       <ul className="divide-y divide-slate-100 text-sm">
-                        {dados.data.porQuarteirao.slice(0, 30).map((q) => (
+                        {porQuarteirao.slice(0, 30).map((q) => (
                           <li key={q.id} className="flex items-center justify-between px-4 py-2">
                             <span>
                               Quarteirão <b>{q.numero}</b>

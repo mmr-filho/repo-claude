@@ -144,6 +144,9 @@ export class TerritorioService {
         take: 6000,
       }),
     ]);
+    // ACS: marca a posição só dos imóveis da sua área (os demais aparecem, mas sem o botão).
+    const escopo = await this.escopoDeCampo(ctx);
+    const doCampo = escopo ? new Set((await ctx.db.household.findMany({ where: { id: { in: imoveis.map((h) => h.id) }, OR: escopo }, select: { id: true } })).map((h) => h.id)) : null;
     return {
       localidades,
       bairros,
@@ -157,6 +160,7 @@ export class TerritorioService {
         sequencia: h.rgSequence,
         endereco: [h.street, h.number].filter(Boolean).join(', '),
         tipo: h.propertyType,
+        campo: doCampo ? doCampo.has(h.id) : roleHasPermission(ctx.session.role, 'territorio.editar'),
       })),
       limitado: quarteiroes.length === 4000 || imoveis.length === 6000,
     };

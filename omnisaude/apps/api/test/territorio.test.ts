@@ -443,6 +443,13 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     await db.household.update({ where: { id: alheia }, data: { unitId: outraUnidade.id } });
     await t.http().post(`/api/territorio/imoveis/${alheia}/posicao`).set(auth(acs)).send({ lat: p[1], lng: p[0], origem: 'MAPA' }).expect(403);
     await t.http().post(`/api/territorio/imoveis/${casa}/posicao`).set(auth(acs)).send({ lat: p[1], lng: p[0], origem: 'MAPA', sequencia: '9' }).expect(403);
+    // No mapa, o imóvel de outra unidade aparece sem poder ser marcado pelo ACS.
+    await db.household.update({ where: { id: alheia }, data: { latitude: p[1], longitude: p[0], geoPrecision: 'MAPA' } });
+    const caixa = [p[0] - 0.001, p[1] - 0.001, p[0] + 0.001, p[1] + 0.001].join(',');
+    const noMapa = (await t.http().get(`/api/territorio/mapa?bbox=${caixa}`).set(auth(acs)).expect(200)).body.imoveis as { id: string; campo: boolean }[];
+    expect(noMapa.find((x) => x.id === alheia)?.campo).toBe(false);
+    expect(noMapa.find((x) => x.id === casa)?.campo).toBe(true);
+    await db.household.update({ where: { id: alheia }, data: { latitude: null, longitude: null, geoPrecision: null } });
     const doAcs = (await t.http().get('/api/territorio/imoveis?situacao=SEM_POSICAO').set(auth(acs)).expect(200)).body as { id: string }[];
     expect(doAcs.map((x) => x.id)).not.toContain(alheia);
     expect(((await t.http().get('/api/territorio/imoveis?situacao=SEM_POSICAO').set(auth(gestora)).expect(200)).body as { id: string }[]).map((x) => x.id)).toContain(alheia);

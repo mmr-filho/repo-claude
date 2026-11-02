@@ -438,7 +438,7 @@ export function AbaImportar({ srcAceitos, onAplicada }: { srcAceitos: { codigo: 
             </Field>
             {tipo !== 'ENDERECOS' && (
               <Field label="Sistema de coordenadas" htmlFor="terr-imp-src" hint="Só quando o arquivo não traz o .prj">
-                <Select id="terr-imp-src" value={src} onChange={(e) => setSrc(e.target.value)}>
+                <Select id="terr-imp-src" value={src} onChange={(e) => (setSrc(e.target.value), setPrevia(null))}>
                   <option value="">Ler do arquivo</option>
                   {srcAceitos.map((s) => (
                     <option key={s.codigo} value={s.codigo}>

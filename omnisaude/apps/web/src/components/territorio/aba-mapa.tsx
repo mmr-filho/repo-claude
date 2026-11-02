@@ -2,7 +2,7 @@
 
 import { PRECISAO_INFO, type PrecisaoGeo } from '@omnisaude/shared';
 import { Crosshair, MapPin, PenLine, Radius, Shapes, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
@@ -36,6 +36,7 @@ export function AbaMapa({
   imovelAPosicionar,
   onPosicionado,
   onAlterado,
+  onCancelarPosicao,
 }: {
   podeEditar: boolean;
   /** Marcar a posição do imóvel: quem edita o território e o ACS em campo. */
@@ -45,6 +46,8 @@ export function AbaMapa({
   onPosicionado?: () => void;
   /** Quarteirão criado, editado ou desativado (o resumo da página recarrega). */
   onAlterado?: () => void;
+  /** A marcação do imóvel vinda das pendências foi abandonada. */
+  onCancelarPosicao?: () => void;
 }) {
   const toast = useToast();
   const [bbox, setBbox] = useState<string | null>(null);
@@ -70,7 +73,27 @@ export function AbaMapa({
   }, [imovelAPosicionar]);
 
   const imovel = camadas.data?.imoveis.find((h) => h.id === selImovel) ?? null;
-  const modo: ModoMapa = ferramenta === 'raio' || ferramenta === 'posicionar' ? 'clicar' : ferramenta === 'desenhar' && !rascunho ? 'desenhar' : ferramenta === 'editar' ? 'editar' : 'navegar';
+  // Lista estável entre renderizações: o mapa só redesenha os quarteirões quando o raio muda.
+  const destaque = useMemo(() => raio?.quarteiroes.map((q) => q.id), [raio]);
+  // Desenho concluído fica no mapa, editável, até salvar ou cancelar.
+  const modo: ModoMapa = ferramenta === 'raio' || ferramenta === 'posicionar' ? 'clicar' : ferramenta === 'desenhar' ? (rascunho ? 'editar' : 'desenhar') : ferramenta === 'editar' ? 'editar' : 'navegar';
+  const geometriaEdicao = ferramenta === 'editar' ? (rascunho ?? detalhe.data?.geometry ?? null) : ferramenta === 'desenhar' ? rascunho : null;
+
+  /** Trocar de quarteirão no meio da edição descarta o rascunho (ele é do quarteirão anterior). */
+  function selecionarQuarteirao(id: string | null) {
+    setSelQ(id);
+    setSelImovel(null);
+    if (ferramenta === 'editar') {
+      setRascunho(null);
+      setFerramenta('navegar');
+    }
+  }
+
+  /** Sair da marcação do imóvel desarma o pedido vindo das pendências. */
+  function trocarFerramenta(f: Ferramenta) {
+    if (ferramenta === 'posicionar' && f !== 'posicionar') onCancelarPosicao?.();
+    setFerramenta(f);
+  }
 
   async function clicar(lat: number, lng: number) {
     if (ferramenta === 'raio') {
@@ -144,7 +167,7 @@ export function AbaMapa({
                 variant={ferramenta === f.id ? 'primary' : 'secondary'}
                 id={`terr-ferramenta-${f.id}`}
                 onClick={() => {
-                  setFerramenta(f.id);
+                  trocarFerramenta(f.id);
                   setRascunho(null);
                   if (f.id !== 'raio') setRaio(null);
                 }}
@@ -166,12 +189,12 @@ export function AbaMapa({
           modo={modo}
           quarteiraoSelecionado={selQ}
           imovelSelecionado={selImovel}
-          destaque={raio?.quarteiroes.map((q) => q.id)}
+          destaque={destaque}
           raio={raio}
-          geometriaEdicao={ferramenta === 'editar' ? (rascunho ?? detalhe.data?.geometry ?? null) : null}
+          geometriaEdicao={geometriaEdicao}
           onMover={(b) => setBbox(b.map((n) => n.toFixed(5)).join(','))}
           onClicar={clicar}
-          onQuarteirao={(id) => (setSelQ(id), setSelImovel(null))}
+          onQuarteirao={(id) => selecionarQuarteirao(id)}
           onImovel={(id) => setSelImovel(id)}
           onGeometria={(g) => setRascunho(g)}
           centroInicial={imovelAPosicionar?.latitude != null && imovelAPosicionar.longitude != null ? [imovelAPosicionar.latitude, imovelAPosicionar.longitude] : null}
@@ -256,7 +279,7 @@ export function AbaMapa({
                 <ul className="divide-y divide-slate-100 text-sm">
                   {raio.quarteiroes.map((q) => (
                     <li key={q.id} className="flex items-center justify-between gap-3 px-4 py-2">
-                      <button type="button" className="whitespace-nowrap font-medium text-brand-700 hover:underline" onClick={() => setSelQ(q.id)}>
+                      <button type="button" className="whitespace-nowrap font-medium text-brand-700 hover:underline" onClick={() => selecionarQuarteirao(q.id)}>
                         Quarteirão {q.numero}
                       </button>
                       <span className="text-right text-xs text-slate-500">
@@ -279,7 +302,7 @@ export function AbaMapa({
               actions={
                 podeEditar ? (
                   <div className="flex gap-1">
-                    <Button size="sm" variant="secondary" id="terr-editar-contorno" onClick={() => (setRascunho(null), setFerramenta('editar'))}>
+                    <Button size="sm" variant="secondary" id="terr-editar-contorno" onClick={() => (setRascunho(null), trocarFerramenta('editar'))}>
                       <PenLine className="h-4 w-4" /> Contorno
                     </Button>
                     <Button size="sm" variant="ghost" onClick={() => setDesativar(detalhe.data!.id)}>
@@ -317,7 +340,7 @@ export function AbaMapa({
               {imovel?.precisao && PRECISAO_INFO[imovel.precisao].bloqueio !== 'AUTOMATICO' && (
                 <Alert tone="warn">{PRECISAO_INFO[imovel.precisao].bloqueio === 'COM_AVISO' ? 'Posição aproximada: confira antes de usar no bloqueio.' : 'Posição imprecisa: confirme em campo antes do bloqueio.'}</Alert>
               )}
-              {podePosicionar && (
+              {podePosicionar && (podeEditar || imovel?.campo || imovelAPosicionar?.id === selImovel) && (
                 <Button size="sm" variant="secondary" id="terr-posicionar" onClick={() => setFerramenta('posicionar')}>
                   <Crosshair className="h-4 w-4" /> Marcar no mapa
                 </Button>
@@ -341,6 +364,8 @@ export function AbaMapa({
                 await api.post(`/territorio/quarteiroes/${desativar}/desativar`, { reason: motivo });
                 toast.success('Quarteirão desativado.');
                 setDesativar(null);
+                setRascunho(null);
+                setFerramenta('navegar');
                 setSelQ(null);
                 await camadas.reload();
                 onAlterado?.();

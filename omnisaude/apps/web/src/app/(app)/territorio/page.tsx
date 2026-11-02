@@ -60,7 +60,15 @@ export default function TerritorioPage() {
           Última importação: {r.ultimaImportacao.fileName} em {fmtDateTime(r.ultimaImportacao.appliedAt)}.
         </p>
       )}
-      <Tabs value={tab} onValueChange={setTab} tabs={tabs}>
+      <Tabs
+        value={tab}
+        onValueChange={(v) => {
+          setTab(v);
+          // Marcação pedida nas pendências vale só para esta ida ao mapa.
+          if (v !== 'mapa') setAPosicionar(null);
+        }}
+        tabs={tabs}
+      >
         <TabPanel value="mapa">
           {/* O mapa só monta na aba visível (o Leaflet mede o contêiner ao criar). */}
           {tab === 'mapa' && r && (
@@ -70,6 +78,7 @@ export default function TerritorioPage() {
               raioPadrao={r.config.raioBloqueioM}
               imovelAPosicionar={aPosicionar}
               onPosicionado={() => (setAPosicionar(null), atualizar())}
+              onCancelarPosicao={() => setAPosicionar(null)}
               onAlterado={atualizar}
             />
           )}
@@ -94,7 +103,7 @@ export default function TerritorioPage() {
             }}
           />
         </TabPanel>
-        <TabPanel value="configuracao">{r && <AbaConfiguracao key={versao} resumo={r} podeEditar={podeEditar} onSalvo={atualizar} />}</TabPanel>
+        <TabPanel value="configuracao">{r && <AbaConfiguracao key={`${r.config.numeracaoQuarteirao}|${r.config.raioBloqueioM}`} resumo={r} podeEditar={podeEditar} onSalvo={atualizar} />}</TabPanel>
       </Tabs>
     </div>
   );
