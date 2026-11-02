@@ -274,6 +274,35 @@ function distanciaAteBorda(p: Posicao, a: Area): number {
 
 export class GeometriaInvalida extends Error {}
 
+/** Largura mínima (em metros) do fecho convexo dos pontos: quanto o anel tem de "espessura" na direção mais estreita. */
+function larguraMinima(pts: Anel, m: { lat: number; lng: number }): number {
+  const xy = pts.map((p) => [p[0] * m.lng, p[1] * m.lat] as [number, number]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cruz = (o: [number, number], a: [number, number], b: [number, number]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const baixo: [number, number][] = [];
+  for (const p of xy) {
+    while (baixo.length >= 2 && cruz(baixo[baixo.length - 2]!, baixo[baixo.length - 1]!, p) <= 0) baixo.pop();
+    baixo.push(p);
+  }
+  const cima: [number, number][] = [];
+  for (const p of [...xy].reverse()) {
+    while (cima.length >= 2 && cruz(cima[cima.length - 2]!, cima[cima.length - 1]!, p) <= 0) cima.pop();
+    cima.push(p);
+  }
+  const fecho = [...baixo.slice(0, -1), ...cima.slice(0, -1)];
+  if (fecho.length < 3) return 0;
+  let menor = Infinity;
+  for (let i = 0; i < fecho.length; i++) {
+    const a = fecho[i]!;
+    const b = fecho[(i + 1) % fecho.length]!;
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (!len) continue;
+    let maior = 0;
+    for (const p of fecho) maior = Math.max(maior, Math.abs(cruz(a, b, p)) / len);
+    menor = Math.min(menor, maior);
+  }
+  return menor;
+}
+
 /**
  * Normaliza a geometria recebida (importação ou editor): só Polygon/MultiPolygon, números finitos dentro de
  * [-180, 180] e [-90, 90], anéis fechados com pelo menos 3 vértices distintos, sem pontos repetidos seguidos, 6 casas
@@ -295,19 +324,33 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
       const ult = orig[orig.length - 1];
       if (!ult || ult[0] !== lng || ult[1] !== lat) orig.push([lng, lat]);
     }
-    if (orig.length > 1 && (orig[0]![0] !== orig[orig.length - 1]![0] || orig[0]![1] !== orig[orig.length - 1]![1])) orig.push([orig[0]![0], orig[0]![1]]);
-    if (orig.length < 4) return null;
-    // 2) Defeitos do desenho original são do arquivo: recusa ("oito" pelo mesmo vértice, gravata, laço).
+    // Vértices seguidos a menos de 5 cm (abaixo da resolução de ~10 cm) viram um só, inclusive o fechamento: o clique
+    // final perto do primeiro vértice, o canto duplicado e o nó de milímetros não são defeitos do desenho.
+    const m0 = metrosPorGrau(orig[0]?.[1] ?? 0);
+    const perto = (a: Posicao, b: Posicao) => Math.hypot((a[0] - b[0]) * m0.lng, (a[1] - b[1]) * m0.lat) < 0.05;
+    const aberto = orig.length > 1 && orig[0]![0] === orig[orig.length - 1]![0] && orig[0]![1] === orig[orig.length - 1]![1] ? orig.slice(0, -1) : orig.slice();
+    const fundido: Anel = [];
+    for (const q of aberto) if (!fundido.length || !perto(fundido[fundido.length - 1]!, q)) fundido.push(q);
+    while (fundido.length > 1 && perto(fundido[fundido.length - 1]!, fundido[0]!)) fundido.pop();
+    if (fundido.length < 3) return null;
+    orig.length = 0;
+    orig.push(...fundido, [fundido[0]![0], fundido[0]![1]]);
+    // 2) Defeitos do desenho original são do arquivo ("oito" pelo mesmo vértice, gravata, laço) e recusam a feição,
+    // a não ser que o anel seja uma agulha (largura mínima menor que 15 cm): aí é lasca de recorte e sai com aviso.
     const vistos = new Set<string>();
+    let repetido = false;
     for (const q of orig.slice(0, -1)) {
       const k = `${q[0]},${q[1]}`;
-      if (vistos.has(k)) throw new GeometriaInvalida('O contorno passa duas vezes pelo mesmo vértice');
+      if (vistos.has(k)) repetido = true;
       vistos.add(k);
     }
-    if (anelAutointersecta(orig)) throw new GeometriaInvalida('O contorno cruza a si mesmo');
+    const cruzado = !repetido && anelAutointersecta(orig);
+    if (repetido || cruzado) {
+      if (larguraMinima(orig, m0) < 0.15) return null;
+      throw new GeometriaInvalida(repetido ? 'O contorno passa duas vezes pelo mesmo vértice' : 'O contorno cruza a si mesmo');
+    }
     // 3) Lasca de recorte: menos de 1 m² ou mais fina que a resolução do arredondamento (espessura média 2·área/perímetro
     // abaixo de 15 cm). Sai com aviso, sem recusar a feição.
-    const m0 = metrosPorGrau(orig[0]![1]);
     const area0 = Math.abs(areaDoAnelM2(orig, m0, orig[0]![1], orig[0]![0]));
     let perimetro = 0;
     for (let i = 1; i < orig.length; i++) perimetro += Math.hypot((orig[i]![0] - orig[i - 1]![0]) * m0.lng, (orig[i]![1] - orig[i - 1]![1]) * m0.lat);
@@ -319,8 +362,9 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
       const ult = pts[pts.length - 1];
       if (!ult || ult[0] !== q[0] || ult[1] !== q[1]) pts.push(q);
     }
-    const repetido = new Set(pts.slice(0, -1).map((q) => `${q[0]},${q[1]}`)).size !== pts.length - 1;
-    if (pts.length < 4 || repetido || anelAutointersecta(pts)) throw new GeometriaInvalida('O contorno tem um trecho mais fino que 10 cm e fica inválido com a precisão de 6 casas decimais: simplifique esse trecho');
+    const repeteArredondado = new Set(pts.slice(0, -1).map((q) => `${q[0]},${q[1]}`)).size !== pts.length - 1;
+    if (pts.length < 4 || repeteArredondado || anelAutointersecta(pts))
+      throw new GeometriaInvalida('O contorno tem um trecho mais fino que 10 cm e fica inválido com a precisão de 6 casas decimais: simplifique esse trecho');
     return sentidoHorario(pts) === externo ? pts.reverse() : pts;
   };
   let descartados = 0;

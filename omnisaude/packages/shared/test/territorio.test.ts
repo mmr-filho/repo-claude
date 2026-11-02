@@ -236,6 +236,28 @@ describe('geometria do território', () => {
     expect(() => normalizarArea({ type: 'Polygon', coordinates: [quarteirao, [d(20, 10), d(80, 10), d(20, 40), d(80, 40), d(20, 10)]] })).toThrow(/cruza a si mesmo/);
   });
 
+  it('defeitos milimétricos do desenho são absorvidos; lasca que se cruza ou passa duas vezes pelo vértice sai como lasca', () => {
+    const o: Posicao = [-49.07, -11.73];
+    const m = metrosPorGrau(o[1]);
+    const d = (x: number, y: number): Posicao => [o[0] + x / m.lng, o[1] + y / m.lat];
+    const ok = (anel: Posicao[]) => normalizarArea({ type: 'Polygon', coordinates: [anel] });
+    // Fechamento a 1 µm do primeiro vértice, canto duplicado a 1 µm, último clique 7 mm além do primeiro, nó de 5 mm.
+    expect(areaM2(ok([d(0, 0), d(100, 0), d(100, 55), d(0, 55), d(0.0000007, -0.0000007)]))).toBeGreaterThan(5490);
+    expect(areaM2(ok([d(0, 0), d(100, 0), d(99.9999993, -0.0000007), d(100, 55), d(0, 55), d(0, 0)]))).toBeGreaterThan(5490);
+    expect(areaM2(ok([d(0, 0), d(100, 0), d(100, 55), d(0, 55), d(0.005, -0.005), d(0, 0)]))).toBeGreaterThan(5490);
+    expect(areaM2(ok([d(0, 0), d(50, 0), d(50.003, 0.004), d(50.005, -0.002), d(50, 0.001), d(100, 0), d(100, 55), d(0, 55), d(0, 0)]))).toBeGreaterThan(5490);
+    // Lascas (2 cm de largura) que se cruzam ou passam duas vezes pelo mesmo vértice: descartadas com aviso.
+    const quarteirao = [d(0, 0), d(100, 0), d(100, 55), d(0, 55), d(0, 0)];
+    const cruzada = [d(150, 0), d(165, 0.01), d(195, -0.01), d(210, 0), d(195, 0.01), d(165, -0.01), d(150, 0)];
+    const oito = [d(150, 0), d(165, 0.005), d(180, 0), d(195, 0.005), d(210, 0), d(195, -0.005), d(180, 0), d(165, -0.005), d(150, 0)];
+    for (const lasca of [cruzada, oito]) {
+      const avisos: string[] = [];
+      expect(normalizarArea({ type: 'MultiPolygon', coordinates: [[quarteirao], [lasca]] }, avisos).type).toBe('Polygon');
+      expect(avisos[0]).toMatch(/descartado/);
+    }
+    expect(normalizarArea({ type: 'Polygon', coordinates: [quarteirao, oito.map(([x, y]) => [x - 0.0012, y + 0.0002] as Posicao)] }).coordinates).toHaveLength(1);
+  });
+
   it('cunha real entre vizinhos (canto quase encaixado, lado que entra 2 m) continua sendo sobreposição', () => {
     const o: Posicao = [-49.07, -11.73];
     const m = metrosPorGrau(o[1]);
