@@ -418,6 +418,41 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
       .set(auth(gestora))
       .send({ aliases: ['BEIRA RIO'] })
       .expect(200);
+    // Zip do CNEFE corrompido: 400 com orientação, não erro interno.
+    const corrompido = (
+      await t
+        .http()
+        .post('/api/territorio/importacoes/previa')
+        .set(auth(vig))
+        .send({ tipo: 'ENDERECOS', nomeArquivo: 'cnefe.zip', arquivoBase64: b64('isto não é um zip de verdade') })
+        .expect(400)
+    ).body;
+    expect(corrompido.message).toMatch(/zip/);
+    // Aplicação interrompida (processo caiu): depois de 20 min em APLICANDO, pode aplicar de novo; antes, não.
+    const presa = (
+      await t
+        .http()
+        .post('/api/territorio/importacoes/previa')
+        .set(auth(vig))
+        .send({ tipo: 'QUARTEIROES', nomeArquivo: 'p.geojson', arquivoBase64: b64(JSON.stringify({ type: 'FeatureCollection', features: [feicao('1', g1!.centro)] })) })
+        .expect(200)
+    ).body;
+    await db.territoryImport.update({ where: { id: presa.id }, data: { status: 'APLICANDO', appliedAt: new Date(Date.now() - 5 * 60_000) } });
+    await t
+      .http()
+      .post(`/api/territorio/importacoes/${presa.id}/aplicar`)
+      .set(auth(vig))
+      .send({ mapeamento: { numero: 'NUM' }, localidadeFixa: localidade2 })
+      .expect(409);
+    await db.territoryImport.update({ where: { id: presa.id }, data: { appliedAt: new Date(Date.now() - 25 * 60_000) } });
+    await t
+      .http()
+      .post(`/api/territorio/importacoes/${presa.id}/aplicar`)
+      .set(auth(vig))
+      .send({ mapeamento: { numero: 'NUM' }, localidadeFixa: localidade2 })
+      .expect(200);
+    expect((await db.territoryImport.findUniqueOrThrow({ where: { id: presa.id } })).status).toBe('APLICADA');
+
     const pb = (
       await t
         .http()
@@ -688,6 +723,15 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     await t.http().patch(`/api/households/${comGps}`).set(auth(recepcao)).send({ number: '1501' }).expect(200);
     expect(await h(comGps)).toMatchObject({ geoPrecision: 'GPS_CAMPO', latitude: C[1] });
     // Imóvel de outro município, com bairro de mesmo nome, não recebe o centro do bairro daqui.
+    // IBGE de 6 dígitos (o cadastro aceita) é o mesmo município: casa com a base do IBGE.
+    const seisDigitos = await cria({ street: 'Av. Goiás', number: '1500', ibgeCode: '170950' });
+    await t
+      .http()
+      .post('/api/territorio/imoveis/geocodificar')
+      .set(auth(gestora))
+      .send({ ids: [seisDigitos] })
+      .expect(200);
+    expect((await h(seisDigitos)).geoPrecision).toBe('ENDERECO');
     const deFora = await cria({ street: 'Rua Desconhecida', number: '2', district: 'Centro', ibgeCode: '1709302' });
     expect(
       (
@@ -758,6 +802,26 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
         ],
       })
       .expect(200);
+    // Leitura acima de 50 m na visita fica só na visita.
+    const naRuaRuim = await cria({ street: 'Av Maranhão', number: '998' });
+    await t
+      .http()
+      .post('/api/territorio/imoveis/geocodificar')
+      .set(auth(gestora))
+      .send({ ids: [naRuaRuim] })
+      .expect(200);
+    expect((await h(naRuaRuim)).geoPrecision).toBe('LOGRADOURO');
+    await t
+      .http()
+      .post('/api/acs/sync')
+      .set(auth(acs))
+      .send({
+        operacoes: [
+          { tipo: 'VISITA', clientId: randomUUID(), registradoEm: new Date().toISOString(), householdId: naRuaRuim, visita: { motivos: ['1'], desfecho: '3', latitude: naRua[1], longitude: naRua[0], precisaoGps: 80 } },
+        ],
+      })
+      .expect(200);
+    expect((await h(naRuaRuim)).geoPrecision).toBe('LOGRADOURO');
     expect(await h(porRua)).toMatchObject({ geoPrecision: 'GPS_CAMPO', geoSource: 'visita', geoAccuracyM: 6 });
 
     // Nome de bairro que existe em duas localidades é ambíguo: ninguém vai para o centro de um deles.
