@@ -17,6 +17,7 @@ export * from './regulacao';
 export * from './rnds-regulacao';
 export * from './roles';
 export * from './session';
+export * from './territorio';
 export * from './tfd';
 export * from './units';
 export * from './vacinas';

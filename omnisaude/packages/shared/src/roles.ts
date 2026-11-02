@@ -109,6 +109,12 @@ export const PERMISSIONS = [
   'aih.autorizar',
   'transporte.ler',
   'transporte.gerir',
+  /** Território (PLT-3): ver localidades, bairros, quarteirões e imóveis no mapa; calcular o raio. */
+  'territorio.ler',
+  /** Editar a malha (importar, desenhar quarteirões) e carregar a base de endereços do IBGE. */
+  'territorio.editar',
+  /** Mapa de casos notificados: só a vigilância (sigilo, Lei 6.259/1975, art. 10). */
+  'vigilancia.mapa',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -143,6 +149,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'regulacao.solicitar',
     'regulacao.ler',
     'acs.territorio',
+    'territorio.ler',
     'vacinas.ler',
     'vacinas.aplicar',
     'aps.programas',
@@ -276,6 +283,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'regulacao.ler',
     'regulacao.regular',
     'acs.territorio',
+    'territorio.ler',
+    'territorio.editar',
     'vacinas.ler',
     'aps.programas',
     'aps.indicadores',
@@ -299,7 +308,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'esus.ler',
     'esus.gerir',
   ],
-  ACS: ['acs.campo', 'acs.territorio', 'vacinas.ler', 'aps.programas', ...COMMON, 'paciente.cadastrar', 'cadsus.consultar'],
+  ACS: ['acs.campo', 'acs.territorio', 'territorio.ler', 'vacinas.ler', 'aps.programas', ...COMMON, 'paciente.cadastrar', 'cadsus.consultar'],
   VIGILANCIA_EPIDEMIOLOGICA: [
     ...COMMON,
     'notificacao.registrar',
@@ -313,9 +322,23 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vigilancia.digitar',
     'vigilancia.investigar',
     'vigilancia.exportar',
+    'vigilancia.mapa',
+    'territorio.ler',
+    'territorio.editar',
     'vacinas.ler',
   ],
-  NUCLEO_VIGILANCIA: [...COMMON, 'notificacao.registrar', 'notificacao.sensivel', 'vigilancia.painel', 'vigilancia.comunicar', 'vigilancia.digitar', 'vigilancia.investigar', 'vacinas.ler'],
+  NUCLEO_VIGILANCIA: [
+    ...COMMON,
+    'notificacao.registrar',
+    'notificacao.sensivel',
+    'vigilancia.painel',
+    'vigilancia.comunicar',
+    'vigilancia.digitar',
+    'vigilancia.investigar',
+    'vigilancia.mapa',
+    'territorio.ler',
+    'vacinas.ler',
+  ],
 };
 
 export function isRole(value: unknown): value is Role {

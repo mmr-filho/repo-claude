@@ -39,3 +39,22 @@
     background: white;
   }
 }
+
+/* Número do quarteirão no mapa do território (aparece a partir do zoom 17). */
+.rotulo-quarteirao {
+  background: transparent;
+  border: 0;
+}
+.rotulo-quarteirao span {
+  display: block;
+  text-align: center;
+  font:
+    600 11px/16px ui-sans-serif,
+    system-ui,
+    sans-serif;
+  color: #0f172a;
+  text-shadow:
+    0 0 3px #fff,
+    0 0 3px #fff;
+  pointer-events: none;
+}

@@ -16,6 +16,7 @@ import { fmtDate, fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useRealtime } from '@/lib/realtime';
 import { useSession } from '@/lib/session';
+import { ListaBloqueio, type QuarteiroesDoCaso } from './bloqueio';
 import { DIGITACAO, ESFERA_ROTULO, EVENTO, MEIO, ORIGEM, SITUACAO, STATUS, tempoAte, type Destino, type LinhaEspelho, type NotificacaoDetalhe } from './types';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 
@@ -650,6 +651,8 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
         </Card>
       )}
 
+      {session.can('vigilancia.mapa') && d.status !== 'DESCARTADA' && <BloqueioDoCaso id={id} />}
+
       <Card>
         <CardHeader title="Ficha Individual de Notificação (Sinan Net v5)" description="Campos 1 a 16 e 20 a 33. Retrato tirado do cadastro na abertura da notificação." />
         <CardBody className="grid gap-x-6 gap-y-1.5 text-sm md:grid-cols-2" id="vig-campos">
@@ -889,5 +892,16 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
         <Alert tone="error">O prazo perante a vigilância municipal venceu. Confirme e comunique assim que possível: a notificação continua obrigatória.</Alert>
       )}
     </div>
+  );
+}
+
+/** Quarteirões a até o raio do bloqueio da residência do caso (lista que a semana 26 transforma em ordem de bloqueio). */
+function BloqueioDoCaso({ id }: { id: string }) {
+  const q = useApi<QuarteiroesDoCaso>(`/vigilancia/notificacoes/${id}/quarteiroes`, [id]);
+  return (
+    <Card id="vig-bloqueio">
+      <CardHeader title={`Quarteirões no raio do bloqueio${q.data ? ` (${q.data.raioM} m)` : ''}`} description="Medido da residência até a borda de cada quarteirão do território." />
+      <CardBody>{q.loading && !q.data ? <Spinner /> : q.error ? <Alert tone="error">{q.error}</Alert> : q.data && <ListaBloqueio q={q.data} />}</CardBody>
+    </Card>
   );
 }

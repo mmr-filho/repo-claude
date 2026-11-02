@@ -39,6 +39,9 @@ e BI conversacional).
   (Sinan Net, Sinan Online, e-SUS Sinan, e-SUS Notifica, Sivep-Gripe) com o número oficial, espelho e PDF da ficha,
   encerramento, REL de covid-19 e mpox à RNDS e comunicação policial na violência contra a mulher
   ([`docs/VIGILANCIA.md`](docs/VIGILANCIA.md)).
+- **Território georreferenciado**: localidade, bairro, quarteirão e imóvel únicos para ACS, ACE e vigilância;
+  importação da malha (GeoJSON ou shapefile), editor de quarteirões, geocodificação local com nível de precisão,
+  raio do bloqueio e mapa de casos só para a vigilância ([`docs/TERRITORIO.md`](docs/TERRITORIO.md)).
 - **Leitos/NIR**, **POPs** (hard e soft gates), **faturamento** (SIGTAP, crítica pré-glosa, BPA-I/BPA-C),
   **BI conversacional** com Text-to-SQL blindado, **gestão** (produtividade, SLAs, pautas) e **busca ativa**.
 - **Acessibilidade**: VLibras e chamada de intérprete de Libras por vídeo (WebRTC).

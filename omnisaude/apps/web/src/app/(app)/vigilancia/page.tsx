@@ -11,6 +11,7 @@ import { Alert, Spinner } from '@/components/ui/misc';
 import { TabPanel, Tabs } from '@/components/ui/tabs';
 import { FichaNotificacao } from '@/components/vigilancia/ficha-notificacao';
 import { CatalogoTab, CodigosTab, PlantaoTab, SistemasTab } from '@/components/vigilancia/gestao';
+import { MapaCasosTab } from '@/components/vigilancia/mapa-casos';
 import { NovaNotificacaoDialog } from '@/components/vigilancia/nova-notificacao';
 import { DIGITACAO, ORIGEM, SITUACAO, STATUS, tempoAte, type FilaDigitacao, type NotificacaoResumo, type PainelVigilancia, type SugestaoSrag } from '@/components/vigilancia/types';
 import { api, errorMessage, saveBlob } from '@/lib/api';
@@ -70,6 +71,7 @@ export default function VigilanciaPage() {
   const gere = session.can('vigilancia.catalogo');
   const digita = session.can('vigilancia.digitar');
   const exporta = session.can('vigilancia.exportar');
+  const mapaOk = session.can('vigilancia.mapa');
   const toast = useToast();
   const [sistema, setSistema] = useState('');
   const [situacaoFila, setSituacaoFila] = useState('PENDENTE');
@@ -118,6 +120,7 @@ export default function VigilanciaPage() {
     ...(painelOk ? [{ value: 'painel', label: 'Painel da vigilância' }] : []),
     ...(notifica ? [{ value: 'minhas', label: 'Minhas notificações' }] : []),
     ...(digita ? [{ value: 'digitacao', label: 'Digitação nos sistemas oficiais' }] : []),
+    ...(mapaOk ? [{ value: 'mapa', label: 'Mapa de casos' }] : []),
     ...(painelOk ? [{ value: 'descartes', label: 'Descartes' }] : []),
     ...(painelOk ? [{ value: 'catalogo', label: 'Lista (LNNC)' }] : []),
     ...(painelOk ? [{ value: 'codigos', label: 'Códigos' }] : []),
@@ -283,6 +286,7 @@ export default function VigilanciaPage() {
             </div>
           </TabPanel>
         ))}
+        {mapaOk && <TabPanel value="mapa">{tab === 'mapa' && <MapaCasosTab />}</TabPanel>}
         <TabPanel value="catalogo">
           <CatalogoTab podeGerir={gere} />
         </TabPanel>

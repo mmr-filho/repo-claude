@@ -5,6 +5,7 @@ import { Ctx, RequirePermission, type RequestContext } from '../../core/context'
 import { zv } from '../../core/zod';
 import { CatalogoVigilanciaService } from './catalogo.service';
 import { CAMPOS_EDITAVEIS } from './ficha';
+import { MapaCasosService } from './mapa.service';
 import { NotificacaoService } from './notificacao.service';
 import { SaidaOficialService } from './saida.service';
 
@@ -124,6 +125,8 @@ const encerrarSchema = z.object({
   encerradaEm: dia,
   conclusao: z.record(z.string().regex(/^\d{2}$/), z.string().trim().max(120).nullable()).nullish(),
 });
+const mapaSchema = z.object({ de: dia, ate: dia, grupo: z.string().trim().max(40).optional() });
+const raioCasoSchema = z.object({ metros: z.coerce.number().int().min(10).max(2000).optional() });
 const exportacaoSchema = z.object({ sistema: sistema.optional(), de: dia, ate: dia, situacao: z.enum(['PENDENTE', 'DIGITADA']).optional() });
 const rotaSchema = z.object({
   groupKey: z.string().trim().min(2).max(40),
@@ -150,7 +153,22 @@ export class VigilanciaController {
     private readonly notificacoes: NotificacaoService,
     private readonly catalogo: CatalogoVigilanciaService,
     private readonly saida: SaidaOficialService,
+    private readonly mapaCasos: MapaCasosService,
   ) {}
+
+  /** Mapa de casos (só a vigilância): posição da residência, precisão e casos por quarteirão. */
+  @Get('mapa')
+  @RequirePermission('vigilancia.mapa')
+  mapa(@Ctx() ctx: RequestContext, @Query(zv(mapaSchema)) q: z.infer<typeof mapaSchema>) {
+    return this.mapaCasos.mapa(ctx, q);
+  }
+
+  /** Quarteirões no raio do bloqueio a partir da residência do caso. */
+  @Get('notificacoes/:id/quarteiroes')
+  @RequirePermission('vigilancia.mapa')
+  quarteiroesDoCaso(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Query(zv(raioCasoSchema)) q: z.infer<typeof raioCasoSchema>) {
+    return this.mapaCasos.quarteiroesDoCaso(ctx, id, q.metros);
+  }
 
   @Get('painel')
   @RequirePermission('vigilancia.painel')

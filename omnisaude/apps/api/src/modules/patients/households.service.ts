@@ -1,8 +1,9 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { onlyDigits } from '@omnisaude/shared';
+import { onlyDigits, type PrecisaoGeo } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { DomainError, notFound } from '../../core/errors';
+import { LocalizadorService } from '../territorio/localizador.service';
 import { patientSummary } from './patients.service';
 
 export interface HouseholdInput {
@@ -16,6 +17,9 @@ export interface HouseholdInput {
   ibgeCode?: string | null;
   latitude?: number | null;
   longitude?: number | null;
+  /** Precisão da posição enviada; sem ela, GPS em campo (o cadastro de domicílio só recebe posição do GPS do aparelho do ACS). */
+  geoPrecision?: PrecisaoGeo | null;
+  geoAccuracyM?: number | null;
   propertyType?: string | null;
   dwellingType?: string | null;
   tenure?: string | null;
@@ -48,7 +52,10 @@ const householdInclude = { families: { where: { active: true }, include: familyI
 /** Domicílios e famílias: um paciente pertence a uma família, que vive num domicílio (base do cadastro domiciliar do e-SUS). */
 @Injectable()
 export class HouseholdsService {
-  constructor(private readonly audit: AuditService) {}
+  constructor(
+    private readonly audit: AuditService,
+    private readonly localizador: LocalizadorService,
+  ) {}
 
   async search(ctx: RequestContext, q: string) {
     const term = q.trim();
@@ -72,23 +79,46 @@ export class HouseholdsService {
   }
 
   async create(ctx: RequestContext, input: HouseholdInput & { family?: FamilyInput | null }) {
-    return ctx.db.$transaction(async (tx) => {
-      const h = await tx.household.create({ data: { ...this.data(input), unitId: input.unitId ?? ctx.session.unitId ?? null } });
+    const id = await ctx.db.$transaction(async (tx) => {
+      const h = await tx.household.create({ data: { ...this.data(input), ...this.geo(input, null), unitId: input.unitId ?? ctx.session.unitId ?? null } });
       if (input.family) await this.newFamily(ctx, tx, h.id, input.family);
       await this.audit.record(ctx, tx, { action: 'domicilio.cadastrar', entityType: 'Household', entityId: h.id, payload: input });
-      const full = await tx.household.findUniqueOrThrow({ where: { id: h.id }, include: householdInclude });
-      return this.view(full);
+      return h.id;
     });
+    // Território (PLT-3): com posição, o imóvel é ligado ao quarteirão que a contém.
+    if (input.latitude != null && input.longitude != null) await this.localizador.vincularImovel(ctx.db, id);
+    return this.view(await ctx.db.household.findUniqueOrThrow({ where: { id }, include: householdInclude }));
   }
 
   async update(ctx: RequestContext, id: string, input: HouseholdInput) {
     const h = await ctx.db.household.findUnique({ where: { id } });
     if (!h) throw notFound('Domicílio');
-    return ctx.db.$transaction(async (tx) => {
-      await tx.household.update({ where: { id }, data: this.data(input) });
+    const geo = this.geo(input, h);
+    await ctx.db.$transaction(async (tx) => {
+      await tx.household.update({ where: { id }, data: { ...this.data(input), ...geo } });
       await this.audit.record(ctx, tx, { action: 'domicilio.atualizar', entityType: 'Household', entityId: id, payload: input });
-      return this.view(await tx.household.findUniqueOrThrow({ where: { id }, include: householdInclude }));
     });
+    if ('geoPrecision' in geo) await this.localizador.vincularImovel(ctx.db, id);
+    return this.view(await ctx.db.household.findUniqueOrThrow({ where: { id }, include: householdInclude }));
+  }
+
+  /** Liga o imóvel ao quarteirão que contém a posição dele (ou desliga, se ficou sem posição ou fora da malha). */
+  ligarAoQuarteirao(ctx: RequestContext, id: string) {
+    return this.localizador.vincularImovel(ctx.db, id);
+  }
+
+  /**
+   * Precisão da posição quando ela muda: a enviada (o app do ACS manda o raio do GPS) ou GPS em campo. Sem posição,
+   * a precisão e o quarteirão saem junto.
+   */
+  private geo(input: HouseholdInput, atual: { latitude: number | null; longitude: number | null } | null) {
+    if (input.latitude === undefined && input.longitude === undefined) return {};
+    // Só uma das coordenadas no corpo: a outra continua a atual.
+    const lat = input.latitude !== undefined ? input.latitude : (atual?.latitude ?? null);
+    const lng = input.longitude !== undefined ? input.longitude : (atual?.longitude ?? null);
+    if (lat == null || lng == null) return atual?.latitude != null ? { geoPrecision: null, geoSource: null, geoAccuracyM: null, geoAt: null, blockId: null } : {};
+    if (atual && atual.latitude === lat && atual.longitude === lng && input.geoPrecision === undefined) return {};
+    return { geoPrecision: input.geoPrecision ?? ('GPS_CAMPO' as const), geoSource: 'cadastro', geoAccuracyM: input.geoAccuracyM ?? null, geoAt: new Date() };
   }
 
   async createFamily(ctx: RequestContext, householdId: string, input: FamilyInput) {

@@ -471,7 +471,9 @@ export class AcsService {
     const turno = v.turno ?? turnoDaHora(zonedParts(visitedAt, ctx.tenant.timeZone).hour);
     const microArea = v.microArea ?? household?.microArea ?? ref.lot?.microArea ?? null;
     const dec = (x: number | null | undefined) => (x === null || x === undefined ? null : x);
-    return ctx.db.$transaction(async (tx) => {
+    // Domicílio sem posição recebe a do GPS da visita (precisão de GPS em campo) e é ligado ao quarteirão (PLT-3).
+    const posiciona = !!household && household.latitude === null && v.latitude !== null && v.latitude !== undefined && v.longitude !== null && v.longitude !== undefined;
+    const visitId = await ctx.db.$transaction(async (tx) => {
       const visit = await tx.homeVisit.create({
         data: {
           clientId: op.clientId,
@@ -502,8 +504,11 @@ export class AcsService {
           notes: v.observacoes?.trim() || null,
         },
       });
-      if (household && household.latitude === null && v.latitude !== null && v.latitude !== undefined && v.longitude !== null && v.longitude !== undefined) {
-        await tx.household.update({ where: { id: household.id }, data: { latitude: v.latitude, longitude: v.longitude } });
+      if (posiciona) {
+        await tx.household.update({
+          where: { id: household!.id },
+          data: { latitude: v.latitude, longitude: v.longitude, geoPrecision: 'GPS_CAMPO', geoSource: 'visita', geoAccuracyM: null, geoAt: visitedAt },
+        });
       }
       if (patientId && v.desfecho === '1') await tx.activeSearchCase.updateMany({ where: { patientId, status: { not: 'ENCERRADO' } }, data: { lastVisitAt: visitedAt } });
       await this.audit.record(ctx, tx, {
@@ -514,6 +519,8 @@ export class AcsService {
       });
       return visit.id;
     });
+    if (posiciona) await this.households.ligarAoQuarteirao(ctx, household!.id);
+    return visitId;
   }
 
   // ─── Produtividade ──────────────────────────────────────────────────────────

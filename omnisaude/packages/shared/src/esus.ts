@@ -62,6 +62,8 @@ export const TIPO_IMOVEL: Record<string, string> = {
   '10': 'Unidade de medida socioeducativa',
   '11': 'Delegacia',
   '12': 'Estabelecimento religioso',
+  // LEDI 8.7.0 (a ficha impressa v2.1 ainda não traz).
+  '13': 'CASAI',
   '99': 'Outros',
 };
 

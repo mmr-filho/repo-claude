@@ -22,6 +22,15 @@ export interface TenantSettings {
   assistantFaq: { pergunta: string; resposta: string }[];
   /** Vigilância epidemiológica (VIG-1a): parâmetros locais de plantão, sem base normativa federal. */
   vigilancia: VigilanciaSettings;
+  /** Território (PLT-3): regras locais do reconhecimento geográfico e do bloqueio de transmissão. */
+  territorio: TerritorioSettings;
+}
+
+export interface TerritorioSettings {
+  /** Numeração dos quarteirões: única na localidade ou reiniciada em cada bairro (PNCD 2001 faculta as duas). */
+  numeracaoQuarteirao: 'LOCALIDADE' | 'BAIRRO';
+  /** Raio do bloqueio de transmissão em metros (Diretrizes: no mínimo 150 m; a SES pode adotar outro). */
+  raioBloqueioM: number;
 }
 
 export interface VigilanciaSettings {
@@ -51,9 +60,15 @@ export const DEFAULT_TENANT_SETTINGS: TenantSettings = {
   assistantName: 'Assistente de saúde',
   assistantFaq: [],
   vigilancia: { ackMinutes: 60, onCallPhones: [], whatsappAlerts: false, relEnabled: false, prazosEncerramento: {}, modeloPolicial: null },
+  territorio: { numeracaoQuarteirao: 'LOCALIDADE', raioBloqueioM: 150 },
 };
 
 export function tenantSettings(raw: unknown): TenantSettings {
   const value = raw && typeof raw === 'object' ? (raw as Partial<TenantSettings>) : {};
-  return { ...DEFAULT_TENANT_SETTINGS, ...value, vigilancia: { ...DEFAULT_TENANT_SETTINGS.vigilancia, ...(value.vigilancia ?? {}) } };
+  return {
+    ...DEFAULT_TENANT_SETTINGS,
+    ...value,
+    vigilancia: { ...DEFAULT_TENANT_SETTINGS.vigilancia, ...(value.vigilancia ?? {}) },
+    territorio: { ...DEFAULT_TENANT_SETTINGS.territorio, ...(value.territorio ?? {}) },
+  };
 }

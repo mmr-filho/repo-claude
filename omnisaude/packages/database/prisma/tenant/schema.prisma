@@ -496,15 +496,185 @@ model Household {
   active         Boolean  @default(true)
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
+  /// Território (PLT-3): quarteirão do reconhecimento geográfico, sequência do imóvel no quarteirão e zona.
+  blockId        String?         @map("block_id") @db.Uuid
+  rgSequence     String?         @map("rg_sequence") @db.VarChar(12)
+  zone           TerritoryZone?
+  /// Precisão e origem da posição (GPS em campo, mapa, base de endereços do IBGE, centro do quarteirão...).
+  geoPrecision   GeoPrecision?   @map("geo_precision")
+  geoSource      String?         @map("geo_source")
+  /// Raio de incerteza em metros, normalizado para 95% de confiança.
+  geoAccuracyM   Float?          @map("geo_accuracy_m")
+  geoAt          DateTime?       @map("geo_at")
 
   unit     Unit?    @relation(fields: [unitId], references: [id])
   team     Team?    @relation(fields: [teamId], references: [id])
+  block    Block?   @relation(fields: [blockId], references: [id])
   families Family[]
   visits   HomeVisit[]
 
   @@index([cep])
   @@index([ibgeCode, district])
+  @@index([blockId])
+  @@index([latitude, longitude])
   @@map("households")
+}
+
+enum TerritoryZone {
+  URBANA
+  RURAL
+  PERIURBANA
+}
+
+enum GeoPrecision {
+  GPS_CAMPO
+  MAPA
+  ENDERECO
+  FACE
+  LOGRADOURO
+  QUARTEIRAO
+  LOCALIDADE
+  SETOR
+  CEP
+  MUNICIPIO
+}
+
+/// Localidade do reconhecimento geográfico (PNCD): cidade, vila, povoado, fazenda, sítio... Código de até 8 dígitos
+/// único no município entre as ativas (cadastro de localidades do DATASUS).
+model Locality {
+  id        String        @id @default(uuid(7)) @db.Uuid
+  code      String        @db.VarChar(8)
+  name      String
+  category  String        @default("CIDADE")
+  zone      TerritoryZone @default(URBANA)
+  /// ATIVA ou EXTINTA (a extinta fica para o histórico).
+  status    String        @default("ATIVA")
+  geometry  Json?
+  minLng    Float?        @map("min_lng")
+  minLat    Float?        @map("min_lat")
+  maxLng    Float?        @map("max_lng")
+  maxLat    Float?        @map("max_lat")
+  centerLat Float?        @map("center_lat")
+  centerLng Float?        @map("center_lng")
+  source    String        @default("MANUAL")
+  notes     String?
+  createdBy String?       @map("created_by") @db.Uuid
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  neighborhoods Neighborhood[]
+  blocks        Block[]
+
+  @@map("localities")
+}
+
+/// Bairro ou setor (sublocalidade do PNCD). Os apelidos ligam o nome do cadastro e do Sinan ao polígono.
+model Neighborhood {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  localityId String   @map("locality_id") @db.Uuid
+  name       String
+  code       String?  @db.VarChar(20)
+  /// Limites oficiais (lei de bairros) ou provisórios (desenhados ou vindos de outra base).
+  official   Boolean  @default(false)
+  aliases    String[] @default([])
+  geometry   Json?
+  minLng     Float?   @map("min_lng")
+  minLat     Float?   @map("min_lat")
+  maxLng     Float?   @map("max_lng")
+  maxLat     Float?   @map("max_lat")
+  centerLat  Float?   @map("center_lat")
+  centerLng  Float?   @map("center_lng")
+  active     Boolean  @default(true)
+  source     String   @default("MANUAL")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  locality Locality @relation(fields: [localityId], references: [id])
+  blocks   Block[]
+
+  @@index([localityId])
+  @@map("neighborhoods")
+}
+
+/// Quarteirão do reconhecimento geográfico: polígono (GeoJSON RFC 7946) e número, único na localidade ou no bairro
+/// conforme a regra da instituição (conferida na aplicação).
+model Block {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  localityId     String   @map("locality_id") @db.Uuid
+  neighborhoodId String?  @map("neighborhood_id") @db.Uuid
+  number         String   @db.VarChar(10)
+  geometry       Json
+  minLng         Float    @map("min_lng")
+  minLat         Float    @map("min_lat")
+  maxLng         Float    @map("max_lng")
+  maxLat         Float    @map("max_lat")
+  centerLat      Float    @map("center_lat")
+  centerLng      Float    @map("center_lng")
+  areaM2         Float    @map("area_m2")
+  source         String   @default("EDITOR")
+  notes          String?
+  active         Boolean  @default(true)
+  createdBy      String?  @map("created_by") @db.Uuid
+  updatedBy      String?  @map("updated_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  locality     Locality      @relation(fields: [localityId], references: [id])
+  neighborhood Neighborhood? @relation(fields: [neighborhoodId], references: [id])
+  households   Household[]
+
+  @@index([localityId, number])
+  @@index([minLng, maxLng, minLat, maxLat])
+  @@map("blocks")
+}
+
+/// Endereço da base local de geocodificação (CNEFE do Censo 2022, carregado pela instituição). Sem morador.
+model AddressPoint {
+  id         String  @id @default(uuid(7)) @db.Uuid
+  source     String  @default("CNEFE2022")
+  externalId String  @map("external_id")
+  ibgeCode   String  @map("ibge_code") @db.VarChar(7)
+  sector     String? @db.VarChar(16)
+  quadra     String? @db.VarChar(6)
+  face       String? @db.VarChar(6)
+  cep        String? @db.Char(8)
+  locality   String?
+  street     String
+  streetKey  String  @map("street_key")
+  number     String?
+  complement String?
+  quadraKey  String? @map("quadra_key")
+  loteKey    String? @map("lote_key")
+  latitude   Float
+  longitude  Float
+  /// NV_GEO_COORD do IBGE: 1 a 3 endereço, 4 face de quadra, 5 localidade, 6 setor censitário.
+  level      Int
+  species    Int?
+
+  @@unique([source, externalId])
+  @@index([streetKey, number])
+  @@index([quadraKey, loteKey])
+  @@index([cep])
+  @@map("address_points")
+}
+
+/// Importação de malha (localidades, bairros, quarteirões) ou da base de endereços: prévia e aplicação auditadas.
+model TerritoryImport {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  kind       String
+  fileName   String    @map("file_name")
+  crs        String?
+  status     String    @default("PREVIA")
+  storageKey String?   @map("storage_key")
+  summary    Json
+  result     Json?
+  createdBy  String    @map("created_by") @db.Uuid
+  createdAt  DateTime  @default(now()) @map("created_at")
+  appliedBy  String?   @map("applied_by") @db.Uuid
+  appliedAt  DateTime? @map("applied_at")
+
+  @@index([createdAt])
+  @@map("territory_imports")
 }
 
 /// Família de um domicílio: responsável, membros (pacientes) e renda.
@@ -2814,6 +2984,8 @@ model Notification {
   residenceIbge         String?            @map("residence_ibge") @db.Char(7)
   residenceLat          Float?             @map("residence_lat")
   residenceLng          Float?             @map("residence_lng")
+  /// Precisão da posição da residência no retrato da ficha (PLT-3).
+  residencePrecision    GeoPrecision?      @map("residence_precision")
   outOfMunicipality     Boolean            @default(false) @map("out_of_municipality")
   smsReceivedAt         DateTime?          @map("sms_received_at")
   smsReceivedBy         String?            @map("sms_received_by") @db.Uuid

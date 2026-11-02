@@ -623,7 +623,7 @@ export class NotificacaoService implements OnModuleInit {
       sys.db.patient.findUniqueOrThrow({ where: { id: p.patientId } }),
       sys.db.unit.findUniqueOrThrow({ where: { id: p.unitId } }),
       sys.db.user.findUniqueOrThrow({ where: { id: p.autor.userId }, select: { name: true, socialName: true } }),
-      sys.db.patient.findUnique({ where: { id: p.patientId }, select: { family: { select: { household: { select: { latitude: true, longitude: true } } } } } }),
+      sys.db.patient.findUnique({ where: { id: p.patientId }, select: { family: { select: { household: { select: { latitude: true, longitude: true, geoPrecision: true } } } } } }),
     ]);
     const prazo = calcularPrazo(c, { atendimento: p.primeiroAtendimento, conhecimento: p.conhecimento, confirmacao: p.confirmacao, internacao: p.internacao });
     const ficha = montarFicha({
@@ -699,6 +699,7 @@ export class NotificacaoService implements OnModuleInit {
             residenceIbge: ibgeResidencia,
             residenceLat: ficha.ID_GEO1,
             residenceLng: ficha.ID_GEO2,
+            residencePrecision: ficha.ID_GEO1 != null ? (household?.family?.household.geoPrecision ?? null) : null,
             outOfMunicipality: !!ibgeResidencia && ibgeResidencia !== unit.ibgeCode,
             policeRequired: policial,
             policeDueAt: policial ? new Date(p.conhecimento.getTime() + PRAZO_POLICIAL_HORAS * 3_600_000) : null,
@@ -814,6 +815,11 @@ export class NotificacaoService implements OnModuleInit {
     if (ctx.session.role === 'VIGILANCIA_EPIDEMIOLOGICA') return true;
     if (ctx.session.role === 'NUCLEO_VIGILANCIA') return n.unitId === ctx.session.unitId;
     return n.notifierId === ctx.session.userId;
+  }
+
+  /** Para os serviços irmãos (mapa de casos): mesma regra de sigilo da ficha. */
+  podeAbrirSigilosa(ctx: RequestContext, n: { notifierId: string; unitId: string }) {
+    return this.abreSigiloso(ctx, n);
   }
 
   /** Sigilo (art. 7º): agravo sensível só abre para o autor, a vigilância municipal e o núcleo da unidade. */
