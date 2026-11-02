@@ -302,6 +302,40 @@ function distanciaAteBorda(p: Posicao, a: Area): number {
 
 export class GeometriaInvalida extends Error {}
 
+/** Número de uma coordenada sem coerção: só number ou texto numérico; o resto vira NaN (e é recusado). */
+function numero(v: unknown): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string' && v.trim() !== '') return Number(v);
+  return NaN;
+}
+
+/**
+ * Tira os espinhos de largura zero de um anel aberto (cíclico): o vértice em que o contorno volta exatamente pelo mesmo
+ * caminho (anterior, ele e seguinte na mesma reta, com inversão de sentido). A área não muda; repetições seguidas que
+ * sobram também saem.
+ */
+function tirarEspinhos(aberto: Posicao[]): Posicao[] {
+  const pts = aberto.slice();
+  let mudou = true;
+  while (mudou && pts.length >= 3) {
+    mudou = false;
+    for (let i = 0; i < pts.length && pts.length >= 3; i++) {
+      const a = pts[(i - 1 + pts.length) % pts.length]!;
+      const b = pts[i]!;
+      const c = pts[(i + 1) % pts.length]!;
+      const igual = (p: Posicao, q: Posicao) => p[0] === q[0] && p[1] === q[1];
+      const cruz = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+      const volta = (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1]) < 0;
+      if (igual(a, b) || igual(b, c) || (cruz === 0 && volta)) {
+        pts.splice(i, 1);
+        mudou = true;
+        i--;
+      }
+    }
+  }
+  return pts;
+}
+
 /**
  * Laços simples de um anel que se cruza, encosta em si mesmo ou passa duas vezes pelo mesmo vértice: corta no primeiro
  * ponto e repete em cada parte. Serve para medir a área real de um anel torcido (na gravata, as áreas com sinal dos
@@ -334,6 +368,18 @@ function espessuraMedia(anel: Anel, m: { lat: number; lng: number }, simples: bo
   return { area, espessura: perimetro ? (2 * area) / perimetro : 0 };
 }
 
+/** Laços do anel: 'lasca' se todos são lascas, o único laço de verdade (reparo), ou 'invalido' com dois ou mais. */
+function repararAnel(anel: Anel, m: { lat: number; lng: number }): Anel | 'lasca' | 'invalido' {
+  const partes = lacos(anel);
+  if (!partes) return 'invalido';
+  const reais = partes.filter((l) => {
+    const { area, espessura } = espessuraMedia(l, m, true);
+    return area >= 1 && espessura >= 0.15;
+  });
+  if (!reais.length) return 'lasca';
+  return reais.length === 1 ? reais[0]! : 'invalido';
+}
+
 /**
  * Normaliza a geometria recebida (importação ou editor): só Polygon/MultiPolygon, números finitos dentro de
  * [-180, 180] e [-90, 90], anéis fechados com pelo menos 3 vértices distintos, sem pontos repetidos seguidos, 6 casas
@@ -349,8 +395,9 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
     const orig: Anel = [];
     for (const p of r) {
       if (!Array.isArray(p) || p.length < 2) throw new GeometriaInvalida('Posição inválida');
-      const lng = Number(p[0]);
-      const lat = Number(p[1]);
+      // Só número (ou texto numérico): null, vazio, lista e booleano não viram 0 (um vértice em 0°, 0° no Golfo da Guiné).
+      const lng = numero(p[0]);
+      const lat = numero(p[1]);
       if (!Number.isFinite(lng) || !Number.isFinite(lat) || lng < -180 || lng > 180 || lat < -90 || lat > 90) throw new GeometriaInvalida('Coordenada fora de longitude/latitude: confira o sistema de referência');
       const ult = orig[orig.length - 1];
       if (!ult || ult[0] !== lng || ult[1] !== lat) orig.push([lng, lat]);
@@ -364,8 +411,10 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
     for (const q of aberto) if (!fundido.length || !perto(fundido[fundido.length - 1]!, q)) fundido.push(q);
     while (fundido.length > 1 && perto(fundido[fundido.length - 1]!, fundido[0]!)) fundido.pop();
     if (fundido.length < 3) return null;
+    const semEspinho = tirarEspinhos(fundido);
+    if (semEspinho.length < 3) return null;
     orig.length = 0;
-    orig.push(...fundido, [fundido[0]![0], fundido[0]![1]]);
+    orig.push(...semEspinho, [semEspinho[0]![0], semEspinho[0]![1]]);
     // 2) Defeitos do desenho original são do arquivo ("oito" pelo mesmo vértice, gravata, laço) e recusam a feição,
     // a não ser que o anel seja uma lasca pelo mesmo critério do passo 3, medido nos laços (a área com sinal de um anel
     // torcido se anula): aí sai com aviso.
@@ -378,9 +427,14 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
     }
     const cruzado = !repetido && anelAutointersecta(orig);
     if (repetido || cruzado) {
-      const { area, espessura } = espessuraMedia(orig, m0, false);
-      if (area < 1 || espessura < 0.15) return null;
-      throw new GeometriaInvalida(repetido ? 'O contorno passa duas vezes pelo mesmo vértice' : 'O contorno cruza a si mesmo');
+      // Corta nos cruzamentos: laços-lasca (nó de centímetros num canto, torção de uma faixa) saem; sobrando um laço de
+      // verdade, ele é o contorno (reparo com aviso); dois ou mais (gravata, oito) são defeito do desenho.
+      const r = repararAnel(orig, m0);
+      if (r === 'lasca') return null;
+      if (r === 'invalido') throw new GeometriaInvalida(repetido ? 'O contorno passa duas vezes pelo mesmo vértice' : 'O contorno cruza a si mesmo');
+      reparados++;
+      orig.length = 0;
+      orig.push(...r);
     }
     // 3) Lasca de recorte: menos de 1 m² ou mais fina que a resolução do arredondamento (espessura média 2·área/perímetro
     // abaixo de 15 cm). Sai com aviso, sem recusar a feição.
@@ -393,12 +447,33 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
       const ult = pts[pts.length - 1];
       if (!ult || ult[0] !== q[0] || ult[1] !== q[1]) pts.push(q);
     }
-    const repeteArredondado = new Set(pts.slice(0, -1).map((q) => `${q[0]},${q[1]}`)).size !== pts.length - 1;
-    if (pts.length < 4 || repeteArredondado || anelAutointersecta(pts))
-      throw new GeometriaInvalida('O contorno tem um trecho mais fino que 10 cm e fica inválido com a precisão de 6 casas decimais: simplifique esse trecho');
+    // O arredondamento pode pôr um vértice exatamente sobre o lado de volta (espinho de largura zero, sem área): sai.
+    const limpos = tirarEspinhos(pts.slice(0, -1));
+    pts.length = 0;
+    pts.push(...limpos, ...(limpos.length ? [[limpos[0]![0], limpos[0]![1]] as Posicao] : []));
+    const fino = new GeometriaInvalida('O contorno tem um trecho mais fino que 10 cm e fica inválido com a precisão de 6 casas decimais: simplifique esse trecho');
+    if (pts.length < 4) throw fino;
+    if (anelAutointersecta(pts)) {
+      // O arredondamento criou um nó de centímetros: fica o laço de verdade, com o ponto de corte também arredondado.
+      const r = repararAnel(pts, m0);
+      if (r === 'lasca' || r === 'invalido') throw fino;
+      const final: Posicao[] = [];
+      for (const q0 of r.slice(0, -1)) {
+        const q: Posicao = [arred(q0[0]), arred(q0[1])];
+        const ult = final[final.length - 1];
+        if (!ult || ult[0] !== q[0] || ult[1] !== q[1]) final.push(q);
+      }
+      const semEsp = tirarEspinhos(final);
+      if (semEsp.length < 3) throw fino;
+      pts.length = 0;
+      pts.push(...semEsp, [semEsp[0]![0], semEsp[0]![1]]);
+      if (anelAutointersecta(pts)) throw fino;
+      reparados++;
+    }
     return sentidoHorario(pts) === externo ? pts.reverse() : pts;
   };
   let descartados = 0;
+  let reparados = 0;
   /** Polígono normalizado, ou null quando o contorno externo colapsa; furos colapsados são descartados. */
   const poligono = (p: unknown): Anel[] | null => {
     if (!Array.isArray(p) || p.length === 0) throw new GeometriaInvalida('Polígono vazio');
@@ -443,6 +518,7 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
   // Lascas (partes ou furos minúsculos de recortes e dissoluções) saem; se não sobra parte, o polígono não tem área.
   if (!partes.length) throw new GeometriaInvalida(brutas.length === 1 ? 'Polígono sem área (vértices alinhados, contorno em espinho ou menos de 3 vértices)' : 'Todas as partes do MultiPolygon são lascas sem área');
   if (descartados) avisos?.push(`${descartados} anel(is) minúsculo(s) descartado(s)`);
+  if (reparados) avisos?.push(`${reparados} contorno(s) com nó de poucos centímetros corrigido(s)`);
   return partes.length === 1 ? { type: 'Polygon', coordinates: partes[0]! } : { type: 'MultiPolygon', coordinates: partes };
 }
 

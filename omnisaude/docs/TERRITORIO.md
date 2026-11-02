@@ -71,8 +71,10 @@ elas vão para os geo campos 1 e 2 da ficha de notificação.
   reprojetado para SIRGAS 2000 no QGIS antes. Coordenada fora do Brasil, arquivo em metros sem sistema e shapefile
   sem .prj (sem escolher o sistema na tela) são recusados.
 - **Prévia sem efeito**: lê, valida cada feição (anel fechado, sem autointerseção, sem vértice repetido, com área,
-  sentido corrigido, furos dentro do contorno; lascas de recorte e furos minúsculos saem com aviso) e sugere qual
-  coluna é o número, o nome, a localidade e o bairro. Só "Aplicar" muda o território.
+  sentido corrigido, furos dentro do contorno; lascas de recorte e furos minúsculos, medidos pela espessura, saem com
+  aviso; vértices a menos de 5 cm e nós de poucos centímetros são corrigidos com aviso; gravata e "oito" de verdade
+  recusam a feição) e sugere qual coluna é o número, o nome, a localidade e o bairro. Só "Aplicar" muda o
+  território.
 - **Aplicação**: localidades por código, bairros por nome ou apelido, quarteirões por localidade (+ bairro, na
   numeração por bairro) + número, este em forma única ("012" é o 12 e "12A" é o 12-A, como no editor); o código da
   localidade também ("0001" é o 1). O bairro do quarteirão vem da coluna, do bairro fixo ou do contorno do bairro;

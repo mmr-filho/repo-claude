@@ -246,6 +246,31 @@ describe('geometria do território', () => {
     expect(areaM2(ok([d(0, 0), d(100, 0), d(99.9999993, -0.0000007), d(100, 55), d(0, 55), d(0, 0)]))).toBeGreaterThan(5490);
     expect(areaM2(ok([d(0, 0), d(100, 0), d(100, 55), d(0, 55), d(0.005, -0.005), d(0, 0)]))).toBeGreaterThan(5490);
     expect(areaM2(ok([d(0, 0), d(50, 0), d(50.003, 0.004), d(50.005, -0.002), d(50, 0.001), d(100, 0), d(100, 55), d(0, 55), d(0, 0)]))).toBeGreaterThan(5490);
+    // Segundo clique no canto, 6 a 10 cm para trás ao longo do lado (o arredondamento o põe sobre o lado: espinho sem
+    // área) ou exatamente sobre o lado: o quarteirão é aceito sem o espinho.
+    for (const [dx, dy] of [
+      [0.08, 0.02],
+      [0.06, 0.02],
+      [0.1, 0.03],
+      [0.07, 0.025],
+      [0.09, 0.02],
+      [0.08, 0],
+    ] as const)
+      expect(areaM2(ok([d(0, 0), d(100, 0), d(100, 55), d(0, 55), d(dx, 55 - dy), d(0, 0)]))).toBeGreaterThan(5490);
+    // Clique 8 cm além do canto (nó de centímetros que se cruza): corrigido com aviso, sem recusar o quarteirão.
+    const avisosNo: string[] = [];
+    const comNo = normalizarArea({ type: 'Polygon', coordinates: [[d(0, 0), d(100, 0), d(100, 55), d(0, 55), d(0.06, 55.06), d(0, 0)]] }, avisosNo);
+    expect(areaM2(comNo)).toBeGreaterThan(5490);
+    expect(avisosNo[0]).toMatch(/nó de poucos centímetros/);
+    // Coordenada nula, vazia, lista ou booleana não vira 0 (um vértice em 0°, 0°): recusada.
+    for (const ruim of [
+      [null, null],
+      ['', ''],
+      [[], []],
+      [true, false],
+      [5, null],
+    ])
+      expect(() => normalizarArea({ type: 'Polygon', coordinates: [[d(0, 0), ruim as unknown as Posicao, d(100, 55), d(0, 55), d(0, 0)]] })).toThrow(GeometriaInvalida);
     // Lascas (2 cm de largura) que se cruzam ou passam duas vezes pelo mesmo vértice: descartadas com aviso.
     const quarteirao = [d(0, 0), d(100, 0), d(100, 55), d(0, 55), d(0, 0)];
     const cruzada = [d(150, 0), d(165, 0.01), d(195, -0.01), d(210, 0), d(195, 0.01), d(165, -0.01), d(150, 0)];

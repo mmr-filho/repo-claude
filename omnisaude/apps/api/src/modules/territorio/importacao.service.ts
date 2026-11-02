@@ -112,6 +112,7 @@ export class ImportacaoTerritorioService {
         const invalidas: { indice: number; motivo: string }[] = [];
         const tipos: Record<string, number> = {};
         const lascas: string[] = [];
+        const nos: string[] = [];
         malha.feicoes.forEach((f, i) => {
           const tipo = f.geometria?.type ?? 'sem geometria';
           tipos[tipo] = (tipos[tipo] ?? 0) + 1;
@@ -121,7 +122,10 @@ export class ImportacaoTerritorioService {
             return;
           }
           try {
-            validas.push({ i, p: f.propriedades, g: normalizarArea(f.geometria, lascas), ponto: null });
+            const avisosFeicao: string[] = [];
+            validas.push({ i, p: f.propriedades, g: normalizarArea(f.geometria, avisosFeicao), ponto: null });
+            if (avisosFeicao.some((a) => /descartado/.test(a))) lascas.push(String(i + 1));
+            if (avisosFeicao.some((a) => /corrigido/.test(a))) nos.push(String(i + 1));
           } catch (err) {
             if (err instanceof GeometriaInvalida) invalidas.push({ indice: i + 1, motivo: err.message });
             else throw err;
@@ -149,7 +153,11 @@ export class ImportacaoTerritorioService {
             ].slice(0, 3),
           })),
           sugestao: sugerir(chaves),
-          avisos: lascas.length ? [...malha.avisos, `${lascas.length} feição(ões) com partes ou furos minúsculos (lascas de recorte), descartados`] : malha.avisos,
+          avisos: [
+            ...malha.avisos,
+            ...(lascas.length ? [`${lascas.length} feição(ões) com partes ou furos minúsculos (lascas de recorte), descartados`] : []),
+            ...(nos.length ? [`${nos.length} feição(ões) com nó de poucos centímetros no contorno, corrigido`] : []),
+          ],
         };
         conteudo = validas;
       }
