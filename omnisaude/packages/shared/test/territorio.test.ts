@@ -274,6 +274,14 @@ describe('geometria do território', () => {
     expect(normalizarArea({ type: 'Polygon', coordinates: [grande, emL] }).coordinates).toHaveLength(1);
     // A gravata de 100 x 50 m continua recusada.
     expect(() => normalizarArea({ type: 'MultiPolygon', coordinates: [[quarteirao], [[d(200, 0), d(300, 0), d(200, 50), d(300, 50), d(200, 0)]]] })).toThrow(/cruza a si mesmo/);
+    // Gravata que se cruza num vértice exatamente sobre o lado (mesma latitude) e oito que encosta num lado: recusados.
+    expect(() => normalizarArea({ type: 'MultiPolygon', coordinates: [[quarteirao], [[d(200, 0), d(300, 0), d(300, 50), d(250, 0), d(200, -50), d(200, 0)]]] })).toThrow(/cruza a si mesmo/);
+    expect(() => normalizarArea({ type: 'Polygon', coordinates: [[d(0, 0), d(100, 0), d(100, 100), d(0, 100), d(0, 60), d(50, 0), d(0, 40), d(0, 0)]] })).toThrow(/cruza a si mesmo/);
+    // Fita de 60 cm com 80 torções: espessura real acima da regra, recusada (não some como lasca).
+    const fita: Posicao[] = [];
+    for (let k = 0; k <= 80; k++) fita.push(d(500 + k * 5, k % 2 ? 0.3 : -0.3));
+    for (let k = 80; k >= 0; k--) fita.push(d(500 + k * 5, k % 2 ? -0.3 : 0.3));
+    expect(() => normalizarArea({ type: 'MultiPolygon', coordinates: [[quarteirao], [[...fita, fita[0]!]]] })).toThrow(/cruza a si mesmo/);
   });
 
   it('cunha real entre vizinhos (canto quase encaixado, lado que entra 2 m) continua sendo sobreposição', () => {

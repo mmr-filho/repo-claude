@@ -192,13 +192,41 @@ function segmentosCruzam(p1: Posicao, p2: Posicao, p3: Posicao, p4: Posicao): bo
 
 /** Anel que cruza a si mesmo (lados não vizinhos se cortam). */
 export function anelAutointersecta(anel: Anel): boolean {
+  return cortarAnel(anel) !== null;
+}
+
+/**
+ * Primeiro ponto em que o anel encosta em si mesmo, cortado em dois laços: cruzamento de lados não vizinhos, vértice
+ * repetido ou vértice exatamente sobre um lado não vizinho (toque, comum com coordenadas de 6 casas em lados retos).
+ * null = anel simples.
+ */
+function cortarAnel(anel: Anel): [Anel, Anel] | null {
   const n = anel.length - 1;
-  for (let i = 0; i < n; i++)
-    for (let j = i + 2; j < n; j++) {
-      if (i === 0 && j === n - 1) continue;
-      if (segmentosCruzam(anel[i]!, anel[i + 1]!, anel[j]!, anel[j + 1]!)) return true;
+  if (n < 3) return null;
+  const v = (k: number) => anel[((k % n) + n) % n]!;
+  // Sequência cíclica de a até b (inclusive), fechada no primeiro ponto.
+  const trecho = (a: number, b: number, inicio?: Posicao): Anel => {
+    const pts: Posicao[] = inicio ? [inicio] : [];
+    for (let k = a; ; k = (k + 1) % n) {
+      pts.push(v(k));
+      if (k === ((b % n) + n) % n) break;
     }
-  return false;
+    return [...pts, pts[0]!];
+  };
+  for (let i = 0; i < n; i++)
+    for (let j = 0; j < n; j++) {
+      if (j === i) continue;
+      // Vértice j repetido no vértice i (j > i): laços i..j-1 e j..i-1.
+      if (j > i && v(i)[0] === v(j)[0] && v(i)[1] === v(j)[1]) return [trecho(i, j - 1), trecho(j, i - 1)];
+      // Vértice j sobre o lado i → i+1 (não vizinho): laços j..i e i+1..j.
+      if (j !== (i + 1) % n && naBorda(v(j), v(i), v(i + 1))) return [trecho(j, i), trecho((i + 1) % n, j)];
+      // Lados i → i+1 e j → j+1 que se cruzam (não vizinhos).
+      if (j > i + 1 && !(i === 0 && j === n - 1) && segmentosCruzam(v(i), v(i + 1), v(j), v(j + 1))) {
+        const x = cruzamento(v(i), v(i + 1), v(j), v(j + 1));
+        return [trecho(i + 1, j, x), trecho(j + 1, i, x)];
+      }
+    }
+  return null;
 }
 
 /**
@@ -275,29 +303,32 @@ function distanciaAteBorda(p: Posicao, a: Area): number {
 export class GeometriaInvalida extends Error {}
 
 /**
- * Laços simples de um anel que se cruza ou passa duas vezes pelo mesmo vértice: corta no primeiro cruzamento (ou
- * vértice repetido) e repete em cada parte. Serve para medir a área real de um anel torcido (na gravata, as áreas com
- * sinal dos dois laços se anulam).
+ * Laços simples de um anel que se cruza, encosta em si mesmo ou passa duas vezes pelo mesmo vértice: corta no primeiro
+ * ponto e repete em cada parte. Serve para medir a área real de um anel torcido (na gravata, as áreas com sinal dos
+ * dois laços se anulam). null = cortes demais para medir (o anel é recusado, nunca descartado como lasca).
  */
-function lacos(anel: Anel, profundidade = 0): Anel[] {
-  const n = anel.length - 1;
-  if (n < 3 || profundidade > 30) return [anel];
-  const fechar = (pts: Posicao[]): Anel => [...pts, pts[0]!];
-  for (let i = 0; i < n; i++)
-    for (let j = i + 1; j < n; j++) {
-      if (anel[i]![0] === anel[j]![0] && anel[i]![1] === anel[j]![1]) return [...lacos(fechar(anel.slice(i, j)), profundidade + 1), ...lacos(fechar([...anel.slice(j, n), ...anel.slice(0, i)]), profundidade + 1)];
-      if (j === i + 1 || (i === 0 && j === n - 1)) continue;
-      if (segmentosCruzam(anel[i]!, anel[i + 1]!, anel[j]!, anel[j + 1]!)) {
-        const x = cruzamento(anel[i]!, anel[i + 1]!, anel[j]!, anel[j + 1]!);
-        return [...lacos(fechar([x, ...anel.slice(i + 1, j + 1)]), profundidade + 1), ...lacos(fechar([x, ...anel.slice(j + 1, n), ...anel.slice(0, i + 1)]), profundidade + 1)];
-      }
+function lacos(anel: Anel): Anel[] | null {
+  const prontos: Anel[] = [];
+  const pilha: Anel[] = [anel];
+  let cortes = 0;
+  while (pilha.length) {
+    const atual = pilha.pop()!;
+    const corte = cortarAnel(atual);
+    if (!corte) prontos.push(atual);
+    else {
+      if (++cortes > 2000) return null;
+      pilha.push(...corte);
     }
-  return [anel];
+  }
+  return prontos;
 }
 
 /** Espessura média (em metros) do anel: 2·(área real, somando os laços)/perímetro. Numa faixa, é a largura dela. */
-function espessuraMedia(anel: Anel, m: { lat: number; lng: number }): { area: number; espessura: number } {
-  const area = lacos(anel).reduce((s, l) => s + Math.abs(areaDoAnelM2(l, m, anel[0]![1], anel[0]![0])), 0);
+function espessuraMedia(anel: Anel, m: { lat: number; lng: number }, simples: boolean): { area: number; espessura: number } {
+  // Anel simples (já conferido): a área com sinal basta, sem refazer a varredura dos laços.
+  const partes = simples ? [anel] : lacos(anel);
+  if (!partes) return { area: Infinity, espessura: Infinity };
+  const area = partes.reduce((s, l) => s + Math.abs(areaDoAnelM2(l, m, anel[0]![1], anel[0]![0])), 0);
   let perimetro = 0;
   for (let i = 1; i < anel.length; i++) perimetro += Math.hypot((anel[i]![0] - anel[i - 1]![0]) * m.lng, (anel[i]![1] - anel[i - 1]![1]) * m.lat);
   return { area, espessura: perimetro ? (2 * area) / perimetro : 0 };
@@ -347,13 +378,13 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
     }
     const cruzado = !repetido && anelAutointersecta(orig);
     if (repetido || cruzado) {
-      const { area, espessura } = espessuraMedia(orig, m0);
+      const { area, espessura } = espessuraMedia(orig, m0, false);
       if (area < 1 || espessura < 0.15) return null;
       throw new GeometriaInvalida(repetido ? 'O contorno passa duas vezes pelo mesmo vértice' : 'O contorno cruza a si mesmo');
     }
     // 3) Lasca de recorte: menos de 1 m² ou mais fina que a resolução do arredondamento (espessura média 2·área/perímetro
     // abaixo de 15 cm). Sai com aviso, sem recusar a feição.
-    const { area: area0, espessura } = espessuraMedia(orig, m0);
+    const { area: area0, espessura } = espessuraMedia(orig, m0, true);
     if (area0 < 1 || espessura < 0.15) return null;
     // 4) Arredonda a 6 casas (~10 cm). Se só o arredondamento estraga o anel, o problema é um trecho fino demais.
     const pts: Anel = [];
