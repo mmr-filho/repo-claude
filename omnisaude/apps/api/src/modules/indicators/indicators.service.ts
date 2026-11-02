@@ -194,7 +194,7 @@ export class IndicatorsService {
     if (!team) throw notFound('Equipe');
     const membros = new Set(team.members.map((m) => m.userId as string));
     const dados = await carregarDadosEquipe(ctx.db, { id: team.id, typeCode: team.typeCode, name: team.name, unitId: team.unitId }, membros, mes.asOf);
-    const lista: Pendencia[] = pendencias(q.codigo, dados, mes.asOf, mes.asOfLocal);
+    const lista: Pendencia[] = pendencias(q.codigo, dados, mes.asOf, tz);
     await this.audit.record(ctx, ctx.db, { action: 'indicadores.lista_nominal', entityType: 'Team', entityId: team.id, payload: { codigo: q.codigo, competencia, pessoas: lista.length } });
     const resultadoMes = apurarMes(q.codigo, dados, mes);
     return { competencia, ate: mes.asOf.toISOString(), team: { id: team.id, name: team.name, ine: team.ine, unitName: team.unit.name }, codigo: q.codigo, mes: resultadoMes, pessoas: lista };
@@ -210,7 +210,7 @@ export function mesesDoQuadrimestre(competencia: string, tz: string, now: Date):
       const inicio = fromZonedParts({ year: y, month: mo, day: 1, hour: 0, minute: 0, second: 0 }, tz);
       const fim = fromZonedParts({ year: mo === 12 ? y + 1 : y, month: mo === 12 ? 1 : mo + 1, day: 1, hour: 0, minute: 0, second: 0 }, tz);
       const asOf = fim.getTime() <= now.getTime() ? new Date(fim.getTime() - 1) : now;
-      return { competencia: m, inicio, fim, asOf, asOfLocal: localDateString(asOf, tz) };
+      return { competencia: m, inicio, fim, asOf, asOfLocal: localDateString(asOf, tz), timeZone: tz };
     })
     .filter((m) => m.inicio.getTime() <= now.getTime());
 }

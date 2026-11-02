@@ -28,8 +28,15 @@ As fichas técnicas completas, com os links das notas metodológicas, estão na 
   A **DUM é a data de início da condição**; sem desfecho registrado, a gestação encerra em 294 dias. O
   desfecho é registrado em *Paciente › Condições › Encerrar* (data do parto/desfecho). Aborto registrado
   exclui a gestação.
+- **Datas e fuso**: nascimento, DUM e desfecho são datas sem hora e contam no calendário da instituição (fuso
+  do tenant, `tenant.timeZone`), não à meia-noite UTC. O dia que abre uma janela vale desde 00:00 e o dia que a
+  fecha vale até 23:59, no horário local: com DUM em 01/12/2025 e sem desfecho, o puerpério vai até 23:59 de
+  02/11/2026 e a consulta das 22h desse dia conta. A gestação vai até a véspera do desfecho, porque o dia do
+  desfecho já é o primeiro dia do puerpério. Prazos em meses (6 e 12 meses de vida, dois anos) caem no mesmo dia
+  do mês; se esse dia não existe no mês, vale o dia 1º do mês seguinte. Idades e condições ativas usam o dia
+  local do corte.
 - **Diabetes e hipertensão**: condições ativas com os códigos da nota (ou a linha de cuidado). Condição
-  encerrada sai do denominador a partir da data do desfecho.
+  encerrada sai do denominador a partir do dia (local) do desfecho.
 - **Consultas**: registros SOAP/evolução assinados por médicos (CBO 2231, 2251, 2252, 2253) ou enfermeiros
   (2235). PA, peso e altura vêm da classificação de risco/acolhimento (mesmo dia). Exames contam quando
   solicitados ou com resultado na janela. Vacinas pelo código do imunobiológico ou pelo nome.
@@ -56,7 +63,9 @@ Na tela, cada boa prática mostra se é *apurada no sistema*, *apurada em parte*
 ## Conferência manual
 
 O teste `apps/api/test/indicators.test.ts` monta uma equipe de teste com registros conhecidos e confere os
-números contra o cálculo manual (C1 a C7, nota final, classificação e valor). Para conferir uma equipe real:
+números contra o cálculo manual (C1 a C7, nota final, classificação e valor). O teste
+`apps/api/test/indicators-calc.test.ts` apura sem banco, com horários fixos, os limites das janelas no dia local
+(registros das 21h à meia-noite, que em UTC já caem no dia seguinte). Para conferir uma equipe real:
 abra a equipe na tela, veja numerador/denominador de cada mês e a lista *Quem falta* com os pontos de cada
 pessoa; a soma dos pontos dividida pelo número de pessoas avaliadas é o resultado do mês.
 

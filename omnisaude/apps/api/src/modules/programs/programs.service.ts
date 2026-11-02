@@ -81,7 +81,7 @@ export class ProgramsService {
       escopo: escopoNome,
       ate: asOf.toISOString(),
       programas: PROGRAMAS_APS.map((p) => {
-        const r = listarPrograma(p.codigo, dados, asOf);
+        const r = listarPrograma(p.codigo, dados, asOf, ctx.tenant.timeZone);
         return { codigo: p.codigo, titulo: p.titulo, populacao: r.populacao, faltosos: r.faltosos, indicadores: p.indicadores };
       }),
     };
@@ -93,7 +93,7 @@ export class ProgramsService {
     if (!programa) throw notFound('Programa');
     const asOf = new Date();
     const { dados, escopoNome } = await this.dados(ctx, escopo, asOf);
-    const r = listarPrograma(codigo, dados, asOf);
+    const r = listarPrograma(codigo, dados, asOf, ctx.tenant.timeZone);
     const ids = r.pessoas.map((p) => p.patientId);
     const casos = ids.length ? await ctx.db.activeSearchCase.findMany({ where: { patientId: { in: ids }, status: { not: 'ENCERRADO' } }, select: { id: true, patientId: true, lineOfCare: true, status: true } }) : [];
     const pessoas: (LinhaPrograma & { buscaAtiva: { id: string; lineOfCare: string; status: string } | null })[] = r.pessoas

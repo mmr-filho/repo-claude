@@ -13,7 +13,22 @@ import {
   type LinhaBuscaAtiva,
   type TipoEstratificacao,
 } from '@omnisaude/shared';
-import { cadastradas, cronicos, cumpreC7, dosesValidas, gestacoes, idade, idosos, Indice, pontuarCronico, pontuarIdoso, praticasC7Aplicaveis, type DadosEquipe, type Pessoa } from '../indicators/indicators-calc';
+import {
+  cadastradas,
+  cronicos,
+  cumpreC7,
+  diasEntre,
+  dosesValidas,
+  gestacoes,
+  idosos,
+  Indice,
+  maisDias,
+  pontuarCronico,
+  pontuarIdoso,
+  praticasC7Aplicaveis,
+  type DadosEquipe,
+  type Pessoa,
+} from '../indicators/indicators-calc';
 
 /**
  * Listas dos programas da APS: quem está em acompanhamento, o que está em atraso e qual a próxima ação.
@@ -69,6 +84,8 @@ const addDias = (d: Date, n: number) => new Date(d.getTime() + n * DIA);
 const addMeses = (d: Date, n: number) => new Date(d.getTime() + n * MES);
 const meses = (de: Date, ate: Date) => (ate.getTime() - de.getTime()) / MES;
 const fmt = (d: Date) => `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+/** Data sem hora (AAAA-MM-DD) como DD/MM/AAAA. */
+const fmtDia = (dia: string) => `${dia.slice(8, 10)}/${dia.slice(5, 7)}/${dia.slice(0, 4)}`;
 const ehMedEnf = (cbo: string) => CBO_MEDICO_ENFERMEIRO_PREFIXOS.some((p) => cbo.startsWith(p));
 
 function ultimaEstratificacao(dados: DadosPrograma, patientId: string, kind: TipoEstratificacao, desde?: Date): Estratificacao | null {
@@ -78,8 +95,8 @@ function ultimaEstratificacao(dados: DadosPrograma, patientId: string, kind: Tip
 
 const viewEstrat = (e: Estratificacao | null) => (e ? { kind: e.kind, result: e.result, assessedAt: e.assessedAt.toISOString(), nextDueAt: e.nextDueAt ? iso(e.nextDueAt) : null } : null);
 
-function linha(p: Pessoa, asOf: Date, extra: Omit<LinhaPrograma, 'patientId' | 'nome' | 'idade' | 'sexo' | 'nascimento'>): LinhaPrograma {
-  return { patientId: p.id, nome: p.name, idade: idade(p, asOf), sexo: p.sex, nascimento: iso(p.birthDate), ...extra };
+function linha(ix: Indice, p: Pessoa, asOf: Date, extra: Omit<LinhaPrograma, 'patientId' | 'nome' | 'idade' | 'sexo' | 'nascimento'>): LinhaPrograma {
+  return { patientId: p.id, nome: p.name, idade: ix.idade(p, asOf), sexo: p.sex, nascimento: iso(p.birthDate), ...extra };
 }
 
 /** Doses em atraso do calendário até a idade atual da criança. */
@@ -101,18 +118,19 @@ export function vacinasEmAtraso(ix: Indice, p: Pessoa, asOf: Date): Falta[] {
 
 function preNatal(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaPrograma[] {
   const pessoas = new Map(cadastradas(dados.pessoas, asOf).map((p) => [p.id, p]));
+  const hoje = ix.cal.dia(asOf);
   const out: LinhaPrograma[] = [];
   for (const g of gestacoes(ix)) {
     const p = pessoas.get(g.patientId);
-    if (!p || g.dum.getTime() > asOf.getTime() || g.fimPuerperio.getTime() < asOf.getTime()) continue;
-    const puerperio = asOf.getTime() > g.fimGestacao.getTime();
-    const semanas = Math.floor((asOf.getTime() - g.dum.getTime()) / (7 * DIA));
+    if (!p || g.dum > hoje || g.ultimoDiaPuerperio < hoje) continue;
+    const puerperio = hoje >= g.desfecho;
+    const semanas = Math.floor(diasEntre(g.dum, hoje) / 7);
     const consultas = ix
-      .consultasMedEnf(p.id, g.dum, g.fimPuerperio, asOf)
+      .consultasMedEnf(p.id, g.inicioGestacao, g.fimPuerperio, asOf)
       .map((c) => c.at.getTime())
       .sort((a, b) => a - b);
     const faltas: Falta[] = [];
-    const risco = ultimaEstratificacao(dados, p.id, 'GESTANTE', g.dum);
+    const risco = ultimaEstratificacao(dados, p.id, 'GESTANTE', g.inicioGestacao);
     if (!puerperio) {
       const ultima = consultas.length ? new Date(consultas[consultas.length - 1]!) : null;
       const limite = intervaloPreNatalDias(semanas) + 7;
@@ -121,18 +139,19 @@ function preNatal(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaPrograma[]
         faltas.push({ codigo: 'CONSULTA', descricao: `Consulta em atraso: última em ${fmt(ultima)}, intervalo de ${intervaloPreNatalDias(semanas)} dias` });
       if (consultas.length && !risco) faltas.push({ codigo: 'RISCO', descricao: 'Sem classificação de risco gestacional' });
       const t1 = [SIGTAP_APS.TESTES_SIFILIS, SIGTAP_APS.TESTES_HIV, SIGTAP_APS.TESTES_HEPATITE_B, SIGTAP_APS.TESTES_HEPATITE_C];
-      if (semanas > 13 && !t1.every((codes) => ix.exame(p.id, codes, g.dum, g.fimGestacao, asOf))) faltas.push({ codigo: 'EXAMES_T1', descricao: 'Sífilis, HIV, hepatites B e C do 1º trimestre' });
-      if (semanas > 30 && ![SIGTAP_APS.TESTES_SIFILIS, SIGTAP_APS.TESTES_HIV].every((codes) => ix.exame(p.id, codes, addDias(g.dum, 196), g.fimGestacao, asOf)))
+      if (semanas > 13 && !t1.every((codes) => ix.exame(p.id, codes, g.inicioGestacao, g.fimGestacao, asOf))) faltas.push({ codigo: 'EXAMES_T1', descricao: 'Sífilis, HIV, hepatites B e C do 1º trimestre' });
+      if (semanas > 30 && ![SIGTAP_APS.TESTES_SIFILIS, SIGTAP_APS.TESTES_HIV].every((codes) => ix.exame(p.id, codes, ix.cal.inicioDoDia(maisDias(g.dum, 196)), g.fimGestacao, asOf)))
         faltas.push({ codigo: 'EXAMES_T3', descricao: 'Sífilis e HIV do 3º trimestre' });
-      if (semanas > 24 && !ix.vacinasCom(p.id, 'DTPA_ADULTO', addDias(g.dum, 140), g.fimGestacao, asOf).length) faltas.push({ codigo: 'DTPA', descricao: 'Vacina dTpa (a partir de 20 semanas)' });
-      if (semanas > 20 && !(ix.consultas.get(p.id) ?? []).some((c) => !ehMedEnf(c.cbo) && c.kind === 'ODONTOGRAMA' && c.at.getTime() >= g.dum.getTime() && c.at.getTime() <= asOf.getTime())) {
-        const odontoProd = (ix.procedimentos.get(p.id) ?? []).some((pr) => pr.cbo.startsWith('2232') && pr.at.getTime() >= g.dum.getTime() && pr.at.getTime() <= asOf.getTime());
+      if (semanas > 24 && !ix.vacinasCom(p.id, 'DTPA_ADULTO', ix.cal.inicioDoDia(maisDias(g.dum, 140)), g.fimGestacao, asOf).length) faltas.push({ codigo: 'DTPA', descricao: 'Vacina dTpa (a partir de 20 semanas)' });
+      if (semanas > 20 && !(ix.consultas.get(p.id) ?? []).some((c) => !ehMedEnf(c.cbo) && c.kind === 'ODONTOGRAMA' && c.at.getTime() >= g.inicioGestacao.getTime() && c.at.getTime() <= asOf.getTime())) {
+        const odontoProd = (ix.procedimentos.get(p.id) ?? []).some((pr) => pr.cbo.startsWith('2232') && pr.at.getTime() >= g.inicioGestacao.getTime() && pr.at.getTime() <= asOf.getTime());
         if (!odontoProd) faltas.push({ codigo: 'ODONTO', descricao: 'Atendimento odontológico na gestação' });
       }
     } else {
-      const diasPuerperio = Math.floor((asOf.getTime() - g.fimGestacao.getTime()) / DIA);
-      if (!ix.consultasMedEnf(p.id, g.fimGestacao, g.fimPuerperio, asOf).length && diasPuerperio > 10) faltas.push({ codigo: 'PUERPERIO', descricao: `Sem consulta puerperal (${diasPuerperio} dias após o desfecho)` });
-      if (!ix.visitasEm(p.id, g.fimGestacao, g.fimPuerperio, asOf).length && diasPuerperio > 10) faltas.push({ codigo: 'VISITA', descricao: 'Sem visita do ACS no puerpério' });
+      const diasPuerperio = diasEntre(g.desfecho, hoje);
+      if (!ix.consultasMedEnf(p.id, g.inicioPuerperio, g.fimPuerperio, asOf).length && diasPuerperio > 10)
+        faltas.push({ codigo: 'PUERPERIO', descricao: `Sem consulta puerperal (${diasPuerperio} dias após o desfecho)` });
+      if (!ix.visitasEm(p.id, g.inicioPuerperio, g.fimPuerperio, asOf).length && diasPuerperio > 10) faltas.push({ codigo: 'VISITA', descricao: 'Sem visita do ACS no puerpério' });
     }
     // Visitas do ACS na gestação: 3 após a 1ª consulta (boa prática E do C3); cobra-se a partir da 20ª semana.
     if (!puerperio && consultas.length && semanas > 20) {
@@ -142,15 +161,15 @@ function preNatal(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaPrograma[]
     const proximaAcao = puerperio
       ? faltas.length
         ? 'Consulta puerperal'
-        : `Puerpério até ${fmt(g.fimPuerperio)}`
+        : `Puerpério até ${fmtDia(g.ultimoDiaPuerperio)}`
       : consultas.length
         ? `Próxima consulta até ${fmt(addDias(new Date(consultas[consultas.length - 1]!), intervaloPreNatalDias(semanas)))}`
         : 'Captar para a 1ª consulta';
     out.push(
-      linha(p, asOf, {
+      linha(ix, p, asOf, {
         situacao: puerperio
-          ? `Puerpério (desfecho ${g.desfechoRegistrado ? 'em ' + fmt(g.fimGestacao) : 'estimado em ' + fmt(g.fimGestacao)})`
-          : `${semanas} semanas · DPP ${fmt(addDias(g.dum, 280))}${risco ? ` · ${risco.result === 'ALTO_RISCO' ? 'alto risco' : 'risco habitual'}` : ''}`,
+          ? `Puerpério (desfecho ${g.desfechoRegistrado ? 'em ' + fmtDia(g.desfecho) : 'estimado em ' + fmtDia(g.desfecho)})`
+          : `${semanas} semanas · DPP ${fmtDia(maisDias(g.dum, 280))}${risco ? ` · ${risco.result === 'ALTO_RISCO' ? 'alto risco' : 'risco habitual'}` : ''}`,
         faltas,
         proximaAcao,
         linhas: ['GESTANTE'],
@@ -184,7 +203,7 @@ function puericultura(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaProgra
     if (idadeMeses >= 16 && idadeMeses <= 30 && !mchat) faltas.push({ codigo: 'MCHAT', descricao: 'M-CHAT-R não aplicado (16 a 30 meses)' });
     const proxima = CONSULTAS_PUERICULTURA_MESES.find((m) => m > idadeMeses);
     out.push(
-      linha(p, asOf, {
+      linha(ix, p, asOf, {
         situacao: `${Math.floor(idadeMeses)} meses · ${consultas.length} consulta(s)${mchat ? ` · M-CHAT ${mchat.result.toLowerCase()}` : ''}`,
         faltas,
         proximaAcao: proxima !== undefined ? `Consulta dos ${proxima} meses em ${fmt(addMeses(p.birthDate, proxima))}` : null,
@@ -216,7 +235,7 @@ function hasDm(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaPrograma[] {
       .map((c) => c.at.getTime())
       .sort((a, b) => b - a)[0];
     out.push(
-      linha(p, asOf, {
+      linha(ix, p, asOf, {
         situacao: `${[temHas ? 'Hipertensão' : null, temDm ? 'Diabetes' : null].filter(Boolean).join(' + ')}${pe ? ` · pé grau ${pe.result}` : ''} · última consulta ${ultima ? fmt(new Date(ultima)) : 'sem registro'}`,
         faltas,
         proximaAcao: ultima ? `Consulta até ${fmt(addMeses(new Date(ultima), 6))}` : 'Agendar consulta',
@@ -238,7 +257,7 @@ function idoso(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaPrograma[] {
       .consultasMedEnf(p.id, addMeses(asOf, -24), asOf, asOf)
       .map((c) => c.at.getTime())
       .sort((a, b) => b - a)[0];
-    return linha(p, asOf, {
+    return linha(ix, p, asOf, {
       situacao: `Última consulta ${ultima ? fmt(new Date(ultima)) : 'sem registro'}`,
       faltas: pt.faltam.filter((bp) => bp.fonte !== 'SEM_FONTE').map((bp) => ({ codigo: bp.letra, descricao: bp.descricao })),
       proximaAcao: ultima ? `Consulta até ${fmt(addMeses(new Date(ultima), 12))}` : 'Agendar consulta anual',
@@ -253,11 +272,11 @@ function idoso(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaPrograma[] {
 function mulher(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaPrograma[] {
   const out: LinhaPrograma[] = [];
   for (const p of cadastradas(dados.pessoas, asOf)) {
-    const aplicaveis = praticasC7Aplicaveis(p, asOf);
+    const aplicaveis = praticasC7Aplicaveis(ix, p, asOf);
     if (!aplicaveis.length) continue;
     const faltam = aplicaveis.filter((bp) => !cumpreC7(ix, p, bp, asOf));
     out.push(
-      linha(p, asOf, {
+      linha(ix, p, asOf, {
         situacao: aplicaveis.map((bp) => ({ A: 'citopatológico', B: 'HPV', C: 'saúde sexual', D: 'mamografia' })[bp.letra] ?? bp.letra).join(' · '),
         faltas: faltam.map((bp) => ({ codigo: bp.letra, descricao: bp.descricao })),
         proximaAcao: faltam.length
@@ -277,13 +296,13 @@ function bolsaFamilia(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaProgra
   const vig = vigenciaBolsaFamilia(asOf);
   const gest = new Set(
     gestacoes(ix)
-      .filter((g) => g.dum.getTime() <= asOf.getTime() && g.fimGestacao.getTime() >= asOf.getTime())
+      .filter((g) => g.inicioGestacao.getTime() <= asOf.getTime() && g.fimGestacao.getTime() >= asOf.getTime())
       .map((g) => g.patientId),
   );
   const out: LinhaPrograma[] = [];
   for (const p of cadastradas(dados.pessoas, asOf)) {
     if (!p.bolsaFamilia) continue;
-    const anos = idade(p, asOf);
+    const anos = ix.idade(p, asOf);
     const crianca = anos < 7;
     const gestante = gest.has(p.id);
     const mulherAcomp = p.sex === 'F' && anos >= 14 && anos <= 44;
@@ -293,7 +312,7 @@ function bolsaFamilia(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaProgra
     if (crianca && meses(p.birthDate, asOf) < 24) faltas.push(...vacinasEmAtraso(ix, p, asOf));
     if (gestante && !ix.consultasMedEnf(p.id, addMeses(asOf, -1.5), asOf, asOf).length) faltas.push({ codigo: 'PRE_NATAL', descricao: 'Sem consulta de pré-natal nos últimos 45 dias' });
     out.push(
-      linha(p, asOf, {
+      linha(ix, p, asOf, {
         situacao: `${crianca ? 'Criança' : gestante ? 'Gestante' : 'Mulher 14 a 44 anos'} · ${vig.semestre}ª vigência de ${vig.ano}`,
         faltas,
         proximaAcao: faltas.length ? 'Registrar o acompanhamento antes do fim da vigência' : `Próxima vigência a partir de ${fmt(addDias(vig.fim, 1))}`,
@@ -308,12 +327,12 @@ function bolsaFamilia(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaProgra
 function sisvan(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaPrograma[] {
   const gest = new Set(
     gestacoes(ix)
-      .filter((g) => g.dum.getTime() <= asOf.getTime() && g.fimGestacao.getTime() >= asOf.getTime())
+      .filter((g) => g.inicioGestacao.getTime() <= asOf.getTime() && g.fimGestacao.getTime() >= asOf.getTime())
       .map((g) => g.patientId),
   );
   const out: LinhaPrograma[] = [];
   for (const p of cadastradas(dados.pessoas, asOf)) {
-    const anos = idade(p, asOf);
+    const anos = ix.idade(p, asOf);
     const gestante = gest.has(p.id);
     const prioridade = anos < 5 || anos >= 60 || gestante;
     const ultimas = (ix.medicoes.get(p.id) ?? []).filter((m) => m.pesoAltura && m.at.getTime() <= asOf.getTime()).sort((a, b) => b.at.getTime() - a.at.getTime());
@@ -330,7 +349,7 @@ function sisvan(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaPrograma[] {
       if (estado.startsWith('Baixo peso') || estado.startsWith('Obesidade')) faltas.push({ codigo: 'ESTADO_NUTRICIONAL', descricao: `Estado nutricional de atenção: ${estado}` });
     }
     out.push(
-      linha(p, asOf, {
+      linha(ix, p, asOf, {
         situacao: `${anos < 5 ? 'Criança' : gestante ? 'Gestante' : anos >= 60 ? 'Pessoa idosa' : 'Adulto'}${estado ? ` · ${estado}` : ''}${ultima ? ` · última medida ${fmt(ultima.at)}` : ''}`,
         faltas,
         proximaAcao: ultima ? `Antropometria até ${fmt(addMeses(ultima.at, prazoMeses))}` : 'Registrar peso e altura',
@@ -366,7 +385,7 @@ function tbHanseniase(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaProgra
       faltas.push({ codigo: 'CONSULTA', descricao: ultima ? `Sem consulta há ${Math.floor((asOf.getTime() - ultima) / DIA)} dias (acompanhamento mensal)` : 'Sem consulta desde o início do tratamento' });
     if (asOf.getTime() > addDias(previsao, 30).getTime()) faltas.push({ codigo: 'ALTA', descricao: `Tratamento além da previsão (${fmt(previsao)}): avaliar alta ou encerrar a condição` });
     out.push(
-      linha(p, asOf, {
+      linha(ix, p, asOf, {
         situacao: `${hanseniase ? `Hanseníase ${paucibacilar ? 'paucibacilar' : 'multibacilar'}` : 'Tuberculose'} desde ${fmt(inicio)} · previsão de alta ${fmt(previsao)}`,
         faltas,
         proximaAcao: ultima ? `Consulta até ${fmt(addDias(new Date(ultima), 30))}` : 'Consulta de acompanhamento',
@@ -378,8 +397,9 @@ function tbHanseniase(ix: Indice, dados: DadosPrograma, asOf: Date): LinhaProgra
   return out;
 }
 
-export function listarPrograma(codigo: CodigoPrograma, dados: DadosPrograma, asOf: Date): ResultadoPrograma {
-  const ix = new Indice(dados);
+/** Lista de um programa no corte `asOf`; datas sem hora (nascimento, DUM) no calendário de `timeZone` (tenant). */
+export function listarPrograma(codigo: CodigoPrograma, dados: DadosPrograma, asOf: Date, timeZone: string): ResultadoPrograma {
+  const ix = new Indice(dados, timeZone);
   const pessoas = (() => {
     switch (codigo) {
       case 'PRE_NATAL':
