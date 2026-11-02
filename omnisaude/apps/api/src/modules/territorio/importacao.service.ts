@@ -6,6 +6,7 @@ import {
   centroDe,
   GeometriaInvalida,
   normalizarArea,
+  normalizarCodigoLocalidade,
   normalizarNome,
   normalizarNumeroQuarteirao,
   numeroQuarteiraoValido,
@@ -110,6 +111,7 @@ export class ImportacaoTerritorioService {
         const validas: FeicaoValida[] = [];
         const invalidas: { indice: number; motivo: string }[] = [];
         const tipos: Record<string, number> = {};
+        const lascas: string[] = [];
         malha.feicoes.forEach((f, i) => {
           const tipo = f.geometria?.type ?? 'sem geometria';
           tipos[tipo] = (tipos[tipo] ?? 0) + 1;
@@ -119,7 +121,7 @@ export class ImportacaoTerritorioService {
             return;
           }
           try {
-            validas.push({ i, p: f.propriedades, g: normalizarArea(f.geometria), ponto: null });
+            validas.push({ i, p: f.propriedades, g: normalizarArea(f.geometria, lascas), ponto: null });
           } catch (err) {
             if (err instanceof GeometriaInvalida) invalidas.push({ indice: i + 1, motivo: err.message });
             else throw err;
@@ -147,7 +149,7 @@ export class ImportacaoTerritorioService {
             ].slice(0, 3),
           })),
           sugestao: sugerir(chaves),
-          avisos: malha.avisos,
+          avisos: lascas.length ? [...malha.avisos, `${lascas.length} feição(ões) com partes ou furos minúsculos (lascas de recorte), descartados`] : malha.avisos,
         };
         conteudo = validas;
       }
@@ -219,7 +221,7 @@ export class ImportacaoTerritorioService {
       async (tx) => {
         const vistos = new Set<string>();
         for (const f of feicoes) {
-          const code = texto(f.p[m.codigo!]).replace(/\D/g, '');
+          const code = normalizarCodigoLocalidade(texto(f.p[m.codigo!]));
           const name = texto(f.p[m.nome!]);
           if (!/^\d{1,8}$/.test(code) || !name) {
             erros.push({ indice: f.i + 1, motivo: 'Código (até 8 dígitos) ou nome ausente' });
@@ -260,9 +262,10 @@ export class ImportacaoTerritorioService {
     if (fixa) return fixa;
     if (!valor) return null;
     if (cache.has(valor)) return cache.get(valor)!;
-    const digitos = valor.replace(/\D/g, '');
+    // Código numérico com ou sem zeros à esquerda (o DBF numérico perde os zeros).
+    const digitos = /^\d+$/.test(valor) ? normalizarCodigoLocalidade(valor) : '';
     const l =
-      (digitos && digitos === valor ? await tx.locality.findFirst({ where: { code: digitos, status: 'ATIVA' }, select: { id: true } }) : null) ??
+      (digitos ? await tx.locality.findFirst({ where: { code: digitos, status: 'ATIVA' }, select: { id: true } }) : null) ??
       (await tx.locality.findMany({ where: { status: 'ATIVA' }, select: { id: true, name: true } })).find((x) => normalizarNome(x.name) === normalizarNome(valor)) ??
       null;
     cache.set(valor, l?.id ?? null);
@@ -293,7 +296,20 @@ export class ImportacaoTerritorioService {
             continue;
           }
           vistos.add(chave);
-          const atual = (await tx.neighborhood.findMany({ where: { localityId, active: true }, select: { id: true, name: true } })).find((b) => normalizarNome(b.name) === normalizarNome(name));
+          // O bairro já cadastrado com esse nome ou apelido é o mesmo bairro (fica o nome dele); dois candidatos é erro.
+          const candidatos = (await tx.neighborhood.findMany({ where: { localityId, active: true }, select: { id: true, name: true, aliases: true } })).filter((b) =>
+            [b.name, ...b.aliases].some((n) => normalizarNome(n) === normalizarNome(name)),
+          );
+          if (candidatos.length > 1) {
+            erros.push({ indice: f.i + 1, motivo: `O nome ${name} casa com mais de um bairro (${candidatos.map((c) => c.name).join(', ')})` });
+            continue;
+          }
+          const atual = candidatos[0];
+          if (atual && vistos.has(atual.id)) {
+            erros.push({ indice: f.i + 1, motivo: `Bairro ${atual.name} repetido no arquivo (outro nome ou apelido dele já veio)` });
+            continue;
+          }
+          if (atual) vistos.add(atual.id);
           const data = { ...derivados(f.g), source: 'IMPORTACAO', ...(input.oficial !== undefined ? { official: input.oficial } : {}), ...(m.codigo ? { code: texto(f.p[m.codigo]).slice(0, 20) || null } : {}) };
           if (atual) {
             await tx.neighborhood.update({ where: { id: atual.id }, data });
@@ -328,6 +344,10 @@ export class ImportacaoTerritorioService {
     await ctx.db.$transaction(
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${TRAVA_QUARTEIROES}))`;
+        // Depois da trava: a localidade (e o bairro) escolhidos na tela podem ter sido extintos nesse meio-tempo.
+        if (input.localidadeFixa && !(await tx.locality.findFirst({ where: { id: input.localidadeFixa, status: 'ATIVA' }, select: { id: true } }))) throw notFound('Localidade ativa');
+        if (input.bairroFixo && !(await tx.neighborhood.findFirst({ where: { id: input.bairroFixo, active: true, ...(input.localidadeFixa ? { localityId: input.localidadeFixa } : {}) }, select: { id: true } })))
+          throw notFound('Bairro ativo da localidade');
         const cache = new Map<string, string | null>();
         const bairros = await tx.neighborhood.findMany({ where: { active: true }, select: { id: true, localityId: true, name: true, aliases: true, geometry: true } });
         const tocadas = new Set<string>();
@@ -387,7 +407,7 @@ export class ImportacaoTerritorioService {
           const ausentes = await tx.block.findMany({ where: { active: true, localityId: { in: [...tocadas] } }, select: { id: true, localityId: true, neighborhoodId: true, number: true } });
           const sair = ausentes.filter((b) => !gravados.has(`${b.localityId}|${porBairro ? b.neighborhoodId : ''}|${b.number}`)).map((b) => b.id);
           if (sair.length) {
-            await tx.household.updateMany({ where: { blockId: { in: sair } }, data: { blockId: null } });
+            await tx.$executeRaw`UPDATE households SET block_id = NULL WHERE block_id = ANY(${sair}::uuid[])`;
             desativados = (await tx.block.updateMany({ where: { id: { in: sair } }, data: { active: false, updatedBy: ctx.session.userId } })).count;
           }
         }

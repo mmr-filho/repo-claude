@@ -10,6 +10,7 @@ import {
   turnoDaHora,
   zonedParts,
   type DomicilioCampo,
+  type PrecisaoGeo,
   type OperacaoCampo,
   type PessoaCampo,
   type ResultadoSync,
@@ -21,6 +22,7 @@ import { DomainError, notFound } from '../../core/errors';
 import { HouseholdsService } from '../patients/households.service';
 import type { PatientInput } from '../patients/patients.schemas';
 import { PatientsService, patientSummary } from '../patients/patients.service';
+import { PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
 
 const DIA = 86_400_000;
 
@@ -182,8 +184,10 @@ export class AcsService {
         district: h.district,
         city: h.city,
         uf: h.uf,
+        ibgeCode: h.ibgeCode,
         latitude: h.latitude,
         longitude: h.longitude,
+        geoPrecision: h.geoPrecision,
         microArea: h.microArea,
         propertyType: h.propertyType,
         dwellingType: h.dwellingType,
@@ -422,8 +426,9 @@ export class AcsService {
   }
 
   private domicilioInput(d: DomicilioCampo) {
-    const { latitude, longitude, ...rest } = d;
-    return { ...rest, latitude: latitude ?? undefined, longitude: longitude ?? undefined };
+    const { latitude, longitude, ibgeCode, ...rest } = d;
+    // O app não apaga posição nem município: vazio quer dizer "não mudou".
+    return { ...rest, ibgeCode: ibgeCode ?? undefined, latitude: latitude ?? undefined, longitude: longitude ?? undefined };
   }
 
   private async aplicarDomicilio(ctx: RequestContext, op: Extract<OperacaoCampo, { tipo: 'DOMICILIO' }>, ref: Parameters<AcsService['aplicar']>[2]): Promise<string> {
@@ -472,16 +477,11 @@ export class AcsService {
     const turno = v.turno ?? turnoDaHora(zonedParts(visitedAt, ctx.tenant.timeZone).hour);
     const microArea = v.microArea ?? household?.microArea ?? ref.lot?.microArea ?? null;
     const dec = (x: number | null | undefined) => (x === null || x === undefined ? null : x);
-    // Domicílio sem posição recebe a do GPS da visita (precisão de GPS em campo) e é ligado ao quarteirão (PLT-3).
-    // Leitura acima de 50 m (rede, ambiente fechado) fica só na visita, sem virar a posição do imóvel.
+    // Domicílio sem posição, ou com posição aproximada (centro de rua ou de bairro, que pede confirmação em campo),
+    // recebe a do GPS da visita e é ligado ao quarteirão (PLT-3). Leitura acima de 50 m fica só na visita.
+    const posicaoBoa = !!household?.geoPrecision && household.latitude !== null && PRECISAO_LIGA_QUARTEIRAO.includes(household.geoPrecision as PrecisaoGeo);
     const posiciona =
-      !!household &&
-      household.latitude === null &&
-      v.latitude !== null &&
-      v.latitude !== undefined &&
-      v.longitude !== null &&
-      v.longitude !== undefined &&
-      (v.precisaoGps == null || avaliarGps(v.precisaoGps) !== 'NOVA_LEITURA');
+      !!household && !posicaoBoa && v.latitude !== null && v.latitude !== undefined && v.longitude !== null && v.longitude !== undefined && (v.precisaoGps == null || avaliarGps(v.precisaoGps) !== 'NOVA_LEITURA');
     const visitId = await ctx.db.$transaction(async (tx) => {
       const visit = await tx.homeVisit.create({
         data: {
@@ -514,10 +514,13 @@ export class AcsService {
         },
       });
       if (posiciona) {
-        await tx.household.update({
-          where: { id: household!.id },
+        // Condicional: se alguém marcou a posição no mapa nesse meio-tempo, ela fica.
+        const { count } = await tx.household.updateMany({
+          where: { id: household!.id, OR: [{ latitude: null }, { geoPrecision: null }, { geoPrecision: { notIn: PRECISAO_LIGA_QUARTEIRAO } }] },
           data: { latitude: v.latitude, longitude: v.longitude, geoPrecision: 'GPS_CAMPO', geoSource: 'visita', geoAccuracyM: v.precisaoGps ?? null, geoAt: visitedAt },
         });
+        // Na mesma transação: o reenvio da sincronização não pode achar a visita gravada sem o resto.
+        if (count) await this.households.ligarAoQuarteirao(tx, household!.id);
       }
       if (patientId && v.desfecho === '1') await tx.activeSearchCase.updateMany({ where: { patientId, status: { not: 'ENCERRADO' } }, data: { lastVisitAt: visitedAt } });
       await this.audit.record(ctx, tx, {
@@ -528,7 +531,6 @@ export class AcsService {
       });
       return visit.id;
     });
-    if (posiciona) await this.households.ligarAoQuarteirao(ctx, household!.id);
     return visitId;
   }
 

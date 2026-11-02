@@ -149,8 +149,14 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     // Mesmo nome sem acento ou igual a um apelido de outro bairro ativo: é o mesmo bairro.
     await t.http().post('/api/territorio/bairros').set(auth(gestora)).send({ localityId: localidade, name: 'Sétor Central' }).expect(409);
     await t.http().post('/api/territorio/bairros').set(auth(gestora)).send({ localityId: localidade, name: 'Centro' }).expect(409);
-    // Localidade com bairro ativo não é extinta (a malha ficaria órfã).
-    await t.http().patch(`/api/territorio/localidades/${localidade}`).set(auth(gestora)).send({ status: 'EXTINTA' }).expect(422);
+    // Código em forma única ("0003" é o 3). Localidade sem quarteirões é extinta com os bairros; bairro novo nela é recusado.
+    const extinguivel = (await t.http().post('/api/territorio/localidades').set(auth(gestora)).send({ code: '0003', name: 'Vila Extinta' }).expect(201)).body;
+    expect(extinguivel.code).toBe('3');
+    await t.http().post('/api/territorio/localidades').set(auth(gestora)).send({ code: '3', name: 'Outra Vila' }).expect(409);
+    const bairroExtinto = (await t.http().post('/api/territorio/bairros').set(auth(gestora)).send({ localityId: extinguivel.id, name: 'Rua Única' }).expect(201)).body.id;
+    await t.http().patch(`/api/territorio/localidades/${extinguivel.id}`).set(auth(gestora)).send({ status: 'EXTINTA' }).expect(200);
+    expect((await db.neighborhood.findUniqueOrThrow({ where: { id: bairroExtinto } })).active).toBe(false);
+    await t.http().post('/api/territorio/bairros').set(auth(gestora)).send({ localityId: extinguivel.id, name: 'Bairro Novo' }).expect(404);
   });
 
   it('importar a malha em GeoJSON liga cada domicílio ao seu quarteirão', async () => {
@@ -354,8 +360,16 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
       features: [
         { type: 'Feature', properties: { NOME: 'Praia Norte' }, geometry: quadrado(desloca(C, 5000, 0), 300) },
         { type: 'Feature', properties: { NOME: 'PRAIA NORTE' }, geometry: quadrado(desloca(C, 5000, 600), 300) },
+        // Apelido do bairro Praia: atualiza o contorno dele, sem criar outro.
+        { type: 'Feature', properties: { NOME: 'Beira Rio' }, geometry: quadrado(desloca(C, 5000, 1200), 300) },
       ],
     };
+    await t
+      .http()
+      .patch(`/api/territorio/bairros/${praia}`)
+      .set(auth(gestora))
+      .send({ aliases: ['BEIRA RIO'] })
+      .expect(200);
     const pb = (
       await t
         .http()
@@ -372,7 +386,27 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
         .send({ mapeamento: { nome: 'NOME' }, localidadeFixa: localidade2 })
         .expect(200)
     ).body;
-    expect(rb).toMatchObject({ criados: 1, atualizados: 0, totalErros: 1 });
+    expect(rb).toMatchObject({ criados: 1, atualizados: 1, totalErros: 1 });
+    expect((await db.neighborhood.findUniqueOrThrow({ where: { id: praia } })).centerLat).not.toBeNull();
+
+    // Localidade escolhida na tela e extinta antes de aplicar: nada é gravado nela.
+    const efemera = (await t.http().post('/api/territorio/localidades').set(auth(gestora)).send({ code: '77', name: 'Efêmera' }).expect(201)).body.id;
+    const pe = (
+      await t
+        .http()
+        .post('/api/territorio/importacoes/previa')
+        .set(auth(vig))
+        .send({ tipo: 'QUARTEIROES', nomeArquivo: 'e.geojson', arquivoBase64: b64(JSON.stringify({ type: 'FeatureCollection', features: [feicao('1', desloca(C, 9000, 0))] })) })
+        .expect(200)
+    ).body;
+    await t.http().patch(`/api/territorio/localidades/${efemera}`).set(auth(gestora)).send({ status: 'EXTINTA' }).expect(200);
+    await t
+      .http()
+      .post(`/api/territorio/importacoes/${pe.id}/aplicar`)
+      .set(auth(vig))
+      .send({ mapeamento: { numero: 'NUM' }, localidadeFixa: efemera })
+      .expect(404);
+    expect(await db.block.count({ where: { localityId: efemera } })).toBe(0);
     expect(rb.erros[0].motivo).toMatch(/repetido/);
   });
 
@@ -402,6 +436,27 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
         .expect(201)
     ).body;
     expect(q).toMatchObject({ number: '10-A', religados: 1 });
+    // "10a" é o mesmo 10-A.
+    await t
+      .http()
+      .post('/api/territorio/quarteiroes')
+      .set(auth(gestora))
+      .send({ localityId: localidade, number: '10a', geometry: quadrado(desloca(livre, 0, 900)) })
+      .expect(409);
+    // Com uma importação segurando a trava, o editor avisa em vez de esperar até estourar o tempo.
+    await db.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('territorio:quarteiroes'))`;
+        const ocupado = await t
+          .http()
+          .post('/api/territorio/quarteiroes')
+          .set(auth(gestora))
+          .send({ localityId: localidade, number: '12', geometry: quadrado(desloca(livre, 0, 1200)) })
+          .expect(409);
+        expect(ocupado.body.message).toMatch(/importação/);
+      },
+      { timeout: 20_000 },
+    );
     expect((await db.household.findUniqueOrThrow({ where: { id: casa } })).blockId).toBe(q.id);
     await t.http().patch(`/api/territorio/quarteiroes/${q.id}`).set(auth(gestora)).send({ notes: 'Conferido em campo', versao: q.updatedAt }).expect(200);
     await t.http().patch(`/api/territorio/quarteiroes/${q.id}`).set(auth(gestora)).send({ notes: 'Outra pessoa', versao: q.updatedAt }).expect(409);
@@ -450,6 +505,9 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     expect(noMapa.find((x) => x.id === alheia)?.campo).toBe(false);
     expect(noMapa.find((x) => x.id === casa)?.campo).toBe(true);
     await db.household.update({ where: { id: alheia }, data: { latitude: null, longitude: null, geoPrecision: null } });
+    // Pela edição do domicílio o ACS também não posiciona imóvel fora da sua área: o cadastro muda, a posição não.
+    await t.http().patch(`/api/households/${alheia}`).set(auth(acs)).send({ complement: 'Fundos', latitude: p[1], longitude: p[0], geoAccuracyM: 5 }).expect(200);
+    expect(await db.household.findUniqueOrThrow({ where: { id: alheia } })).toMatchObject({ complement: 'Fundos', latitude: null, geoPrecision: null });
     const doAcs = (await t.http().get('/api/territorio/imoveis?situacao=SEM_POSICAO').set(auth(acs)).expect(200)).body as { id: string }[];
     expect(doAcs.map((x) => x.id)).not.toContain(alheia);
     expect(((await t.http().get('/api/territorio/imoveis?situacao=SEM_POSICAO').set(auth(gestora)).expect(200)).body as { id: string }[]).map((x) => x.id)).toContain(alheia);
@@ -586,6 +644,83 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     expect(await h(leituraRuim)).toMatchObject({ latitude: null, geoPrecision: null });
     const leituraBoa = await cria({ street: 'Rua do Sinal Bom', number: '4', latitude: C[1], longitude: C[0], geoAccuracyM: 8 });
     expect(await h(leituraBoa)).toMatchObject({ geoPrecision: 'GPS_CAMPO', geoAccuracyM: 8 });
+
+    // Edição de rotina do ACS (sem o IBGE no retrato do app, sem leitura nova) não apaga a posição do endereço.
+    const doEndereco = await cria({ street: 'Av. Goiás', number: '1500' });
+    await t
+      .http()
+      .post('/api/territorio/imoveis/geocodificar')
+      .set(auth(gestora))
+      .send({ ids: [doEndereco] })
+      .expect(200);
+    expect((await h(doEndereco)).geoPrecision).toBe('ENDERECO');
+    const territorioAcs = (await t.http().get('/api/acs/territorio').set(auth(acs)).expect(200)).body;
+    const retrato = territorioAcs.domicilios.find((d: { id: string }) => d.id === doEndereco);
+    if (retrato) expect(retrato).toMatchObject({ ibgeCode: '1709500', geoPrecision: 'ENDERECO' });
+    const sinc = (
+      await t
+        .http()
+        .post('/api/acs/sync')
+        .set(auth(acs))
+        .send({
+          operacoes: [
+            {
+              tipo: 'DOMICILIO',
+              clientId: randomUUID(),
+              registradoEm: new Date().toISOString(),
+              householdId: doEndereco,
+              dados: { street: 'Av. Goiás', number: '1500', ibgeCode: null, latitude: null, longitude: null, waterSupply: '02' },
+            },
+          ],
+        })
+        .expect(200)
+    ).body;
+    expect(sinc.resultados[0]).toMatchObject({ status: 'OK' });
+    expect(await h(doEndereco)).toMatchObject({ geoPrecision: 'ENDERECO', ibgeCode: '1709500', waterSupply: '02' });
+    // Endereço corrigido com leitura de GPS ruim: a posição do endereço antigo também sai.
+    await t.http().patch(`/api/households/${doEndereco}`).set(auth(recepcao)).send({ number: '1600', latitude: C[1], longitude: C[0], geoAccuracyM: 90 }).expect(200);
+    expect(await h(doEndereco)).toMatchObject({ latitude: null, geoPrecision: null });
+
+    // Visita do ACS com GPS num imóvel com posição só da rua (confirmar em campo): a leitura de campo substitui.
+    expect((await h(porRua)).geoPrecision).toBe('LOGRADOURO');
+    const naRua = desloca(C, 100, -90);
+    await t
+      .http()
+      .post('/api/acs/sync')
+      .set(auth(acs))
+      .send({
+        operacoes: [
+          { tipo: 'VISITA', clientId: randomUUID(), registradoEm: new Date().toISOString(), householdId: porRua, visita: { motivos: ['1'], desfecho: '3', latitude: naRua[1], longitude: naRua[0], precisaoGps: 6 } },
+        ],
+      })
+      .expect(200);
+    expect(await h(porRua)).toMatchObject({ geoPrecision: 'GPS_CAMPO', geoSource: 'visita', geoAccuracyM: 6 });
+
+    // Nome de bairro que existe em duas localidades é ambíguo: ninguém vai para o centro de um deles.
+    await t
+      .http()
+      .post('/api/territorio/bairros')
+      .set(auth(gestora))
+      .send({ localityId: localidade2, name: 'Setor Central', geometry: quadrado(desloca(C, 8000, 0), 300) })
+      .expect(201);
+    const ambiguo = await cria({ street: 'Rua Sem Base', number: '7', district: 'Setor Central' });
+    expect(
+      (
+        await t
+          .http()
+          .post('/api/territorio/imoveis/geocodificar')
+          .set(auth(gestora))
+          .send({ ids: [ambiguo] })
+          .expect(200)
+      ).body.atualizados,
+    ).toBe(0);
+    // A geocodificação em lote continua de onde parou (proximo/apos), sem repetir sempre os mesmos.
+    const lote1 = (await t.http().post('/api/territorio/imoveis/geocodificar').set(auth(gestora)).send({ limite: 1 }).expect(200)).body;
+    expect(lote1.analisados).toBe(1);
+    expect(lote1.proximo).toEqual(expect.any(String));
+    const lote2 = (await t.http().post('/api/territorio/imoveis/geocodificar').set(auth(gestora)).send({ limite: 1, apos: lote1.proximo }).expect(200)).body;
+    expect(lote2.analisados).toBe(1);
+    expect(lote2.proximo > lote1.proximo).toBe(true);
   });
 
   it('mapa de casos só para a vigilância, com o quarteirão do caso e os quarteirões no raio do bloqueio', async () => {
@@ -619,7 +754,8 @@ describe.runIf(enabled)('Território georreferenciado (PLT-3)', () => {
     await t.http().get(`/api/vigilancia/mapa?de=${ontem}&ate=${hoje}`).set(auth(acs)).expect(403);
     const mapa = (await t.http().get(`/api/vigilancia/mapa?de=${ontem}&ate=${hoje}`).set(auth(vig)).expect(200)).body;
     const ponto = mapa.pontos.find((p: { id: string }) => p.id === n.id);
-    expect(ponto).toMatchObject({ precisao: 'GPS_CAMPO', fonte: 'cadastro', blockId: (await quarteiraoPorNumero(localidade, '5')).id });
+    // A residência notificada (retrato da ficha, com GPS) é a usada no mapa.
+    expect(ponto).toMatchObject({ precisao: 'GPS_CAMPO', fonte: 'ficha', blockId: (await quarteiraoPorNumero(localidade, '5')).id });
     expect(mapa.porQuarteirao.find((q: { numero: string }) => q.numero === '5').casos).toBeGreaterThanOrEqual(1);
     const raio = (await t.http().get(`/api/vigilancia/notificacoes/${n.id}/quarteiroes`).set(auth(vig)).expect(200)).body;
     expect(raio).toMatchObject({ regra: 'AUTOMATICO', raioM: 150, precisao: 'GPS_CAMPO' });

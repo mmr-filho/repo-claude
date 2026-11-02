@@ -4,6 +4,7 @@ import {
   areaM2,
   areasSobrepoem,
   avaliarGps,
+  normalizarCodigoLocalidade,
   roleHasPermission,
   normalizarNumeroQuarteirao,
   caixaDe,
@@ -220,8 +221,9 @@ export class TerritorioService {
         : input.geometry === null
           ? { geometry: TenantPrisma.DbNull, minLng: null, minLat: null, maxLng: null, maxLat: null, centerLat: null, centerLng: null }
           : derivados(geometriaOuErro(input.geometry));
+    const codigo = input.code !== undefined ? normalizarCodigoLocalidade(input.code) : undefined;
     const data = {
-      ...(input.code !== undefined ? { code: input.code.trim() } : {}),
+      ...(codigo !== undefined ? { code: codigo } : {}),
       ...(input.name !== undefined ? { name: input.name.trim() } : {}),
       ...(input.category ? { category: input.category } : {}),
       ...(input.zone ? { zone: input.zone } : {}),
@@ -232,14 +234,15 @@ export class TerritorioService {
     try {
       const l = await ctx.db.$transaction(async (tx) => {
         if (id && input.status === 'EXTINTA') {
-          // Extinguir com malha ativa deixaria quarteirões no mapa e no raio sem poder editá-los.
-          const [quarteiroes, bairros] = await Promise.all([tx.block.count({ where: { localityId: id, active: true } }), tx.neighborhood.count({ where: { localityId: id, active: true } })]);
-          if (quarteiroes || bairros)
-            throw new DomainError('LOCALIDADE_COM_MALHA', `A localidade tem ${quarteiroes} quarteirão(ões) e ${bairros} bairro(s) ativos: desative-os antes de extinguir`, HttpStatus.UNPROCESSABLE_ENTITY);
+          // Extinguir com quarteirões ativos deixaria a malha no mapa e no raio sem poder editá-la. A trava é a das
+          // gravações de quarteirão: uma importação em curso não cria quarteirões numa localidade que acabou de sair.
+          await this.travarQuarteiroes(tx);
+          const quarteiroes = await tx.block.count({ where: { localityId: id, active: true } });
+          if (quarteiroes) throw new DomainError('LOCALIDADE_COM_MALHA', `A localidade tem ${quarteiroes} quarteirão(ões) ativo(s): desative-os antes de extinguir`, HttpStatus.UNPROCESSABLE_ENTITY);
+          // Os bairros, sem quarteirões, saem junto.
+          await tx.neighborhood.updateMany({ where: { localityId: id, active: true }, data: { active: false } });
         }
-        const r = id
-          ? await tx.locality.update({ where: { id }, data })
-          : await tx.locality.create({ data: { code: input.code!.trim(), name: input.name!.trim(), ...data, source: 'MANUAL', createdBy: ctx.session.userId } });
+        const r = id ? await tx.locality.update({ where: { id }, data }) : await tx.locality.create({ data: { code: codigo!, name: input.name!.trim(), ...data, source: 'MANUAL', createdBy: ctx.session.userId } });
         await this.audit.record(ctx, tx, {
           action: id ? 'territorio.localidade_editar' : 'territorio.localidade_criar',
           entityType: 'Locality',
@@ -250,7 +253,10 @@ export class TerritorioService {
       });
       return l;
     } catch (err) {
-      if ((err as { code?: string }).code === 'P2002') throw conflict(`Já existe localidade ativa com o código ${input.code}`);
+      if ((err as { code?: string }).code === 'P2002') {
+        const atual = codigo ?? (id ? (await ctx.db.locality.findUnique({ where: { id }, select: { code: true } }))?.code : undefined);
+        throw conflict(`Já existe localidade ativa com o código ${atual ?? ''}`.trim());
+      }
       if ((err as { code?: string }).code === 'P2025') throw notFound('Localidade');
       throw err;
     }
@@ -282,7 +288,7 @@ export class TerritorioService {
     };
     try {
       return await ctx.db.$transaction(async (tx) => {
-        if (!id && !(await tx.locality.findUnique({ where: { id: input.localityId! } }))) throw notFound('Localidade');
+        if (!id && !(await tx.locality.findFirst({ where: { id: input.localityId!, status: 'ATIVA' } }))) throw notFound('Localidade ativa');
         const atual = id ? await tx.neighborhood.findUnique({ where: { id }, select: { localityId: true, name: true, aliases: true } }) : null;
         if (id && !atual) throw notFound('Bairro');
         if (id && input.active === false && (await tx.block.count({ where: { neighborhoodId: id, active: true } })))
@@ -354,13 +360,22 @@ export class TerritorioService {
     return vizinhos.filter((v) => areasSobrepoem(a, v.geometry as unknown as Area)).map((v) => v.number);
   }
 
+  /**
+   * Trava das gravações de quarteirão sem esperar: com uma importação grande em curso (até 5 min), quem salva no
+   * editor recebe um aviso em vez de estourar o tempo da transação.
+   */
+  private async travarQuarteiroes(tx: { $queryRaw: RequestContext['db']['$queryRaw'] }) {
+    const [r] = await tx.$queryRaw<{ ok: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtext(${TRAVA_QUARTEIROES})) AS ok`;
+    if (!r?.ok) throw conflict('Há uma importação de quarteirões em andamento: tente de novo em instantes');
+  }
+
   async salvarQuarteirao(ctx: RequestContext, id: string | null, input: { localityId?: string; neighborhoodId?: string | null; number?: string; geometry?: unknown; notes?: string | null; versao?: string }) {
     const numero = input.number !== undefined ? normalizarNumeroQuarteirao(input.number) : undefined;
     if (numero !== undefined && !numeroQuarteiraoValido(numero)) throw new DomainError('NUMERO_INVALIDO', 'Número do quarteirão: dígitos, com sufixo opcional (ex.: 12 ou 12-A)', HttpStatus.BAD_REQUEST);
     const area = input.geometry !== undefined ? geometriaOuErro(input.geometry) : null;
     const b = await ctx.db.$transaction(async (tx) => {
       // Uma gravação de quarteirão por vez: número único e sobreposição são conferidos pela aplicação.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${TRAVA_QUARTEIROES}))`;
+      await this.travarQuarteiroes(tx);
       const atual = id ? await tx.block.findUnique({ where: { id } }) : null;
       if (id && (!atual || !atual.active)) throw notFound('Quarteirão');
       // Edição concorrente no editor: a gravação só vale sobre a versão lida.
@@ -402,7 +417,7 @@ export class TerritorioService {
     await ctx.db.$transaction(async (tx) => {
       const { count } = await tx.block.updateMany({ where: { id, active: true }, data: { active: false, updatedBy: ctx.session.userId } });
       if (count !== 1) throw notFound('Quarteirão');
-      await tx.household.updateMany({ where: { blockId: id }, data: { blockId: null } });
+      await tx.$executeRaw`UPDATE households SET block_id = NULL WHERE block_id = ${id}::uuid`;
       await this.audit.record(ctx, tx, { action: 'territorio.quarteirao_desativar', entityType: 'Block', entityId: id, payload: { motivo } });
     });
     return { ok: true };
@@ -427,14 +442,8 @@ export class TerritorioService {
 
   // ───────────── imóvel ─────────────
 
-  /**
-   * Imóveis que o papel sem 'territorio.editar' (o ACS) alcança: os da sua equipe e microárea e os ainda sem equipe da
-   * unidade do contexto (cadastrados na recepção). null = todos (quem edita o território).
-   */
-  private async escopoDeCampo(ctx: RequestContext) {
-    if (roleHasPermission(ctx.session.role, 'territorio.editar') || ctx.session.role !== 'ACS') return null;
-    const lotacoes = await ctx.db.teamMember.findMany({ where: { userId: ctx.session.userId, active: true, team: { unitId: ctx.session.unitId, active: true } }, select: { teamId: true, microArea: true } });
-    return [...lotacoes.map((l) => ({ teamId: l.teamId, ...(l.microArea ? { microArea: l.microArea } : {}) })), { teamId: null, unitId: ctx.session.unitId }];
+  private escopoDeCampo(ctx: RequestContext) {
+    return this.localizador.escopoDeCampo(ctx);
   }
 
   /**

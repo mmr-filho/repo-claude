@@ -31,19 +31,38 @@ export class MapaCasosService {
     private readonly audit: AuditService,
   ) {}
 
-  /** Posição da residência: imóvel do cadastro (pode ter melhorado depois da ficha) ou o retrato da ficha. */
+  /**
+   * Posição da residência do caso: a registrada na ficha (a residência notificada; só existe com posição do imóvel) e,
+   * sem ela, a do domicílio atual do paciente (seguindo a unificação de cadastros duplicados). Domicílio com posição
+   * sem precisão conhecida é tratado como a mais fraca, nunca como GPS.
+   */
   private async residencias(ctx: RequestContext, ns: { id: string; patientId: string; residenceLat: number | null; residenceLng: number | null; residencePrecision: string | null }[]) {
-    const pacientes = await ctx.db.patient.findMany({
-      where: { id: { in: [...new Set(ns.map((n) => n.patientId))] } },
-      select: { id: true, family: { select: { household: { select: { latitude: true, longitude: true, geoPrecision: true, blockId: true } } } } },
-    });
-    const casa = new Map(pacientes.map((p) => [p.id, p.family?.household ?? null]));
+    const casaDe = new Map<string, { latitude: number | null; longitude: number | null; geoPrecision: string | null; blockId: string | null } | null>();
+    let pendentes = [...new Set(ns.filter((n) => n.residenceLat == null || n.residenceLng == null).map((n) => n.patientId))];
+    const destino = new Map(pendentes.map((id) => [id, id]));
+    // Até 5 saltos de unificação (duplicado → sobrevivente).
+    for (let salto = 0; salto < 5 && pendentes.length; salto++) {
+      const pacientes = await ctx.db.patient.findMany({
+        where: { id: { in: pendentes } },
+        select: { id: true, mergedIntoId: true, family: { select: { household: { select: { latitude: true, longitude: true, geoPrecision: true, blockId: true } } } } },
+      });
+      const proximos: string[] = [];
+      for (const p of pacientes) {
+        const origens = [...destino.entries()].filter(([, atual]) => atual === p.id).map(([origem]) => origem);
+        if (p.mergedIntoId && !p.family?.household) {
+          for (const o of origens) destino.set(o, p.mergedIntoId);
+          proximos.push(p.mergedIntoId);
+        } else for (const o of origens) casaDe.set(o, p.family?.household ?? null);
+      }
+      pendentes = [...new Set(proximos)];
+    }
     return new Map<string, Residencia | null>(
       ns.map((n): [string, Residencia | null] => {
-        const h = casa.get(n.patientId);
-        if (h?.latitude != null && h.longitude != null) return [n.id, { lat: h.latitude, lng: h.longitude, precisao: (h.geoPrecision ?? 'GPS_CAMPO') as PrecisaoGeo, blockId: h.blockId, fonte: 'cadastro' as const }];
         if (n.residenceLat != null && n.residenceLng != null)
+          // Ficha anterior à semana 25 sem a precisão: naquela época a posição do domicílio só vinha do GPS.
           return [n.id, { lat: n.residenceLat, lng: n.residenceLng, precisao: (n.residencePrecision ?? 'GPS_CAMPO') as PrecisaoGeo, blockId: null, fonte: 'ficha' as const }];
+        const h = casaDe.get(n.patientId);
+        if (h?.latitude != null && h.longitude != null) return [n.id, { lat: h.latitude, lng: h.longitude, precisao: (h.geoPrecision ?? 'MUNICIPIO') as PrecisaoGeo, blockId: h.blockId, fonte: 'cadastro' as const }];
         return [n.id, null];
       }),
     );

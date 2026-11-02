@@ -25,6 +25,8 @@ export interface DomicilioVisitavel {
   propertyType: string | null;
   latitude: number | null;
   longitude: number | null;
+  /** Posição aproximada (centro de rua ou de bairro): a leitura do GPS na visita a substitui. */
+  posicaoAproximada?: boolean;
 }
 
 const agoraLocal = () => {
@@ -266,9 +268,11 @@ export function VisitForm({
           <span className="text-sm text-slate-600">
             {posicao
               ? `${posicao.latitude}, ${posicao.longitude}${posicao.precisao ? ` (±${posicao.precisao} m)` : ''}`
-              : domicilio?.latitude
+              : domicilio?.latitude && !domicilio.posicaoAproximada
                 ? 'Domicílio já tem posição no mapa'
-                : 'Sem posição: o domicílio entra no mapa quando marcada'}
+                : domicilio?.latitude
+                  ? 'Posição aproximada (rua ou bairro): marque a posição para confirmar em campo'
+                  : 'Sem posição: o domicílio entra no mapa quando marcada'}
           </span>
         </div>
         <Field label="Observações" htmlFor="visita-obs">

@@ -102,11 +102,20 @@ export function numeroQuarteiraoValido(n: string): boolean {
  * zeros à esquerda na parte numérica ("012" → "12", "007-a" → "7-A"; "0" fica "0").
  */
 export function normalizarNumeroQuarteirao(n: string): string {
-  return n
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, '')
-    .replace(/^0+(?=\d)/, '');
+  return (
+    n
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, '')
+      .replace(/^0+(?=\d)/, '')
+      // Sufixo de letra com ou sem hífen é a mesma numeração suplementar: "12A" e "12-A" viram "12-A".
+      .replace(/^(\d+)-?([A-Z][A-Z0-9]*)$/, '$1-$2')
+  );
+}
+
+/** Código da localidade em forma única: só dígitos, sem zeros à esquerda ("0001" e o 1 numérico do DBF são o 1). */
+export function normalizarCodigoLocalidade(c: string): string {
+  return c.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
 }
 
 /** Código da localidade (cadastro de localidades do DATASUS): até 8 dígitos, único no município. */

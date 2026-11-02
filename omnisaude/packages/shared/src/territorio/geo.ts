@@ -222,7 +222,13 @@ export function areasSobrepoem(a: Area, b: Area): boolean {
           if (!segmentosCruzam(p1, p2, p3, p4)) continue;
           // Cruzamento colado a um vértice é ruído do encaixe ou do arredondamento, não sobreposição.
           const x = cruzamento(p1, p2, p3, p4);
-          if ([p1, p2, p3, p4].every((v) => distanciaM(x, v) > FOLGA_M)) return true;
+          if (![p1, p2, p3, p4].every((v) => distanciaM(x, v) > FOLGA_M)) continue;
+          // Lado encaixado ao longo do lado do vizinho (junção em T): os dois extremos de um ficam a menos da folga
+          // do outro; o arredondamento faz os dois "se cruzarem" no meio sem haver área em comum.
+          const m = metrosPorGrau(x[1]);
+          const colado = (u: Posicao, v: Posicao, s1: Posicao, s2: Posicao) => distanciaAoSegmento(u, s1, s2, m) <= FOLGA_M && distanciaAoSegmento(v, s1, s2, m) <= FOLGA_M;
+          if (colado(p1, p2, p3, p4) || colado(p3, p4, p1, p2)) continue;
+          return true;
         }
   const dentroEstrito = (p: Posicao, x: Area) => pontoNaArea(p, x) && distanciaAteBorda(p, x) > FOLGA_M;
   if (poligonos(a).some((pol) => (pol[0] ?? []).some((p) => dentroEstrito(p, b))) || poligonos(b).some((pol) => (pol[0] ?? []).some((p) => dentroEstrito(p, a)))) return true;
@@ -252,10 +258,11 @@ export class GeometriaInvalida extends Error {}
  * [-180, 180] e [-90, 90], anéis fechados com pelo menos 3 vértices distintos, sem pontos repetidos seguidos, 6 casas
  * decimais (~10 cm), anel externo anti-horário e furos horários (RFC 7946) e sem autointerseção.
  */
-export function normalizarArea(bruta: unknown): Area {
+export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
   const g = bruta as { type?: string; coordinates?: unknown };
   if (!g || (g.type !== 'Polygon' && g.type !== 'MultiPolygon') || !Array.isArray(g.coordinates)) throw new GeometriaInvalida('A geometria precisa ser Polygon ou MultiPolygon');
-  const anel = (r: unknown, externo: boolean): Anel => {
+  /** Anel normalizado, ou null quando colapsa (menos de 3 vértices depois de arredondar, ou menos de 1 m²). */
+  const anel = (r: unknown, externo: boolean): Anel | null => {
     if (!Array.isArray(r)) throw new GeometriaInvalida('Anel inválido');
     const pts: Anel = [];
     for (const p of r) {
@@ -268,7 +275,7 @@ export function normalizarArea(bruta: unknown): Area {
       if (!ult || ult[0] !== q[0] || ult[1] !== q[1]) pts.push(q);
     }
     if (pts.length > 1 && (pts[0]![0] !== pts[pts.length - 1]![0] || pts[0]![1] !== pts[pts.length - 1]![1])) pts.push([pts[0]![0], pts[0]![1]]);
-    if (pts.length < 4) throw new GeometriaInvalida('Polígono com menos de 3 vértices');
+    if (pts.length < 4) return null;
     // Vértice repetido fora do fechamento: o contorno passa duas vezes pelo mesmo ponto (um "oito").
     const vistos = new Set<string>();
     for (const q of pts.slice(0, -1)) {
@@ -278,24 +285,44 @@ export function normalizarArea(bruta: unknown): Area {
     }
     if (anelAutointersecta(pts)) throw new GeometriaInvalida('O contorno cruza a si mesmo');
     const m = metrosPorGrau(pts[0]![1]);
-    if (Math.abs(areaDoAnelM2(pts, m, pts[0]![1], pts[0]![0])) < 1) throw new GeometriaInvalida('Polígono sem área (vértices alinhados ou contorno em espinho)');
+    if (Math.abs(areaDoAnelM2(pts, m, pts[0]![1], pts[0]![0])) < 1) return null;
     return sentidoHorario(pts) === externo ? pts.reverse() : pts;
   };
-  const poligono = (p: unknown): Anel[] => {
+  let descartados = 0;
+  /** Polígono normalizado, ou null quando o contorno externo colapsa; furos colapsados são descartados. */
+  const poligono = (p: unknown): Anel[] | null => {
     if (!Array.isArray(p) || p.length === 0) throw new GeometriaInvalida('Polígono vazio');
-    const aneis = p.map((r, i) => anel(r, i === 0));
-    // Furo tem de estar dentro do contorno externo (partes separadas são MultiPolygon, não furos).
-    const [externo, ...furos] = aneis;
-    for (const furo of furos) {
-      const fora = furo.some((q) => !pontoNoAnel(q, externo!));
-      const cruza = furo.some((_, i) => i > 0 && externo!.some((__, j) => j > 0 && segmentosCruzam(furo[i - 1]!, furo[i]!, externo![j - 1]!, externo![j]!)));
+    const externo = anel(p[0], true);
+    if (!externo) return null;
+    const furos: Anel[] = [];
+    for (const r of p.slice(1)) {
+      const furo = anel(r, false);
+      if (!furo) {
+        descartados++;
+        continue;
+      }
+      // Furo tem de estar dentro do contorno externo (partes separadas são MultiPolygon, não furos); o vértice que
+      // toca o contorno pode cair um pouco fora pelo arredondamento.
+      const m = metrosPorGrau(externo[0]![1]);
+      const naBordaExterna = (q: Posicao) => externo.some((_, i) => i > 0 && distanciaAoSegmento(q, externo[i - 1]!, externo[i]!, m) <= FOLGA_M);
+      const fora = furo.some((q) => !pontoNoAnel(q, externo) && !naBordaExterna(q));
+      const cruza = furo.some((_, i) => i > 0 && externo.some((__, j) => j > 0 && segmentosCruzam(furo[i - 1]!, furo[i]!, externo[j - 1]!, externo[j]!)) && !(naBordaExterna(furo[i - 1]!) || naBordaExterna(furo[i]!)));
       if (fora || cruza) throw new GeometriaInvalida('Há um anel fora do contorno externo: partes separadas vão como MultiPolygon');
+      furos.push(furo);
     }
-    return aneis;
+    return [externo, ...furos];
   };
-  if (g.type === 'Polygon') return { type: 'Polygon', coordinates: poligono(g.coordinates) };
-  const partes = (g.coordinates as unknown[]).map(poligono);
-  if (!partes.length) throw new GeometriaInvalida('MultiPolygon vazio');
+  const brutas = g.type === 'Polygon' ? [g.coordinates] : (g.coordinates as unknown[]);
+  if (!brutas.length) throw new GeometriaInvalida('MultiPolygon vazio');
+  const partes: Anel[][] = [];
+  for (const b of brutas) {
+    const pol = poligono(b);
+    if (pol) partes.push(pol);
+    else descartados++;
+  }
+  // Lascas (partes ou furos minúsculos de recortes e dissoluções) saem; se não sobra parte, o polígono não tem área.
+  if (!partes.length) throw new GeometriaInvalida(brutas.length === 1 ? 'Polígono sem área (vértices alinhados, contorno em espinho ou menos de 3 vértices)' : 'Todas as partes do MultiPolygon são lascas sem área');
+  if (descartados) avisos?.push(`${descartados} anel(is) minúsculo(s) descartado(s)`);
   return partes.length === 1 ? { type: 'Polygon', coordinates: partes[0]! } : { type: 'MultiPolygon', coordinates: partes };
 }
 

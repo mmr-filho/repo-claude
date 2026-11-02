@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { TenantClient } from '@omnisaude/database';
-import { ampliarCaixa, caixasSeTocam, distanciaAteArea, ORDEM_PRECISAO, pontoNaArea, type Area, type Caixa, type PrecisaoGeo, type Posicao } from '@omnisaude/shared';
+import { ampliarCaixa, caixasSeTocam, distanciaAteArea, ORDEM_PRECISAO, pontoNaArea, roleHasPermission, type Area, type Caixa, type PrecisaoGeo, type Posicao } from '@omnisaude/shared';
+import type { RequestContext } from '../../core/context';
 
 /** Ponto sobre a rua ou com erro de GPS: até esta distância de um quarteirão, o imóvel é ligado ao mais próximo. */
 export const TOLERANCIA_QUARTEIRAO_M = 15;
@@ -8,7 +9,7 @@ export const TOLERANCIA_QUARTEIRAO_M = 15;
 /** Precisões boas o bastante para ligar o imóvel ao quarteirão pela posição (as demais não dizem em qual está). */
 export const PRECISAO_LIGA_QUARTEIRAO: PrecisaoGeo[] = ['GPS_CAMPO', 'MAPA', 'ENDERECO', 'FACE'];
 
-type Db = Pick<TenantClient, 'block' | 'household'>;
+type Db = Pick<TenantClient, 'block' | 'household' | '$executeRaw'>;
 
 interface QuarteiraoGeo {
   id: string;
@@ -92,6 +93,22 @@ export class LocalizadorService {
       .map((x) => ({ id: x.b.id, numero: x.b.number, localityId: x.b.localityId, neighborhoodId: x.b.neighborhoodId, distanciaM: Math.round(x.d * 10) / 10 }));
   }
 
+  /**
+   * Imóveis que o ACS (papel sem 'territorio.editar') alcança: os da sua equipe e microárea e os ainda sem equipe da
+   * unidade do contexto (cadastrados na recepção). null = todos (quem edita o território e os demais papéis).
+   */
+  async escopoDeCampo(ctx: RequestContext) {
+    if (roleHasPermission(ctx.session.role, 'territorio.editar') || ctx.session.role !== 'ACS') return null;
+    const lotacoes = await ctx.db.teamMember.findMany({ where: { userId: ctx.session.userId, active: true, team: { unitId: ctx.session.unitId, active: true } }, select: { teamId: true, microArea: true } });
+    return [...lotacoes.map((l) => ({ teamId: l.teamId, ...(l.microArea ? { microArea: l.microArea } : {}) })), { teamId: null, unitId: ctx.session.unitId }];
+  }
+
+  /** O imóvel está ao alcance do ACS (sempre verdadeiro para os demais papéis). */
+  async noEscopoDeCampo(ctx: RequestContext, householdId: string) {
+    const escopo = await this.escopoDeCampo(ctx);
+    return !escopo || (await ctx.db.household.count({ where: { id: householdId, OR: escopo } })) > 0;
+  }
+
   /** Liga um imóvel ao quarteirão pela posição (só com precisão suficiente); devolve o quarteirão gravado. */
   async vincularImovel(db: Db, householdId: string): Promise<string | null> {
     const h = await db.household.findUnique({ where: { id: householdId }, select: { latitude: true, longitude: true, geoPrecision: true, blockId: true } });
@@ -99,7 +116,8 @@ export class LocalizadorService {
     if (!PRECISAO_LIGA_QUARTEIRAO.includes(h.geoPrecision as PrecisaoGeo)) return h.blockId;
     const b = await this.quarteiraoDoPonto(db, h.latitude, h.longitude);
     const novo = b?.id ?? null;
-    if (novo !== h.blockId) await db.household.update({ where: { id: householdId }, data: { blockId: novo } });
+    // SQL direto: ligar ao quarteirão não é alteração do cadastro (não mexe em updated_at, que dispara a ficha do e-SUS).
+    if (novo !== h.blockId) await db.$executeRaw`UPDATE households SET block_id = ${novo}::uuid WHERE id = ${householdId}::uuid`;
     return novo;
   }
 
@@ -133,7 +151,7 @@ export class LocalizadorService {
         if (novo !== h.blockId) (mudancas.get(novo) ?? mudancas.set(novo, []).get(novo)!).push(h.id);
       }
       for (const [blockId, ids] of mudancas) {
-        await db.household.updateMany({ where: { id: { in: ids } }, data: { blockId } });
+        await db.$executeRaw`UPDATE households SET block_id = ${blockId}::uuid WHERE id = ANY(${ids}::uuid[])`;
         r.alterados += ids.length;
       }
     }

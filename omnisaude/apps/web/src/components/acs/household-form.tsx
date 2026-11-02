@@ -26,6 +26,8 @@ import { PessoaCampos, pessoaParaOp, pessoaValida, pessoaVazia, type PessoaForm 
 
 export interface DomicilioExistente extends DomicilioCampo {
   id: string;
+  /** Precisão da posição gravada (território, semana 25). */
+  geoPrecision?: string | null;
 }
 
 type Form = Required<{ [K in Exclude<keyof DomicilioCampo, 'geoAccuracyM'>]: string }> & { electricity: string; rooms: string };
@@ -60,7 +62,7 @@ const deExistente = (d: DomicilioExistente): Form => ({
   ...vazio(d.microArea ?? null),
   ...Object.fromEntries(
     Object.entries(d)
-      .filter(([k]) => k !== 'id')
+      .filter(([k]) => k !== 'id' && k !== 'geoPrecision')
       .map(([k, v]) => [k, v === null || v === undefined ? '' : String(v)]),
   ),
 });
@@ -112,6 +114,8 @@ export function HouseholdForm({
     setPessoa(pessoaVazia());
     setRenda('');
     setErro(null);
+    // Leitura do GPS vale só para o domicílio em que foi feita.
+    setLeitura(null);
   }, [aberto, existente, microAreaPadrao, municipio]);
 
   const set = (k: keyof Form, v: string) => setF((x) => ({ ...x, [k]: v }));

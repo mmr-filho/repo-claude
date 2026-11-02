@@ -153,7 +153,7 @@ export function AbaLocalidades({ podeEditar, onAlterado }: { podeEditar: boolean
           title={atual ? `Bairros de ${atual.name}` : 'Bairros'}
           description="Sublocalidade do PNCD. Os apelidos ligam o bairro escrito no cadastro ao bairro oficial."
           actions={
-            podeEditar && sel ? (
+            podeEditar && sel && atual?.status === 'ATIVA' ? (
               <Button size="sm" id="terr-novo-bairro" onClick={() => setNovoBairro(true)}>
                 <Plus className="h-4 w-4" /> Bairro
               </Button>
@@ -682,7 +682,19 @@ export function AbaPendencias({
   async function geocodificar() {
     setBusy('geo');
     try {
-      const r = await api.post<{ analisados: number; atualizados: number; semResultado: number; baseDeEnderecos: number }>('/territorio/imoveis/geocodificar', {});
+      // A API trabalha em lotes: repete enquanto houver imóveis pendentes depois do último analisado.
+      type R = { analisados: number; atualizados: number; semResultado: number; baseDeEnderecos: number; proximo: string | null };
+      const r: R = { analisados: 0, atualizados: 0, semResultado: 0, baseDeEnderecos: 0, proximo: null };
+      let apos: string | null = null;
+      for (let volta = 0; volta < 50; volta++) {
+        const parte: R = await api.post<R>('/territorio/imoveis/geocodificar', apos ? { apos } : {});
+        r.analisados += parte.analisados;
+        r.atualizados += parte.atualizados;
+        r.semResultado += parte.semResultado;
+        r.baseDeEnderecos = parte.baseDeEnderecos;
+        apos = parte.proximo;
+        if (!apos) break;
+      }
       toast.success(
         r.baseDeEnderecos
           ? `${r.atualizados} de ${r.analisados} imóvel(is) localizados pela base local de endereços.`

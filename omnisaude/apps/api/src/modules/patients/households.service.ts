@@ -65,9 +65,13 @@ interface AtualGeo {
   ibgeCode: string | null;
 }
 
+const CAMPOS_ENDERECO = ['street', 'number', 'complement', 'district', 'cep', 'ibgeCode'] as const;
+
 /** Algum campo do endereço enviado difere do gravado. */
 function enderecoAlterado(novo: { street?: string | null; number?: string | null; complement?: string | null; district?: string | null; cep?: string | null; ibgeCode?: string | null }, atual: AtualGeo) {
-  return (['street', 'number', 'complement', 'district', 'cep', 'ibgeCode'] as const).some((k) => novo[k] !== undefined && (novo[k] ?? null) !== (atual[k] ?? null));
+  // O IBGE com 6 ou 7 dígitos é o mesmo município.
+  const igual = (k: (typeof CAMPOS_ENDERECO)[number], a: string | null, b: string | null) => (k === 'ibgeCode' ? (a ?? '').slice(0, 6) === (b ?? '').slice(0, 6) : a === b);
+  return CAMPOS_ENDERECO.some((k) => novo[k] !== undefined && !igual(k, novo[k] ?? null, atual[k] ?? null));
 }
 
 /** Domicílios e famílias: um paciente pertence a uma família, que vive num domicílio (base do cadastro domiciliar do e-SUS). */
@@ -103,29 +107,33 @@ export class HouseholdsService {
     const id = await ctx.db.$transaction(async (tx) => {
       const h = await tx.household.create({ data: { ...this.data(input), ...this.geo(input, null), unitId: input.unitId ?? ctx.session.unitId ?? null } });
       if (input.family) await this.newFamily(ctx, tx, h.id, input.family);
+      // Território (PLT-3): com posição, o imóvel é ligado ao quarteirão que a contém (na mesma transação: o reenvio
+      // da sincronização do ACS não pode achar o domicílio gravado pela metade).
+      if (input.latitude != null && input.longitude != null) await this.localizador.vincularImovel(tx, h.id);
       await this.audit.record(ctx, tx, { action: 'domicilio.cadastrar', entityType: 'Household', entityId: h.id, payload: input });
       return h.id;
     });
-    // Território (PLT-3): com posição, o imóvel é ligado ao quarteirão que a contém.
-    if (input.latitude != null && input.longitude != null) await this.localizador.vincularImovel(ctx.db, id);
     return this.view(await ctx.db.household.findUniqueOrThrow({ where: { id }, include: householdInclude }));
   }
 
   async update(ctx: RequestContext, id: string, input: HouseholdInput) {
     const h = await ctx.db.household.findUnique({ where: { id } });
     if (!h) throw notFound('Domicílio');
+    // ACS fora da sua equipe e microárea: o cadastro é atualizado, mas a posição não (mesma regra da marcação no mapa).
+    if ((input.latitude !== undefined || input.longitude !== undefined) && !(await this.localizador.noEscopoDeCampo(ctx, id)))
+      input = { ...input, latitude: undefined, longitude: undefined, geoAccuracyM: undefined, geoPrecision: undefined };
     const geo = this.geo(input, h);
     await ctx.db.$transaction(async (tx) => {
       await tx.household.update({ where: { id }, data: { ...this.data(input), ...geo } });
+      if ('geoPrecision' in geo) await this.localizador.vincularImovel(tx, id);
       await this.audit.record(ctx, tx, { action: 'domicilio.atualizar', entityType: 'Household', entityId: id, payload: input });
     });
-    if ('geoPrecision' in geo) await this.localizador.vincularImovel(ctx.db, id);
     return this.view(await ctx.db.household.findUniqueOrThrow({ where: { id }, include: householdInclude }));
   }
 
   /** Liga o imóvel ao quarteirão que contém a posição dele (ou desliga, se ficou sem posição ou fora da malha). */
-  ligarAoQuarteirao(ctx: RequestContext, id: string) {
-    return this.localizador.vincularImovel(ctx.db, id);
+  ligarAoQuarteirao(db: Parameters<LocalizadorService['vincularImovel']>[0], id: string) {
+    return this.localizador.vincularImovel(db, id);
   }
 
   /**
@@ -146,7 +154,7 @@ export class HouseholdsService {
     if (lat == null || lng == null) return atual?.latitude != null ? semPosicao : {};
     if (atual && atual.latitude === lat && atual.longitude === lng && input.geoPrecision === undefined) return posicaoDoEndereco && enderecoMudou ? semPosicao : naoMuda;
     // Leitura do GPS acima de 50 m (rede ou ambiente fechado) não serve à posição do imóvel: não é gravada.
-    if (input.geoAccuracyM != null && avaliarGps(input.geoAccuracyM) === 'NOVA_LEITURA') return naoMuda;
+    if (input.geoAccuracyM != null && avaliarGps(input.geoAccuracyM) === 'NOVA_LEITURA') return posicaoDoEndereco && enderecoMudou ? semPosicao : naoMuda;
     return { geoPrecision: input.geoPrecision ?? ('GPS_CAMPO' as const), geoSource: 'cadastro', geoAccuracyM: input.geoAccuracyM ?? null, geoAt: new Date() };
   }
 

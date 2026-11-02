@@ -23,6 +23,8 @@ import {
   type VacinacaoAtendimentoInput,
   type VisitaDomiciliarInput,
 } from '@omnisaude/esus';
+import type { PrecisaoGeo } from '@omnisaude/shared';
+import { PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
 
 /**
  * Fontes das fichas do e-SUS APS nos registros do sistema. Cada fonte devolve fichas prontas para serializar,
@@ -523,6 +525,9 @@ export async function fichasCadastroIndividual(ctx: FonteContexto): Promise<Fich
   return out;
 }
 
+/** Posição que é do imóvel (e não do endereço aproximado): a mesma regra dos geo campos da ficha do Sinan. */
+const posicaoDoImovel = (h: { geoPrecision: string | null }) => !!h.geoPrecision && PRECISAO_LIGA_QUARTEIRAO.includes(h.geoPrecision as PrecisaoGeo);
+
 export async function fichasCadastroDomiciliar(ctx: FonteContexto): Promise<FichaGerada[]> {
   const { db, unit } = ctx;
   const households = await db.household.findMany({
@@ -567,8 +572,10 @@ export async function fichasCadastroDomiciliar(ctx: FonteContexto): Promise<Fich
           renda: f.incomeBracket,
           resideDesde: f.createdAt,
         })),
-        latitude: h.latitude,
-        longitude: h.longitude,
+        // Ao SISAB só vai a posição do imóvel (GPS, mapa, endereço ou face de quadra da base do IBGE): o centro de rua
+        // ou de bairro da geocodificação não é a localização do domicílio.
+        latitude: posicaoDoImovel(h) ? h.latitude : null,
+        longitude: posicaoDoImovel(h) ? h.longitude : null,
       }),
       summary: { domicilio: [h.street, h.number, h.district].filter(Boolean).join(', '), familias: h.families.length, atualizacao: !!previous, dia: localDate(h.updatedAt, ctx.timeZone) },
     });

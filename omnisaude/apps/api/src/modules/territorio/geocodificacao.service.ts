@@ -56,7 +56,7 @@ export class GeocodificacaoService {
     private readonly audit: AuditService,
   ) {}
 
-  async geocodificar(ctx: RequestContext, input: { ids?: string[]; limite?: number }) {
+  async geocodificar(ctx: RequestContext, input: { ids?: string[]; limite?: number; apos?: string }) {
     // Teto de imóveis analisados por chamada; os pendentes são percorridos por id, sem repetir sempre os mesmos.
     const limite = Math.min(input.limite ?? 20_000, 50_000);
     const explicito = !!input.ids?.length;
@@ -81,15 +81,22 @@ export class GeocodificacaoService {
     // Municípios do território (unidades e base de endereços): imóvel de outro município não ganha posição daqui.
     const municipios = new Set([...(await ctx.db.unit.findMany({ select: { ibgeCode: true } })).map((u) => u.ibgeCode), ...base.map((p) => p.ibgeCode)].map((c) => (c ?? '').slice(0, 6)).filter(Boolean));
     const centroBloco = new Map(blocos.map((b) => [b.id, b]));
+    // Nome de bairro ou localidade que existe em mais de um lugar (o "Centro" da sede e o do distrito) é ambíguo: não
+    // posiciona ninguém por ele.
+    const porNome = new Map<string, { lat: number; lng: number }[]>();
+    const somar = (n: string, c: { lat: number; lng: number }) => (porNome.get(n) ?? porNome.set(n, []).get(n)!).push(c);
+    for (const l of localidades) somar(normalizarNome(l.name), { lat: l.centerLat!, lng: l.centerLng! });
+    for (const b of bairros) for (const n of new Set([b.name, ...b.aliases].map((x) => normalizarNome(x)))) somar(n, { lat: b.centerLat!, lng: b.centerLng! });
     const centroNome = new Map<string, { lat: number; lng: number }>();
-    for (const l of localidades) centroNome.set(normalizarNome(l.name), { lat: l.centerLat!, lng: l.centerLng! });
-    for (const b of bairros) for (const n of [b.name, ...b.aliases]) centroNome.set(normalizarNome(n), { lat: b.centerLat!, lng: b.centerLng! });
+    for (const [n, cs] of porNome) if (cs.every((c) => distanciaM([c.lng, c.lat], [cs[0]!.lng, cs[0]!.lat]) < 50)) centroNome.set(n, cs[0]!);
 
     const resumo: Record<string, number> = {};
     let analisados = 0;
     let atualizados = 0;
     let semResultado = 0;
-    let cursor: string | undefined;
+    // Continua de onde a chamada anterior parou (a tela repete enquanto houver "proximo").
+    let cursor: string | undefined = input.apos;
+    let esgotou = false;
     while (analisados < limite) {
       const imoveis = await ctx.db.household.findMany({
         where: {
@@ -101,7 +108,10 @@ export class GeocodificacaoService {
         orderBy: { id: 'asc' },
         take: Math.min(1000, limite - analisados),
       });
-      if (!imoveis.length) break;
+      if (!imoveis.length) {
+        esgotou = true;
+        break;
+      }
       cursor = imoveis[imoveis.length - 1]!.id;
       for (const h of imoveis) {
         analisados++;
@@ -120,7 +130,7 @@ export class GeocodificacaoService {
       }
     }
     await this.audit.recordStandalone(ctx, { action: 'territorio.geocodificar', entityType: 'Household', payload: { analisados, atualizados, resumo } });
-    return { analisados, atualizados, semResultado, porPrecisao: resumo, baseDeEnderecos: base.length };
+    return { analisados, atualizados, semResultado, porPrecisao: resumo, baseDeEnderecos: base.length, proximo: esgotou || explicito ? null : (cursor ?? null) };
   }
 
   private tentar(

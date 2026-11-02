@@ -13,6 +13,7 @@ import {
   normalizarArea,
   normalizarLogradouro,
   normalizarNumero,
+  normalizarCodigoLocalidade,
   normalizarNumeroQuarteirao,
   ORDEM_PRECISAO,
   PRECISAO_INFO,
@@ -187,6 +188,37 @@ describe('geometria do território', () => {
     expect(normalizarArea({ type: 'Polygon', coordinates: [[d(0, 0), d(10, 0), d(10, 10), d(0, 10), d(0, 0)], quadrado(3, 3)] }).coordinates).toHaveLength(2);
   });
 
+  it('dois vértices encaixados ao longo do lado do vizinho (lado colado) não são sobreposição', () => {
+    const P: Posicao = [-49.068712, -11.730113];
+    const Q: Posicao = [-49.068291, -11.729177];
+    const oeste = (p: Posicao): Posicao => [p[0] - 0.0008, p[1]];
+    const leste = (p: Posicao): Posicao => [p[0] + 0.0008, p[1]];
+    const A = normalizarArea({ type: 'Polygon', coordinates: [[P, Q, oeste(Q), oeste(P), P]] });
+    const ponto = (t: number): Posicao => [P[0] + t * (Q[0] - P[0]), P[1] + t * (Q[1] - P[1])];
+    let falsos = 0;
+    for (let i = 1; i < 100; i++) {
+      const [S1, S2] = [ponto(i / 200), ponto(0.5 + i / 200)];
+      if (areasSobrepoem(A, normalizarArea({ type: 'Polygon', coordinates: [[S1, leste(S1), leste(S2), S2, S1]] }))) falsos++;
+    }
+    expect(falsos).toBe(0);
+  });
+
+  it('lascas de recorte saem sem recusar a feição; furo que toca o contorno é aceito', () => {
+    const o: Posicao = [-49.07, -11.73];
+    const d = (x: number, y: number): Posicao => [o[0] + x * 0.0001, o[1] + y * 0.0001];
+    const grande = [d(0, 0), d(20, 0), d(20, 20), d(0, 20), d(0, 0)];
+    const lasca = [d(30, 30), d(30.003, 30), d(30.003, 30.003), d(30, 30)];
+    const avisos: string[] = [];
+    const r = normalizarArea({ type: 'MultiPolygon', coordinates: [[grande], [lasca]] }, avisos);
+    expect(r.type).toBe('Polygon');
+    expect(avisos[0]).toMatch(/descartado/);
+    // Furo minúsculo descartado; furo encostado no lado diagonal do contorno, aceito.
+    expect(normalizarArea({ type: 'Polygon', coordinates: [grande, [d(5, 5), d(5.003, 5), d(5.003, 5.003), d(5, 5)]] }).coordinates).toHaveLength(1);
+    const tri = [d(0, 0), d(20, 0), d(0, 20), d(0, 0)];
+    const furoNaDiagonal = [d(10, 10), d(5, 10), d(5, 5), d(10, 10)];
+    expect(normalizarArea({ type: 'Polygon', coordinates: [tri, furoNaDiagonal] }).coordinates).toHaveLength(2);
+  });
+
   it('fuso UTM e EPSG do SIRGAS 2000 no Tocantins', () => {
     expect(fusoUtm(-49.07)).toBe(22);
     expect(epsgSirgasUtmSul(22)).toBe(31982);
@@ -227,6 +259,10 @@ describe('regras do território', () => {
     expect(['012', '12', ' 12 ', '0012'].map(normalizarNumeroQuarteirao)).toEqual(['12', '12', '12', '12']);
     expect(normalizarNumeroQuarteirao('007-a')).toBe('7-A');
     expect(normalizarNumeroQuarteirao('0')).toBe('0');
-    expect(normalizarNumeroQuarteirao('12 A')).toBe('12A');
+    expect(normalizarNumeroQuarteirao('12 A')).toBe('12-A');
+    expect(normalizarNumeroQuarteirao('12A')).toBe(normalizarNumeroQuarteirao('12-a'));
+    expect(normalizarNumeroQuarteirao('123')).toBe('123');
+    expect(normalizarNumeroQuarteirao('12-1')).toBe('12-1');
+    expect(['0001', '1', ' 001 '].map(normalizarCodigoLocalidade)).toEqual(['1', '1', '1']);
   });
 });

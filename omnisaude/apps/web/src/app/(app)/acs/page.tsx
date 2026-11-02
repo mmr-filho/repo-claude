@@ -253,7 +253,17 @@ export default function AcsPage() {
     setDialogo({
       tipo: 'visita',
       domicilio: d
-        ? { id: d.id, pendente: false, rotulo: d.addressLine ?? 'Domicílio', microArea: d.microArea ?? null, propertyType: d.propertyType ?? null, latitude: d.latitude ?? null, longitude: d.longitude ?? null }
+        ? {
+            id: d.id,
+            pendente: false,
+            rotulo: d.addressLine ?? 'Domicílio',
+            microArea: d.microArea ?? null,
+            propertyType: d.propertyType ?? null,
+            latitude: d.latitude ?? null,
+            longitude: d.longitude ?? null,
+            // Só GPS, mapa, endereço ou face de quadra da base do IBGE contam como posição do imóvel.
+            posicaoAproximada: !!d.geoPrecision && !['GPS_CAMPO', 'MAPA', 'ENDERECO', 'FACE'].includes(d.geoPrecision),
+          }
         : null,
       pessoas: d ? d.familias.flatMap((f) => f.membros.map((m) => ({ id: m.id, pendente: false, nome: m.name, idade: m.age }))) : [],
       pessoaInicial: pessoaInicial ?? null,
