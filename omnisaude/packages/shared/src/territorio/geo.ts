@@ -456,7 +456,9 @@ export function normalizarArea(bruta: unknown, avisos?: string[]): Area {
     if (anelAutointersecta(pts)) {
       // O arredondamento criou um nó de centímetros: fica o laço de verdade, com o ponto de corte também arredondado.
       const r = repararAnel(pts, m0);
-      if (r === 'lasca' || r === 'invalido') throw fino;
+      // Só laços-lasca depois de arredondar (haltere de bolhas ligadas por gargalo de centímetros): é lasca, como no passo 2.
+      if (r === 'lasca') return null;
+      if (r === 'invalido') throw fino;
       const final: Posicao[] = [];
       for (const q0 of r.slice(0, -1)) {
         const q: Posicao = [arred(q0[0]), arred(q0[1])];

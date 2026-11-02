@@ -117,8 +117,13 @@ export class ImportacaoTerritorioService {
           const tipo = f.geometria?.type ?? 'sem geometria';
           tipos[tipo] = (tipos[tipo] ?? 0) + 1;
           if (input.tipo === 'LOCALIDADES' && f.geometria?.type === 'Point') {
-            const [lng, lat] = f.geometria.coordinates as number[];
-            validas.push({ i, p: f.propriedades, g: null, ponto: [Number(lng), Number(lat)] });
+            const [lng, lat] = f.geometria.coordinates as unknown[];
+            // Só número: coordenada nula ou vazia não vira 0°, 0°.
+            if (typeof lng !== 'number' || typeof lat !== 'number' || !Number.isFinite(lng) || !Number.isFinite(lat) || lng < -75 || lng > -28 || lat < -35 || lat > 6) {
+              invalidas.push({ indice: i + 1, motivo: 'Ponto sem coordenada válida no Brasil' });
+              return;
+            }
+            validas.push({ i, p: f.propriedades, g: null, ponto: [lng, lat] });
             return;
           }
           try {
