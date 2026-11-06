@@ -11,7 +11,7 @@ e BI conversacional).
 
 - **Multitenancy de verdade**: um banco PostgreSQL por contratante, catálogo de roteamento no
   `master_auth_db`, réplica de leitura para BI e provisionamento de novos tenants por linha de comando ou API.
-- **Acesso por contexto**: login por CPF, 2FA (TOTP), escolha de unidade + papel, 9 papéis e 40 permissões,
+- **Acesso por contexto**: login por CPF, 2FA (TOTP), escolha de unidade + papel, 15 papéis e 87 permissões,
   negação por padrão em toda rota.
 - **Trilha de auditoria imutável** com hash SHA-256 encadeado (conteúdo + instante UTC + IP + 2FA).
 - **Recepção**: OCR de documentos (via Claude), CADSUS pela RNDS, duplicidade, senhas e painel de chamada
@@ -42,6 +42,11 @@ e BI conversacional).
 - **Território georreferenciado**: localidade, bairro, quarteirão e imóvel únicos para ACS, ACE e vigilância;
   importação da malha (GeoJSON ou shapefile), editor de quarteirões, geocodificação local com nível de precisão,
   raio do bloqueio e mapa de casos só para a vigilância ([`docs/TERRITORIO.md`](docs/TERRITORIO.md)).
+- **Agente de combate às endemias e bloqueio de transmissão**: app de campo do ACE sem internet (depósitos A1 a E,
+  focos, tubitos, larvicida com baixa por lote, pendências, imóvel novo) com sincronização que não duplica; ordem de
+  bloqueio aberta pelas notificações de dengue, chikungunya e Zika, com casos próximos numa ordem só sobre os
+  quarteirões no raio de 150 m; zonas, supervisão, larvicidas, índices larvários e a ficha de visita do e-SUS
+  ([`docs/ENDEMIAS.md`](docs/ENDEMIAS.md)).
 - **Leitos/NIR**, **POPs** (hard e soft gates), **faturamento** (SIGTAP, crítica pré-glosa, BPA-I/BPA-C),
   **BI conversacional** com Text-to-SQL blindado, **gestão** (produtividade, SLAs, pautas) e **busca ativa**.
 - **Acessibilidade**: VLibras e chamada de intérprete de Libras por vídeo (WebRTC).
@@ -124,6 +129,9 @@ Instituição **`demo`**, senha **`OmniSaude2026`** para todos:
 | Agente comunitário de saúde (ACS) | 100.000.011-71 | UBS Centro |
 | Vigilância epidemiológica | 100.000.014-14 | Vigilância em Saúde |
 | Núcleo de vigilância hospitalar | 100.000.015-03 | Hospital |
+| Agente de combate às endemias (ACE) | 100.000.016-86 | Vigilância em Saúde |
+| Supervisora de campo de endemias | 100.000.017-67 | Vigilância em Saúde |
+| Coordenador de endemias | 100.000.018-48 | Vigilância em Saúde |
 
 O cidadão entra no app (`/cidadao`) com `demo`, o CPF e a data de nascimento, mais um código de 6 dígitos enviado
 pelo WhatsApp ou emitido pela recepção na ficha do paciente ("Código do app"); não há senha.

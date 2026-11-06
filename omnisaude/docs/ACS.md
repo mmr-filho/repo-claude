@@ -8,8 +8,8 @@ conexão volta. A mesma tela, no papel de enfermagem ou gestão, mostra o territ
 
 ## Papel e permissões
 
-- Papel **ACS** (`Agente Comunitário de Saúde`), sugerido automaticamente pelo CBO 5151xx na importação do
-  CNES e nas lotações. Permissões: `acs.campo` (registrar visitas e cadastros em campo, sincronizar),
+- Papel **ACS** (`Agente Comunitário de Saúde`), sugerido automaticamente pelo CBO 5151xx (menos o 515140, do
+  agente de combate às endemias, que sugere o papel ACE; ver `docs/ENDEMIAS.md`) na importação do CNES e nas lotações. Permissões: `acs.campo` (registrar visitas e cadastros em campo, sincronizar),
   `acs.territorio`, `paciente.ler`/`paciente.cadastrar`, `vacinas.ler` e `aps.programas`. O agente **não**
   acessa o prontuário clínico.
 - Enfermagem e gestão têm `acs.territorio`: veem o território e a produtividade, mas não registram em campo.

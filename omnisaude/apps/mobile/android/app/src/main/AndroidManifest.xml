@@ -47,9 +47,13 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Vibração de confirmação/bloqueio na administração beira-leito -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Localização: GPS do ACS e do ACE na visita ao imóvel (a WebView pede a permissão em tempo de uso) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <!-- Android 11+: visibilidade do serviço de reconhecimento de voz do sistema -->
     <queries>
