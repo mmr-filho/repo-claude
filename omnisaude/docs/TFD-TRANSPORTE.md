@@ -30,8 +30,9 @@ ABERTO ──enviar──▶ ENVIADO ──parecer──▶ DEFERIDO ──agend
 1. **Laudo** (médico): diagnóstico e CID-10, procedimento (nome e SIGTAP opcional), resumo clínico, justificativa
    de indisponibilidade no município, caráter de urgência, destino (cidade, UF, IBGE, unidade), transporte
    (rodoviário, aéreo, ambulância, veículo sanitário, próprio), pernoite e acompanhante (nome, CPF, vínculo).
-   O processo recebe número `TFD-AAAA-NNNNNN` e só pode existir **um em andamento por pessoa**. O laudo pode ser
-   corrigido enquanto o processo está aberto ou indeferido.
+   O processo recebe número `TFD-AAAA-NNNNNN` e só pode existir **um em andamento por pessoa**. Processos abertos
+   ao mesmo tempo recebem números distintos e o ano segue o fuso da instituição. O laudo pode ser corrigido
+   enquanto o processo está aberto ou indeferido.
 2. **Envio** à regional ou ao estado (serviço social, NIR): registra a data e a observação (SEI, ofício, malote).
 3. **Parecer**: deferido ou indeferido, com o texto do parecer, se a **ajuda de custo foi aprovada** e o
    transporte autorizado (pode mudar o pedido do laudo). Indeferido encerra o processo; o cidadão recebe a

@@ -32,7 +32,8 @@ PENDENTE ──analisar──▶ EM_ANALISE ──autorizar──▶ AUTORIZADA 
 - **Conteúdo**: tipo de leito (clínica médica, cirúrgica, UTI adulto/pediátrica, pediatria, obstetrícia,
   observação), especialidade, CID, quadro clínico, **sinais vitais** (PA, FC, FR, SatO2, temperatura, nível de
   consciência, oxigênio), **suporte** em uso (ventilação mecânica, droga vasoativa, oxigênio, diálise),
-  isolamento e se é eletiva. Uma solicitação em andamento por pessoa.
+  isolamento e se é eletiva. Uma solicitação em andamento por pessoa. O número é `LEI-AAAA-NNNNNN`;
+  solicitações simultâneas recebem números distintos e o ano segue o fuso da instituição.
 - **NEWS2** (Royal College of Physicians, 2017, escala 1 de SpO2) é calculado dos sinais vitais e mostrado com a
   faixa de risco; a **prioridade sugerida** vem do NEWS2, do suporte e do tipo de leito (`prioridadeLeitoSugerida`):
   ventilação, droga vasoativa, UTI ou NEWS2 ≥ 7 → **emergência** (2 h); NEWS2 5–6, oxigênio ou diálise →

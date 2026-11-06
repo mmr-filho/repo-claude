@@ -53,7 +53,8 @@ justificativa nas duas primeiras) e **reclassificada pelo regulador** ao autoriz
    anexos (documentos do paciente). A verificação do protocolo (`POST /api/regulacao/verificar`) mostra, antes
    de enviar, os exames mínimos sem resultado, a falta de critério e a falta de justificativa; as pendências
    ficam gravadas na solicitação para o regulador. Uma solicitação aberta da mesma especialidade para a mesma
-   pessoa é recusada (409). O número de protocolo é `REG-AAAA-NNNNNN`.
+   pessoa é recusada (409). O número de protocolo é `REG-AAAA-NNNNNN`; solicitações simultâneas recebem números
+   distintos e o ano segue o fuso da instituição.
 2. **Fila única** (`GET /api/regulacao/fila`): pendentes e em análise, ordenadas por prioridade e, dentro dela,
    por ordem de chegada; posição, dias na fila, prazo-meta e atraso; totais por prioridade e por especialidade;
    espera média. Filtros por especialidade, prioridade e tipo.
@@ -130,7 +131,8 @@ ecocardiograma) e as agendas de cardiologia e oftalmologia na Policlínica.
 - `packages/messaging/test/regulacao-template.test.ts`: modelo da devolutiva por WhatsApp.
 - `apps/api/test/regulation.test.ts`: verificação, solicitação com protocolo, duplicidade, fila única por
   prioridade, análise, devolução e complementação (volta à posição original), autorização com reclassificação
-  e devolutiva por WhatsApp no simulador, negativa, cancelamento, painel e linha do tempo.
+  e devolutiva por WhatsApp no simulador, negativa, cancelamento, painel e linha do tempo; cinco solicitações
+  simultâneas com protocolos distintos.
 - `apps/api/test/regulation-providers.test.ts`: prestadores e cotas (cadastro, PPI, consumo, cota esgotada,
   teto financeiro, cota com uso), agendamento regulado na agenda do prestador (vaga ocupada recusada,
   remarcação, desmarcação, falta antes da hora recusada, conclusão) e tempos médios por prestador.
