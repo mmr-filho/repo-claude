@@ -3,7 +3,23 @@
  * Tenant_ID + Unidade_Fisica_ID + Papel_Ativo. Um mesmo profissional pode ter papéis diferentes em cada unidade.
  */
 
-export const ROLES = ['RECEPCAO', 'ENFERMAGEM', 'MEDICO', 'MULTIPROFISSIONAL', 'SERVICO_SOCIAL', 'NIR', 'FARMACIA', 'FATURAMENTO', 'GESTOR', 'ACS', 'VIGILANCIA_EPIDEMIOLOGICA', 'NUCLEO_VIGILANCIA'] as const;
+export const ROLES = [
+  'RECEPCAO',
+  'ENFERMAGEM',
+  'MEDICO',
+  'MULTIPROFISSIONAL',
+  'SERVICO_SOCIAL',
+  'NIR',
+  'FARMACIA',
+  'FATURAMENTO',
+  'GESTOR',
+  'ACS',
+  'VIGILANCIA_EPIDEMIOLOGICA',
+  'NUCLEO_VIGILANCIA',
+  'ACE',
+  'SUPERVISOR_ENDEMIAS',
+  'COORDENADOR_ENDEMIAS',
+] as const;
 export type Role = (typeof ROLES)[number];
 
 export const ROLE_LABELS: Record<Role, string> = {
@@ -19,6 +35,9 @@ export const ROLE_LABELS: Record<Role, string> = {
   ACS: 'Agente Comunitário de Saúde',
   VIGILANCIA_EPIDEMIOLOGICA: 'Vigilância Epidemiológica (SMS)',
   NUCLEO_VIGILANCIA: 'Núcleo de Vigilância do Estabelecimento',
+  ACE: 'Agente de Combate às Endemias',
+  SUPERVISOR_ENDEMIAS: 'Supervisor de Campo de Endemias',
+  COORDENADOR_ENDEMIAS: 'Coordenação de Endemias (controle vetorial)',
 };
 
 export const PERMISSIONS = [
@@ -115,6 +134,14 @@ export const PERMISSIONS = [
   'territorio.editar',
   /** Mapa de casos notificados: só a vigilância (sigilo, Lei 6.259/1975, art. 10). */
   'vigilancia.mapa',
+  /** Endemias (VIG-3a): trabalho de campo do ACE no app sem internet (visitas, depósitos, tratamento, imóvel novo). */
+  'endemias.campo',
+  /** Acompanhar as ordens de bloqueio e a produção de campo, sem alterar (vigilância e gestão). */
+  'endemias.ler',
+  /** Supervisão de campo: zonas dos agentes, ordens de bloqueio, pendências dos imóveis e do larvicida. */
+  'endemias.supervisionar',
+  /** Coordenação de endemias: parâmetros do bloqueio, cadastro e entrada de larvicidas, cancelamento de ordens. */
+  'endemias.coordenar',
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -265,6 +292,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   FATURAMENTO: ['aih.ler', 'aps.indicadores', ...COMMON, 'prontuario.ler', 'faturamento.ler', 'faturamento.criticar', 'faturamento.exportar', 'sigtap.sincronizar', 'auditoria.ler', 'esus.ler', 'esus.gerir'],
   GESTOR: [
     'vigilancia.resumo',
+    'endemias.ler',
     'assistente.ler',
     'assistente.responder',
     'ouvidoria.ler',
@@ -326,6 +354,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'territorio.ler',
     'territorio.editar',
     'vacinas.ler',
+    'endemias.ler',
   ],
   NUCLEO_VIGILANCIA: [
     ...COMMON,
@@ -339,6 +368,10 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'territorio.ler',
     'vacinas.ler',
   ],
+  // O ACE trabalha sobre o imóvel, não sobre a pessoa: sem leitura de prontuário (LGPD, art. 6º, III).
+  ACE: ['endemias.campo', 'territorio.ler', 'pop.consultar', 'libras.acionar'],
+  SUPERVISOR_ENDEMIAS: ['endemias.supervisionar', 'endemias.ler', 'endemias.campo', 'territorio.ler', 'estoque.ler', 'pop.consultar', 'libras.acionar'],
+  COORDENADOR_ENDEMIAS: ['endemias.coordenar', 'endemias.supervisionar', 'endemias.ler', 'territorio.ler', 'territorio.editar', 'estoque.ler', 'pop.consultar', 'libras.acionar'],
 };
 
 export function isRole(value: unknown): value is Role {

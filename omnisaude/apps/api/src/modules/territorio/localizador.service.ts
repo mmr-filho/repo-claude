@@ -98,9 +98,21 @@ export class LocalizadorService {
    * unidade do contexto (cadastrados na recepção). null = todos (quem edita o território e os demais papéis).
    */
   async escopoDeCampo(ctx: RequestContext) {
-    if (roleHasPermission(ctx.session.role, 'territorio.editar') || ctx.session.role !== 'ACS') return null;
+    if (roleHasPermission(ctx.session.role, 'territorio.editar')) return null;
+    // ACE (VIG-3a): os quarteirões da sua zona e os das ordens de bloqueio ativas em que foi designado.
+    if (ctx.session.role === 'ACE') return [{ blockId: { in: await this.quarteiroesDoAce(ctx.db, ctx.session.userId) } }];
+    if (ctx.session.role !== 'ACS') return null;
     const lotacoes = await ctx.db.teamMember.findMany({ where: { userId: ctx.session.userId, active: true, team: { unitId: ctx.session.unitId, active: true } }, select: { teamId: true, microArea: true } });
     return [...lotacoes.map((l) => ({ teamId: l.teamId, ...(l.microArea ? { microArea: l.microArea } : {}) })), { teamId: null, unitId: ctx.session.unitId }];
+  }
+
+  /** Quarteirões de trabalho do agente de endemias: zona(s) de que é titular e ordens de bloqueio ativas designadas. */
+  async quarteiroesDoAce(db: Pick<TenantClient, 'vectorZoneBlock' | 'blockingOrderBlock'>, userId: string): Promise<string[]> {
+    const [zona, ordens] = await Promise.all([
+      db.vectorZoneBlock.findMany({ where: { zone: { aceId: userId, active: true } }, select: { blockId: true } }),
+      db.blockingOrderBlock.findMany({ where: { order: { status: { in: ['ABERTA', 'EM_CAMPO'] }, assignees: { some: { userId } } } }, select: { blockId: true } }),
+    ]);
+    return [...new Set([...zona, ...ordens].map((b) => b.blockId))];
   }
 
   /** O imóvel está ao alcance do ACS (sempre verdadeiro para os demais papéis). */

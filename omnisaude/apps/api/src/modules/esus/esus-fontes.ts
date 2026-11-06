@@ -23,7 +23,7 @@ import {
   type VacinacaoAtendimentoInput,
   type VisitaDomiciliarInput,
 } from '@omnisaude/esus';
-import type { PrecisaoGeo } from '@omnisaude/shared';
+import { motivosEsusVisitaVetorial, SITUACAO_INFO, type Depositos, type LocalUbv, type PrecisaoGeo } from '@omnisaude/shared';
 import { PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
 
 /**
@@ -399,8 +399,10 @@ export async function fichasVisitaDomiciliar(ctx: FonteContexto): Promise<FichaG
   const rows = await db.homeVisit.findMany({ where: { unitId: unit.id, visitedAt: { gte: ctx.from, lte: ctx.to } }, include: { patient: true }, orderBy: { visitedAt: 'asc' } });
   const lots = await lotacoes(db, unit.id, [...new Set(rows.map((v) => v.professionalId))]);
   const out: FichaGerada[] = [];
-  for (const g of groupByProfessionalDay(rows, (v) => ({ userId: v.professionalId, at: v.visitedAt }), timeZone).values()) {
-    const lot = lots.get(g.userId);
+  // Uma ficha por profissional, CBO e dia: quem tem duas lotações na unidade (ACS e ACE) não mistura as ocupações.
+  for (const g of groupByProfessionalDay(rows, (v) => ({ userId: `${v.professionalId}|${v.cbo ?? ''}`, at: v.visitedAt }), timeZone).values()) {
+    const [userId, cboDaVisita] = g.userId.split('|') as [string, string];
+    const lot = lots.get(userId);
     for (const part of chunks(g.items, 99)) {
       const visitas: VisitaDomiciliarInput[] = part.map((v) => ({
         turno: (v.turno as 1 | 2 | 3) ?? turnoFromDate(v.visitedAt, timeZone),
@@ -429,8 +431,70 @@ export async function fichasVisitaDomiciliar(ctx: FonteContexto): Promise<FichaG
         sourceId: part[0]!.id,
         patientId: part.length === 1 ? (part[0]!.patientId ?? null) : null,
         ine: lot?.ine ?? null,
-        ficha: buildVisitaDomiciliar({ uuid, header: { cns: lot?.cns ?? '', cbo: lot?.cbo ?? '', cnes: unit.cnes, ine: lot?.ine, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge }, visitas }),
-        summary: { profissional: lot?.name ?? g.userId, dia: g.day, visitas: part.length, registros: part.map((v) => v.id) },
+        ficha: buildVisitaDomiciliar({
+          uuid,
+          header: { cns: lot?.cns ?? '', cbo: cboDaVisita || lot?.cbo || '', cnes: unit.cnes, ine: lot?.ine, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge },
+          visitas,
+        }),
+        summary: { profissional: lot?.name ?? userId, dia: g.day, visitas: part.length, registros: part.map((v) => v.id) },
+      });
+    }
+  }
+  return out;
+}
+
+// ─── Visita do agente de combate às endemias (controle vetorial, VIG-3a) ─────
+
+/** Tipos de imóvel que seguem a regra do domicílio no LEDI (domicílio, abrigo, ILPI, prisional, socioeducativa, delegacia, outros). */
+const TIPOS_COMO_DOMICILIO = new Set(['01', '07', '08', '09', '10', '11', '99']);
+
+/**
+ * Ficha de visita domiciliar e territorial (tipo 8) das visitas do ACE (CBO 515140): motivos do grupo de controle
+ * ambiental e vetorial (34 a 37), desfecho pela situação do imóvel (fechado e abandonado = ausente, recusado), tipo do
+ * imóvel e posição. No domicílio, o cidadão é o responsável pela família, como pede o LEDI para a visita de controle
+ * vetorial; sem família cadastrada, vai sem pessoa. Sem microárea no imóvel, a visita vai como fora de área.
+ */
+export async function fichasVisitaVetorial(ctx: FonteContexto): Promise<FichaGerada[]> {
+  const { db, unit, timeZone } = ctx;
+  const rows = await db.vectorVisit.findMany({ where: { unitId: unit.id, visitedAt: { gte: ctx.from, lte: ctx.to } }, orderBy: { visitedAt: 'asc' } });
+  if (!rows.length) return [];
+  const lots = await lotacoes(db, unit.id, [...new Set(rows.map((v) => v.userId))]);
+  const domicilios = [...new Set(rows.filter((v) => TIPOS_COMO_DOMICILIO.has(v.propertyType) && v.situation === 'TRABALHADO').map((v) => v.householdId))];
+  const familias = domicilios.length
+    ? await db.family.findMany({ where: { householdId: { in: domicilios }, active: true, responsibleId: { not: null } }, include: { responsible: true }, orderBy: { createdAt: 'asc' } })
+    : [];
+  const responsavel = new Map<string, NonNullable<(typeof familias)[number]['responsible']>>();
+  for (const f of familias) if (f.responsible && !f.responsible.mergedIntoId && !responsavel.has(f.householdId)) responsavel.set(f.householdId, f.responsible);
+  const out: FichaGerada[] = [];
+  for (const g of groupByProfessionalDay(rows, (v) => ({ userId: `${v.userId}|${v.cbo}`, at: v.visitedAt }), timeZone).values()) {
+    const [userId, cbo] = g.userId.split('|') as [string, string];
+    const lot = lots.get(userId);
+    for (const part of chunks(g.items, 99)) {
+      const visitas: VisitaDomiciliarInput[] = part.map((v) => {
+        const p = TIPOS_COMO_DOMICILIO.has(v.propertyType) && v.situation === 'TRABALHADO' ? responsavel.get(v.householdId) : undefined;
+        const microArea = v.microArea && /^\d{2}$/.test(v.microArea) ? v.microArea : null;
+        return {
+          turno: (v.turno as 1 | 2 | 3) ?? turnoFromDate(v.visitedAt, timeZone),
+          cidadao: p ? cidadao(p) : null,
+          motivos: motivosEsusVisitaVetorial({ situacao: v.situation, acaoEducativa: v.education, depositos: v.deposits as Depositos | null, ubv: v.ubv as LocalUbv | null }).map(Number),
+          desfecho: Number(SITUACAO_INFO[v.situation].desfechoEsus) as 1 | 2 | 3,
+          microArea,
+          foraDaArea: !microArea,
+          tipoImovel: v.propertyType,
+          latitude: v.latitude,
+          longitude: v.longitude,
+        };
+      });
+      const uuid = lediUuid(unit.cnes);
+      out.push({
+        kind: TIPO_DADO.VISITA_DOMICILIAR,
+        uuid,
+        sourceType: 'VectorVisit',
+        sourceId: part[0]!.id,
+        patientId: null,
+        ine: lot?.ine ?? null,
+        ficha: buildVisitaDomiciliar({ uuid, header: { cns: lot?.cns ?? '', cbo, cnes: unit.cnes, ine: lot?.ine, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge }, visitas }),
+        summary: { profissional: lot?.name ?? userId, dia: g.day, visitas: part.length, registros: part.map((v) => v.id) },
       });
     }
   }

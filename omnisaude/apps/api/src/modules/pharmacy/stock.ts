@@ -14,7 +14,9 @@ export type MovementKind =
   | 'UNITARIZACAO_SAIDA'
   | 'UNITARIZACAO_ENTRADA'
   | 'AJUSTE'
-  | 'PERDA';
+  | 'PERDA'
+  | 'TRATAMENTO_FOCAL'
+  | 'ENTRADA_REMESSA';
 
 export interface MovementRef {
   kind: MovementKind;
@@ -29,23 +31,35 @@ export interface MovementRef {
  * mesmo com duas baixas simultâneas). Toda alteração de saldo gera um movimento.
  */
 export async function debit(tx: Tx, locationId: string, lotId: string, quantity: number, ref: MovementRef) {
+  const movimento = await tryDebit(tx, locationId, lotId, quantity, ref);
+  if (!movimento) {
+    const lot = await tx.stockLot.findUnique({ where: { id: lotId }, include: { product: true } });
+    throw new DomainError('SALDO_INSUFICIENTE', `Saldo insuficiente de ${lot?.product.description ?? 'produto'} (lote ${lot?.lotNumber ?? lotId})`, HttpStatus.UNPROCESSABLE_ENTITY, {
+      locationId,
+      lotId,
+      requested: quantity,
+    });
+  }
+  return movimento;
+}
+
+/**
+ * Baixa que não aborta a transação quando falta saldo: devolve o id do movimento, ou null sem saldo (o UPDATE
+ * condicional que não acha linha não é erro no PostgreSQL). Usada pela sincronização do campo, que não pode perder a
+ * visita por causa do estoque.
+ */
+export async function tryDebit(tx: Tx, locationId: string, lotId: string, quantity: number, ref: MovementRef): Promise<string | null> {
   if (!(quantity > 0)) throw new DomainError('QUANTIDADE_INVALIDA', 'A quantidade deve ser positiva');
   const { count } = await tx.stockBalance.updateMany({
     where: { locationId, lotId, quantity: { gte: quantity } },
     data: { quantity: { decrement: quantity } },
   });
-  if (count !== 1) {
-    const lot = await tx.stockLot.findUnique({ where: { id: lotId }, include: { product: true } });
-    throw new DomainError(
-      'SALDO_INSUFICIENTE',
-      `Saldo insuficiente de ${lot?.product.description ?? 'produto'} (lote ${lot?.lotNumber ?? lotId})`,
-      HttpStatus.UNPROCESSABLE_ENTITY,
-      { locationId, lotId, requested: quantity },
-    );
-  }
-  await tx.stockMovement.create({
+  if (count !== 1) return null;
+  const m = await tx.stockMovement.create({
     data: { kind: ref.kind, locationId, lotId, quantity: -quantity, refType: ref.refType, refId: ref.refId, patientId: ref.patientId, userId: ref.userId },
+    select: { id: true },
   });
+  return m.id;
 }
 
 export async function credit(tx: Tx, locationId: string, lotId: string, quantity: number, ref: MovementRef) {

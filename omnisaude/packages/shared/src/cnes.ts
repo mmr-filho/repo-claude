@@ -123,6 +123,8 @@ export function roleFromCbo(cbo: string): Role {
   if (p4 === '1312') return 'GESTOR';
   if (p4 === '4221') return 'RECEPCAO';
   if (p4 === '4110') return 'FATURAMENTO';
+  // 5151-40 é o ACE (definitivo desde a Portaria GM/MS 535/2016, no lugar do provisório 5151-F1); o resto da família é ACS.
+  if (cbo === '515140' || cbo.toUpperCase() === '5151F1') return 'ACE';
   if (p4 === '5151') return 'ACS';
   return 'MULTIPROFISSIONAL';
 }

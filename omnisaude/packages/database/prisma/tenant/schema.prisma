@@ -85,6 +85,12 @@ enum Role {
   VIGILANCIA_EPIDEMIOLOGICA
   /// Núcleo de vigilância do estabelecimento (alcance da unidade da lotação).
   NUCLEO_VIGILANCIA
+  /// Agente de combate às endemias (CBO 515140): visita aos imóveis no app de campo (VIG-3a).
+  ACE
+  /// Supervisor de campo de endemias: zonas dos agentes, ordens de bloqueio e pendências.
+  SUPERVISOR_ENDEMIAS
+  /// Coordenação de endemias: parâmetros do bloqueio e estoque de larvicidas.
+  COORDENADOR_ENDEMIAS
 }
 
 /// Profissionais e colaboradores do tenant. O login é por CPF dentro do tenant.
@@ -2007,9 +2013,12 @@ model Product {
   highAlert         Boolean         @default(false) @map("high_alert")
   antimicrobialRestricted Boolean   @default(false) @map("antimicrobial_restricted")
   active            Boolean         @default(true)
+  /// Insumo do controle vetorial (VIG-3a): larvicida ou adulticida. Não aparece na dispensação.
+  vectorControl     VectorControlKind? @map("vector_control")
 
   mappings ProductMapping[]
   lots     StockLot[]
+  vectorTreatments VectorTreatment[]
 
   @@index([gtin])
   @@map("products")
@@ -2037,6 +2046,8 @@ enum StockLocationKind {
   FARMACIA_SETORIAL
   POSTO_ENFERMAGEM
   SALA_DE_VACINA
+  /// Depósito de insumos do controle vetorial (larvicidas e adulticidas), de onde sai a baixa do tratamento focal.
+  ENDEMIAS
 }
 
 model StockLocation {
@@ -2061,6 +2072,7 @@ model StockLot {
 
   product  Product        @relation(fields: [productId], references: [id])
   balances StockBalance[]
+  vectorTreatments VectorTreatment[]
 
   @@unique([productId, lotNumber])
   @@map("stock_lots")
@@ -2089,6 +2101,10 @@ enum MovementKind {
   UNITARIZACAO_ENTRADA
   AJUSTE
   PERDA
+  /// Larvicida usado no tratamento focal de uma visita do ACE (uma baixa por linha de tratamento).
+  TRATAMENTO_FOCAL
+  /// Entrada de insumo do controle vetorial recebido do Ministério ou da SES (SIES), sem nota fiscal.
+  ENTRADA_REMESSA
 }
 
 model StockMovement {
@@ -3140,4 +3156,268 @@ model OfficialSystemRoute {
 
   @@unique([groupKey, conditionKey, validFrom])
   @@map("official_system_routes")
+}
+
+// ───────────────────────────── Endemias: ACE em campo e bloqueio de transmissão (VIG-3a) ─────────────────────────────
+
+enum VectorControlKind {
+  LARVICIDA
+  ADULTICIDA
+}
+
+/// Atividade da visita (boletins de campo do PNCD: 1-LI, 2-LI+T, 3-PE, 4-T, 5-DF, 6-PVE) e o bloqueio de transmissão.
+enum VectorActivity {
+  LI_T
+  LI
+  T
+  BLOQUEIO
+  PE
+  DF
+  PVE
+}
+
+/// Situação do imóvel na visita: trabalhado ou pendente (fechado, recusado, abandonado).
+enum VectorVisitSituation {
+  TRABALHADO
+  FECHADO
+  RECUSADO
+  ABANDONADO
+}
+
+enum BlockingOrderStatus {
+  AGUARDANDO_LOCALIZACAO
+  ABERTA
+  EM_CAMPO
+  CONCLUIDA
+  CANCELADA
+}
+
+/// Baixa do larvicida no estoque: feita na sincronização, pendente (sem saldo, lote desconhecido) ou resolvida depois.
+enum TreatmentStockStatus {
+  BAIXADO
+  PENDENTE
+  REGULARIZADO
+  CANCELADO
+}
+
+/// Zona de trabalho do ACE: o conjunto de quarteirões que ele visita a cada ciclo (PNCD: 800 a 1.000 imóveis).
+model VectorZone {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  /// Unidade de lotação dos agentes (a coordenação de endemias).
+  unitId    String   @map("unit_id") @db.Uuid
+  name      String
+  /// Agente titular; vazio quando a zona está descoberta.
+  aceId     String?  @map("ace_id") @db.Uuid
+  active    Boolean  @default(true)
+  notes     String?
+  createdBy String?  @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  blocks VectorZoneBlock[]
+
+  @@index([aceId])
+  @@map("vector_zones")
+}
+
+/// Quarteirão da zona (um quarteirão fica em uma zona só).
+model VectorZoneBlock {
+  zoneId  String @map("zone_id") @db.Uuid
+  blockId String @unique @map("block_id") @db.Uuid
+
+  zone VectorZone @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@id([zoneId, blockId])
+  @@map("vector_zone_blocks")
+}
+
+/// Visita do ACE ao imóvel (boletim de campo): situação, depósitos, focos, amostras, tratamento e nebulização.
+model VectorVisit {
+  id                 String               @id @default(uuid(7)) @db.Uuid
+  /// UUID gerado no aparelho: o reenvio da sincronização não duplica.
+  clientId           String               @unique @map("client_id") @db.Uuid
+  userId             String               @map("user_id") @db.Uuid
+  unitId             String               @map("unit_id") @db.Uuid
+  cbo                String               @db.Char(6)
+  householdId        String               @map("household_id") @db.Uuid
+  /// Retratos do imóvel na hora da visita (quarteirão, tipo e microárea), para os índices e a ficha do e-SUS.
+  blockId            String?              @map("block_id") @db.Uuid
+  propertyType       String               @map("property_type") @db.Char(2)
+  microArea          String?              @map("micro_area")
+  orderId            String?              @map("order_id") @db.Uuid
+  activity           VectorActivity
+  situation          VectorVisitSituation
+  /// Retorno a imóvel que estava pendente no mesmo ciclo (ou na mesma ordem de bloqueio).
+  recovery           Boolean              @default(false)
+  /// Ciclo bimestral do ano (AAAA-C).
+  cycle              String               @db.VarChar(7)
+  visitedAt          DateTime             @map("visited_at")
+  turno              Int
+  syncedAt           DateTime             @default(now()) @map("synced_at")
+  /// Contagem por tipo de depósito (A1, A2, B, C, D1, D2, E): inspecionados, com foco, eliminados e tratados.
+  deposits           Json?
+  depositsInspected  Int                  @default(0) @map("deposits_inspected")
+  depositsPositive   Int                  @default(0) @map("deposits_positive")
+  depositsEliminated Int                  @default(0) @map("deposits_eliminated")
+  depositsTreated    Int                  @default(0) @map("deposits_treated")
+  /// Tubitos coletados (número e tipo de depósito), para o laboratório de entomologia.
+  samples            Json?
+  samplesCount       Int                  @default(0) @map("samples_count")
+  /// Nebulização costal no bloqueio: INTRA, PERI ou INTRA_PERI.
+  ubv                String?
+  education          Boolean              @default(false)
+  latitude           Float?
+  longitude          Float?
+  accuracyM          Float?               @map("accuracy_m")
+  notes              String?
+
+  order      BlockingOrder?    @relation(fields: [orderId], references: [id])
+  treatments VectorTreatment[]
+
+  @@index([householdId, visitedAt])
+  @@index([userId, visitedAt])
+  @@index([unitId, visitedAt])
+  @@index([blockId, visitedAt])
+  @@index([orderId])
+  @@map("vector_visits")
+}
+
+/// Produto usado na visita, com a baixa por lote no depósito de endemias da unidade.
+model VectorTreatment {
+  id            String               @id @default(uuid(7)) @db.Uuid
+  visitId       String               @map("visit_id") @db.Uuid
+  seq           Int
+  productId     String               @map("product_id") @db.Uuid
+  lotId         String?              @map("lot_id") @db.Uuid
+  /// Número do lote como veio do aparelho (mesmo quando não foi achado no estoque).
+  lotNumber     String?              @map("lot_number")
+  quantity      Decimal              @db.Decimal(12, 3)
+  deposits      Int
+  locationId    String?              @map("location_id") @db.Uuid
+  stockStatus   TreatmentStockStatus @map("stock_status")
+  /// SALDO_INSUFICIENTE, LOTE_DESCONHECIDO, LOTE_DE_OUTRO_PRODUTO, LOTE_NAO_INFORMADO ou SEM_DEPOSITO.
+  pendingReason String?              @map("pending_reason")
+  /// O lote estava vencido na data da visita (fica registrado; o larvicida já foi usado).
+  expiredAtUse  Boolean              @default(false) @map("expired_at_use")
+  movementId    String?              @map("movement_id") @db.Uuid
+  resolvedBy    String?              @map("resolved_by") @db.Uuid
+  resolvedAt    DateTime?            @map("resolved_at")
+  resolution    String?
+  createdAt     DateTime             @default(now()) @map("created_at")
+
+  visit   VectorVisit @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  product Product     @relation(fields: [productId], references: [id])
+  lot     StockLot?   @relation(fields: [lotId], references: [id])
+
+  @@unique([visitId, seq])
+  @@index([stockStatus])
+  @@map("vector_treatments")
+}
+
+/// Entrada de larvicida recebido por remessa (Ministério da Saúde ou SES, pelo SIES), sem nota fiscal.
+model VectorStockReceipt {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  locationId String   @map("location_id") @db.Uuid
+  productId  String   @map("product_id") @db.Uuid
+  lotId      String   @map("lot_id") @db.Uuid
+  quantity   Decimal  @db.Decimal(12, 3)
+  /// Número da guia ou do documento de remessa.
+  document   String
+  origin     String
+  notes      String?
+  receivedBy String   @map("received_by") @db.Uuid
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@unique([document, lotId])
+  @@map("vector_stock_receipts")
+}
+
+/// Ordem de bloqueio de transmissão: casos próximos (até 2× o raio e 7 dias) numa ação só sobre os quarteirões no raio.
+model BlockingOrder {
+  id             String              @id @default(uuid(7)) @db.Uuid
+  year           Int
+  seq            Int
+  status         BlockingOrderStatus
+  radiusM        Int                 @map("radius_m")
+  /// Grupos de agravo dos casos ligados (dengue, chikungunya, zika).
+  groups         String[]
+  /// Algum caso com posição a conferir (face de quadra ou centro do quarteirão).
+  needsCheck     Boolean             @default(false) @map("needs_check")
+  openedAt       DateTime            @default(now()) @map("opened_at")
+  /// Vazio = aberta pela notificação, sem ação de usuário.
+  openedBy       String?             @map("opened_by") @db.Uuid
+  startedAt      DateTime?           @map("started_at")
+  concludedAt    DateTime?           @map("concluded_at")
+  concludedBy    String?             @map("concluded_by") @db.Uuid
+  conclusionNote String?             @map("conclusion_note")
+  cancelledAt    DateTime?           @map("cancelled_at")
+  cancelledBy    String?             @map("cancelled_by") @db.Uuid
+  cancelReason   String?             @map("cancel_reason")
+  /// Ordem que absorveu esta (o caso ganhou posição perto de outra ordem ativa).
+  mergedIntoId   String?             @map("merged_into_id") @db.Uuid
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+
+  cases     BlockingOrderCase[]
+  blocks    BlockingOrderBlock[]
+  assignees BlockingOrderAssignee[]
+  visits    VectorVisit[]
+
+  @@unique([year, seq])
+  @@index([status])
+  @@map("blocking_orders")
+}
+
+/// Notificação ligada à ordem, com o retrato da residência usado no raio (sem nome do paciente).
+model BlockingOrderCase {
+  id             String        @id @default(uuid(7)) @db.Uuid
+  orderId        String        @map("order_id") @db.Uuid
+  notificationId String        @unique @map("notification_id") @db.Uuid
+  patientId      String        @map("patient_id") @db.Uuid
+  householdId    String?       @map("household_id") @db.Uuid
+  groupKey       String        @map("group_key") @db.VarChar(40)
+  conditionKey   String        @map("condition_key") @db.VarChar(60)
+  lat            Float?
+  lng            Float?
+  precision      GeoPrecision?
+  blockId        String?       @map("block_id") @db.Uuid
+  /// Início dos sintomas ou, sem ele, a data em que a vigilância soube do caso.
+  referenceDate  DateTime      @map("reference_date") @db.Date
+  active         Boolean       @default(true)
+  linkedAt       DateTime      @default(now()) @map("linked_at")
+  unlinkedAt     DateTime?     @map("unlinked_at")
+  unlinkReason   String?       @map("unlink_reason")
+
+  order BlockingOrder @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@map("blocking_order_cases")
+}
+
+model BlockingOrderBlock {
+  orderId   String   @map("order_id") @db.Uuid
+  blockId   String   @map("block_id") @db.Uuid
+  /// Menor distância de uma residência da ordem até a borda do quarteirão (0 = dentro).
+  distanceM Float    @map("distance_m")
+  addedAt   DateTime @default(now()) @map("added_at")
+
+  order BlockingOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@id([orderId, blockId])
+  @@index([blockId])
+  @@map("blocking_order_blocks")
+}
+
+/// Agentes designados para executar a ordem (os titulares das zonas atingidas, ajustáveis pela supervisão).
+model BlockingOrderAssignee {
+  orderId    String   @map("order_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  assignedAt DateTime @default(now()) @map("assigned_at")
+  assignedBy String?  @map("assigned_by") @db.Uuid
+
+  order BlockingOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@id([orderId, userId])
+  @@index([userId])
+  @@map("blocking_order_assignees")
 }

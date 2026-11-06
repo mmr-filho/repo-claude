@@ -24,6 +24,22 @@ export interface TenantSettings {
   vigilancia: VigilanciaSettings;
   /** Território (PLT-3): regras locais do reconhecimento geográfico e do bloqueio de transmissão. */
   territorio: TerritorioSettings;
+  /** Endemias (VIG-3a): ordem de bloqueio de transmissão aberta pelas notificações. */
+  endemias: EndemiasSettings;
+}
+
+export interface EndemiasSettings {
+  /**
+   * Abre (ou amplia) a ordem de bloqueio a cada notificação de dengue, chikungunya ou Zika. Em epidemia, com a
+   * transmissão espalhada, a coordenação desliga e passa a agir por área (Diretrizes de 2025, cap. 9).
+   */
+  bloqueioAutomatico: boolean;
+  /** Casos da mesma área com até estes dias de diferença entram na mesma ordem (Diretrizes de 2025, p. 52: sete dias). */
+  janelaAgrupamentoDias: number;
+  /** Grupos de agravo que abrem a ordem (catálogo da Lista Nacional). */
+  gruposBloqueio: string[];
+  /** Dias sem início em campo para a ordem aparecer como atrasada (parâmetro local: o Ministério pede "o mais rápido possível"). */
+  alertaSemInicioDias: number;
 }
 
 export interface TerritorioSettings {
@@ -61,6 +77,7 @@ export const DEFAULT_TENANT_SETTINGS: TenantSettings = {
   assistantFaq: [],
   vigilancia: { ackMinutes: 60, onCallPhones: [], whatsappAlerts: false, relEnabled: false, prazosEncerramento: {}, modeloPolicial: null },
   territorio: { numeracaoQuarteirao: 'LOCALIDADE', raioBloqueioM: 150 },
+  endemias: { bloqueioAutomatico: true, janelaAgrupamentoDias: 7, gruposBloqueio: ['dengue', 'chikungunya', 'zika'], alertaSemInicioDias: 3 },
 };
 
 export function tenantSettings(raw: unknown): TenantSettings {
@@ -70,5 +87,6 @@ export function tenantSettings(raw: unknown): TenantSettings {
     ...value,
     vigilancia: { ...DEFAULT_TENANT_SETTINGS.vigilancia, ...(value.vigilancia ?? {}) },
     territorio: { ...DEFAULT_TENANT_SETTINGS.territorio, ...(value.territorio ?? {}) },
+    endemias: { ...DEFAULT_TENANT_SETTINGS.endemias, ...(value.endemias ?? {}) },
   };
 }

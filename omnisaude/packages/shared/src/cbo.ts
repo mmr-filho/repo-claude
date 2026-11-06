@@ -25,6 +25,7 @@ export const CBO_SUGESTOES: { code: string; label: string }[] = [
   { code: '223605', label: 'Fisioterapeuta' },
   { code: '223710', label: 'Nutricionista' },
   { code: '515105', label: 'Agente comunitário de saúde' },
+  { code: '515140', label: 'Agente de combate às endemias' },
   { code: '422105', label: 'Recepcionista' },
   { code: '411010', label: 'Assistente administrativo' },
   { code: '131205', label: 'Gerente de serviços de saúde' },

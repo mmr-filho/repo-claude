@@ -1250,7 +1250,7 @@ export const PARENTESCO_PARA_LEDI: Record<string, number> = { '01': 137, '02': 1
 export const RENDA_PARA_LEDI: Record<string, number> = { '01': 1, '02': 2, '03': 3, '04': 4, '05': 7, '06': 5, '07': 6 };
 
 /** Tipo de imóvel do cadastro → tipoDeImovel. */
-export const TIPO_IMOVEL_PARA_LEDI: Record<string, number> = { '01': 1, '02': 2, '03': 3, '04': 4, '05': 5, '06': 6, '07': 7, '08': 8, '09': 9, '10': 10, '11': 11, '12': 12, '99': 99 };
+export const TIPO_IMOVEL_PARA_LEDI: Record<string, number> = { '01': 1, '02': 2, '03': 3, '04': 4, '05': 5, '06': 6, '07': 7, '08': 8, '09': 9, '10': 10, '11': 11, '12': 12, '13': 13, '99': 99 };
 
 /** Situação de moradia do cadastro → SituacaoDeMoradia. */
 export const SITUACAO_MORADIA_PARA_LEDI: Record<string, number> = { '01': 75, '02': 76, '03': 77, '04': 78, '05': 79, '06': 80, '07': 81, '08': 82 };

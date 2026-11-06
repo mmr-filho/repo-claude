@@ -1,5 +1,6 @@
 import { isValidCns, isValidCpf } from '@omnisaude/shared';
-import { CBO_POR_MODELO, CONDUTA, CONDUTA_ODONTO, DESFECHO_VISITA, JUSTIFICATIVA_SEM_CPF, LOCAL_ATENDIMENTO, MOTIVO_VISITA, TIPO_ATENDIMENTO, TIPO_DADO, TIPO_IMOVEL_LEDI } from './codes';
+import { CBO_POR_MODELO, CONDUTA, CONDUTA_ODONTO, DESFECHO_VISITA, JUSTIFICATIVA_SEM_CPF, LOCAL_ATENDIMENTO, MOTIVO_VISITA, TIPO_ATENDIMENTO, TIPO_DADO, TIPO_GLICEMIA, TIPO_IMOVEL_LEDI } from './codes';
+import { MOTIVOS_FORA_DO_DOMICILIO, TIPOS_IMOVEL_NAO_DOMICILIO } from './fichas';
 import { normalizeName } from './ledi';
 import { lediFields } from './thrift';
 import type { LediObject, LediValue } from './thrift';
@@ -294,6 +295,9 @@ function checkVacinacao(c: Checker, o: LediObject) {
   });
 }
 
+/** Motivos que não se referem a uma pessoa: convite, outros e o controle ambiental e vetorial (ação educativa, foco, ação mecânica, tratamento). */
+const MOTIVOS_SEM_PESSOA = new Set([27, 28, 34, 35, 36, 37]);
+
 function checkVisitaDomiciliar(c: Checker, o: LediObject) {
   c.required(o, '$', 'FichaVisitaDomiciliarMasterThrift');
   const h = obj(o.headerTransport);
@@ -305,14 +309,41 @@ function checkVisitaDomiciliar(c: Checker, o: LediObject) {
     const v = obj(item);
     if (!v) return;
     const p = `$.visitasDomiciliares[${i}]`;
-    for (const f of ['turno', 'desfecho', 'motivosVisita', 'tipoDeImovel']) if (v[f] === undefined) c.add(`${p}.${f}`, 'campo obrigatório ausente');
+    for (const f of ['turno', 'desfecho', 'tipoDeImovel']) if (v[f] === undefined) c.add(`${p}.${f}`, 'campo obrigatório ausente');
     c.codeIn(v.turno, { '1': 'Manhã', '2': 'Tarde', '3': 'Noite' }, `${p}.turno`, 'turno');
     c.codeIn(v.desfecho, DESFECHO_VISITA, `${p}.desfecho`, 'desfecho');
     c.codeIn(v.tipoDeImovel, TIPO_IMOVEL_LEDI, `${p}.tipoDeImovel`, 'tipo de imóvel');
+    const realizada = num(v.desfecho) === 1;
+    const naoDomicilio = TIPOS_IMOVEL_NAO_DOMICILIO.has(num(v.tipoDeImovel) ?? -1);
     const motivos = arr(v.motivosVisita) ?? [];
-    if (!motivos.length) c.add(`${p}.motivosVisita`, 'informe ao menos um motivo da visita');
+    // LEDI 8.7.0: recusada ou ausente vai sem motivo; realizada pede ao menos um (manual do CDS).
+    if (realizada && !motivos.length) c.add(`${p}.motivosVisita`, 'informe ao menos um motivo da visita');
+    if (!realizada && motivos.length) c.add(`${p}.motivosVisita`, 'visita recusada ou ausente não leva motivo');
     if (new Set(motivos.map((m) => String(m))).size !== motivos.length) c.add(`${p}.motivosVisita`, 'motivos repetidos');
     for (const m of motivos) c.codeIn(m, MOTIVO_VISITA, `${p}.motivosVisita`, 'motivo da visita');
+    if (naoDomicilio) {
+      const fora = motivos.filter((m) => !MOTIVOS_FORA_DO_DOMICILIO.has(Number(m)));
+      if (fora.length) c.add(`${p}.motivosVisita`, `motivo ${fora.join(', ')} não é aceito em imóvel que não é domicílio`);
+      for (const f of [
+        'numProntuario',
+        'cnsCidadao',
+        'cpfCidadao',
+        'dtNascimento',
+        'sexo',
+        'pesoAcompanhamentoNutricional',
+        'alturaAcompanhamentoNutricional',
+        'pressaoSistolica',
+        'pressaoDiastolica',
+        'temperatura',
+        'glicemia',
+      ])
+        if (v[f] !== undefined) c.add(`${p}.${f}`, 'não deve ser preenchido em imóvel que não é domicílio');
+    }
+    if (!realizada)
+      for (const f of ['pesoAcompanhamentoNutricional', 'alturaAcompanhamentoNutricional', 'pressaoSistolica', 'pressaoDiastolica', 'temperatura', 'glicemia'])
+        if (v[f] !== undefined) c.add(`${p}.${f}`, 'visita recusada ou ausente não leva medição');
+    if (str(v.cnsCidadao) && str(v.cpfCidadao)) c.add(`${p}.cpfCidadao`, 'CPF e CNS do cidadão não vão juntos (use o CPF)');
+    if (v.tipoGlicemia !== undefined) c.codeIn(v.tipoGlicemia, TIPO_GLICEMIA, `${p}.tipoGlicemia`, 'tipo de glicemia');
     if (v.stForaArea !== true && !str(v.microArea)) c.add(`${p}.microArea`, 'informe a microárea ou marque fora de área');
     if (str(v.microArea) && !/^\d{2}$/.test(str(v.microArea)!)) c.add(`${p}.microArea`, 'microárea deve ter 2 dígitos');
     const identificado = str(v.cnsCidadao) || str(v.cpfCidadao) || v.dtNascimento !== undefined || v.sexo !== undefined;
@@ -321,7 +352,9 @@ function checkVisitaDomiciliar(c: Checker, o: LediObject) {
       if (v.dtNascimento === undefined) c.add(`${p}.dtNascimento`, 'data de nascimento obrigatória quando a pessoa é identificada');
       if (v.sexo === undefined) c.add(`${p}.sexo`, 'sexo obrigatório quando a pessoa é identificada');
       c.dateNotFuture(v.dtNascimento, `${p}.dtNascimento`);
-    } else if (num(v.tipoDeImovel) === 1 && num(v.desfecho) === 1) c.add(`${p}.cnsCidadao`, 'visita realizada a domicílio precisa identificar a pessoa visitada (CNS ou CPF)');
+    } else if (!naoDomicilio && realizada && (!motivos.length || motivos.some((m) => !MOTIVOS_SEM_PESSOA.has(Number(m)))))
+      // Acompanhamento e busca ativa são da pessoa; a visita só de controle vetorial pode não identificar ninguém.
+      c.add(`${p}.cnsCidadao`, 'visita realizada a domicílio precisa identificar a pessoa visitada (CNS ou CPF)');
     const lat = num(v.latitude);
     const lng = num(v.longitude);
     if ((lat === undefined) !== (lng === undefined)) c.add(`${p}.latitude`, 'latitude e longitude devem vir juntas');

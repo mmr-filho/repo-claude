@@ -319,7 +319,7 @@ export class NotificacaoService implements OnModuleInit {
       });
       if (count === 1) {
         await sys.db.notificationEvent.create({ data: { notificationId: ativa.id, kind: 'RESULTADO_EXAME', userId: autor.userId, data: { exame: cat.key, examRequestId: exame.id } } });
-        this.avisar(sys, ativa);
+        await this.avisar(sys, ativa);
         return [this.avisoExistente(ativa, muda ? prazo.vence : ativa.dueAt, 'CONFIRMADA', autor)];
       }
       // Mudou entre a leitura e a gravação (outra pessoa editou): relê e tenta de novo.
@@ -346,7 +346,7 @@ export class NotificacaoService implements OnModuleInit {
     if (fechada) {
       if (fechada.groupKey === cat.grupo && fechada.status === 'ENCERRADA' && fechada.finalClass === '1') return [];
       await sys.db.notificationEvent.create({ data: { notificationId: fechada.id, kind: 'RESULTADO_APOS_FECHAMENTO', userId: autor.userId, data: { exame: cat.key, examRequestId: exame.id, situacao: fechada.status } } });
-      this.avisar(sys, fechada);
+      await this.avisar(sys, fechada);
       return [this.avisoExistente(fechada, null, fechada.status === 'ENCERRADA' ? 'ENCERRADA' : 'DESCARTADA', autor)];
     }
     const e = exame.encounterId ? await sys.db.encounter.findUnique({ where: { id: exame.encounterId }, include: { unit: true } }) : null;
@@ -592,7 +592,7 @@ export class NotificacaoService implements OnModuleInit {
     });
     if (count !== 1) return;
     await sys.db.notificationEvent.create({ data: { notificationId: n.id, kind: 'POLICIAL_EXIGIDA', userId: p.autor.userId } });
-    this.avisar(sys, n);
+    await this.avisar(sys, n);
   }
 
   private async criarRascunho(
@@ -723,7 +723,7 @@ export class NotificacaoService implements OnModuleInit {
             },
           },
         });
-        this.avisar(sys, n);
+        await this.avisar(sys, n);
         return {
           id: n.id,
           numero: n.number,
@@ -748,9 +748,24 @@ export class NotificacaoService implements OnModuleInit {
    * Evento em tempo real só com o id: as salas do tenant e da unidade incluem a recepção e os painéis de TV, então
    * nada que indique o agravo (nem "sigiloso" ou o prazo) vai no evento; a tela recarrega pela API, que aplica o alcance.
    */
-  private avisar(sys: { tenant: { id: string } }, n: { id: string; unitId: string }) {
+  private async avisar(sys: SystemContext, n: { id: string; unitId: string }) {
     this.realtime.emitToTenant(sys.tenant.id, 'vigilancia:notificacao', { id: n.id });
     this.realtime.emitToUnit(sys.tenant.id, n.unitId, 'vigilancia:notificacao', { id: n.id });
+    // Depois do commit, os ouvintes (a ordem de bloqueio das endemias) reagem; a falha nunca desfaz a notificação: a
+    // varredura periódica deles recupera.
+    for (const ouvinte of this.ouvintes)
+      try {
+        await ouvinte(sys, n.id);
+      } catch (err) {
+        this.logger.error(`Ouvinte da notificação ${n.id} falhou: ${(err as Error).message}`);
+      }
+  }
+
+  private readonly ouvintes: ((sys: SystemContext, notificationId: string) => Promise<void>)[] = [];
+
+  /** Reação a toda criação ou mudança de notificação (depois do commit), sem dependência circular entre módulos. */
+  aoMudarNotificacao(ouvinte: (sys: SystemContext, notificationId: string) => Promise<void>) {
+    this.ouvintes.push(ouvinte);
   }
 
   // ───────────────────────────── notificação manual ─────────────────────────────
@@ -1089,7 +1104,7 @@ export class NotificacaoService implements OnModuleInit {
         await tx.notificationEvent.create({ data: { notificationId: id, kind: 'EDITADA', userId: ctx.session.userId, data: mudanca } });
         await this.audit.record(ctx, tx, { action: 'notificacao.editar', entityType: 'Notification', entityId: id, payload: mudanca });
       });
-      this.avisar(ctx, n);
+      await this.avisar(ctx, n);
       return this.detalhe(ctx, id);
     }
     if (n.status === 'ENCERRADA') throw new DomainError('ENCERRADA', 'Notificação encerrada: a vigilância municipal reabre para editar', HttpStatus.UNPROCESSABLE_ENTITY);
@@ -1150,7 +1165,7 @@ export class NotificacaoService implements OnModuleInit {
       });
       if (n.status === 'NOTIFICADA' || afrouxa || dispensa !== undefined) await this.audit.record(ctx, tx, { action: 'notificacao.editar', entityType: 'Notification', entityId: id, payload: { antes, depois } });
     });
-    this.avisar(ctx, n);
+    await this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -1190,7 +1205,7 @@ export class NotificacaoService implements OnModuleInit {
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'CONFIRMADA', userId: ctx.session.userId, data: { semana: semanas.SEM_NOT, sistema: rota.sistema } } });
       await this.audit.record(ctx, tx, { action: 'notificacao.confirmar', entityType: 'Notification', entityId: id, payload: { numero: n.number, agravo: n.conditionKey } });
     });
-    this.avisar(ctx, n);
+    await this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -1218,7 +1233,7 @@ export class NotificacaoService implements OnModuleInit {
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'DESCARTADA', userId: ctx.session.userId, notes: motivo.trim() } });
       await this.audit.record(ctx, tx, { action: 'notificacao.descartar', entityType: 'Notification', entityId: id, payload: { numero: n.number, motivo } });
     });
-    this.avisar(ctx, n);
+    await this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -1235,7 +1250,7 @@ export class NotificacaoService implements OnModuleInit {
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'CIENCIA_SMS', userId: ctx.session.userId } });
       await this.audit.record(ctx, tx, { action: 'notificacao.ciencia', entityType: 'Notification', entityId: id, payload: { numero: n.number } });
     });
-    this.avisar(ctx, n);
+    await this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -1289,7 +1304,7 @@ export class NotificacaoService implements OnModuleInit {
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'COMUNICACAO', userId: ctx.session.userId, data: { esfera: input.target, meio: input.channel } } });
       await this.audit.record(ctx, tx, { action: 'notificacao.comunicar', entityType: 'Notification', entityId: id, payload: { esfera: input.target, meio: input.channel } });
     });
-    this.avisar(ctx, n);
+    await this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -1569,7 +1584,7 @@ export class NotificacaoService implements OnModuleInit {
       if ((err as { code?: string }).code === 'P2002') throw conflict(`O número ${numero} já foi informado para outra notificação do ${SISTEMA_INFO[sistema].label}`);
       throw err;
     }
-    this.avisar(ctx, n);
+    await this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -1588,7 +1603,7 @@ export class NotificacaoService implements OnModuleInit {
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'DIGITACAO_DESFEITA', userId: ctx.session.userId, notes: motivo.trim(), data: { numeroAnterior: n.officialNumber } } });
       await this.audit.record(ctx, tx, { action: 'notificacao.numero_desfeito', entityType: 'Notification', entityId: id, payload: { numero: n.officialNumber, motivo } });
     });
-    this.avisar(ctx, n);
+    await this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -1638,7 +1653,7 @@ export class NotificacaoService implements OnModuleInit {
       });
       await this.audit.record(ctx, tx, { action: 'notificacao.encerrar', entityType: 'Notification', entityId: id, payload: { numero: n.number, classificacao: e.classificacao } });
     });
-    this.avisar(ctx, n);
+    await this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -1670,7 +1685,7 @@ export class NotificacaoService implements OnModuleInit {
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'REABERTA', userId: ctx.session.userId, notes: motivo.trim() } });
       await this.audit.record(ctx, tx, { action: 'notificacao.reabrir', entityType: 'Notification', entityId: id, payload: { numero: n.number, motivo } });
     });
-    this.avisar(ctx, n);
+    await this.avisar(ctx, n);
     return this.detalhe(ctx, id);
   }
 
@@ -1875,7 +1890,7 @@ export class NotificacaoService implements OnModuleInit {
       const { count } = await sys.db.notification.updateMany({ where: { id: n.id, overdueAt: null }, data: { overdueAt: agora } });
       if (count !== 1) continue;
       await sys.db.notificationEvent.create({ data: { notificationId: n.id, kind: 'PRAZO_VENCIDO' } });
-      this.avisar(sys, n);
+      await this.avisar(sys, n);
       resultado.vencidas++;
     }
     return resultado;

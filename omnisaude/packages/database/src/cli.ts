@@ -40,7 +40,7 @@ async function main() {
     const master = createMasterClient(masterUrl);
     try {
       if (process.env.SEED_DEMO === 'true') {
-        const result = await seedDemo({ master, credentials, primaryHost: host, primaryPort: port, replicaHost, replicaPort, platformUser: !process.env.PLATFORM_ADMIN_PASSWORD });
+        const result = await seedDemo({ master, credentials, primaryHost: host, primaryPort: port, replicaHost, replicaPort, platformUser: !process.env.PLATFORM_ADMIN_PASSWORD, territorioDemo: true });
         console.log(result.skipped ? `Tenant demo já existe (${result.dbName})` : `Tenant demo criado em ${result.dbName}`);
       }
       await ensurePlatformAdmin(master);
@@ -113,7 +113,7 @@ async function main() {
     await applyMigrations(masterUrl, 'master');
     const master = createMasterClient(masterUrl);
     try {
-      const result = await seedDemo({ master, credentials, primaryHost: host, primaryPort: port, replicaHost, replicaPort, platformUser: !process.env.PLATFORM_ADMIN_PASSWORD });
+      const result = await seedDemo({ master, credentials, primaryHost: host, primaryPort: port, replicaHost, replicaPort, platformUser: !process.env.PLATFORM_ADMIN_PASSWORD, territorioDemo: true });
       console.log(result.skipped ? `Tenant demo já populado (${result.dbName})` : `Tenant demo criado em ${result.dbName}`);
       await ensurePlatformAdmin(master);
     } finally {

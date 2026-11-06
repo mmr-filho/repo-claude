@@ -1,17 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import { distanciaM, fromZonedParts, ORDEM_PRECISAO, PRECISAO_INFO, type PrecisaoGeo } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
+import type { TenantClient } from '@omnisaude/database';
 import type { RequestContext } from '../../core/context';
 import { LocalizadorService } from '../territorio/localizador.service';
 import { TerritorioService } from '../territorio/territorio.service';
 import { NotificacaoService } from './notificacao.service';
 
-interface Residencia {
+export interface Residencia {
   lat: number;
   lng: number;
   precisao: PrecisaoGeo;
   blockId: string | null;
   fonte: 'cadastro' | 'ficha';
+  /** Domicílio atual do paciente (seguindo a unificação), quando há; a ficha guarda só o retrato da posição. */
+  householdId: string | null;
 }
 
 const inicioDoDia = (iso: string, tz: string) => fromZonedParts({ year: Number(iso.slice(0, 4)), month: Number(iso.slice(5, 7)), day: Number(iso.slice(8, 10)), hour: 0, minute: 0, second: 0 }, tz);
@@ -36,15 +39,15 @@ export class MapaCasosService {
    * sem ela, a do domicílio atual do paciente (seguindo a unificação de cadastros duplicados). Domicílio com posição
    * sem precisão conhecida é tratado como a mais fraca, nunca como GPS.
    */
-  private async residencias(ctx: RequestContext, ns: { id: string; patientId: string; residenceLat: number | null; residenceLng: number | null; residencePrecision: string | null }[]) {
-    const casaDe = new Map<string, { latitude: number | null; longitude: number | null; geoPrecision: string | null; blockId: string | null } | null>();
+  async residencias(db: TenantClient, ns: { id: string; patientId: string; residenceLat: number | null; residenceLng: number | null; residencePrecision: string | null }[]) {
+    const casaDe = new Map<string, { id: string; latitude: number | null; longitude: number | null; geoPrecision: string | null; blockId: string | null } | null>();
     let pendentes = [...new Set(ns.map((n) => n.patientId))];
     const destino = new Map(pendentes.map((id) => [id, id]));
     // Até 5 saltos de unificação (duplicado → sobrevivente).
     for (let salto = 0; salto < 5 && pendentes.length; salto++) {
-      const pacientes = await ctx.db.patient.findMany({
+      const pacientes = await db.patient.findMany({
         where: { id: { in: pendentes } },
-        select: { id: true, mergedIntoId: true, family: { select: { household: { select: { latitude: true, longitude: true, geoPrecision: true, blockId: true } } } } },
+        select: { id: true, mergedIntoId: true, family: { select: { household: { select: { id: true, latitude: true, longitude: true, geoPrecision: true, blockId: true } } } } },
       });
       const proximos: string[] = [];
       for (const p of pacientes) {
@@ -61,7 +64,7 @@ export class MapaCasosService {
         const h = casaDe.get(n.patientId);
         if (n.residenceLat != null && n.residenceLng != null) {
           // Ficha anterior à semana 25 sem a precisão: naquela época a posição do domicílio só vinha do GPS.
-          const ficha: Residencia = { lat: n.residenceLat, lng: n.residenceLng, precisao: (n.residencePrecision ?? 'GPS_CAMPO') as PrecisaoGeo, blockId: null, fonte: 'ficha' };
+          const ficha: Residencia = { lat: n.residenceLat, lng: n.residenceLng, precisao: (n.residencePrecision ?? 'GPS_CAMPO') as PrecisaoGeo, blockId: null, fonte: 'ficha', householdId: h?.id ?? null };
           // O mesmo imóvel confirmado depois em campo (posição melhor, a até 100 m do retrato) vale mais que o retrato;
           // longe dele é outra casa (mudança de família) e fica a residência notificada.
           const melhor =
@@ -70,9 +73,10 @@ export class MapaCasosService {
             !!h.geoPrecision &&
             ORDEM_PRECISAO[h.geoPrecision as PrecisaoGeo] < ORDEM_PRECISAO[ficha.precisao] &&
             distanciaM([h.longitude, h.latitude], [ficha.lng, ficha.lat]) <= 100;
-          return [n.id, melhor ? { lat: h!.latitude!, lng: h!.longitude!, precisao: h!.geoPrecision as PrecisaoGeo, blockId: h!.blockId, fonte: 'cadastro' } : ficha];
+          return [n.id, melhor ? { lat: h!.latitude!, lng: h!.longitude!, precisao: h!.geoPrecision as PrecisaoGeo, blockId: h!.blockId, fonte: 'cadastro', householdId: h!.id } : ficha];
         }
-        if (h?.latitude != null && h.longitude != null) return [n.id, { lat: h.latitude, lng: h.longitude, precisao: (h.geoPrecision ?? 'MUNICIPIO') as PrecisaoGeo, blockId: h.blockId, fonte: 'cadastro' as const }];
+        if (h?.latitude != null && h.longitude != null)
+          return [n.id, { lat: h.latitude, lng: h.longitude, precisao: (h.geoPrecision ?? 'MUNICIPIO') as PrecisaoGeo, blockId: h.blockId, fonte: 'cadastro' as const, householdId: h.id }];
         return [n.id, null];
       }),
     );
@@ -101,7 +105,7 @@ export class MapaCasosService {
       }
       return true;
     });
-    const pos = await this.residencias(ctx, visiveis);
+    const pos = await this.residencias(ctx.db, visiveis);
     // Quarteirão do caso: o do imóvel; para o retrato da ficha, pela posição.
     const pontos = [];
     let semPosicao = 0;
@@ -156,7 +160,7 @@ export class MapaCasosService {
    */
   async quarteiroesDoCaso(ctx: RequestContext, id: string, metros?: number) {
     const n = await this.notificacoes.acessar(ctx, id, { leitura: true });
-    const r = (await this.residencias(ctx, [n])).get(n.id) ?? null;
+    const r = (await this.residencias(ctx.db, [n])).get(n.id) ?? null;
     const raioM = metros ?? ctx.tenant.settings.territorio.raioBloqueioM;
     if (!r) return { ponto: null, raioM, quarteiroes: [], regra: 'CONFIRMAR_EM_CAMPO' as const, motivo: 'Residência sem posição: marque o imóvel no mapa do território ou geocodifique pela base do IBGE.' };
     const lista = await this.localizador.quarteiroesNoRaio(ctx.db, r.lat, r.lng, raioM);

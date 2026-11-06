@@ -557,7 +557,8 @@ export class AcsService {
     const visitas = await ctx.db.homeVisit.findMany({ where, select: { professionalId: true, outcome: true, householdId: true, patientId: true, reasons: true } });
     // Agentes do escopo: membros de equipe com CBO de ACS/TACS mais quem registrou visita no período.
     const membros = await ctx.db.teamMember.findMany({
-      where: { active: true, userId: { not: null }, cbo: { startsWith: '5151' }, team: e.teamId ? { id: e.teamId } : { unitId: e.unitId, active: true } },
+      // O agente de combate às endemias (515140) também é da família 5151, mas não tem microárea de ACS.
+      where: { active: true, userId: { not: null }, cbo: { startsWith: '5151', notIn: ['515140', '5151F1'] }, team: e.teamId ? { id: e.teamId } : { unitId: e.unitId, active: true } },
       include: { team: { select: { id: true, name: true } }, user: { select: { id: true, name: true } } },
     });
     const agenteIds = new Set<string>([...membros.map((m) => m.userId as string), ...visitas.map((v) => v.professionalId)]);

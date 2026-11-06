@@ -29,9 +29,7 @@ export class DispensationService {
   async dispense(ctx: RequestContext, input: z.infer<typeof dispensationSchema>) {
     const patient = await ctx.db.patient.findUnique({ where: { id: input.patientId } });
     if (!patient) throw notFound('Paciente');
-    const location = input.locationId
-      ? await this.inventory.ownLocation(ctx, input.locationId)
-      : await ctx.db.stockLocation.findFirst({ where: { unitId: ctx.session.unitId, kind: { in: [...DISPENSING_LOCATIONS] } } });
+    const location = input.locationId ? await this.inventory.ownLocation(ctx, input.locationId) : await ctx.db.stockLocation.findFirst({ where: { unitId: ctx.session.unitId, kind: { in: [...DISPENSING_LOCATIONS] } } });
     if (!location) throw new DomainError('SEM_FARMACIA', 'A unidade do contexto ativo não tem farmácia de dispensação');
     if (!(DISPENSING_LOCATIONS as readonly string[]).includes(location.kind)) throw forbidden('Dispensação só a partir de farmácia');
 
@@ -39,6 +37,8 @@ export class DispensationService {
     if (products.length !== new Set(input.items.map((i) => i.productId)).size) throw notFound('Produto');
     const byId = new Map(products.map((p) => [p.id, p]));
     const controlled = products.filter((p) => p.controlledList);
+    const vetorial = products.find((p) => p.vectorControl);
+    if (vetorial) throw new DomainError('INSUMO_VETORIAL', `${vetorial.description} é insumo do controle vetorial: sai pelo tratamento na visita do ACE, não pela dispensação`);
 
     let prescription: Awaited<ReturnType<typeof this.loadPrescription>> | null = null;
     if (input.prescriptionId) {
@@ -46,9 +46,7 @@ export class DispensationService {
       if (prescription.patientId !== patient.id) throw new DomainError('PRESCRICAO_OUTRO_PACIENTE', 'A prescrição é de outro paciente');
       if (prescription.status !== 'ATIVA') throw new DomainError('PRESCRICAO_INATIVA', 'Prescrição suspensa ou encerrada');
       const prescribed = prescription.items.filter((i) => !i.suspendedAt);
-      const missing = products.filter(
-        (p) => !prescribed.some((i) => i.productId === p.id || (i.activeIngredient && p.activeIngredient && normalizeText(i.activeIngredient) === normalizeText(p.activeIngredient))),
-      );
+      const missing = products.filter((p) => !prescribed.some((i) => i.productId === p.id || (i.activeIngredient && p.activeIngredient && normalizeText(i.activeIngredient) === normalizeText(p.activeIngredient))));
       if (missing.length) throw new DomainError('ITEM_NAO_PRESCRITO', 'Item não consta na prescrição', HttpStatus.UNPROCESSABLE_ENTITY, { products: missing.map((m) => m.description) });
     }
     if (controlled.length && !prescription && !input.externalPrescription) {

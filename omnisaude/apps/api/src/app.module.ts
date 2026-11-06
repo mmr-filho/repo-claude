@@ -27,6 +27,7 @@ import { AssistantModule } from './modules/assistant/assistant.module';
 import { OmbudsmanModule } from './modules/ombudsman/ombudsman.module';
 import { TerritorioModule } from './modules/territorio/territorio.module';
 import { VigilanciaModule } from './modules/vigilancia/vigilancia.module';
+import { EndemiasModule } from './modules/endemias/endemias.module';
 import { CitizenModule } from './modules/citizen/citizen.module';
 import { TfdModule } from './modules/tfd/tfd.module';
 import { TransportModule } from './modules/transport/transport.module';
@@ -59,6 +60,7 @@ import { TriageModule } from './modules/triage/triage.module';
     OmbudsmanModule,
     VigilanciaModule,
     TerritorioModule,
+    EndemiasModule,
     PharmacyModule,
     BedsModule,
     PopsModule,

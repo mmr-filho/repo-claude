@@ -11,6 +11,6 @@ import { VigilanciaController } from './vigilancia.controller';
   imports: [IntegrationsModule, TerritorioModule],
   controllers: [VigilanciaController],
   providers: [CatalogoVigilanciaService, NotificacaoService, SaidaOficialService, MapaCasosService],
-  exports: [CatalogoVigilanciaService, NotificacaoService, SaidaOficialService],
+  exports: [CatalogoVigilanciaService, NotificacaoService, SaidaOficialService, MapaCasosService],
 })
 export class VigilanciaModule {}

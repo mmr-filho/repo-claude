@@ -86,8 +86,11 @@ export const MOTIVO_VISITA_LABEL: Record<string, string> = Object.fromEntries(MO
 /** Tipo de glicemia capilar na visita (código do LEDI). */
 export const TIPO_GLICEMIA: Record<string, string> = { '1': 'Jejum', '2': 'Pós-prandial', '3': 'Pré-prandial', '4': 'Não especificado' };
 
-/** CBOs de agente comunitário de saúde e técnico de ACS (família 5151). */
-export const ehCboAcs = (cbo: string | null | undefined) => /^5151/.test(cbo ?? '');
+/** CBOs de agente comunitário de saúde (família 5151, menos o agente de combate às endemias, 515140 e o provisório 5151F1). */
+export const ehCboAcs = (cbo: string | null | undefined) => /^5151/.test(cbo ?? '') && !ehCboAce(cbo);
+
+/** Agente de combate às endemias: 5151-40 (e o código provisório 5151-F1, que o e-SUS ainda aceita). */
+export const ehCboAce = (cbo: string | null | undefined) => /^5151(40|F1)$/i.test(cbo ?? '');
 
 // ─── Operações registradas em campo ───────────────────────────────────────────
 

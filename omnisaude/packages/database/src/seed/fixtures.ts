@@ -30,7 +30,22 @@ export const UNITS = [
 ] as const;
 export type UnitKey = (typeof UNITS)[number]['key'];
 
-type RoleName = 'RECEPCAO' | 'ENFERMAGEM' | 'MEDICO' | 'MULTIPROFISSIONAL' | 'SERVICO_SOCIAL' | 'NIR' | 'FARMACIA' | 'FATURAMENTO' | 'GESTOR' | 'ACS' | 'VIGILANCIA_EPIDEMIOLOGICA' | 'NUCLEO_VIGILANCIA';
+type RoleName =
+  | 'RECEPCAO'
+  | 'ENFERMAGEM'
+  | 'MEDICO'
+  | 'MULTIPROFISSIONAL'
+  | 'SERVICO_SOCIAL'
+  | 'NIR'
+  | 'FARMACIA'
+  | 'FATURAMENTO'
+  | 'GESTOR'
+  | 'ACS'
+  | 'VIGILANCIA_EPIDEMIOLOGICA'
+  | 'NUCLEO_VIGILANCIA'
+  | 'ACE'
+  | 'SUPERVISOR_ENDEMIAS'
+  | 'COORDENADOR_ENDEMIAS';
 
 export const STAFF: {
   key: string;
@@ -186,6 +201,28 @@ export const STAFF: {
     cns: cnsFromBase('10000000015'),
     council: 'COREN-TO 100015',
     assignments: [{ unit: 'hosp', role: 'NUCLEO_VIGILANCIA', cbo: '223505' }],
+  },
+  // Controle vetorial (VIG-3a): lotados na Vigilância em Saúde, onde fica o depósito de endemias.
+  {
+    key: 'ace',
+    name: 'Rafael Souza Agente de Endemias',
+    cpf: completeCpf('100000016'),
+    cns: cnsFromBase('10000000016'),
+    assignments: [{ unit: 'vig', role: 'ACE', cbo: '515140' }],
+  },
+  {
+    key: 'supervisora',
+    name: 'Sílvia Moura Supervisora de Endemias',
+    cpf: completeCpf('100000017'),
+    cns: cnsFromBase('10000000017'),
+    assignments: [{ unit: 'vig', role: 'SUPERVISOR_ENDEMIAS', cbo: '515140' }],
+  },
+  {
+    key: 'coordenador',
+    name: 'Otávio Reis Coordenador de Endemias',
+    cpf: completeCpf('100000018'),
+    cns: cnsFromBase('10000000018'),
+    assignments: [{ unit: 'vig', role: 'COORDENADOR_ENDEMIAS', cbo: '131205' }],
   },
 ];
 
@@ -365,6 +402,44 @@ function gtin(seq: number): string {
   const body = `789000000${String(seq).padStart(3, '0')}`;
   return `${body}${gtinCheckDigit(body)}`;
 }
+
+/**
+ * Larvicidas da rotina (Nota Informativa nº 29/2024-CGARB, repetida na NI 10/2025): Bti WG 37,4% (em gramas) e o disco
+ * de resina de piriproxifeno 2% para recipientes de 40 a 500 L que não podem ser removidos. Lotes fictícios.
+ */
+export const LARVICIDES = [
+  {
+    code: 'LAR001',
+    description: 'Larvicida biológico Bti WG 37,4% (Bacillus thuringiensis israelensis, cepa AM65-52)',
+    activeIngredient: 'Bacillus thuringiensis israelensis',
+    concentration: '37,4% p/p (3.000 UTI/mg)',
+    pharmaceuticalForm: 'Granulado dispersível em água (WG)',
+    unit: 'G',
+    lots: [
+      { lotNumber: 'BTI2601', expiryDays: 300, quantity: 5000 },
+      { lotNumber: 'BTI2509', expiryDays: 40, quantity: 600 },
+    ],
+  },
+  {
+    code: 'LAR002',
+    description: 'Larvicida piriproxifeno 2% em disco de resina de liberação lenta',
+    activeIngredient: 'Piriproxifeno',
+    concentration: '2% p/p',
+    pharmaceuticalForm: 'Disco de resina',
+    unit: 'UN',
+    lots: [{ lotNumber: 'PPF2603', expiryDays: 420, quantity: 3 }],
+  },
+] as const;
+
+/** Imóveis sem família do território de demonstração (comércio, terreno baldio, ponto estratégico, escola). */
+export const DEMO_PROPERTIES = [
+  { street: 'Avenida Goiás', number: '1200', propertyType: '04', notes: 'Borracharia (ponto estratégico)', lat: -11.73055, lng: -49.06985 },
+  { street: 'Rua Exemplo', number: 's/n', propertyType: '03', notes: 'Terreno baldio', lat: -11.72935, lng: -49.06985 },
+  { street: 'Avenida Goiás', number: '1350', propertyType: '02', notes: 'Mercado', lat: -11.72815, lng: -49.0683 },
+  { street: 'Rua das Flores', number: '50', propertyType: '05', notes: 'Escola municipal (imóvel especial)', lat: -11.73055, lng: -49.0683 },
+  { street: 'Rua das Flores', number: '72', propertyType: '01', notes: 'Residência sem cadastro de família', lat: -11.72935, lng: -49.0683 },
+  { street: 'Rua das Flores', number: '90', propertyType: '01', notes: 'Residência sem cadastro de família', lat: -11.72815, lng: -49.06985 },
+] as const;
 
 export const PRODUCTS = [
   { code: 'MED001', description: 'Dipirona sódica 500 mg comprimido', activeIngredient: 'dipirona', unit: 'CP', gtin: gtin(1) },

@@ -258,8 +258,8 @@ async function carregarDados(db: TenantClient, team: { id: string; typeCode: str
     }),
     db.vaccination.findMany({ where: { patient: vinculo }, select: { patientId: true, vaccineCode: true, vaccineName: true, appliedAt: true } }),
     db.patientCondition.findMany({ where: { patient: vinculo }, select: { patientId: true, system: true, code: true, lineOfCare: true, onsetAt: true, recordedAt: true, active: true, resolvedAt: true } }),
-    // Visitas domiciliares realizadas por ACS/TACS (CBO 5151) registradas no app do ACS.
-    db.homeVisit.findMany({ where: { outcome: '1', cbo: { startsWith: '5151' }, visitedAt: { gte: desde }, patient: vinculo }, select: { patientId: true, visitedAt: true } }),
+    // Visitas domiciliares realizadas por ACS/TACS (CBO 5151, menos o ACE 515140) registradas no app do ACS.
+    db.homeVisit.findMany({ where: { outcome: '1', cbo: { startsWith: '5151', notIn: ['515140', '5151F1'] }, visitedAt: { gte: desde }, patient: vinculo }, select: { patientId: true, visitedAt: true } }),
   ]);
   const producao: DadosEquipe['procedimentos'] = [];
   const lotes = [...chunk(ids, 5000).map((c) => ({ patientId: { in: c } })), ...(membroIds.length ? [{ professionalId: { in: membroIds } }] : [])];

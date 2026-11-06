@@ -104,7 +104,7 @@ export class TerritorioController {
 
   @Post('imoveis/:id/posicao')
   @HttpCode(200)
-  @RequirePermission('territorio.editar', 'acs.campo')
+  @RequirePermission('territorio.editar', 'acs.campo', 'endemias.campo')
   posicao(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(posicaoSchema)) body: z.infer<typeof posicaoSchema>) {
     return this.territorio.posicionarImovel(ctx, id, body);
   }

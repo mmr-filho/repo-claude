@@ -323,3 +323,71 @@ describe('ficha de visita domiciliar e territorial (ACS)', () => {
     expect(issues).toEqual(expect.arrayContaining(['$.headerTransport.cboCodigo_2002', '$.visitasDomiciliares[0].motivosVisita', '$.visitasDomiciliares[0].microArea', '$.visitasDomiciliares[0].cnsCidadao']));
   });
 });
+
+describe('ficha de visita domiciliar e territorial (ACE, controle vetorial, LEDI 8.7.0)', () => {
+  const headerAce = { ...header, cbo: '515140', ine: undefined };
+  it('agente de endemias sem equipe: ponto estratégico sem pessoa, domicílio com o responsável (só CPF), fechado e recusado sem motivo', () => {
+    const ficha = buildVisitaDomiciliar({
+      uuid: lediUuid('9000117'),
+      header: headerAce,
+      visitas: [
+        // Ponto estratégico: a pessoa e a visita periódica (29) não entram, mesmo se vierem.
+        { turno: 1, cidadao, motivos: [35, 36, 37, 29], desfecho: 1, foraDaArea: true, tipoImovel: '04', pesoKg: 70, latitude: -11.708192009057754, longitude: -49.04816543454751 },
+        { turno: 1, cidadao, motivos: [34, 35, 37], desfecho: 1, foraDaArea: true, tipoImovel: '01' },
+        { turno: 2, motivos: [34], desfecho: 3, foraDaArea: true, tipoImovel: '01' },
+        { turno: 2, motivos: [], desfecho: 2, microArea: '01', tipoImovel: '02' },
+        // Domicílio sem família cadastrada: só controle vetorial, sem pessoa.
+        { turno: 2, motivos: [34], desfecho: 1, foraDaArea: true, tipoImovel: '01' },
+        { turno: 3, motivos: [28], desfecho: 1, foraDaArea: true, tipoImovel: '13' },
+      ],
+    });
+    expect(validateFicha(TIPO_DADO.VISITA_DOMICILIAR, ficha, new Date('2026-10-31T12:00:00Z'))).toEqual([]);
+    const v = ficha.visitasDomiciliares as LediObject[];
+    expect((ficha.headerTransport as LediObject).ine).toBeUndefined();
+    expect(v[0]).toMatchObject({ tipoDeImovel: 4, motivosVisita: [35, 36, 37], desfecho: 1, stForaArea: true, latitude: -11.708192, longitude: -49.048165 });
+    for (const f of ['cnsCidadao', 'cpfCidadao', 'dtNascimento', 'sexo', 'pesoAcompanhamentoNutricional']) expect(v[0]![f]).toBeUndefined();
+    expect(v[1]).toMatchObject({ cpfCidadao: '52998224725', motivosVisita: [34, 35, 37] });
+    expect(v[1]!.cnsCidadao).toBeUndefined();
+    expect(v[2]).toMatchObject({ desfecho: 3, motivosVisita: [] });
+    expect(v[3]).toMatchObject({ desfecho: 2, motivosVisita: [], tipoDeImovel: 2 });
+    expect(v[4]!.cpfCidadao).toBeUndefined();
+    expect(v[5]).toMatchObject({ tipoDeImovel: 13 });
+    const back = decodeLedi(structForTipo(TIPO_DADO.VISITA_DOMICILIAR), encodeLedi(structForTipo(TIPO_DADO.VISITA_DOMICILIAR), ficha));
+    expect((back.visitasDomiciliares as LediObject[])[0]).toMatchObject({ motivosVisita: [35, 36, 37], tipoDeImovel: 4 });
+  });
+
+  it('o validador recusa o que o PEC recusaria: motivo em visita ausente, CPF com CNS, pessoa e motivo de acompanhamento fora do domicílio', () => {
+    const ficha = {
+      uuidFicha: lediUuid('9000117'),
+      tpCdsOrigem: 3,
+      headerTransport: { profissionalCNS: '700000000000005', cboCodigo_2002: '515140', cnes: '9000117', dataAtendimento: Date.parse('2026-10-30T03:00:00Z'), codigoIbgeMunicipio: '3550308' },
+      visitasDomiciliares: [
+        { turno: 1, motivosVisita: [34], desfecho: 3, stForaArea: true, tipoDeImovel: 1 },
+        {
+          turno: 1,
+          motivosVisita: [35],
+          desfecho: 1,
+          stForaArea: true,
+          tipoDeImovel: 1,
+          cpfCidadao: '52998224725',
+          cnsCidadao: '700000000000005',
+          dtNascimento: Date.parse('1980-01-01T00:00:00Z'),
+          sexo: 1,
+          stCidadaoNaoPossuiCpf: false,
+        },
+        { turno: 1, motivosVisita: [29, 5], desfecho: 1, stForaArea: true, tipoDeImovel: 4, cpfCidadao: '52998224725' },
+        { turno: 1, motivosVisita: [35], desfecho: 1, stForaArea: true, tipoDeImovel: 1, glicemia: 110, tipoGlicemia: 4 },
+      ],
+    } as LediObject;
+    const issues = validateFicha(TIPO_DADO.VISITA_DOMICILIAR, ficha, new Date('2026-10-31T12:00:00Z')).map((i) => `${i.path}: ${i.message}`);
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/\[0\]\.motivosVisita: visita recusada ou ausente não leva motivo/),
+        expect.stringMatching(/\[1\]\.cpfCidadao: CPF e CNS/),
+        expect.stringMatching(/\[2\]\.motivosVisita: motivo 29, 5 não é aceito/),
+        expect.stringMatching(/\[2\]\.cpfCidadao: não deve ser preenchido/),
+        expect.stringMatching(/\[3\]\.tipoGlicemia/),
+      ]),
+    );
+  });
+});

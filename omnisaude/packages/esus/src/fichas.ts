@@ -568,10 +568,19 @@ export interface VisitaDomiciliarInput {
   diastolica?: number | null;
   temperatura?: number | null;
   glicemia?: number | null;
+  /** Momento da glicemia no código do app (1 jejum, 2 pós-prandial, 3 pré-prandial, 4 não especificado). */
   tipoGlicemia?: number | null;
   latitude?: number | null;
   longitude?: number | null;
 }
+
+/** Imóveis que não são domicílio (LEDI 8.7.0): comércio, terreno baldio, ponto estratégico, escola, creche, religioso, CASAI. */
+export const TIPOS_IMOVEL_NAO_DOMICILIO = new Set([2, 3, 4, 5, 6, 12, 13]);
+/** Únicos motivos aceitos fora do domicílio: cadastramento, convite, outros, orientação e controle ambiental/vetorial. */
+export const MOTIVOS_FORA_DO_DOMICILIO = new Set([1, 27, 28, 31, 34, 35, 36, 37]);
+
+/** Até 6 casas decimais (cerca de 10 cm), dentro do limite de caracteres do LEDI para latitude e longitude. */
+const coordenada = (x: number | null | undefined) => (x === null || x === undefined ? undefined : Math.round(x * 1e6) / 1e6);
 
 export interface FichaVisitaDomiciliarInput {
   uuid: string;
@@ -585,32 +594,41 @@ export function buildVisitaDomiciliar(input: FichaVisitaDomiciliarInput): LediOb
     tpCdsOrigem: TP_CDS_ORIGEM_TERCEIROS,
     headerTransport: headerUnico(input.header),
     visitasDomiciliares: input.visitas.map((v): LediObject => {
-      const c = v.cidadao;
+      const tipoDeImovel = TIPO_IMOVEL_PARA_LEDI[v.tipoImovel ?? '01'] ?? 1;
+      const naoDomicilio = TIPOS_IMOVEL_NAO_DOMICILIO.has(tipoDeImovel);
+      // Regras do LEDI 8.7.0: fora do domicílio, nenhum dado de pessoa nem medição; recusada ou ausente, sem motivo nem
+      // medição; CPF e CNS não vão juntos (o CPF, quando há, é a chave).
+      const c = naoDomicilio ? null : v.cidadao;
       const cpf = c ? cpfOf(c) : undefined;
+      const realizada = v.desfecho === 1;
+      const mede = realizada && !naoDomicilio;
+      const motivos = realizada ? [...new Set(v.motivos)].filter((m) => !naoDomicilio || MOTIVOS_FORA_DO_DOMICILIO.has(m)) : [];
+      const glicemia = mede ? (v.glicemia ?? undefined) : undefined;
       return {
         turno: v.turno,
-        numProntuario: v.numeroProntuario ?? undefined,
-        cnsCidadao: c ? cnsOf(c) : undefined,
+        numProntuario: naoDomicilio ? undefined : (v.numeroProntuario ?? undefined),
+        cnsCidadao: c && !cpf ? cnsOf(c) : undefined,
         cpfCidadao: cpf,
         stCidadaoNaoPossuiCpf: c ? !cpf : undefined,
         justificativaCidadaoNaoPossuiCpf: c && !cpf ? (c.justificativaSemCpf ?? undefined) : undefined,
         dtNascimento: c ? epochDate(c.birthDate) : undefined,
         sexo: c ? sexo(c.sex) : undefined,
         statusVisitaCompartilhadaOutroProfissional: v.compartilhada ?? false,
-        motivosVisita: [...new Set(v.motivos)],
+        motivosVisita: motivos,
         desfecho: v.desfecho,
         microArea: v.foraDaArea ? undefined : (v.microArea ?? undefined),
         stForaArea: v.foraDaArea ?? false,
-        tipoDeImovel: TIPO_IMOVEL_PARA_LEDI[v.tipoImovel ?? '01'] ?? 1,
-        pesoAcompanhamentoNutricional: v.pesoKg ?? undefined,
-        alturaAcompanhamentoNutricional: v.alturaCm ?? undefined,
-        pressaoSistolica: v.sistolica ?? undefined,
-        pressaoDiastolica: v.diastolica ?? undefined,
-        temperatura: v.temperatura ?? undefined,
-        tipoGlicemia: v.glicemia !== null && v.glicemia !== undefined ? (v.tipoGlicemia ?? 4) : undefined,
-        glicemia: v.glicemia ?? undefined,
-        latitude: v.latitude ?? undefined,
-        longitude: v.longitude ?? undefined,
+        tipoDeImovel,
+        pesoAcompanhamentoNutricional: mede ? (v.pesoKg ?? undefined) : undefined,
+        alturaAcompanhamentoNutricional: mede ? (v.alturaCm ?? undefined) : undefined,
+        pressaoSistolica: mede ? (v.sistolica ?? undefined) : undefined,
+        pressaoDiastolica: mede ? (v.diastolica ?? undefined) : undefined,
+        temperatura: mede ? (v.temperatura ?? undefined) : undefined,
+        // LEDI: 0 jejum, 1 pós-prandial, 2 pré-prandial, 3 não especificado (o app usa 1 a 4, na mesma ordem).
+        tipoGlicemia: glicemia !== undefined ? Math.min(3, Math.max(0, (v.tipoGlicemia ?? 4) - 1)) : undefined,
+        glicemia,
+        latitude: coordenada(v.latitude),
+        longitude: coordenada(v.longitude),
       };
     }),
   };

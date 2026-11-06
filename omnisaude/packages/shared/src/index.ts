@@ -9,6 +9,7 @@ export * from './vigilancia';
 export * from './clinical';
 export * from './cnes';
 export * from './dates';
+export * from './endemias';
 export * from './documents';
 export * from './esus';
 export * from './gs1';

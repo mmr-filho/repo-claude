@@ -6,7 +6,18 @@ import type { RequestContext } from '../../core/context';
 import { TenantsService } from '../../core/database';
 import { DomainError, notFound } from '../../core/errors';
 import { IntegrationConfigService } from '../integrations/integration-config.service';
-import { fichasAtendimento, fichasCadastroDomiciliar, fichasCadastroIndividual, fichasProcedimentos, fichasVacinacao, fichasVisitaDomiciliar, localDate, type FichaGerada, type FonteContexto } from './esus-fontes';
+import {
+  fichasAtendimento,
+  fichasCadastroDomiciliar,
+  fichasCadastroIndividual,
+  fichasProcedimentos,
+  fichasVacinacao,
+  fichasVisitaDomiciliar,
+  fichasVisitaVetorial,
+  localDate,
+  type FichaGerada,
+  type FonteContexto,
+} from './esus-fontes';
 
 const APP_VERSION = '0.1';
 type Db = TenantClient;
@@ -102,6 +113,7 @@ export class EsusService {
       ...(await fichasProcedimentos(c)),
       ...(await fichasVacinacao(c)),
       ...(await fichasVisitaDomiciliar(c)),
+      ...(await fichasVisitaVetorial(c)),
     ];
   }
 

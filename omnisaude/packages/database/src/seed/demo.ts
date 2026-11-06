@@ -1,4 +1,4 @@
-import { completeCpf, cnsFromBase, competencia, gs1HumanReadable, localDateString, personNameKey } from '@omnisaude/shared';
+import { areaM2, caixaDe, centroDe, cnsFromBase, competencia, completeCpf, distanciaAteArea, gs1HumanReadable, localDateString, metrosPorGrau, normalizarArea, personNameKey, type Area } from '@omnisaude/shared';
 import type { PrismaClient as MasterClient } from '../generated/master/client';
 import type { Prisma, PrismaClient as TenantClient } from '../generated/tenant/client';
 import { appendAudit } from '../audit';
@@ -7,7 +7,7 @@ import { provisionTenant } from '../provision';
 import { connectionUrl, type CredentialsResolver } from '../tenancy';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/tenant/client';
-import { DEMO_PASSWORD, DEMO_TENANT, PATIENTS, POPS, PRODUCTS, SIGTAP_SAMPLE, STAFF, UNITS, VACCINES, type UnitKey } from './fixtures';
+import { DEMO_PASSWORD, DEMO_PROPERTIES, DEMO_TENANT, LARVICIDES, PATIENTS, POPS, PRODUCTS, SIGTAP_SAMPLE, STAFF, UNITS, VACCINES, type UnitKey } from './fixtures';
 
 export interface SeedOptions {
   master: MasterClient;
@@ -23,6 +23,11 @@ export interface SeedOptions {
   slug?: string;
   /** false quando a conta da plataforma tem senha própria (PLATFORM_ADMIN_PASSWORD) em vez da senha pública. */
   platformUser?: boolean;
+  /**
+   * Malha de quarteirões de demonstração sobre os domicílios de exemplo, com os imóveis ligados e a zona do ACE (VIG-3a).
+   * Ligada pela linha de comando; os testes da API constroem a própria malha.
+   */
+  territorioDemo?: boolean;
 }
 
 const DAY = 86_400_000;
@@ -33,6 +38,84 @@ export const DEMO_PLATFORM_EMAIL = 'plataforma@omnisaude.dev';
  * unidades, equipe por papel, pacientes crônicos, agenda, estoque, leitos, SIGTAP, POPs e histórico.
  * Só roda em banco de tenant vazio.
  */
+/**
+ * Malha de demonstração: localidade 1 (sede), bairro Centro e 36 quarteirões de 80 m (ruas de 20 m) numerados a partir
+ * do sudoeste, cobrindo os domicílios de exemplo; imóveis sem família (comércio, terreno baldio, ponto estratégico,
+ * escola) e a zona 01 com o ACE titular. Os imóveis são ligados ao quarteirão como faria o localizador (até 15 m da borda).
+ */
+async function territorioDemo(db: TenantClient, p: { households: string[]; unitVig: string; ace: string; coordenador: string }) {
+  const locality = await db.locality.create({ data: { code: '1', name: 'Sede (demonstração)', category: 'CIDADE', zone: 'URBANA', source: 'MANUAL', createdBy: p.coordenador } });
+  const bairro = await db.neighborhood.create({ data: { localityId: locality.id, name: 'Centro', official: true, aliases: ['Vila Nova', 'Jardim das Flores'] } });
+  const origem = { lat: -11.732, lng: -49.0715 };
+  const m = metrosPorGrau(origem.lat);
+  const ponto = (lesteM: number, norteM: number): [number, number] => [Number((origem.lng + lesteM / m.lng).toFixed(6)), Number((origem.lat + norteM / m.lat).toFixed(6))];
+  const blocos: { id: string; area: Area }[] = [];
+  for (let linha = 0; linha < 6; linha++)
+    for (let coluna = 0; coluna < 6; coluna++) {
+      const x = coluna * 100 + 10;
+      const y = linha * 100 + 10;
+      const area = normalizarArea({ type: 'Polygon', coordinates: [[ponto(x, y), ponto(x + 80, y), ponto(x + 80, y + 80), ponto(x, y + 80), ponto(x, y)]] });
+      const [minLng, minLat, maxLng, maxLat] = caixaDe(area);
+      const [centerLng, centerLat] = centroDe(area);
+      const b = await db.block.create({
+        data: {
+          localityId: locality.id,
+          neighborhoodId: bairro.id,
+          number: String(linha * 6 + coluna + 1),
+          geometry: area as object,
+          minLng,
+          minLat,
+          maxLng,
+          maxLat,
+          centerLat,
+          centerLng,
+          areaM2: areaM2(area),
+          source: 'EDITOR',
+          createdBy: p.coordenador,
+          updatedBy: p.coordenador,
+        },
+      });
+      blocos.push({ id: b.id, area });
+    }
+  const extras: string[] = [];
+  for (const prop of DEMO_PROPERTIES) {
+    const h = await db.household.create({
+      data: {
+        street: prop.street,
+        number: prop.number,
+        district: 'Centro',
+        ibgeCode: DEMO_TENANT.ibgeCode,
+        city: 'Gurupi',
+        uf: 'TO',
+        propertyType: prop.propertyType,
+        latitude: prop.lat,
+        longitude: prop.lng,
+        geoPrecision: 'GPS_CAMPO',
+        geoSource: 'seed',
+        geoAt: new Date(),
+        notes: prop.notes,
+      },
+    });
+    extras.push(h.id);
+  }
+  const imoveis = await db.household.findMany({ where: { id: { in: [...p.households, ...extras] } }, select: { id: true, latitude: true, longitude: true } });
+  const porBloco = new Map<string, { id: string; lng: number }[]>();
+  for (const h of imoveis) {
+    if (h.latitude == null || h.longitude == null) continue;
+    let melhor: { id: string; d: number } | null = null;
+    for (const b of blocos) {
+      const d = distanciaAteArea([h.longitude, h.latitude], b.area);
+      if (d <= 15 && (!melhor || d < melhor.d)) melhor = { id: b.id, d };
+    }
+    if (melhor) porBloco.set(melhor.id, [...(porBloco.get(melhor.id) ?? []), { id: h.id, lng: h.longitude }]);
+  }
+  for (const [blockId, lista] of porBloco)
+    for (const [i, h] of lista.sort((a, b) => a.lng - b.lng).entries())
+      // SQL direto, como o localizador: não muda o updated_at (que regeraria a ficha de cadastro domiciliar do e-SUS).
+      await db.$executeRaw`UPDATE households SET block_id = ${blockId}::uuid, rg_sequence = ${String(i + 1)} WHERE id = ${h.id}::uuid`;
+  await db.vectorZone.create({ data: { unitId: p.unitVig, name: 'Zona 01', aceId: p.ace, createdBy: p.coordenador, blocks: { create: blocos.map((b) => ({ blockId: b.id })) } } });
+}
+
 export async function seedDemo(opts: SeedOptions) {
   const now = opts.now ?? new Date();
   const daysAgo = (n: number, hour = 9) => {
@@ -288,6 +371,20 @@ export async function seedDemo(opts: SeedOptions) {
       await db.stockBalance.create({ data: { locationId: salaVacina, lotId: l.id, quantity: 50 } });
       await db.stockMovement.create({ data: { kind: 'AJUSTE', locationId: salaVacina, lotId: l.id, quantity: 50, refType: 'CARGA_INICIAL', userId: staff.enfermeiro! } });
     }
+
+    // ── Depósito de endemias da Vigilância em Saúde: larvicidas por lote (VIG-3a) ──
+    const endemias = (await db.stockLocation.create({ data: { unitId: unit.vig, name: 'Depósito de Endemias', kind: 'ENDEMIAS' } })).id;
+    for (const l of LARVICIDES) {
+      const row = await db.product.create({
+        data: { code: l.code, description: l.description, activeIngredient: l.activeIngredient, concentration: l.concentration, pharmaceuticalForm: l.pharmaceuticalForm, unit: l.unit, vectorControl: 'LARVICIDA' },
+      });
+      for (const lote of l.lots) {
+        const sl = await db.stockLot.create({ data: { productId: row.id, lotNumber: lote.lotNumber, expiry: new Date(now.getTime() + lote.expiryDays * DAY), manufacturer: 'Fornecido pelo Ministério da Saúde (SIES)' } });
+        await db.stockBalance.create({ data: { locationId: endemias, lotId: sl.id, quantity: lote.quantity } });
+        await db.stockMovement.create({ data: { kind: 'AJUSTE', locationId: endemias, lotId: sl.id, quantity: lote.quantity, refType: 'CARGA_INICIAL', userId: staff.coordenador! } });
+      }
+    }
+    if (opts.territorioDemo) await territorioDemo(db, { households, unitVig: unit.vig, ace: staff.ace!, coordenador: staff.coordenador! });
 
     // ── Leitos ──
     const wards = [
