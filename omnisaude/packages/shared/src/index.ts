@@ -14,6 +14,7 @@ export * from './documents';
 export * from './esus';
 export * from './gs1';
 export * from './leitos';
+export * from './numero';
 export * from './regulacao';
 export * from './rnds-regulacao';
 export * from './roles';

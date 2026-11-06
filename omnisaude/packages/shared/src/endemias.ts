@@ -168,6 +168,11 @@ interface OperacaoBaseAce {
   clientId: string;
   /** Momento do registro no aparelho (ISO 8601). */
   registradoEm: string;
+  /**
+   * Unidade da lotação ativa no aparelho quando o registro foi feito. O aparelho só envia na mesma lotação, e o
+   * servidor recusa a operação de outra unidade (a visita, o depósito da baixa e a ficha do e-SUS são da unidade).
+   */
+  unitId?: string | null;
 }
 
 export type OperacaoAce =
@@ -179,7 +184,12 @@ export type TipoOperacaoAce = OperacaoAce['tipo'];
 export interface ResultadoSyncAce {
   clientId: string;
   tipo: TipoOperacaoAce;
-  status: 'OK' | 'DUPLICADA' | 'ERRO';
+  /**
+   * OK e DUPLICADA: está no servidor (sai da fila). ERRO: recusada pelo conteúdo; precisa ser corrigida ou descartada.
+   * TENTAR_DE_NOVO: falha passageira do servidor (conflito entre transações, banco indisponível); continua pendente
+   * no aparelho e vai no próximo envio.
+   */
+  status: 'OK' | 'DUPLICADA' | 'ERRO' | 'TENTAR_DE_NOVO';
   id: string | null;
   erro: string | null;
   /** Gravado, mas com algo a conferir pela supervisão (ex.: larvicida sem saldo no lote, que fica pendente). */

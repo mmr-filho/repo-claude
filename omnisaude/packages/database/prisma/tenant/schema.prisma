@@ -186,11 +186,28 @@ model EsusRecord {
   sentAt     DateTime?        @map("sent_at")
   createdAt  DateTime         @default(now()) @map("created_at")
 
-  batch EsusBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  batch EsusBatch        @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  items EsusRecordItem[]
 
   @@index([batchId, status])
   @@index([sourceType, sourceId])
   @@map("esus_records")
+}
+
+/// Registro de origem que entrou numa ficha (atendimento, procedimento, classificação de risco, vacina, visita do ACS
+/// ou do ACE). Cada um entra em no máximo uma ficha de cada tipo: outro lote do mesmo período não o repete, e o
+/// reprocessamento regera a ficha só com os registros dela. Cadastros (Patient, Household) não entram aqui.
+model EsusRecordItem {
+  kind       Int
+  sourceType String @map("source_type")
+  sourceId   String @map("source_id") @db.Uuid
+  recordId   String @map("record_id") @db.Uuid
+
+  record EsusRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+
+  @@id([kind, sourceType, sourceId])
+  @@index([recordId])
+  @@map("esus_record_items")
 }
 
 /// Certificado digital A1 (e-CPF ICP-Brasil) do profissional, guardado cifrado; a senha do arquivo é pedida a cada assinatura.
@@ -512,6 +529,8 @@ model Household {
   /// Raio de incerteza em metros, normalizado para 95% de confiança.
   geoAccuracyM   Float?          @map("geo_accuracy_m")
   geoAt          DateTime?       @map("geo_at")
+  /// Observação do controle vetorial (ACE e supervisão). O pacote do campo leva só esta, nunca `notes`, que é da APS.
+  vectorNotes    String?         @map("vector_notes")
 
   unit     Unit?    @relation(fields: [unitId], references: [id])
   team     Team?    @relation(fields: [teamId], references: [id])
@@ -2105,6 +2124,8 @@ enum MovementKind {
   TRATAMENTO_FOCAL
   /// Entrada de insumo do controle vetorial recebido do Ministério ou da SES (SIES), sem nota fiscal.
   ENTRADA_REMESSA
+  /// Estorno de uma entrada de remessa lançada errada (movimento inverso; a guia pode ser lançada de novo).
+  ESTORNO_REMESSA
 }
 
 model StockMovement {
@@ -3279,6 +3300,8 @@ model VectorVisit {
   @@index([unitId, visitedAt])
   @@index([blockId, visitedAt])
   @@index([orderId])
+  @@index([cycle, householdId, visitedAt])
+  @@index([visitedAt])
   @@map("vector_visits")
 }
 
@@ -3327,8 +3350,13 @@ model VectorStockReceipt {
   notes      String?
   receivedBy String   @map("received_by") @db.Uuid
   receivedAt DateTime @default(now()) @map("received_at")
+  /// Estorno (lançamento errado): movimento inverso no lote. A mesma guia não entra duas vezes para o mesmo lote
+  /// enquanto não for estornada (índice único parcial vector_stock_receipts_document_lot_id_ativa, só no SQL).
+  reversedAt     DateTime? @map("reversed_at")
+  reversedBy     String?   @map("reversed_by") @db.Uuid
+  reversalReason String?   @map("reversal_reason")
 
-  @@unique([document, lotId])
+  @@index([receivedAt])
   @@map("vector_stock_receipts")
 }
 
