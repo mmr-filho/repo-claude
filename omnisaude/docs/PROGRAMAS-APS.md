@@ -40,6 +40,11 @@ aplicados pela tela de programas ou pelo cadastro do paciente (card *Estratifica
 - Consultas: registros SOAP/evolução assinados por médicos e enfermeiros. PA, peso e altura: classificação de
   risco/acolhimento. Exames: solicitados ou com resultado. Vacinas: código do imunobiológico ou nome.
 - O vínculo é o do cadastro domiciliar (unidade ou equipe do domicílio).
+- Datas no calendário da instituição (fuso do tenant), como nos indicadores: idades, meses de vida, vencimento
+  das vacinas (idade recomendada + 30 dias), vigência do Bolsa Família, previsão de alta e retorno do pé
+  diabético contam pelo dia local, e as datas mostradas ("última consulta em", "consulta até") são as do dia
+  local do registro. Prazos em meses caem no mesmo dia do mês (sem esse dia no mês, no dia 1º do seguinte); a
+  "1ª semana" da puericultura é o 7º dia de vida.
 - A lista de faltosos é um instrumento de gestão do cuidado; os registros oficiais continuam sendo as fichas
   do e-SUS e o Siaps.
 - O acesso às listas nominais fica registrado na auditoria.

@@ -1,5 +1,5 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
-import { ageInYears, isValidCns, isValidCpf, normalizePersonName, onlyDigits, personNameKey, STATUS_SOLICITACAO, STATUS_TFD, STATUS_SOLICITACAO_LEITO, TIPO_LEITO } from '@omnisaude/shared';
+import { ageInYears, isValidCns, isValidCpf, localDateString, normalizePersonName, onlyDigits, personNameKey, STATUS_SOLICITACAO, STATUS_TFD, STATUS_SOLICITACAO_LEITO, TIPO_LEITO } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
@@ -281,7 +281,9 @@ export class PatientsService {
     const c = await ctx.db.patientCondition.findFirst({ where: { id: conditionId, patientId } });
     if (!c) throw notFound('Condição');
     const active = input.active ?? c.active;
-    const resolvedAt = active ? null : input.resolvedAt ? new Date(input.resolvedAt) : (c.resolvedAt ?? new Date(new Date().toISOString().slice(0, 10)));
+    // Sem data informada, o desfecho é hoje no calendário da instituição (às 22h em UTC-3 já seria amanhã em UTC).
+    const hoje = () => new Date(localDateString(new Date(), ctx.tenant.timeZone));
+    const resolvedAt = active ? null : input.resolvedAt ? new Date(input.resolvedAt) : (c.resolvedAt ?? hoje());
     return ctx.db.$transaction(async (tx) => {
       const row = await tx.patientCondition.update({ where: { id: conditionId }, data: { active, resolvedAt } });
       await this.audit.record(ctx, tx, { action: active ? 'condicao.reativar' : 'condicao.resolver', entityType: 'Patient', entityId: patientId, payload: { conditionId, code: c.code, resolvedAt } });

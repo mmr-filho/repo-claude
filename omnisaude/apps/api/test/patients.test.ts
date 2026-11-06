@@ -1,4 +1,4 @@
-import { completeCpf } from '@omnisaude/shared';
+import { completeCpf, localDateString } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 
@@ -48,6 +48,19 @@ describe.runIf(enabled)('pacientes', () => {
     expect(units).toContain('Farmácia Central');
     // Recepção não lê prontuário.
     await t.http().get(`/api/patients/${maria.id}/timeline`).set('authorization', `Bearer ${recepcao}`).expect(403);
+  });
+
+  it('encerra a condição sem data com o dia de hoje no fuso da instituição', async () => {
+    const auth = { authorization: `Bearer ${medica}` };
+    const tz = (await t.http().get('/api/auth/me').set(auth).expect(200)).body.tenant.timeZone as string;
+    const [maria] = (await t.http().get('/api/patients?q=maria aparecida').set(auth).expect(200)).body;
+    const hipertensao = { system: 'CIAP2', code: 'K86', description: 'Hipertensão sem complicações', lineOfCare: 'HIPERTENSAO' };
+    const cond = (await t.http().post(`/api/patients/${maria.id}/conditions`).set(auth).send(hipertensao).expect(201)).body;
+    const antes = localDateString(new Date(), tz);
+    const encerrada = (await t.http().patch(`/api/patients/${maria.id}/conditions/${cond.id}`).set(auth).send({ active: false }).expect(200)).body;
+    const depois = localDateString(new Date(), tz);
+    // Das 21h à meia-noite em UTC-3, a data de UTC já seria a de amanhã.
+    expect([antes, depois]).toContain(String(encerrada.resolvedAt).slice(0, 10));
   });
 });
 

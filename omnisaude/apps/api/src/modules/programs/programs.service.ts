@@ -125,7 +125,8 @@ export class ProgramsService {
       const r = classificarPeDiabetico(itens);
       result = String(r.grau);
       score = r.grau;
-      nextDueAt = new Date(hoje.getTime() + r.retornoMeses * 30.4375 * 86_400_000);
+      // Data sem hora: o dia local do retorno (gravar o instante deixaria o dia de UTC, o seguinte depois das 21h em UTC-3).
+      nextDueAt = new Date(localDateString(new Date(hoje.getTime() + r.retornoMeses * 30.4375 * 86_400_000), ctx.tenant.timeZone));
       detalhe = { itens, descricao: r.descricao, retornoMeses: r.retornoMeses, orientacao: r.orientacao };
     } else if (input.kind === 'MCHAT') {
       const respostas = input.answers && typeof input.answers === 'object' && !Array.isArray(input.answers) ? (input.answers as Record<string, boolean>) : {};

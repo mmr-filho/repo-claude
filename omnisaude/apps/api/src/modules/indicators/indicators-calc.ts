@@ -205,6 +205,14 @@ export const maisMeses = (dia: string, n: number) => {
   const alvo = Date.UTC(y, m - 1 + n, d);
   return new Date(alvo).getUTCDate() === d ? isoUtc(alvo) : isoUtc(Date.UTC(y, m + n, 1));
 };
+/** Meses completos de `de` até `ate` (datas sem hora, `ate` não anterior a `de`), na mesma contagem de `maisMeses`. */
+export const mesesCompletos = (de: string, ate: string) => {
+  const [y1, m1] = partesDia(de);
+  const [y2, m2] = partesDia(ate);
+  let n = (y2 - y1) * 12 + (m2 - m1);
+  while (n > 0 && maisMeses(de, n) > ate) n--;
+  return Math.max(0, n);
+};
 /** Segundo aniversário como data sem hora (AAAA-MM-DD). */
 const segundoAniversario = (nasc: Date) => maisMeses(diaDe(nasc), 24);
 /** Idade em anos completos num dia do calendário (AAAA-MM-DD). */
@@ -742,7 +750,7 @@ export function pendencias(codigo: CodigoIndicador, dados: DadosEquipe, asOf: Da
         const nasc = diaDe(p.birthDate);
         if (nasc > hoje || segundoAniversario(p.birthDate) < hoje) continue;
         const pt = pontuarCrianca(ix, p, asOf, eAp);
-        out.push({ ...nomeIdade(ix, p, asOf), pontos: pt.pontos, maximo: pt.maximo, faltam: faltamDe(pt), observacao: `${Math.floor((diasEntre(nasc, hoje) * DIA) / MES)} meses de vida` });
+        out.push({ ...nomeIdade(ix, p, asOf), pontos: pt.pontos, maximo: pt.maximo, faltam: faltamDe(pt), observacao: `${mesesCompletos(nasc, hoje)} meses de vida` });
       }
       break;
     }

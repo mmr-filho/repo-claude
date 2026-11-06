@@ -65,7 +65,7 @@ export const conditionSchema = z.object({
 });
 export const conditionUpdateSchema = z.object({
   active: z.boolean().optional(),
-  /** Data do desfecho (fim da gestação, resolução); ao inativar sem informar, usa a data de hoje. */
+  /** Data do desfecho (fim da gestação, resolução); ao inativar sem informar, usa a data de hoje no fuso da instituição. */
   resolvedAt: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, 'Data no formato AAAA-MM-DD')

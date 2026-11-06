@@ -144,12 +144,12 @@ Legenda: ✅ implementado e testado · 🟡 parcial (ver observação) · ⏳ pe
 
 ## Verificação feita
 
-- 562 testes automatizados em 77 arquivos (bibliotecas, simulador, Worker da Cloudflare e API contra PostgreSQL
-  real), na rodada de 02/11/2026 às 22h UTC (19h de Brasília): todos passando. Com o relógio do processo em 22h45
-  de Brasília, 13 falham porque dependem da hora do relógio (devolutiva da regulação e do TFD por WhatsApp, na
-  janela de silêncio das 22h às 6h locais; faturamento, agenda e saída da vigilância, entre 21h e meia-noite) e
-  passam fora dessas janelas. Eram 14 antes de a apuração dos indicadores APS passar a seguir o dia local da
-  instituição nas janelas sobre datas sem hora (`docs/INDICADORES-APS.md`).
+- 570 testes automatizados em 78 arquivos (bibliotecas, simulador, Worker da Cloudflare e API contra PostgreSQL
+  real), na rodada de 06/11/2026 às 17h UTC (14h de Brasília): todos passando. Com o relógio do processo em 22h45
+  de Brasília, falham os que dependem da hora: a devolutiva da regulação e do TFD por WhatsApp (janela de
+  silêncio das 22h às 6h locais) e 9 da saída da vigilância; em 02/11, faturamento e agenda também falharam
+  nesse horário. A apuração dos indicadores, as listas dos programas e o encerramento de condição sem data
+  seguem o dia local da instituição (`docs/INDICADORES-APS.md`, `docs/PROGRAMAS-APS.md`).
 - Teste de fumaça com Playwright (`e2e/smoke.e2e.mjs`) percorrendo 16 telas com 9 papéis no build de produção.
 - Território no navegador (semana 25): localidade e bairros com apelido, importação de 30 quarteirões em GeoJSON com
   os 11 imóveis ligados, raio de 150 m, quarteirão desenhado no editor (rascunho visível e editável antes de salvar),
