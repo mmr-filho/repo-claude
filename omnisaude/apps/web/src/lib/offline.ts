@@ -8,8 +8,9 @@ import { useEffect, useState } from 'react';
  * privada antiga), tudo vira operação vazia e a tela segue só com a rede.
  */
 const DB_NAME = 'omnisaude-campo';
-const DB_VERSION = 1;
-export type Store = 'fila' | 'cache';
+/** 2: fila própria do agente de combate às endemias (filaAce), separada da do ACS. */
+const DB_VERSION = 2;
+export type Store = 'fila' | 'cache' | 'filaAce';
 
 function abrir(): Promise<IDBDatabase | null> {
   if (typeof indexedDB === 'undefined') return Promise.resolve(null);
@@ -20,6 +21,7 @@ function abrir(): Promise<IDBDatabase | null> {
         const db = req.result;
         if (!db.objectStoreNames.contains('fila')) db.createObjectStore('fila', { keyPath: 'clientId' });
         if (!db.objectStoreNames.contains('cache')) db.createObjectStore('cache', { keyPath: 'key' });
+        if (!db.objectStoreNames.contains('filaAce')) db.createObjectStore('filaAce', { keyPath: 'clientId' });
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);

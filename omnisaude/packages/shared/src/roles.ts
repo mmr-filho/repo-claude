@@ -370,8 +370,9 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   ],
   // O ACE trabalha sobre o imóvel, não sobre a pessoa: sem leitura de prontuário (LGPD, art. 6º, III).
   ACE: ['endemias.campo', 'territorio.ler', 'pop.consultar', 'libras.acionar'],
-  SUPERVISOR_ENDEMIAS: ['endemias.supervisionar', 'endemias.ler', 'endemias.campo', 'territorio.ler', 'estoque.ler', 'pop.consultar', 'libras.acionar'],
-  COORDENADOR_ENDEMIAS: ['endemias.coordenar', 'endemias.supervisionar', 'endemias.ler', 'territorio.ler', 'territorio.editar', 'estoque.ler', 'pop.consultar', 'libras.acionar'],
+  // O estoque de larvicidas fica na própria tela de endemias (sem a farmácia).
+  SUPERVISOR_ENDEMIAS: ['endemias.supervisionar', 'endemias.ler', 'endemias.campo', 'territorio.ler', 'pop.consultar', 'libras.acionar'],
+  COORDENADOR_ENDEMIAS: ['endemias.coordenar', 'endemias.supervisionar', 'endemias.ler', 'territorio.ler', 'territorio.editar', 'pop.consultar', 'libras.acionar'],
 };
 
 export function isRole(value: unknown): value is Role {

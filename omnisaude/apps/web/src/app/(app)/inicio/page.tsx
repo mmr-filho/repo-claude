@@ -30,6 +30,8 @@ const DESCRIPTIONS: Record<string, string> = {
   '/vacinas': 'Sala de vacina, cartão, aprazamento, faltosos e estoque por lote.',
   '/vigilancia': 'Notificação compulsória com prazo de 24 h ou 7 dias, ciência e repasse da vigilância, lista vigente e de-para de códigos.',
   '/territorio': 'Localidades, bairros, quarteirões e imóveis no mapa: importação da malha, editor de quarteirões e raio do bloqueio.',
+  '/campo-ace': 'Zona e ordens de bloqueio do agente de endemias: visita ao imóvel com depósitos, focos e larvicida, também sem internet.',
+  '/endemias': 'Ordens de bloqueio de transmissão abertas pelas notificações, zonas dos agentes, pendências, larvicidas e índices larvários.',
   '/programas': 'Programas da APS com faltosos, busca ativa e estratificações.',
   '/indicadores': 'Os 15 indicadores do cofinanciamento, por equipe e competência.',
   '/esus': 'Lotes de fichas do e-SUS APS e envio ao PEC.',

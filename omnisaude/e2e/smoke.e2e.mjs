@@ -22,6 +22,10 @@ const journeys = [
   { cpf: '100.000.009-57', unit: 'UBS Centro', role: 'Gestor', pages: ['/gestao', '/bi', '/auditoria', '/administracao', '/territorio'] },
   { cpf: '100.000.005-23', unit: 'UBS Centro', role: 'Serviço Social', pages: ['/servico-social'] },
   { cpf: '100.000.011-71', unit: 'UBS Centro', role: 'Agente', pages: ['/acs', '/territorio'] },
+  { cpf: '100.000.014-14', unit: null, role: 'Vigilância', pages: ['/vigilancia', '/endemias'] },
+  { cpf: '100.000.016-86', unit: null, role: 'Agente de Combate', pages: ['/campo-ace', '/territorio'] },
+  { cpf: '100.000.017-67', unit: null, role: 'Supervisor', pages: ['/endemias', '/campo-ace'] },
+  { cpf: '100.000.018-48', unit: null, role: 'Coordenação', pages: ['/endemias'] },
 ];
 
 const browser = await chromium.launch();

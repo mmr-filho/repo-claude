@@ -16,6 +16,7 @@ import { fmtDate, fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useRealtime } from '@/lib/realtime';
 import { useSession } from '@/lib/session';
+import { OrdemDoCaso } from '@/components/endemias/ordem-do-caso';
 import { ListaBloqueio, type QuarteiroesDoCaso } from './bloqueio';
 import { DIGITACAO, ESFERA_ROTULO, EVENTO, MEIO, ORIGEM, SITUACAO, STATUS, tempoAte, type Destino, type LinhaEspelho, type NotificacaoDetalhe } from './types';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
@@ -651,7 +652,11 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
         </Card>
       )}
 
-      {session.can('vigilancia.mapa') && d.status !== 'DESCARTADA' && <BloqueioDoCaso key={id} id={id} />}
+      {session.can('endemias.ler') ? (
+        <OrdemDoCaso key={id} notificationId={id} semOrdem={session.can('vigilancia.mapa') && d.status !== 'DESCARTADA' ? <BloqueioDoCaso id={id} /> : null} />
+      ) : (
+        session.can('vigilancia.mapa') && d.status !== 'DESCARTADA' && <BloqueioDoCaso key={id} id={id} />
+      )}
 
       <Card>
         <CardHeader title="Ficha Individual de Notificação (Sinan Net v5)" description="Campos 1 a 16 e 20 a 33. Retrato tirado do cadastro na abertura da notificação." />
@@ -895,7 +900,7 @@ export function FichaNotificacao({ id, onChanged }: { id: string; onChanged?: ()
   );
 }
 
-/** Quarteirões a até o raio do bloqueio da residência do caso (lista que a semana 26 transforma em ordem de bloqueio). */
+/** Quarteirões a até o raio do bloqueio da residência do caso, para o agravo sem ordem de bloqueio (as arboviroses têm a ordem). */
 function BloqueioDoCaso({ id }: { id: string }) {
   const q = useApi<QuarteiroesDoCaso>(`/vigilancia/notificacoes/${id}/quarteiroes`, [id]);
   return (
