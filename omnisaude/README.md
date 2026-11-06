@@ -113,12 +113,20 @@ Instituição **`demo`**, senha **`OmniSaude2026`** para todos:
 | Enfermagem | 100.000.002-80 | UPA, Hospital, UBS |
 | Técnica de enfermagem (dupla checagem) | 100.000.010-90 | Hospital |
 | Médica | 100.000.003-61 | UBS, UPA, Hospital |
+| Médico cardiologista | 100.000.012-52 | Policlínica Municipal |
+| Médica oftalmologista | 100.000.013-33 | Policlínica Municipal |
 | Cirurgião-dentista | 100.000.004-42 | CEO |
 | Serviço social | 100.000.005-23 | UBS, Hospital |
-| NIR | 100.000.006-04 | Hospital |
+| NIR | 100.000.006-04 | Hospital, Policlínica Municipal |
 | Farmácia | 100.000.007-95 | Farmácia Central, Hospital, Almoxarifado, UPA |
 | Faturamento | 100.000.008-76 | UBS, UPA, Hospital |
 | Gestão | 100.000.009-57 | UBS, UPA, Hospital, Farmácia Central |
+| Agente comunitário de saúde (ACS) | 100.000.011-71 | UBS Centro |
+| Vigilância epidemiológica | 100.000.014-14 | Vigilância em Saúde |
+| Núcleo de vigilância hospitalar | 100.000.015-03 | Hospital |
+
+O cidadão entra no app (`/cidadao`) com `demo`, o CPF e a data de nascimento, mais um código de 6 dígitos enviado
+pelo WhatsApp ou emitido pela recepção na ficha do paciente ("Código do app"); não há senha.
 
 Operação da plataforma: `plataforma@omnisaude.dev` (mesma senha), em `POST /api/platform/login`.
 
