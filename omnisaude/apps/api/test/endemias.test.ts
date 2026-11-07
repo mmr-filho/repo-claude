@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { areaM2, caixaDe, centroDe, cnsFromBase, completeCpf, metrosPorGrau, normalizarArea, type Posicao } from '@omnisaude/shared';
+import { areaM2, caixaDe, centroDe, cnsFromBase, completeCpf, localDateString, metrosPorGrau, normalizarArea, type Posicao } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TenantsService } from '../src/core/database';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
@@ -30,6 +30,7 @@ describe.runIf(enabled)('VIG-3a: ACE em campo e ordem de bloqueio de transmissã
   let supervisora = '';
   let coordenador = '';
   let localidade = '';
+  let tz = 'America/Sao_Paulo';
   const bloco: Record<string, string> = {};
   let aceId = '';
   const casa: Record<string, string> = {};
@@ -95,7 +96,9 @@ describe.runIf(enabled)('VIG-3a: ACE em campo e ordem de bloqueio de transmissã
     supervisora = await t.login('supervisora', 'Vigilância em Saúde', 'SUPERVISOR_ENDEMIAS');
     coordenador = await t.login('coordenador', 'Vigilância em Saúde', 'COORDENADOR_ENDEMIAS');
     const tenants = t.app.get(TenantsService);
-    db = await tenants.client((await tenants.resolve(t.slug)).id);
+    const info = await tenants.resolve(t.slug);
+    tz = info.timeZone;
+    db = await tenants.client(info.id);
     localidade = (await t.http().post('/api/territorio/localidades').set(auth(gestora)).send({ code: '7', name: 'Endemias Teste' }).expect(201)).body.id;
     for (let lin = 0; lin < 5; lin++)
       for (let col = 0; col < 5; col++) {
@@ -439,8 +442,12 @@ describe.runIf(enabled)('VIG-3a: ACE em campo e ordem de bloqueio de transmissã
   });
 
   it('produção do período por agente, com os índices larvários preliminares', async () => {
-    const hoje = new Date().toISOString().slice(0, 10);
-    const p = (await t.http().get(`/api/endemias/producao?de=${hoje}&ate=${hoje}`).set(auth(vig)).expect(200)).body;
+    // O período é de datas locais do município, como a API conta as visitas (antes, a data em UTC falhava das 21 h à
+    // meia-noite de Brasília). De ontem a hoje: as visitas deste arquivo são da última hora, que pode começar no dia
+    // anterior quando a suíte roda logo depois da meia-noite.
+    const de = localDateString(new Date(Date.now() - 86_400_000), tz);
+    const ate = localDateString(new Date(), tz);
+    const p = (await t.http().get(`/api/endemias/producao?de=${de}&ate=${ate}`).set(auth(vig)).expect(200)).body;
     expect(p.total).toMatchObject({ trabalhados: 4, fechados: 1, recuperados: 1, amostras: 2 });
     expect(p.total.larvicida.find((l: { unidade: string }) => l.unidade === 'G').quantidade).toBe(3.5);
     // Imóveis com foco em qualquer atividade: o terreno (bloqueio) e a casa 4 (LI+T).

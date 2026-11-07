@@ -80,14 +80,36 @@ const chaveTubito = (userId: string) => `tubito:${userId}`;
 const chavePacote = (ctx: ContextoAce) => `pacote:ace:${ctx.unitId ?? ''}:${ctx.userId}`;
 
 /**
- * Envio e download do pacote, um por vez: o pacote baixado durante um envio não traria o efeito dele, e o efeito
- * aplicado depois contaria duas vezes o larvicida.
+ * Envio e download do pacote, um por vez, nesta aba e entre as abas do app (o banco do aparelho é o mesmo): o pacote
+ * baixado durante um envio não traria o efeito dele, e o efeito aplicado depois contaria duas vezes o larvicida; duas abas
+ * enviando a mesma fila receberiam OK numa e DUPLICADA na outra, e as duas aplicariam o efeito no pacote guardado. Entre
+ * abas vale a trava do navegador (Web Locks API); sem ela (navegador antigo, página fora de HTTPS), a ordem é só desta
+ * aba, e gravarResultados não aplica de novo o que a outra aba já tirou da fila e pôs no histórico.
  */
+const TRAVA_ENVIO = 'omnisaude-campo-ace:envio';
 let ultimo: Promise<unknown> = Promise.resolve();
 function emSequencia<T>(fn: () => Promise<T>): Promise<T> {
-  const r = ultimo.then(fn, fn);
+  const rodar = () => entreAbas(fn);
+  const r = ultimo.then(rodar, rodar);
   ultimo = r.catch(() => undefined);
   return r;
+}
+
+async function entreAbas<T>(fn: () => Promise<T>): Promise<T> {
+  const travas = typeof navigator === 'undefined' ? undefined : (navigator as { locks?: LockManager }).locks;
+  if (typeof travas?.request !== 'function') return fn();
+  let rodou = false;
+  try {
+    return await travas.request(TRAVA_ENVIO, () => {
+      rodou = true;
+      return fn();
+    });
+  } catch (e) {
+    if (rodou) throw e;
+    // O navegador recusou a trava (ex.: documento sem permissão): segue só com a ordem desta aba.
+    console.warn('Trava entre abas indisponível', e);
+    return fn();
+  }
 }
 
 async function itensDoUsuario(userId: string): Promise<ItemFilaAce[]> {
@@ -143,9 +165,13 @@ export const pacoteAce = {
 async function gravarResultados(ctx: ContextoAce, resultados: ResultadoSyncAce[], porId: Map<string, ItemFilaAce>, resumo: ResumoSyncAce) {
   // O resultado vale sobre o que está na fila agora: o item descartado durante o envio não volta.
   const atuais = new Map((await itensDoUsuario(ctx.userId)).map((i) => [i.clientId, i]));
+  const algumAceito = resultados.some((r) => (r.status === 'OK' || r.status === 'DUPLICADA') && porId.has(r.clientId));
+  const historico = algumAceito ? await historicoAce.listar(ctx.userId) : [];
+  const jaNoHistorico = new Set(historico.map((h) => h.clientId));
   const saida = new Map<string, ItemFilaAce | null>();
   const novos: EnviadoAce[] = [];
   const aceitos: AceitoAce[] = [];
+  const noPacote: AceitoAce[] = [];
   const agora = new Date().toISOString();
   for (const r of resultados) {
     const enviado = porId.get(r.clientId);
@@ -161,6 +187,9 @@ async function gravarResultados(ctx: ContextoAce, resultados: ResultadoSyncAce[]
       saida.set(enviado.clientId, null);
       novos.push({ clientId: r.clientId, tipo: r.tipo, rotulo: enviado.rotulo, id: r.id, em: agora, ...(r.avisos?.length ? { avisos: r.avisos } : {}) });
       aceitos.push({ op: enviado.op, id: r.id });
+      // O pacote guardado não recebe de novo o que outra aba já tirou da fila e pôs no histórico (OK lá, DUPLICADA aqui):
+      // ela aplicou o efeito. O descartado durante o envio não está no histórico e recebe (o servidor gravou).
+      if (item || !jaNoHistorico.has(r.clientId)) noPacote.push({ op: enviado.op, id: r.id });
       if (r.status === 'OK') resumo.enviados++;
       else resumo.duplicados++;
       resumo.avisos += r.avisos?.length ?? 0;
@@ -181,15 +210,11 @@ async function gravarResultados(ctx: ContextoAce, resultados: ResultadoSyncAce[]
     }
   }
   const gravacoes: Gravacao[] = [...saida].map(([clientId, item]) => (item ? { store: 'fila', put: item } : { store: 'fila', delete: clientId }));
-  if (novos.length) {
-    const historico = semRepetidos([...novos.reverse(), ...(await historicoAce.listar(ctx.userId))]).slice(0, 300);
-    gravacoes.push({ store: 'cache', put: { key: chaveHistorico(ctx.userId), data: historico, savedAt: agora } });
-  }
+  if (novos.length) gravacoes.push({ store: 'cache', put: { key: chaveHistorico(ctx.userId), data: semRepetidos([...novos.reverse(), ...historico]).slice(0, 300), savedAt: agora } });
   await localAce.gravar(gravacoes);
-  if (aceitos.length) {
-    resumo.aceitos.push(...aceitos);
-    await pacoteAce.aplicar(ctx, aceitos).catch((e) => console.warn('Pacote do aparelho não atualizado', e));
-  }
+  // A tela aplica todos os aceitos no pacote que tem em memória (lido antes deste envio, sem o efeito deles).
+  resumo.aceitos.push(...aceitos);
+  if (noPacote.length) await pacoteAce.aplicar(ctx, noPacote).catch((e) => console.warn('Pacote do aparelho não atualizado', e));
 }
 
 async function enviar(ctx: ContextoAce): Promise<ResumoSyncAce> {

@@ -1,9 +1,10 @@
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { avaliarGps, onlyDigits, type PrecisaoGeo } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { DomainError, notFound } from '../../core/errors';
 import { LocalizadorService } from '../territorio/localizador.service';
+import { TerritorioService } from '../territorio/territorio.service';
 import { patientSummary } from './patients.service';
 
 export interface HouseholdInput {
@@ -77,9 +78,12 @@ function enderecoAlterado(novo: { street?: string | null; number?: string | null
 /** Domicílios e famílias: um paciente pertence a uma família, que vive num domicílio (base do cadastro domiciliar do e-SUS). */
 @Injectable()
 export class HouseholdsService {
+  private readonly logger = new Logger('Domicilios');
+
   constructor(
     private readonly audit: AuditService,
     private readonly localizador: LocalizadorService,
+    private readonly territorio: TerritorioService,
   ) {}
 
   async search(ctx: RequestContext, q: string) {
@@ -103,9 +107,14 @@ export class HouseholdsService {
     return this.view(h);
   }
 
-  async create(ctx: RequestContext, input: HouseholdInput & { family?: FamilyInput | null }) {
+  /**
+   * `posicionados`: quem grava em lote (a sincronização do ACS) junta aqui os imóveis que ganharam posição e avisa o
+   * território no fim; sem ele, o aviso sai logo depois do commit.
+   */
+  async create(ctx: RequestContext, input: HouseholdInput & { family?: FamilyInput | null }, posicionados?: string[]) {
+    const geo = this.geo(input, null);
     const id = await ctx.db.$transaction(async (tx) => {
-      const h = await tx.household.create({ data: { ...this.data(input), ...this.geo(input, null), unitId: input.unitId ?? ctx.session.unitId ?? null } });
+      const h = await tx.household.create({ data: { ...this.data(input), ...geo, unitId: input.unitId ?? ctx.session.unitId ?? null } });
       if (input.family) await this.newFamily(ctx, tx, h.id, input.family);
       // Território (PLT-3): com posição, o imóvel é ligado ao quarteirão que a contém (na mesma transação: o reenvio
       // da sincronização do ACS não pode achar o domicílio gravado pela metade).
@@ -113,10 +122,11 @@ export class HouseholdsService {
       await this.audit.record(ctx, tx, { action: 'domicilio.cadastrar', entityType: 'Household', entityId: h.id, payload: input });
       return h.id;
     });
+    if ('geoPrecision' in geo) await this.avisarPosicao(ctx, id, posicionados);
     return this.view(await ctx.db.household.findUniqueOrThrow({ where: { id }, include: householdInclude }));
   }
 
-  async update(ctx: RequestContext, id: string, input: HouseholdInput) {
+  async update(ctx: RequestContext, id: string, input: HouseholdInput, posicionados?: string[]) {
     const h = await ctx.db.household.findUnique({ where: { id } });
     if (!h) throw notFound('Domicílio');
     // ACS fora da sua equipe e microárea: o cadastro é atualizado, mas a posição não (mesma regra da marcação no mapa).
@@ -128,7 +138,25 @@ export class HouseholdsService {
       if ('geoPrecision' in geo) await this.localizador.vincularImovel(tx, id);
       await this.audit.record(ctx, tx, { action: 'domicilio.atualizar', entityType: 'Household', entityId: id, payload: input });
     });
+    if ('geoPrecision' in geo) await this.avisarPosicao(ctx, id, posicionados);
     return this.view(await ctx.db.household.findUniqueOrThrow({ where: { id }, include: householdInclude }));
+  }
+
+  private async avisarPosicao(ctx: RequestContext, id: string, posicionados?: string[]) {
+    if (posicionados) posicionados.push(id);
+    else await this.imoveisPosicionados(ctx, [id]);
+  }
+
+  /**
+   * Imóveis que ganharam posição nova (ou a perderam), depois do commit: o território avisa os ouvintes, e a ordem de
+   * bloqueio refaz o retrato dos casos dos moradores. Nunca lança: a falha não desfaz o cadastro (a varredura recupera).
+   */
+  async imoveisPosicionados(ctx: RequestContext, ids: string[]) {
+    try {
+      await this.territorio.imoveisPosicionados(ctx, ids);
+    } catch (err) {
+      this.logger.error(`Aviso da posição de ${ids.length} imóvel(is): ${(err as Error).message}`);
+    }
   }
 
   /** O imóvel está na área do ACS (equipe e microárea); verdadeiro para os demais papéis. */

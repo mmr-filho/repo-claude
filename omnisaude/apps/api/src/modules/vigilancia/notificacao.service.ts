@@ -667,62 +667,72 @@ export class NotificacaoService implements OnModuleInit {
     // Município de residência só com o código IBGE de 7 dígitos (o cadastro aceita outros formatos).
     const ibgeResidencia = patient.ibgeCode && /^\d{7}$/.test(patient.ibgeCode) ? patient.ibgeCode : null;
     const ano = Number(localDateString(new Date(), sys.tenant.timeZone).slice(0, 4));
-    for (let tentativa = 0; tentativa < 6; tentativa++) {
-      const ultimo = await sys.db.notification.findFirst({ where: { year: ano }, orderBy: { seq: 'desc' }, select: { seq: true } });
-      const seq = (ultimo?.seq ?? 0) + 1 + tentativa;
+    // Número do ano sem colisão nem buraco: a trava curta do tenant e do ano, presa até o commit, põe em fila as criações
+    // simultâneas, e cada uma lê o maior número só depois que a anterior gravou. Antes, várias liam o mesmo máximo e
+    // esgotavam as tentativas numa rajada. O índice único (ano, sequência) continua como garantia.
+    for (let tentativa = 0; tentativa < 3; tentativa++) {
       try {
-        const n = await sys.db.notification.create({
-          data: {
-            year: ano,
-            seq,
-            number: `${ano}/${String(seq).padStart(6, '0')}`,
-            origin: p.origem,
-            conditionId: c.id,
-            conditionKey: c.key,
-            groupKey: c.groupKey,
-            basis: p.confirmacao ? 'CONFIRMADO' : 'SUSPEITA',
-            codeSystem: p.codigo?.system ?? null,
-            code: p.codigo?.code ?? null,
-            mapStatus: p.mapStatus,
-            patientId: p.patientId,
-            encounterId: p.encounterId ?? null,
-            noteId: p.noteId ?? null,
-            admissionId: p.admissionId ?? null,
-            vaccinationId: p.vaccinationId ?? null,
-            relatedNotificationId: p.relacionada ?? null,
-            unitId: p.unitId,
-            notifierId: p.autor.userId,
-            notifierCbo: p.autor.cbo,
-            notifierRole: p.autor.role,
-            firstCareAt: p.primeiroAtendimento,
-            knownAt: p.conhecimento,
-            confirmedAt: p.confirmacao,
-            deadlineStart: prazo.marco,
-            deadlineKind: prazo.tipo,
-            targets: prazo.esferas,
-            deadlineStartAt: prazo.inicio,
-            dueAt: prazo.vence,
-            symptomsOnset: p.sintomas ? new Date(`${p.sintomas}T00:00:00Z`) : null,
-            epiWeekOnset: p.sintomas ? semanasDaFicha(null, p.sintomas).SEM_PRI : null,
-            sensitive: c.sensitive,
-            form: ficha as object,
-            residenceIbge: ibgeResidencia,
-            residenceLat: ficha.ID_GEO1,
-            residenceLng: ficha.ID_GEO2,
-            residencePrecision: ficha.ID_GEO1 != null ? (household?.family?.household.geoPrecision ?? null) : null,
-            outOfMunicipality: !!ibgeResidencia && ibgeResidencia !== unit.ibgeCode,
-            policeRequired: policial,
-            policeDueAt: policial ? new Date(p.conhecimento.getTime() + PRAZO_POLICIAL_HORAS * 3_600_000) : null,
-            createdBy: p.autor.userId,
-            events: {
-              create: {
-                kind: p.manual ? 'CRIADA_MANUAL' : 'GERADA_PELO_GATILHO',
-                userId: p.autor.userId,
-                data: { origem: p.origem, codigo: p.codigo ? `${p.codigo.system}:${p.codigo.code}` : null, mapeamento: p.mapStatus, ...(p.exameId ? { examRequestId: p.exameId } : {}) },
+        const n = await sys.db.$transaction(
+          async (tx) => {
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`notificacao-numero:${sys.tenant.id}:${ano}`}))`;
+            const ultimo = await tx.notification.findFirst({ where: { year: ano }, orderBy: { seq: 'desc' }, select: { seq: true } });
+            const seq = (ultimo?.seq ?? 0) + 1;
+            return tx.notification.create({
+              data: {
+                year: ano,
+                seq,
+                number: `${ano}/${String(seq).padStart(6, '0')}`,
+                origin: p.origem,
+                conditionId: c.id,
+                conditionKey: c.key,
+                groupKey: c.groupKey,
+                basis: p.confirmacao ? 'CONFIRMADO' : 'SUSPEITA',
+                codeSystem: p.codigo?.system ?? null,
+                code: p.codigo?.code ?? null,
+                mapStatus: p.mapStatus,
+                patientId: p.patientId,
+                encounterId: p.encounterId ?? null,
+                noteId: p.noteId ?? null,
+                admissionId: p.admissionId ?? null,
+                vaccinationId: p.vaccinationId ?? null,
+                relatedNotificationId: p.relacionada ?? null,
+                unitId: p.unitId,
+                notifierId: p.autor.userId,
+                notifierCbo: p.autor.cbo,
+                notifierRole: p.autor.role,
+                firstCareAt: p.primeiroAtendimento,
+                knownAt: p.conhecimento,
+                confirmedAt: p.confirmacao,
+                deadlineStart: prazo.marco,
+                deadlineKind: prazo.tipo,
+                targets: prazo.esferas,
+                deadlineStartAt: prazo.inicio,
+                dueAt: prazo.vence,
+                symptomsOnset: p.sintomas ? new Date(`${p.sintomas}T00:00:00Z`) : null,
+                epiWeekOnset: p.sintomas ? semanasDaFicha(null, p.sintomas).SEM_PRI : null,
+                sensitive: c.sensitive,
+                form: ficha as object,
+                residenceIbge: ibgeResidencia,
+                residenceLat: ficha.ID_GEO1,
+                residenceLng: ficha.ID_GEO2,
+                residencePrecision: ficha.ID_GEO1 != null ? (household?.family?.household.geoPrecision ?? null) : null,
+                outOfMunicipality: !!ibgeResidencia && ibgeResidencia !== unit.ibgeCode,
+                policeRequired: policial,
+                policeDueAt: policial ? new Date(p.conhecimento.getTime() + PRAZO_POLICIAL_HORAS * 3_600_000) : null,
+                createdBy: p.autor.userId,
+                events: {
+                  create: {
+                    kind: p.manual ? 'CRIADA_MANUAL' : 'GERADA_PELO_GATILHO',
+                    userId: p.autor.userId,
+                    data: { origem: p.origem, codigo: p.codigo ? `${p.codigo.system}:${p.codigo.code}` : null, mapeamento: p.mapStatus, ...(p.exameId ? { examRequestId: p.exameId } : {}) },
+                  },
+                },
               },
-            },
+            });
           },
-        });
+          // Rajada: a espera pela conexão e pela trava conta no prazo da transação.
+          { maxWait: 10_000, timeout: 15_000 },
+        );
         await this.avisar(sys, n);
         return {
           id: n.id,

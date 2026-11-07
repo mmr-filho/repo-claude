@@ -334,6 +334,8 @@ export class AcsService {
     }
     /** Membros de famílias que ainda serão criadas neste lote. */
     const membrosPendentes: { familiaClientId: string; patientId: string; kinship: string }[] = [];
+    /** Domicílios que ganharam posição (GPS da visita, cadastro): o território é avisado no fim do lote. */
+    const posicionados: string[] = [];
     const resultados: ResultadoSync[] = [];
     for (const op of ordenarOperacoes(operacoes)) {
       const feita = feitas.get(op.clientId);
@@ -342,7 +344,7 @@ export class AcsService {
         continue;
       }
       try {
-        const r = await this.aplicar(ctx, op, { ids, familias, membrosPendentes, lot });
+        const r = await this.aplicar(ctx, op, { ids, familias, membrosPendentes, lot, posicionados });
         ids.set(op.clientId, r.id);
         await ctx.db.fieldSyncOp.create({
           data: { clientId: op.clientId, kind: op.tipo, userId: ctx.session.userId, unitId: ctx.session.unitId, status: 'OK', entityType: r.entityType, entityId: r.id, recordedAt: this.quando(op.registradoEm) },
@@ -353,6 +355,9 @@ export class AcsService {
         resultados.push({ clientId: op.clientId, tipo: op.tipo, status: 'ERRO', id: null, erro: msg });
       }
     }
+    // Depois dos commits (e com as famílias do lote já montadas): a posição nova refaz o retrato dos casos dos moradores
+    // na ordem de bloqueio das endemias, na hora. Nunca lança; a varredura periódica recupera uma falha.
+    await this.households.imoveisPosicionados(ctx, posicionados);
     const ok = resultados.filter((r) => r.status === 'OK').length;
     await this.audit.record(ctx, ctx.db, {
       action: 'acs.sincronizar',
@@ -381,7 +386,13 @@ export class AcsService {
   private async aplicar(
     ctx: RequestContext,
     op: OperacaoCampo,
-    ref: { ids: Map<string, string>; familias: Map<string, string>; membrosPendentes: { familiaClientId: string; patientId: string; kinship: string }[]; lot: Lotacao | null },
+    ref: {
+      ids: Map<string, string>;
+      familias: Map<string, string>;
+      membrosPendentes: { familiaClientId: string; patientId: string; kinship: string }[];
+      lot: Lotacao | null;
+      posicionados: string[];
+    },
   ): Promise<{ entityType: string; id: string }> {
     switch (op.tipo) {
       case 'PESSOA':
@@ -434,18 +445,22 @@ export class AcsService {
 
   private async aplicarDomicilio(ctx: RequestContext, op: Extract<OperacaoCampo, { tipo: 'DOMICILIO' }>, ref: Parameters<AcsService['aplicar']>[2]): Promise<string> {
     if (op.householdId) {
-      await this.households.update(ctx, op.householdId, this.domicilioInput(op.dados));
+      await this.households.update(ctx, op.householdId, this.domicilioInput(op.dados), ref.posicionados);
       return op.householdId;
     }
     const responsavelId = op.familia?.responsavelId ?? (op.familia?.responsavelClientId ? ref.ids.get(op.familia.responsavelClientId) : undefined);
     if (op.familia?.responsavelClientId && !responsavelId) throw new DomainError('RESPONSAVEL_NAO_ENCONTRADO', 'O responsável da família não foi cadastrado (operação anterior com erro)');
-    const h = await this.households.create(ctx, {
-      ...this.domicilioInput(op.dados),
-      unitId: ctx.session.unitId,
-      teamId: ref.lot?.teamId ?? null,
-      microArea: op.dados.microArea ?? ref.lot?.microArea ?? null,
-      family: op.familia ? { responsibleId: responsavelId ?? null, incomeBracket: op.familia.incomeBracket ?? null, recordNumber: op.familia.recordNumber ?? null } : null,
-    });
+    const h = await this.households.create(
+      ctx,
+      {
+        ...this.domicilioInput(op.dados),
+        unitId: ctx.session.unitId,
+        teamId: ref.lot?.teamId ?? null,
+        microArea: op.dados.microArea ?? ref.lot?.microArea ?? null,
+        family: op.familia ? { responsibleId: responsavelId ?? null, incomeBracket: op.familia.incomeBracket ?? null, recordNumber: op.familia.recordNumber ?? null } : null,
+      },
+      ref.posicionados,
+    );
     const family = h.families[0];
     if (family) {
       ref.familias.set(op.clientId, family.id);
@@ -501,7 +516,7 @@ export class AcsService {
       v.longitude !== undefined &&
       (v.precisaoGps == null || avaliarGps(v.precisaoGps) !== 'NOVA_LEITURA') &&
       (await this.households.noEscopoDeCampo(ctx, household.id));
-    const visitId = await ctx.db.$transaction(async (tx) => {
+    const { visitId, posicionou } = await ctx.db.$transaction(async (tx) => {
       const visit = await tx.homeVisit.create({
         data: {
           clientId: op.clientId,
@@ -532,6 +547,7 @@ export class AcsService {
           notes: v.observacoes?.trim() || null,
         },
       });
+      let posicionou = false;
       if (posiciona) {
         // Condicional: se alguém marcou a posição no mapa nesse meio-tempo, ela fica.
         const { count } = await tx.household.updateMany({
@@ -540,6 +556,7 @@ export class AcsService {
         });
         // Na mesma transação: o reenvio da sincronização não pode achar a visita gravada sem o resto.
         if (count) await this.households.ligarAoQuarteirao(tx, household!.id);
+        posicionou = count > 0;
       }
       if (patientId && v.desfecho === '1') await tx.activeSearchCase.updateMany({ where: { patientId, status: { not: 'ENCERRADO' } }, data: { lastVisitAt: visitedAt } });
       await this.audit.record(ctx, tx, {
@@ -548,8 +565,10 @@ export class AcsService {
         entityId: visit.id,
         payload: { householdId, patientId, desfecho: v.desfecho, motivos, visitedAt: visitedAt.toISOString(), clientId: op.clientId },
       });
-      return visit.id;
+      return { visitId: visit.id, posicionou };
     });
+    // geo_at fica com a hora da visita no aparelho; o aviso ao território (no fim do lote) não depende dela.
+    if (posicionou) ref.posicionados.push(household!.id);
     return visitId;
   }
 

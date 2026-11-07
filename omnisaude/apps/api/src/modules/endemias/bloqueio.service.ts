@@ -5,6 +5,7 @@ import {
   localDateString,
   ORDEM_ATIVA,
   PRECISAO_INFO,
+  PRECISOES,
   progresso,
   roleHasPermission,
   SITUACAO_INFO,
@@ -40,6 +41,8 @@ const ESPERAS_TRAVA_MS = [50, 100, 200, 400, 800];
 const TRABALHADAS: string[] = SITUACOES_VISITA.filter((s) => !SITUACAO_INFO[s].pendencia);
 /** Teto da lista de ordens (a tela avisa quando vem cheia). */
 const LIMITE_LISTA = 500;
+/** Precisões que não definem o raio: o caso fica sem o ponto (só com a precisão) até a confirmação em campo. */
+const SEM_RAIO: string[] = PRECISOES.filter((p) => PRECISAO_INFO[p].bloqueio === 'CONFIRMAR_EM_CAMPO');
 
 interface CasoAvaliado extends CasoParaAgrupar {
   patientId: string;
@@ -228,7 +231,7 @@ export class BloqueioService implements OnModuleInit {
       alteradas = await this.comTrava(sys.db, async (tx) => {
         // Relidas dentro da trava: o descarte, o encerramento ou outra decisão podem ter entrado no intervalo.
         const a = await this.analisar(tx, sys, notificationId, agora);
-        return a && this.precisaMudar(a) ? this.decidir(tx, sys, a) : [];
+        return a && this.precisaMudar(a) ? this.decidir(tx, sys, a, agora) : [];
       });
     } catch (err) {
       // Trava ocupada ou falha: a varredura periódica tenta de novo em até 5 minutos.
@@ -279,27 +282,58 @@ export class BloqueioService implements OnModuleInit {
     };
   }
 
-  private async decidir(tx: Tx, sys: SystemContext, a: Analise): Promise<string[]> {
+  private async decidir(tx: Tx, sys: SystemContext, a: Analise, agora: Date): Promise<string[]> {
     const atual = a.ligacao;
     if (a.motivo || !a.caso) return atual?.active ? this.desligar(tx, atual, a.motivo ?? 'Fora do bloqueio') : [];
     const caso = a.caso;
     const religar = { active: true, linkedAt: new Date(), unlinkedAt: null, unlinkReason: null };
-    if (atual?.active) {
+    // Antes do campo, a data nova que esticaria a própria ordem além da janela tira o caso dela: ele entra como caso
+    // novo (abaixo), sem contar a ordem de onde saiu, e ela é refeita sem ele.
+    const sai = !!atual && ativa(atual.order.status) && (await this.esticariaAntesDoCampo(tx, sys, atual, caso));
+    // Como caso novo, o de início dos sintomas há mais de 30 dias, ou com a abertura automática desligada, não entraria em
+    // ordem nenhuma (ver `analisar`): só sai da sua, sem abrir outra.
+    const cfg = sys.tenant.settings.endemias;
+    if (sai && (!cfg.bloqueioAutomatico || !recente(caso.dataReferencia, agora))) {
+      const motivo = cfg.bloqueioAutomatico ? `início dos sintomas há mais de ${IDADE_MAXIMA_CASO_DIAS} dias` : 'abertura automática desligada';
+      return atual!.active ? this.desligar(tx, atual!, `Data corrigida para fora do período da ordem (${motivo})`) : [];
+    }
+    if (atual?.active && !sai) {
       await tx.blockingOrderCase.update({ where: { id: atual.id }, data: this.retrato(caso) });
       return this.acomodar(tx, sys, atual.orderId, caso);
     }
     // Caso que volta (descarte desfeito, encerramento reaberto): à própria ordem, se ela continua ativa; o trabalho de
     // campo dela vale para ele.
-    if (atual && ativa(atual.order.status)) {
+    if (atual && ativa(atual.order.status) && !sai) {
       await tx.blockingOrderCase.update({ where: { id: atual.id }, data: { ...this.retrato(caso), ...religar } });
       return this.acomodar(tx, sys, atual.orderId, caso);
     }
-    const alvo = await this.ordemQueAgrupa(tx, sys, caso);
+    const alvo = await this.ordemQueAgrupa(tx, sys, caso, sai ? atual!.orderId : undefined);
     const orderId = alvo ?? (await this.criarOrdem(tx, sys, caso));
     if (atual) await tx.blockingOrderCase.update({ where: { id: atual.id }, data: { ...this.retrato(caso), orderId, ...religar } });
     else await tx.blockingOrderCase.create({ data: { ...this.retrato(caso), orderId, notificationId: a.notificationId, patientId: caso.patientId } });
     await this.recalcular(tx, orderId);
+    // A ordem de onde o caso ativo saiu segue as regras de hoje: refeita com os casos que ficaram (ou cancelada sem eles).
+    if (sai && atual!.active) return [orderId, ...(await this.aposSaida(tx, atual!.orderId, 'Caso com a data corrigida para fora do período da ordem'))];
     return [orderId];
+  }
+
+  /**
+   * Com a data nova, o caso esticaria a própria ordem além da janela (período dos casos ativos: a maior menos a menor
+   * data de referência) e a ordem ainda não foi a campo (aguardando a localização ou aberta, sem visita). Com campo, o
+   * caso fica: o trabalho feito vale. Se os outros casos já passam da janela entre si (ordem anterior à regra do período
+   * ou ampliada em campo), não é a data deste caso que a estica, e ele também fica.
+   */
+  private async esticariaAntesDoCampo(tx: Tx, sys: SystemContext, l: Ligacao, caso: CasoAvaliado): Promise<boolean> {
+    const janela = sys.tenant.settings.endemias.janelaAgrupamentoDias;
+    const outros = (await tx.blockingOrderCase.findMany({ where: { orderId: l.orderId, active: true, id: { not: l.id } }, select: { referenceDate: true } })).map((c) => localDateString(c.referenceDate, 'UTC')).sort();
+    if (!outros.length || diasDepois(outros.at(-1)!, outros[0]!) > janela) return false;
+    const de = caso.dataReferencia < outros[0]! ? caso.dataReferencia : outros[0]!;
+    const ate = caso.dataReferencia > outros.at(-1)! ? caso.dataReferencia : outros.at(-1)!;
+    if (diasDepois(ate, de) <= janela) return false;
+    // Linha travada: a visita que chega agora espera, e a situação e a contagem abaixo a veem.
+    await tx.$queryRaw`SELECT id FROM blocking_orders WHERE id = ${l.orderId}::uuid FOR UPDATE`;
+    const o = await tx.blockingOrder.findUnique({ where: { id: l.orderId }, select: { status: true, _count: { select: { visits: true } } } });
+    return !!o && (o.status === 'AGUARDANDO_LOCALIZACAO' || o.status === 'ABERTA') && o._count.visits === 0;
   }
 
   /**
@@ -362,9 +396,9 @@ export class BloqueioService implements OnModuleInit {
     return [destino.id, origem.id];
   }
 
-  /** A ordem ativa mais antiga em que o caso entra (ver `ordensQueAgrupam`). */
-  private async ordemQueAgrupa(tx: Tx, sys: SystemContext, caso: CasoAvaliado): Promise<string | null> {
-    return (await this.ordensQueAgrupam(tx, sys, caso))[0] ?? null;
+  /** A ordem ativa mais antiga em que o caso entra, fora `exceto` (ver `ordensQueAgrupam`). */
+  private async ordemQueAgrupa(tx: Tx, sys: SystemContext, caso: CasoAvaliado, exceto?: string): Promise<string | null> {
+    return (await this.ordensQueAgrupam(tx, sys, caso, exceto))[0] ?? null;
   }
 
   /**
@@ -480,20 +514,25 @@ export class BloqueioService implements OnModuleInit {
   /** Caso descartado (ou fora do bloqueio): sai da ordem; ordem sem caso e sem trabalho de campo é cancelada. */
   private async desligar(tx: Tx, ligacao: { id: string; orderId: string }, motivo: string): Promise<string[]> {
     await tx.blockingOrderCase.update({ where: { id: ligacao.id }, data: { active: false, unlinkedAt: new Date(), unlinkReason: motivo } });
+    return this.aposSaida(tx, ligacao.orderId, motivo);
+  }
+
+  /** Um caso saiu da ordem (desligado ou passado a outra): sem caso ativo e sem trabalho de campo, ela é cancelada; senão, refeita. */
+  private async aposSaida(tx: Tx, orderId: string, motivo: string): Promise<string[]> {
     // Linha travada: a visita que chega agora espera, e a contagem de visitas abaixo a vê.
-    await tx.$queryRaw`SELECT id FROM blocking_orders WHERE id = ${ligacao.orderId}::uuid FOR UPDATE`;
-    const o = await tx.blockingOrder.findUnique({ where: { id: ligacao.orderId }, select: { status: true } });
-    if (!o || !ativa(o.status)) return [ligacao.orderId];
-    const restantes = await tx.blockingOrderCase.count({ where: { orderId: ligacao.orderId, active: true } });
-    if (!restantes && !(await this.temTrabalhoDeCampo(tx, ligacao.orderId))) {
+    await tx.$queryRaw`SELECT id FROM blocking_orders WHERE id = ${orderId}::uuid FOR UPDATE`;
+    const o = await tx.blockingOrder.findUnique({ where: { id: orderId }, select: { status: true } });
+    if (!o || !ativa(o.status)) return [orderId];
+    const restantes = await tx.blockingOrderCase.count({ where: { orderId, active: true } });
+    if (!restantes && !(await this.temTrabalhoDeCampo(tx, orderId))) {
       await tx.blockingOrder.updateMany({
-        where: { id: ligacao.orderId, status: { in: [...ORDEM_ATIVA] } },
+        where: { id: orderId, status: { in: [...ORDEM_ATIVA] } },
         data: { status: 'CANCELADA', cancelledAt: new Date(), cancelReason: `Sem caso ativo antes do trabalho de campo (${motivo.toLowerCase()})` },
       });
-      return [ligacao.orderId];
+      return [orderId];
     }
-    if (restantes) await this.recalcular(tx, ligacao.orderId);
-    return [ligacao.orderId];
+    if (restantes) await this.recalcular(tx, orderId);
+    return [orderId];
   }
 
   /**
@@ -524,19 +563,33 @@ export class BloqueioService implements OnModuleInit {
       SELECT n.id FROM blocking_order_cases c JOIN notifications n ON n.id = c.notification_id
       WHERE c.active AND (n.status = 'DESCARTADA' OR (n.status = 'ENCERRADA' AND n.final_class = '2') OR n.out_of_municipality OR NOT (n.group_key = ANY(${grupos}::text[])))
       LIMIT 500`;
-    // Casos a rever: primeiro os que aguardam a localização, depois os de imóvel com posição mais nova que a ligação
-    // (também com a ordem em campo, onde só acrescenta quarteirões) e, por fim, os mais recentes.
+    // Casos a rever: primeiro os que aguardam a localização, depois os de imóvel com posição que o retrato do caso não
+    // reflete (também com a ordem em campo, onde só acrescenta quarteirões) e, por fim, os mais recentes. A comparação é
+    // com o retrato, e não com a hora da posição: o GPS das visitas do ACS e do ACE grava a hora do aparelho, que pode
+    // ser anterior à ligação (visita feita sem rede e enviada depois). O imóvel conta como em `residencias`: sem a
+    // residência da ficha, a posição dele é a do caso (sem o ponto, se a precisão não define o raio); com ela, só a de
+    // precisão melhor que a da ficha a substitui (a da ficha a mais de 100 m, de quem mudou, é revista sem mudar nada).
     const aRever = await sys.db.$queryRaw<{ id: string }[]>`
-      SELECT c.notification_id AS id FROM blocking_order_cases c
-      JOIN blocking_orders o ON o.id = c.order_id
-      LEFT JOIN patients p ON p.id = c.patient_id
-      LEFT JOIN families f ON f.id = p.family_id
-      LEFT JOIN households h ON h.id = f.household_id
-      WHERE c.active AND o.status IN ('AGUARDANDO_LOCALIZACAO', 'ABERTA', 'EM_CAMPO')
-        AND (o.status <> 'EM_CAMPO' OR (h.geo_at > c.linked_at AND (h.latitude IS DISTINCT FROM c.lat OR h.longitude IS DISTINCT FROM c.lng)))
-      ORDER BY (o.status = 'AGUARDANDO_LOCALIZACAO') DESC,
-        (h.geo_at > c.linked_at AND (h.latitude IS DISTINCT FROM c.lat OR h.longitude IS DISTINCT FROM c.lng)) DESC NULLS LAST,
-        c.linked_at DESC
+      SELECT x.id FROM (
+        SELECT c.notification_id AS id, o.status::text AS status, c.linked_at,
+          COALESCE(h.latitude IS NOT NULL AND h.longitude IS NOT NULL
+            AND (n.residence_lat IS NULL OR n.residence_lng IS NULL
+              OR array_position(${PRECISOES}::text[], COALESCE(h.geo_precision::text, 'MUNICIPIO'))
+                < array_position(${PRECISOES}::text[], COALESCE(n.residence_precision::text, 'GPS_CAMPO')))
+            AND (COALESCE(h.geo_precision::text, 'MUNICIPIO') IS DISTINCT FROM c.precision::text
+              OR (NOT (COALESCE(h.geo_precision::text, 'MUNICIPIO') = ANY(${SEM_RAIO}::text[]))
+                AND (h.latitude IS DISTINCT FROM c.lat OR h.longitude IS DISTINCT FROM c.lng))), false) AS mudou
+        FROM blocking_order_cases c
+        JOIN blocking_orders o ON o.id = c.order_id
+        JOIN notifications n ON n.id = c.notification_id
+        LEFT JOIN patients p ON p.id = c.patient_id
+        LEFT JOIN patients s ON s.id = p.merged_into_id
+        LEFT JOIN families f ON f.id = COALESCE(p.family_id, s.family_id)
+        LEFT JOIN households h ON h.id = f.household_id
+        WHERE c.active AND o.status IN ('AGUARDANDO_LOCALIZACAO', 'ABERTA', 'EM_CAMPO')
+      ) x
+      WHERE x.status <> 'EM_CAMPO' OR x.mudou
+      ORDER BY (x.status = 'AGUARDANDO_LOCALIZACAO') DESC, x.mudou DESC, x.linked_at DESC
       LIMIT 1000`;
     const ids = [...new Set([...inelegiveis.map((r) => r.id), ...semOrdem.map((r) => r.id), ...aRever.map((r) => r.id)])];
     let erros = 0;

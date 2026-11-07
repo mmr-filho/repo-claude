@@ -2,7 +2,7 @@
 
 import { TURNO_VISITA, type OperacaoCampo } from '@omnisaude/shared';
 import { CloudOff, CloudUpload, Home, MapPinned, Plus, RefreshCw, RotateCcw, Trash2, UserPlus } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HouseholdForm, type DomicilioExistente } from '@/components/acs/household-form';
 import { PersonForm } from '@/components/acs/person-form';
 import { TerritoryMap, type PontoMapa } from '@/components/acs/territory-map';
@@ -16,7 +16,7 @@ import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { TabPanel, Tabs } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
 import { errorMessage } from '@/lib/api';
-import { comCache, filaCampo, historicoEnvios, useFila, type Enviado, type ItemFila } from '@/lib/acs-store';
+import { avisoDoEnvio, comCache, filaCampo, historicoEnvios, registrarNaFila, useFila, type Enviado, type ItemFila } from '@/lib/acs-store';
 import { fmtDate, fmtDateTime, todayIso } from '@/lib/format';
 import { useOnline } from '@/lib/offline';
 import { useSession } from '@/lib/session';
@@ -160,26 +160,35 @@ export default function AcsPage() {
     setEnviados(await historicoEnvios.listar());
   }, [chaveEscopo, query]);
 
+  /** Um envio por vez; o registro guardado durante um envio vai numa rodada logo em seguida. */
+  const enviando = useRef(false);
+  const outraRodada = useRef(false);
   const sincronizar = useCallback(
-    async (silencioso = false) => {
-      if (sincronizando) return;
+    async (silencioso = false, registrado = false) => {
+      if (enviando.current) {
+        if (registrado) outraRodada.current = true;
+        return;
+      }
+      enviando.current = true;
       setSincronizando(true);
       try {
-        const r = await filaCampo.sincronizar();
-        if (r.offline) {
-          if (!silencioso) toast.error('Sem conexão: os registros ficam guardados no aparelho e são enviados quando a rede voltar.');
-          return;
+        for (let rodada = 0; rodada === 0 || outraRodada.current; rodada++) {
+          outraRodada.current = false;
+          const r = await filaCampo.sincronizar();
+          const aviso = avisoDoEnvio(r, rodada ? { silencioso: true, registrado: true } : { silencioso, registrado });
+          if (aviso) toast[aviso.tipo](aviso.texto);
+          if (r.enviados || r.duplicados || r.erros) await Promise.all([carregarTerritorio(), carregarVisitas()]);
         }
-        if (r.enviados || r.duplicados || r.erros) {
-          if (r.erros) toast.error(`${r.enviados} registro(s) enviado(s); ${r.erros} com erro (veja a aba Visitas).`);
-          else if (!silencioso || r.enviados) toast.success(`${r.enviados} registro(s) enviado(s)${r.duplicados ? `, ${r.duplicados} já estavam no servidor` : ''}.`);
-          await Promise.all([carregarTerritorio(), carregarVisitas()]);
-        } else if (!silencioso) toast.success('Nada pendente: tudo já está no servidor.');
+      } catch (err) {
+        // O envio corre em segundo plano depois de um registro: o erro vira aviso, nunca volta ao formulário.
+        toast.error(avisoDoEnvio({ enviados: 0, duplicados: 0, erros: 0, offline: false, falha: errorMessage(err) })!.texto);
       } finally {
+        enviando.current = false;
+        outraRodada.current = false;
         setSincronizando(false);
       }
     },
-    [sincronizando, toast, carregarTerritorio, carregarVisitas],
+    [toast, carregarTerritorio, carregarVisitas],
   );
 
   useEffect(() => {
@@ -204,11 +213,13 @@ export default function AcsPage() {
       .catch((err) => setErroProd(errorMessage(err)));
   }, [tab, chaveEscopo, query, periodo]);
 
-  async function registrar(ops: OperacaoCampo[], rotulo: string) {
-    for (const op of ops) await filaCampo.adicionar(op, rotulo);
-    if (online) await sincronizar(true);
-    else toast.success('Registrado no aparelho. Será enviado quando houver conexão.');
-  }
+  // Só a falha ao guardar volta ao formulário; o envio vai em segundo plano e avisa por toast (salvar de novo duplicaria).
+  const registrar = (ops: OperacaoCampo[], rotulo: string) =>
+    registrarNaFila(ops, rotulo, async () => {
+      if (online) await sincronizar(true, true);
+      else toast.success('Registrado no aparelho. Será enviado quando houver conexão.');
+    });
+  const naFila = (acao: Promise<unknown>) => void acao.catch((err) => toast.error(errorMessage(err)));
 
   // Domicílios ainda não enviados (cadastrados agora, sem rede) aparecem no território com a marca de pendência.
   const pendentes = fila.itens;
@@ -500,11 +511,11 @@ export default function AcsPage() {
                         </div>
                         <div className="flex gap-1">
                           {i.status === 'ERRO' && (
-                            <Button size="sm" variant="ghost" onClick={() => filaCampo.tentarDeNovo(i.clientId)} title="Tentar de novo">
+                            <Button size="sm" variant="ghost" onClick={() => naFila(filaCampo.tentarDeNovo(i.clientId))} title="Tentar de novo">
                               <RotateCcw className="h-4 w-4" />
                             </Button>
                           )}
-                          <Button size="sm" variant="ghost" onClick={() => filaCampo.remover(i.clientId)} title="Descartar" aria-label="Descartar registro">
+                          <Button size="sm" variant="ghost" onClick={() => naFila(filaCampo.remover(i.clientId))} title="Descartar" aria-label="Descartar registro">
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         </div>

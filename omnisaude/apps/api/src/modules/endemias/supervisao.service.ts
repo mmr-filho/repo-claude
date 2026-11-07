@@ -169,7 +169,12 @@ export class SupervisaoEndemiasService {
     // até a supervisão trocá-lo: editar o nome ou os quarteirões não obriga a trocar o titular na hora.
     if (input.aceId && input.aceId !== atual?.aceId && !(await ctx.db.userAssignment.count({ where: { userId: input.aceId, active: true, role: { in: ['ACE', 'SUPERVISOR_ENDEMIAS'] }, user: { active: true } } })))
       throw new DomainError('AGENTE_INVALIDO', 'O titular da zona precisa ser agente de endemias (ou supervisor de campo) ativo, com lotação ativa', HttpStatus.BAD_REQUEST);
-    if (blocos.length && (await ctx.db.block.count({ where: { id: { in: blocos }, active: true } })) !== blocos.length)
+    // Como o titular, só o quarteirão que ENTRA na zona é conferido (existe e está ativo na malha). O que já estava nela e
+    // foi desativado depois fica até a supervisão tirá-lo (a lista das zonas o mostra como desativado), como ficaria sem
+    // a edição: renomear a zona ou mexer nos outros quarteirões não obriga a tirá-lo, e o que sai não volta desativado.
+    const jaNaZona = atual ? new Set((await ctx.db.vectorZoneBlock.findMany({ where: { zoneId: atual.id }, select: { blockId: true } })).map((b) => b.blockId)) : new Set<string>();
+    const entram = blocos.filter((b) => !jaNaZona.has(b));
+    if (entram.length && (await ctx.db.block.count({ where: { id: { in: entram }, active: true } })) !== entram.length)
       throw new DomainError('QUARTEIRAO_INVALIDO', 'Algum quarteirão não existe ou foi desativado', HttpStatus.BAD_REQUEST);
     const ocupados = await ctx.db.vectorZoneBlock.findMany({ where: { blockId: { in: blocos }, ...(id ? { zoneId: { not: id } } : {}) }, include: { zone: { select: { name: true } } } });
     if (ocupados.length) {

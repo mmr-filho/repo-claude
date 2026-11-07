@@ -324,4 +324,31 @@ describe.runIf(enabled)('VIG-3a gestão: produção, índices, pendências e tit
     await salvar(zona, { nome: 'Zona do Transferido (centro)', aceId }).expect(200);
     expect((await db.vectorZone.findUniqueOrThrow({ where: { id: zona } })).aceId).toBe(aceId);
   });
+
+  it('o quarteirão só é conferido quando entra na zona: o que saiu da malha e ficou na zona não trava a edição', async () => {
+    const localidade = await novaLocalidade('73');
+    const [q1, q2, q3, q4] = await Promise.all([novoQuarteirao(localidade, '1', 2000), novoQuarteirao(localidade, '2', 2100), novoQuarteirao(localidade, '3', 2200), novoQuarteirao(localidade, '4', 2300)]);
+    const salvar = (id: string | null, corpo: Record<string, unknown>) => (id ? t.http().put(`/api/endemias/zonas/${id}`) : t.http().post('/api/endemias/zonas')).set(auth(supervisora)).send(corpo);
+    const daZona = async (id: string) => (await db.vectorZoneBlock.findMany({ where: { zoneId: id }, select: { blockId: true } })).map((b) => b.blockId).sort();
+
+    const zona = (await salvar(null, { nome: 'Zona da Malha Velha', quarteiroes: [q1, q2] }).expect(201)).body.id as string;
+    // A malha nova tira o quarteirão 1 (desativado); a zona continua com ele, marcado como desativado na lista.
+    await db.block.update({ where: { id: q1 }, data: { active: false } });
+    const listada = ((await t.http().get('/api/endemias/zonas').set(auth(supervisora)).expect(200)).body.zonas as { id: string; quarteiroes: { id: string; ativo: boolean }[] }[]).find((z) => z.id === zona)!;
+    expect(listada.quarteiroes.find((q) => q.id === q1)).toMatchObject({ ativo: false });
+    // Renomear e acrescentar um quarteirão ativo mantendo o desativado: aceito, e ele continua na zona.
+    await salvar(zona, { nome: 'Zona da Malha Velha (centro)', quarteiroes: [q1, q2, q3] }).expect(200);
+    expect((await db.vectorZone.findUniqueOrThrow({ where: { id: zona } })).name).toBe('Zona da Malha Velha (centro)');
+    expect(await daZona(zona)).toEqual([q1, q2, q3].sort());
+    // O que entra é conferido: desativado não entra, nem em zona nova nem de volta depois de sair.
+    await db.block.update({ where: { id: q4 }, data: { active: false } });
+    const recusa = await salvar(zona, { nome: 'Zona da Malha Velha (centro)', quarteiroes: [q1, q2, q3, q4] }).expect(400);
+    expect(recusa.body.message).toMatch(/não existe ou foi desativado/);
+    await salvar(null, { nome: 'Zona Só Desativado', quarteiroes: [q4] }).expect(400);
+    await salvar(zona, { nome: 'Zona da Malha Velha (centro)', quarteiroes: [q2, q3] }).expect(200);
+    expect(await daZona(zona)).toEqual([q2, q3].sort());
+    await salvar(zona, { nome: 'Zona da Malha Velha (centro)', quarteiroes: [q1, q2, q3] }).expect(400);
+    await salvar(zona, { nome: 'Zona da Malha Velha (centro)', quarteiroes: [q2, q3, randomUUID()] }).expect(400);
+    expect(await daZona(zona)).toEqual([q2, q3].sort());
+  });
 });

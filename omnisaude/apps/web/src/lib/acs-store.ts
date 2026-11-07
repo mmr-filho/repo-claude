@@ -20,6 +20,20 @@ export interface ItemFila {
   rotulo: string;
 }
 
+/** Resumo de um envio da fila. */
+export interface ResumoEnvioAcs {
+  enviados: number;
+  duplicados: number;
+  erros: number;
+  /** Sem conexão com o servidor: o que faltava continua na fila. */
+  offline: boolean;
+  /**
+   * O banco do aparelho falhou no meio do envio (ex.: ao tirar da fila o que o servidor aceitou). Nada se perde: o que
+   * ficou na fila vai no próximo envio, e o servidor reconhece o que já recebeu (DUPLICADA).
+   */
+  falha: string | null;
+}
+
 export interface Enviado {
   clientId: string;
   tipo: OperacaoCampo['tipo'];
@@ -36,6 +50,12 @@ interface CacheEntry<T> {
 
 const ouvintes = new Set<() => void>();
 const avisar = () => ouvintes.forEach((f) => f());
+
+/**
+ * Registro em gravação (registrarNaFila): o envio que começa no meio espera ele entrar inteiro ou sair da fila antes de
+ * ler, para não levar só parte dele (ex.: o responsável sem o domicílio novo). Nunca rejeita.
+ */
+let gravacaoEmCurso: Promise<unknown> = Promise.resolve();
 
 export const filaCampo = {
   async listar(): Promise<ItemFila[]> {
@@ -57,48 +77,120 @@ export const filaCampo = {
     if (item) await local.put('fila', { ...item, status: 'PENDENTE', erro: null });
     avisar();
   },
-  /** Envia o que está pendente; devolve o resumo. Fora da rede, não faz nada. */
-  async sincronizar(): Promise<{ enviados: number; duplicados: number; erros: number; offline: boolean }> {
-    if (!estaOnline()) return { enviados: 0, duplicados: 0, erros: 0, offline: true };
-    const pendentes = (await this.listar()).filter((i) => i.status === 'PENDENTE');
-    const resumo = { enviados: 0, duplicados: 0, erros: 0, offline: false };
-    if (!pendentes.length) return resumo;
-    const ops = ordenarOperacoes(pendentes.map((i) => i.op));
-    for (let i = 0; i < ops.length; i += 100) {
-      const lote = ops.slice(i, i + 100);
-      let resultados: ResultadoSync[];
-      try {
-        resultados = (await api.post<{ resultados: ResultadoSync[] }>('/acs/sync', { operacoes: lote })).resultados;
-      } catch (err) {
-        if (err instanceof ApiError && err.status === 0) return { ...resumo, offline: true };
-        // Lote recusado inteiro (validação): marca cada item com a mensagem.
-        for (const op of lote) {
-          const item = pendentes.find((p) => p.clientId === op.clientId);
-          if (item) await local.put('fila', { ...item, status: 'ERRO', erro: err instanceof Error ? err.message : String(err) });
-        }
-        resumo.erros += lote.length;
-        continue;
-      }
-      const historico = await historicoEnvios.listar();
-      for (const r of resultados) {
-        const item = pendentes.find((p) => p.clientId === r.clientId);
-        if (!item) continue;
-        if (r.status === 'ERRO') {
-          await local.put('fila', { ...item, status: 'ERRO', erro: r.erro });
-          resumo.erros++;
+  /**
+   * Envia o que está pendente e devolve o resumo; fora da rede, não faz nada. Não lança: a falha do banco do aparelho no
+   * meio do envio vem em `falha`, e a lista da fila é avisada de qualquer jeito.
+   */
+  async sincronizar(): Promise<ResumoEnvioAcs> {
+    const resumo: ResumoEnvioAcs = { enviados: 0, duplicados: 0, erros: 0, offline: false, falha: null };
+    if (!estaOnline()) return { ...resumo, offline: true };
+    try {
+      await gravacaoEmCurso;
+      const pendentes = (await this.listar()).filter((i) => i.status === 'PENDENTE');
+      if (!pendentes.length) return resumo;
+      const ops = ordenarOperacoes(pendentes.map((i) => i.op));
+      for (let i = 0; i < ops.length; i += 100) {
+        const lote = ops.slice(i, i + 100);
+        let resultados: ResultadoSync[];
+        try {
+          resultados = (await api.post<{ resultados: ResultadoSync[] }>('/acs/sync', { operacoes: lote })).resultados;
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 0) return { ...resumo, offline: true };
+          // Lote recusado inteiro (validação): marca cada item com a mensagem.
+          for (const op of lote) {
+            const item = pendentes.find((p) => p.clientId === op.clientId);
+            if (item) await local.put('fila', { ...item, status: 'ERRO', erro: err instanceof Error ? err.message : String(err) });
+          }
+          resumo.erros += lote.length;
           continue;
         }
-        await local.delete('fila', r.clientId);
-        historico.unshift({ clientId: r.clientId, tipo: r.tipo, rotulo: item.rotulo, id: r.id, em: new Date().toISOString() });
-        if (r.status === 'OK') resumo.enviados++;
-        else resumo.duplicados++;
+        const historico = await historicoEnvios.listar();
+        try {
+          for (const r of resultados) {
+            const item = pendentes.find((p) => p.clientId === r.clientId);
+            if (!item) continue;
+            if (r.status === 'ERRO') {
+              await local.put('fila', { ...item, status: 'ERRO', erro: r.erro });
+              resumo.erros++;
+              continue;
+            }
+            await local.delete('fila', r.clientId);
+            historico.unshift({ clientId: r.clientId, tipo: r.tipo, rotulo: item.rotulo, id: r.id, em: new Date().toISOString() });
+            if (r.status === 'OK') resumo.enviados++;
+            else resumo.duplicados++;
+          }
+        } finally {
+          await historicoEnvios.salvar(historico.slice(0, 200));
+        }
       }
-      await historicoEnvios.salvar(historico.slice(0, 200));
+    } catch (e) {
+      // O servidor pode já ter gravado o que não saiu da fila: no próximo envio ele responde DUPLICADA e nada se repete.
+      resumo.falha = e instanceof Error ? e.message : String(e);
+    } finally {
+      avisar();
     }
-    avisar();
     return resumo;
   },
 };
+
+/**
+ * Registro feito num formulário: grava as operações na fila (todas ou nenhuma) e dispara o envio sem esperar por ele. A
+ * falha ao gravar volta para o formulário (nada ficou guardado, e salvar de novo não duplica). A do envio não volta: o
+ * registro já está na fila, e o formulário aberto com o erro levaria o agente a salvar de novo, com outro clientId (o
+ * registro em dobro). Quem envia avisa o resultado (toast).
+ */
+export async function registrarNaFila(ops: OperacaoCampo[], rotulo: string, enviar: () => Promise<unknown>): Promise<void> {
+  const gravacao = gravarInteiro(ops, rotulo);
+  const anterior = gravacaoEmCurso;
+  gravacaoEmCurso = anterior.then(() => gravacao.catch(() => undefined));
+  await gravacao;
+  // Sem esperar: o formulário fecha já, e nada do envio (nem uma falha imediata) volta para ele.
+  void Promise.resolve()
+    .then(enviar)
+    .catch((e) => console.warn('Envio em segundo plano não concluído', e));
+}
+
+/** Todas as operações na fila, ou nenhuma: se uma falhar, as que já tinham entrado saem, e a falha sobe. */
+async function gravarInteiro(ops: OperacaoCampo[], rotulo: string): Promise<void> {
+  const gravados: string[] = [];
+  try {
+    for (const op of ops) {
+      await filaCampo.adicionar(op, rotulo);
+      gravados.push(op.clientId);
+    }
+  } catch (e) {
+    for (const clientId of gravados) await local.delete('fila', clientId).catch((err) => console.warn('Registro incompleto não saiu da fila do aparelho', err));
+    if (gravados.length) avisar();
+    throw e;
+  }
+}
+
+/** Aviso (toast) depois de um envio. */
+export interface AvisoEnvio {
+  tipo: 'success' | 'error';
+  texto: string;
+}
+
+/**
+ * O que a tela avisa depois de um envio; null quando não há o que dizer. `silencioso` (envio automático) só fala do que
+ * foi enviado ou deu errado; `registrado` (logo depois de guardar um registro) confirma, sem conexão, que ele ficou no
+ * aparelho.
+ */
+export function avisoDoEnvio(r: ResumoEnvioAcs, opcoes: { silencioso?: boolean; registrado?: boolean } = {}): AvisoEnvio | null {
+  const { silencioso = false, registrado = false } = opcoes;
+  if (r.falha) {
+    const inicio = r.enviados ? `${r.enviados} registro(s) enviado(s), mas o envio parou.` : 'O envio parou.';
+    return { tipo: 'error', texto: `${inicio} ${r.falha.replace(/\.?$/, '.')} Nada se perde: o que ficou na fila vai no próximo envio, sem duplicar.` };
+  }
+  if (r.offline) {
+    if (registrado) return { tipo: 'success', texto: 'Registrado no aparelho. Será enviado quando houver conexão.' };
+    return silencioso ? null : { tipo: 'error', texto: 'Sem conexão: os registros ficam guardados no aparelho e são enviados quando a rede voltar.' };
+  }
+  if (r.erros) return { tipo: 'error', texto: `${r.enviados} registro(s) enviado(s); ${r.erros} com erro (veja a aba Visitas).` };
+  if (r.enviados || (r.duplicados && !silencioso)) return { tipo: 'success', texto: `${r.enviados} registro(s) enviado(s)${r.duplicados ? `, ${r.duplicados} já estavam no servidor` : ''}.` };
+  if (silencioso) return null;
+  return { tipo: 'success', texto: 'Nada pendente: tudo já está no servidor.' };
+}
 
 export const historicoEnvios = {
   listar: async () => (await local.get<CacheEntry<Enviado[]>>('cache', 'historico'))?.data ?? [],

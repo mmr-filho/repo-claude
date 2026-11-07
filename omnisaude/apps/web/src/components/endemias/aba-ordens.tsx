@@ -228,7 +228,12 @@ function OrdemDialog({ id, onClose, onMudou, podeGerir, podeCancelar }: { id: st
           {o.atrasada && <Alert tone="error">Aberta há mais tempo que o prazo local sem trabalho de campo: o bloqueio deve começar o mais rápido possível.</Alert>}
           {ativa && o.casos.ativos === 0 && <Alert tone="warn">Todos os casos desta ordem foram descartados depois do início do trabalho de campo: conclua ou cancele.</Alert>}
           {o.status === 'ABERTA' && !o.quarteiroes.length && <Alert tone="warn">Nenhum quarteirão no raio: a malha do território não cobre a residência. Importe ou desenhe os quarteirões e recalcule.</Alert>}
-          {o.unificadaEm && <Alert tone="info">Unificada a outra ordem: o caso foi localizado perto dela.</Alert>}
+          {o.unificadaEm && (
+            <Alert tone="info">
+              Unificada a outra ordem: a posição ou a data de um caso mudou, e os casos ficaram na mesma área e no mesmo período. A visita que ainda chegar para esta ordem entra na que ficou, se o quarteirão estiver
+              nela.
+            </Alert>
+          )}
           <div className="grid gap-3 sm:grid-cols-4">
             <div className="rounded-lg bg-slate-50 p-3 text-sm">
               <div className="text-xs text-slate-500">Casos ligados</div>

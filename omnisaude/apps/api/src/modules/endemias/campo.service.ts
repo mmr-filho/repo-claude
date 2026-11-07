@@ -66,6 +66,11 @@ const MENSAGEM_RESTRICAO: Record<string, string> = {
   vector_treatments_deposits_check: 'Informe quantos depósitos receberam cada produto',
 };
 const RESTRICAO_GENERICA = 'O registro tem um valor que o banco de dados não aceita: confira os números e corrija';
+/** Passos que a visita segue na cadeia de uniões (a ordem que ficou com outra pode ter sido unificada depois). */
+const MAX_UNIOES = 5;
+
+type OrdemDaVisita = { id: string; status: string; seq: number; year: number; mergedIntoId: string | null };
+const numeroOrdem = (o: { seq: number; year: number }) => `${o.seq}/${o.year}`;
 
 /**
  * Trabalho de campo do agente de combate às endemias (VIG-3a): o pacote que o aparelho leva sem internet (zona,
@@ -208,7 +213,7 @@ export class CampoAceService {
         continue;
       }
       try {
-        const r = await this.comNovasTentativas(() => (op.tipo === 'IMOVEL' ? this.aplicarImovel(ctx, op) : this.aplicarVisita(ctx, op, ids)));
+        const r = await this.comNovasTentativas(() => (op.tipo === 'IMOVEL' ? this.aplicarImovel(ctx, op) : this.aplicarVisita(ctx, op, ids, noLote)));
         ids.set(op.clientId, r.id);
         resultados.push({ clientId: op.clientId, tipo: op.tipo, status: 'OK', id: r.id, erro: null, ...(r.avisos.length ? { avisos: r.avisos } : {}) });
       } catch (err) {
@@ -287,13 +292,19 @@ export class CampoAceService {
     const bloco = await ctx.db.block.findUnique({ where: { id: d.blockId }, select: { id: true, number: true, active: true, geometry: true, neighborhoodId: true } });
     if (!bloco) throw new DomainError('QUARTEIRAO_NAO_ENCONTRADO', 'O quarteirão do imóvel não existe na malha: escolha outro');
     const avisos: string[] = [];
+    const gps = this.gpsBom(d.latitude, d.longitude, d.precisaoGps);
+    // O quarteirão escolhido pelo agente manda, como no GPS da visita: o ponto só vira a posição do imóvel quando a malha
+    // o liga a esse mesmo quarteirão (dentro dele, ou na rua a até a tolerância e mais perto dele que de outro). Fora
+    // disso o imóvel entra no quarteirão escolhido sem posição, que nenhuma religação da malha move nem desliga.
+    const daMalha = gps ? await this.localizador.quarteiraoDoPonto(ctx.db, d.latitude!, d.longitude!) : null;
+    const posiciona = gps && daMalha?.id === bloco.id;
     // Quarteirão desativado na malha (fusão, divisão) enquanto o agente estava sem rede: o imóvel entra, com as visitas
     // que o referenciam, e a supervisão confere o quarteirão.
-    if (!bloco.active) avisos.push(`O quarteirão ${bloco.number} foi desativado na malha: a supervisão confere o quarteirão do imóvel`);
-    const gps = this.gpsBom(d.latitude, d.longitude, d.precisaoGps);
-    if (gps) {
-      const dist = distanciaAteArea([d.longitude!, d.latitude!], bloco.geometry as unknown as Area);
-      if (dist > 50) avisos.push(`O GPS ficou a ${Math.round(dist)} m do quarteirão ${bloco.number}: confira o quarteirão do imóvel`);
+    if (!bloco.active) avisos.push(`O quarteirão ${bloco.number} foi desativado na malha: a supervisão confere o quarteirão do imóvel${gps ? ' (a posição do GPS não foi gravada)' : ''}`);
+    else if (gps && !posiciona) {
+      const dist = Math.round(distanciaAteArea([d.longitude!, d.latitude!], bloco.geometry as unknown as Area));
+      const motivo = daMalha ? `O GPS ficou mais perto do quarteirão ${daMalha.number} que do ${bloco.number}, o escolhido (a ${dist} m dele)` : `O GPS ficou a ${dist} m do quarteirão ${bloco.number}`;
+      avisos.push(`${motivo}: o imóvel entrou no quarteirão ${bloco.number} sem a posição do GPS (a supervisão confere)`);
     }
     const sequencia = d.sequencia?.trim().toUpperCase() || null;
     if (sequencia && (await ctx.db.household.count({ where: { blockId: bloco.id, rgSequence: sequencia, active: true } }))) avisos.push(`Já existe um imóvel com a sequência ${sequencia} no quarteirão ${bloco.number}`);
@@ -317,7 +328,7 @@ export class CampoAceService {
           rgSequence: sequencia,
           // Observação do controle vetorial, separada da do cadastro da APS (notes).
           vectorNotes: d.observacoes?.trim() || null,
-          ...(gps ? { latitude: d.latitude, longitude: d.longitude, geoPrecision: 'GPS_CAMPO' as const, geoSource: 'ace', geoAccuracyM: d.precisaoGps ?? null, geoAt: registradoEm } : {}),
+          ...(posiciona ? { latitude: d.latitude, longitude: d.longitude, geoPrecision: 'GPS_CAMPO' as const, geoSource: 'ace', geoAccuracyM: d.precisaoGps ?? null, geoAt: registradoEm } : {}),
         },
       });
       // Na mesma transação: o reenvio simultâneo esbarra no clientId único e desfaz o imóvel duplicado.
@@ -330,10 +341,20 @@ export class CampoAceService {
     return { id, avisos };
   }
 
-  private async aplicarVisita(ctx: RequestContext, op: Extract<OperacaoAce, { tipo: 'VISITA_VETORIAL' }>, ids: Map<string, string>) {
+  /** `noLote`: clientIds deste envio, para dizer se o imóvel novo da visita deu erro aqui ou ainda não foi aceito. */
+  private async aplicarVisita(ctx: RequestContext, op: Extract<OperacaoAce, { tipo: 'VISITA_VETORIAL' }>, ids: Map<string, string>, noLote: ReadonlySet<string> = new Set()) {
     const v = op.visita;
     const householdId = op.householdId ?? (op.householdClientId ? ids.get(op.householdClientId) : undefined) ?? null;
-    if (op.householdClientId && !householdId) throw new DomainError('REFERENCIA_NAO_ENCONTRADA', 'O imóvel desta visita não foi cadastrado (a operação do imóvel deu erro)');
+    // Continua ERRO nos dois casos: o aparelho devolve a visita à fila quando o imóvel dela for aceito. Fora deste envio,
+    // o servidor não sabe se o imóvel ainda está a caminho (outra aba, fila do aparelho) ou se foi recusado num envio
+    // anterior (o aparelho manda a fila de 100 em 100, os imóveis primeiro): o texto não promete que ele vai no próximo.
+    if (op.householdClientId && !householdId)
+      throw new DomainError(
+        'REFERENCIA_NAO_ENCONTRADA',
+        noLote.has(op.householdClientId)
+          ? 'O imóvel desta visita não foi cadastrado (a operação do imóvel deu erro)'
+          : 'O imóvel novo desta visita ainda não foi aceito pelo servidor: a visita vai de novo quando ele for aceito (se ele foi descartado, descarte também a visita)',
+      );
     if (!householdId) throw new DomainError('IMOVEL_OBRIGATORIO', 'Informe o imóvel visitado');
     const h = await ctx.db.household.findUnique({ where: { id: householdId }, select: { id: true, active: true, propertyType: true, blockId: true, microArea: true, latitude: true, geoPrecision: true } });
     if (!h) throw notFound('Imóvel');
@@ -346,28 +367,6 @@ export class CampoAceService {
     const turno = turnoDaHora(zonedParts(visitedAt, ctx.tenant.timeZone).hour);
     const avisos: string[] = [];
     if (!h.active) avisos.push('O imóvel está inativo no cadastro: a supervisão confere');
-
-    // Ordem de bloqueio: a informada pelo aparelho, se o imóvel está nela; sem ela, a ordem ativa mais recente do
-    // quarteirão (a mais antiga pode ser de outra transmissão, com o quarteirão já trabalhado).
-    let ordem: { id: string; status: string; seq: number; year: number } | null = null;
-    if (v.ordemId) {
-      const o = await ctx.db.blockingOrder.findUnique({ where: { id: v.ordemId }, select: { id: true, status: true, seq: true, year: true } });
-      const noRaio = o && h.blockId ? await ctx.db.blockingOrderBlock.findUnique({ where: { orderId_blockId: { orderId: o.id, blockId: h.blockId } } }) : null;
-      if (!o) avisos.push('A ordem de bloqueio não existe mais: visita gravada sem a ordem');
-      else if (o.status === 'CANCELADA') avisos.push(`A ordem ${o.seq}/${o.year} foi cancelada: visita gravada sem a ordem`);
-      else if (!noRaio) avisos.push(`O imóvel não está nos quarteirões da ordem ${o.seq}/${o.year}: visita gravada sem a ordem`);
-      else {
-        ordem = o;
-        if (o.status === 'CONCLUIDA') avisos.push(`A ordem ${o.seq}/${o.year} já estava concluída: a visita entrou nela`);
-      }
-    } else if (v.atividade === 'BLOQUEIO' && h.blockId) {
-      ordem = await ctx.db.blockingOrder.findFirst({
-        where: { status: { in: ['ABERTA', 'EM_CAMPO'] }, blocks: { some: { blockId: h.blockId } } },
-        orderBy: [{ openedAt: 'desc' }, { id: 'desc' }],
-        select: { id: true, status: true, seq: true, year: true },
-      });
-      if (!ordem) avisos.push('Nenhuma ordem de bloqueio ativa neste quarteirão: visita gravada como bloqueio sem ordem');
-    }
     const pendente = SITUACAO_INFO[v.situacao].pendencia;
     // Imóvel não trabalhado (fechado, recusado, abandonado) não tem contagem de depósitos.
     const t = totaisDepositos(pendente ? null : v.depositos);
@@ -376,6 +375,7 @@ export class CampoAceService {
     const r = await ctx.db.$transaction(async (tx) => {
       // Uma visita do imóvel por vez: a recuperação depende da ordem em que as visitas dele aconteceram.
       await tx.$executeRaw`SELECT 1 FROM households WHERE id = ${h.id}::uuid FOR NO KEY UPDATE`;
+      const ordem = await this.ordemDaVisita(tx, h.blockId, v, avisos);
       const escopo = { householdId, visitedAt, orderId: ordem?.id ?? null, cycle: ciclo.chave };
       const recuperacao = await this.anteriorPendente(tx, escopo);
       const visita = await tx.vectorVisit.create({
@@ -444,6 +444,68 @@ export class CampoAceService {
     // Depois do commit: o GPS confirmado em campo refaz o retrato dos casos dos moradores (ordem de bloqueio).
     if (r.posicionou) await this.territorio.imoveisPosicionados(ctx, [h.id]);
     return { id: r.id, avisos };
+  }
+
+  /**
+   * Ordem de bloqueio da visita: a informada pelo aparelho, se o imóvel está nela. A unificada a outra depois que o
+   * aparelho a levou (CANCELADA com mergedIntoId) leva a visita à ordem que ficou, seguindo a cadeia de uniões, se o
+   * quarteirão do imóvel está nela; senão a visita fica sem ordem, como na cancelada. Sem ordem informada, a visita de
+   * bloqueio vai para a ordem ativa mais recente do quarteirão (a mais antiga pode ser de outra transmissão, com o
+   * quarteirão já trabalhado). Cada ordem é lida com a linha travada (ver `ordemTravada`).
+   */
+  private async ordemDaVisita(tx: Tx, blockId: string | null, v: VisitaVetorialCampo, avisos: string[]): Promise<OrdemDaVisita | null> {
+    const temQuarteirao = async (o: OrdemDaVisita) => !!blockId && !!(await tx.blockingOrderBlock.findUnique({ where: { orderId_blockId: { orderId: o.id, blockId } }, select: { orderId: true } }));
+    if (v.ordemId) {
+      const informada = await this.ordemTravada(tx, v.ordemId);
+      if (!informada) {
+        avisos.push('A ordem de bloqueio não existe mais: visita gravada sem a ordem');
+        return null;
+      }
+      let o = informada;
+      for (let passo = 0; o.status === 'CANCELADA' && o.mergedIntoId && passo < MAX_UNIOES; passo++) {
+        const destino = await this.ordemTravada(tx, o.mergedIntoId);
+        if (!destino) break;
+        o = destino;
+      }
+      const unificada = o.id !== informada.id;
+      const noRaio = o.status !== 'CANCELADA' && (await temQuarteirao(o));
+      if (informada.status === 'CANCELADA' && !(unificada && noRaio)) {
+        avisos.push(`A ordem ${numeroOrdem(informada)} foi cancelada: visita gravada sem a ordem`);
+        return null;
+      }
+      if (!noRaio) {
+        avisos.push(`O imóvel não está nos quarteirões da ordem ${numeroOrdem(o)}: visita gravada sem a ordem`);
+        return null;
+      }
+      // A ordem que ficou já concluída recebe a visita como a informada concluída: o trabalho foi feito para ela.
+      if (unificada) avisos.push(`A ordem ${numeroOrdem(informada)} foi unificada à ordem ${numeroOrdem(o)}${o.status === 'CONCLUIDA' ? ', que já estava concluída' : ''}: visita gravada nela`);
+      else if (o.status === 'CONCLUIDA') avisos.push(`A ordem ${numeroOrdem(o)} já estava concluída: a visita entrou nela`);
+      return o;
+    }
+    if (v.atividade !== 'BLOQUEIO' || !blockId) return null;
+    // Duas tentativas: a ordem achada pode ter sido unificada ou refeita enquanto a visita esperava a linha.
+    for (let tentativa = 0; tentativa < 2; tentativa++) {
+      const achada = await tx.blockingOrder.findFirst({
+        where: { status: { in: ['ABERTA', 'EM_CAMPO'] }, blocks: { some: { blockId } } },
+        orderBy: [{ openedAt: 'desc' }, { id: 'desc' }],
+        select: { id: true },
+      });
+      if (!achada) break;
+      const o = await this.ordemTravada(tx, achada.id);
+      if (o && (o.status === 'ABERTA' || o.status === 'EM_CAMPO') && (await temQuarteirao(o))) return o;
+    }
+    avisos.push('Nenhuma ordem de bloqueio ativa neste quarteirão: visita gravada como bloqueio sem ordem');
+    return null;
+  }
+
+  /**
+   * A ordem lida com a linha travada (FOR KEY SHARE, a mesma trava da chave estrangeira da visita): a união, o recálculo
+   * e o desligamento do bloqueio, que travam a linha FOR UPDATE, terminam antes, e a visita vê a situação que ficou (não
+   * entra numa ordem cancelada no meio do envio). Duas visitas da mesma ordem não se esperam.
+   */
+  private async ordemTravada(tx: Tx, id: string): Promise<OrdemDaVisita | null> {
+    await tx.$queryRaw`SELECT id FROM blocking_orders WHERE id = ${id}::uuid FOR KEY SHARE`;
+    return tx.blockingOrder.findUnique({ where: { id }, select: { id: true, status: true, seq: true, year: true, mergedIntoId: true } });
   }
 
   /**

@@ -45,6 +45,15 @@ const GRADES = [
   'var5b',
   'cadv',
   'sim',
+  'dat',
+  'datc',
+  'datv',
+  'acs8',
+  'acs8b',
+  'acs8c',
+  'dom8',
+  'dom8n',
+  'datd',
 ];
 const espera = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const letras = (n: number) => {
@@ -69,6 +78,7 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
   let ace = '';
   let supervisora = '';
   let coordenador = '';
+  let acs = '';
   let aceId = '';
   let supId = '';
   let ace2Id = '';
@@ -239,6 +249,7 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     ace = await t.login('ace', 'Vigilância em Saúde', 'ACE');
     supervisora = await t.login('supervisora', 'Vigilância em Saúde', 'SUPERVISOR_ENDEMIAS');
     coordenador = await t.login('coordenador', 'Vigilância em Saúde', 'COORDENADOR_ENDEMIAS');
+    acs = await t.login('acs', 'UBS Centro', 'ACS');
     const tenants = t.app.get(TenantsService);
     const info = await tenants.resolve(t.slug);
     tenantId = info.id;
@@ -558,6 +569,138 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(await ordemDe('n3')).toBe(on);
   });
 
+  // ─── dados-docs#4, segunda rodada: a data corrigida de um caso já ligado ─────
+  const datasAtivas = (o: { cases: { active: boolean; referenceDate: Date }[] }) =>
+    o.cases
+      .filter((c) => c.active)
+      .map((c) => localDateString(c.referenceDate, 'UTC'))
+      .sort();
+  const corrigirSintomas = (chave: string, data: string) => t.http().patch(`/api/vigilancia/notificacoes/${notificacao[chave]}`).set(auth(vig)).send({ symptomsOnset: data }).expect(200);
+
+  it('dados-docs#4: a data corrigida que esticaria a ordem ainda sem campo tira o caso dela, e o vizinho novo entra na ordem', async () => {
+    await caso('dt1', ponto('dat', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('dt1');
+    await caso('dt2', ponto('dat', 250, 200), 'dengue', dia(-2));
+    expect(await ordemDe('dt2')).toBe(o);
+    const antes = await ordem(o);
+    // A vigilância corrige os sintomas do segundo para 15 dias atrás: com ele, a ordem iria de D-15 a D-1.
+    await corrigirSintomas('dt2', dia(-15));
+    const dt2 = (await ligacao('dt2'))!;
+    expect(dt2.active).toBe(true);
+    expect(dt2.orderId).not.toBe(o);
+    expect(localDateString(dt2.referenceDate, 'UTC')).toBe(dia(-15));
+    // Entrou como caso novo: nenhuma ordem agrupa com ele, então abriu a sua.
+    const nova = await ordem(dt2.orderId);
+    expect(nova).toMatchObject({ status: 'ABERTA', mergedIntoId: null });
+    expect(datasAtivas(nova)).toEqual([dia(-15)]);
+    // A ordem de origem foi refeita sem ele: fica no período do primeiro caso, com os quarteirões só do raio dele.
+    const depois = await ordem(o);
+    expect(depois.status).toBe('ABERTA');
+    expect(datasAtivas(depois)).toEqual([dia(-1)]);
+    expect(depois.blocks.length).toBeLessThan(antes.blocks.length);
+    // Caso novo a 10 m do primeiro, um dia depois dele: entra na ordem (antes abria outra sobre os mesmos quarteirões).
+    const total = await db.blockingOrder.count();
+    await caso('dt3', ponto('dat', 210, 200), 'dengue', dia(0));
+    expect(await ordemDe('dt3')).toBe(o);
+    expect(await db.blockingOrder.count()).toBe(total);
+    expect(datasAtivas(await ordem(o))).toEqual([dia(-1), dia(0)]);
+  });
+
+  it('dados-docs#4: o caso aguardando a localização com a data corrigida também sai da ordem sem campo', async () => {
+    // Dois moradores do mesmo imóvel, sem posição nenhuma: uma ordem só, pelo imóvel.
+    await novoPaciente('da1');
+    await novaCasa('da1', null, paciente.da1!);
+    await notificar('da1', paciente.da1!, 'dengue', dia(-1));
+    const o = await ordemDe('da1');
+    await novoPaciente('da2');
+    await membro(familia.da1!, paciente.da2!);
+    await notificar('da2', paciente.da2!, 'dengue', dia(-3));
+    expect(await ordemDe('da2')).toBe(o);
+    expect((await ordem(o)).status).toBe('AGUARDANDO_LOCALIZACAO');
+    await corrigirSintomas('da2', dia(-14));
+    const da2 = (await ligacao('da2'))!;
+    expect(da2.orderId).not.toBe(o);
+    expect((await ordem(da2.orderId)).status).toBe('AGUARDANDO_LOCALIZACAO');
+    expect(datasAtivas(await ordem(o))).toEqual([dia(-1)]);
+  });
+
+  it('dados-docs#4: o caso que volta (encerramento reaberto) com a data corrigida não estica a ordem ainda sem campo', async () => {
+    await caso('dv1', ponto('datv', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('dv1');
+    await caso('dv2', ponto('datv', 250, 200), 'dengue', dia(-2));
+    expect(await ordemDe('dv2')).toBe(o);
+    await t.http().post(`/api/vigilancia/notificacoes/${notificacao.dv2}/confirmar`).set(auth(vig)).expect(200);
+    await t
+      .http()
+      .post(`/api/vigilancia/notificacoes/${notificacao.dv2}/encerrar`)
+      .set(auth(vig))
+      .send({ investigadaEm: dia(0), classificacao: '2', encerradaEm: dia(0) })
+      .expect(200);
+    expect(await ligacao('dv2')).toMatchObject({ active: false, orderId: o });
+    // Os sintomas corrigidos enquanto o caso estava encerrado (direto no banco: a ficha encerrada não é editada).
+    await db.notification.update({ where: { id: notificacao.dv2! }, data: { symptomsOnset: new Date(`${dia(-15)}T00:00:00Z`) } });
+    await t.http().post(`/api/vigilancia/notificacoes/${notificacao.dv2}/reabrir`).set(auth(vig)).send({ reason: 'Novo resultado do LACEN positivo.' }).expect(200);
+    const dv2 = (await ligacao('dv2'))!;
+    expect(dv2.active).toBe(true);
+    expect(dv2.orderId).not.toBe(o);
+    expect(datasAtivas(await ordem(o))).toEqual([dia(-1)]);
+    expect(datasAtivas(await ordem(dv2.orderId))).toEqual([dia(-15)]);
+  });
+
+  it('dados-docs#4: com a ordem já em campo, o caso com a data corrigida fica nela (o trabalho feito vale)', async () => {
+    await caso('dc1', ponto('datc', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('dc1');
+    await caso('dc2', ponto('datc', 250, 200), 'dengue', dia(-2));
+    expect(await ordemDe('dc2')).toBe(o);
+    expect((await visitar(casa.dc1!, o)).status).toBe('OK');
+    const antes = await ordem(o);
+    expect(antes.status).toBe('EM_CAMPO');
+    const total = await db.blockingOrder.count();
+    await corrigirSintomas('dc2', dia(-15));
+    const dc2 = (await ligacao('dc2'))!;
+    expect(dc2).toMatchObject({ orderId: o, active: true });
+    expect(localDateString(dc2.referenceDate, 'UTC')).toBe(dia(-15));
+    const depois = await ordem(o);
+    expect(depois.status).toBe('EM_CAMPO');
+    expect(datasAtivas(depois)).toEqual([dia(-15), dia(-1)]);
+    expect(await db.blockingOrder.count()).toBe(total);
+    // Em campo a lista só cresce: os quarteirões de antes continuam.
+    expect(antes.blocks.every((b) => depois.blocks.some((x) => x.blockId === b.blockId))).toBe(true);
+  });
+
+  it('dados-docs#4: a data corrigida para mais de 30 dias, ou com a abertura automática desligada, só tira o caso da ordem sem campo', async () => {
+    await caso('dd1', ponto('datd', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('dd1');
+    await caso('dd2', ponto('datd', 250, 200), 'dengue', dia(-2));
+    await caso('dd3', ponto('datd', 150, 200), 'dengue', dia(-3));
+    expect(await ordemDe('dd2')).toBe(o);
+    expect(await ordemDe('dd3')).toBe(o);
+    const total = await db.blockingOrder.count();
+    // Sintomas de 40 dias atrás: como caso novo, não abriria ordem (mais de 30 dias). Antes, abria uma ordem nova para ele.
+    await corrigirSintomas('dd2', dia(-40));
+    expect(await ligacao('dd2')).toMatchObject({ orderId: o, active: false, unlinkReason: 'Data corrigida para fora do período da ordem (início dos sintomas há mais de 30 dias)' });
+    // Com a abertura automática desligada (epidemia: a ação é por área), o caso novo também não abriria ordem.
+    await config({ bloqueioAutomatico: false });
+    try {
+      await corrigirSintomas('dd3', dia(-15));
+    } finally {
+      await config({ bloqueioAutomatico: true });
+    }
+    expect(await ligacao('dd3')).toMatchObject({ orderId: o, active: false, unlinkReason: 'Data corrigida para fora do período da ordem (abertura automática desligada)' });
+    expect(await db.blockingOrder.count()).toBe(total);
+    const depois = await ordem(o);
+    expect(depois.status).toBe('ABERTA');
+    expect(datasAtivas(depois)).toEqual([dia(-1)]);
+    // Com a abertura automática de volta, a varredura trata o de 15 dias atrás como caso novo: abre a ordem dele.
+    expect((await varredura()).erros).toBe(0);
+    const dd3 = (await ligacao('dd3'))!;
+    expect(dd3.active).toBe(true);
+    expect(dd3.orderId).not.toBe(o);
+    expect(datasAtivas(await ordem(dd3.orderId))).toEqual([dia(-15)]);
+    expect(await ligacao('dd2')).toMatchObject({ orderId: o, active: false });
+    expect(datasAtivas(await ordem(o))).toEqual([dia(-1)]);
+  });
+
   // ─── bloqueio#7 ─────────────────────────────────────────────────────────────
   it('bloqueio#7: outro morador do mesmo imóvel, semanas depois, abre outra ordem (a identidade respeita a janela)', async () => {
     await caso('h1', ponto('id7a', 200, 200), 'dengue', dia(-25));
@@ -608,6 +751,107 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(o.blocks.length).toBeGreaterThan(antes.blocks.length);
     // Em campo a lista só cresce: os quarteirões de antes continuam.
     expect(antes.blocks.every((b) => o.blocks.some((x) => x.blockId === b.blockId))).toBe(true);
+  });
+
+  // ─── bloqueio#8, segunda rodada: GPS do ACS e posição do cadastro do domicílio ───
+  /** Imóvel no centro do quarteirão (precisão QUARTEIRAO), caso de ontem e ordem em campo (visita do ACE sem GPS). */
+  async function casoNoCentroEmCampo(chave: string, g: string) {
+    const centro = await db.block.findUniqueOrThrow({ where: { id: bloco(g, 2, 2) } });
+    await novoPaciente(chave);
+    const h = await novaCasa(chave, null, paciente[chave]!);
+    await db.household.update({
+      where: { id: h },
+      data: { latitude: centro.centerLat, longitude: centro.centerLng, geoPrecision: 'QUARTEIRAO', geoSource: 'centro-do-quarteirao', blockId: centro.id, geoAt: new Date() },
+    });
+    await notificar(chave, paciente[chave]!, 'dengue', dia(-1));
+    const o = await ordemDe(chave);
+    expect((await ordem(o)).needsCheck).toBe(true);
+    expect((await visitar(h, o)).status).toBe('OK');
+    const antes = await ordem(o);
+    expect(antes.status).toBe('EM_CAMPO');
+    return { h, o, antes, ligacao: (await ligacao(chave))! };
+  }
+  /** Visita do ACS feita sem rede uma hora antes da ligação do caso e enviada agora, com o GPS do aparelho. */
+  const visitaAcs = async (householdId: string, gps: Posicao, antesDe: Date) => {
+    const op = {
+      tipo: 'VISITA',
+      clientId: randomUUID(),
+      registradoEm: new Date(antesDe.getTime() - 3_600_000).toISOString(),
+      householdId,
+      visita: { motivos: ['29'], desfecho: '3', latitude: gps[1], longitude: gps[0], precisaoGps: 8 },
+    };
+    return (
+      await t
+        .http()
+        .post('/api/acs/sync')
+        .set(auth(acs))
+        .send({ operacoes: [op] })
+        .expect(200)
+    ).body.resultados[0] as { status: string; erro: string | null };
+  };
+  const conferirCorrigido = async (chave: string, o: string, antes: { blocks: { blockId: string }[] }, gps: Posicao) => {
+    const c = (await ligacao(chave))!;
+    expect(c.precision).toBe('GPS_CAMPO');
+    expect(c.lat).toBeCloseTo(gps[1], 6);
+    expect(c.lng).toBeCloseTo(gps[0], 6);
+    const depois = await ordem(o);
+    expect(depois.status).toBe('EM_CAMPO');
+    expect(depois.needsCheck).toBe(false);
+    expect(antes.blocks.every((b) => depois.blocks.some((x) => x.blockId === b.blockId))).toBe(true);
+  };
+
+  it('bloqueio#8: o GPS da visita do ACS feita sem rede antes da notificação refaz na hora o caso da ordem em campo', async () => {
+    const { h, o, antes, ligacao: l } = await casoNoCentroEmCampo('ga1', 'acs8');
+    const gps = ponto('acs8', 225, 230);
+    expect((await visitaAcs(h, gps, l.linkedAt)).status).toBe('OK');
+    // A posição do imóvel guarda a hora da visita no aparelho, anterior à ligação.
+    const imovel = await db.household.findUniqueOrThrow({ where: { id: h } });
+    expect(imovel).toMatchObject({ geoPrecision: 'GPS_CAMPO', geoSource: 'visita' });
+    expect(imovel.geoAt!.getTime()).toBeLessThan(l.linkedAt.getTime());
+    // Sem varredura nem recálculo manual.
+    await conferirCorrigido('ga1', o, antes, gps);
+  });
+
+  it('bloqueio#8: sem o gancho, a varredura refaz o caso pela posição do imóvel, mesmo com a hora do GPS anterior à ligação', async () => {
+    // Com a trava das ordens ocupada, o gancho da sincronização do ACS falha, e a visita é gravada mesmo assim.
+    const a = await casoNoCentroEmCampo('gb1', 'acs8b');
+    const gpsA = ponto('acs8b', 225, 230);
+    const c = await pgc();
+    try {
+      await c.query(`SELECT pg_advisory_lock(hashtext('endemias:bloqueio'))`);
+      expect((await visitaAcs(a.h, gpsA, a.ligacao.linkedAt)).status).toBe('OK');
+    } finally {
+      await c.query('SELECT pg_advisory_unlock_all()').catch(() => undefined);
+      await c.end();
+    }
+    expect((await db.household.findUniqueOrThrow({ where: { id: a.h } })).geoPrecision).toBe('GPS_CAMPO');
+    expect((await ligacao('gb1'))!.precision).toBe('QUARTEIRAO');
+    // A posição gravada por outro caminho, sem gancho nenhum (SQL direto, sem mexer em updated_at), com a hora antiga.
+    const b = await casoNoCentroEmCampo('gc1', 'acs8c');
+    const gpsB = ponto('acs8c', 225, 230);
+    await db.$executeRaw`UPDATE households SET latitude = ${gpsB[1]}, longitude = ${gpsB[0]}, geo_precision = 'GPS_CAMPO', geo_source = 'visita', geo_at = ${new Date(b.ligacao.linkedAt.getTime() - 3_600_000)} WHERE id = ${b.h}::uuid`;
+    expect((await varredura()).erros).toBe(0);
+    await conferirCorrigido('gb1', a.o, a.antes, gpsA);
+    await conferirCorrigido('gc1', b.o, b.antes, gpsB);
+  });
+
+  it('bloqueio#8: a posição nova no cadastro do domicílio refaz o caso na hora (edição e criação)', async () => {
+    // Edição: o GPS lido no cadastro substitui o centro do quarteirão.
+    const { h, o, antes } = await casoNoCentroEmCampo('gd1', 'dom8');
+    const gps = ponto('dom8', 215, 185);
+    await t.http().patch(`/api/households/${h}`).set(auth(recepcao)).send({ latitude: gps[1], longitude: gps[0] }).expect(200);
+    await conferirCorrigido('gd1', o, antes, gps);
+    // Criação: a pessoa do caso sem imóvel nenhum (aguardando a localização) passa a ser responsável por um domicílio
+    // cadastrado com posição: a ordem abre na hora, sem varredura.
+    await novoPaciente('ge1');
+    await notificar('ge1', paciente.ge1!, 'dengue', dia(-1));
+    const oe = await ordemDe('ge1');
+    expect((await ordem(oe)).status).toBe('AGUARDANDO_LOCALIZACAO');
+    await novaCasa('ge1', ponto('dom8n', 200, 200), paciente.ge1!);
+    const aberta = await ordem(oe);
+    expect(aberta.status).toBe('ABERTA');
+    expect(aberta.blocks.map((b) => b.blockId)).toContain(bloco('dom8n', 2, 2));
+    expect((await ligacao('ge1'))!.householdId).toBe(casa.ge1);
   });
 
   // ─── bloqueio#10 ────────────────────────────────────────────────────────────

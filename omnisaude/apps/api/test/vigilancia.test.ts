@@ -642,4 +642,22 @@ describe.runIf(enabled)('Vigilância: notificação compulsória a partir do ate
     const r = (await t.http().get('/api/vigilancia/catalogo/vigente').set(auth(medica)).expect(200)).body;
     expect(r.condicoes.find((x: { key: string }) => x.key === 'caxumba')).toMatchObject({ weekly: true, immediateSms: false });
   });
+
+  it('numeração: 20 notificações criadas ao mesmo tempo saem todas, com números distintos e sem buraco', async () => {
+    const nomes = ['Abel', 'Bento', 'Caio', 'Davi', 'Enzo', 'Fabio', 'Gael', 'Hugo', 'Igor', 'Joel', 'Kleber', 'Luan', 'Mauro', 'Nilo', 'Otavio', 'Paulo', 'Quirino', 'Rui', 'Saulo', 'Tiago'];
+    const pacientesRajada: string[] = [];
+    for (const nome of nomes) pacientesRajada.push(await novoPaciente(`${nome} Rajada Teste`, 'M', '1970-03-03'));
+    const ano = Number(new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' }).slice(0, 4));
+    const antes = (await db.notification.findFirst({ where: { year: ano }, orderBy: { seq: 'desc' }, select: { seq: true } }))?.seq ?? 0;
+    const rs = await Promise.all(pacientesRajada.map((patientId) => t.http().post('/api/vigilancia/notificacoes').set(auth(medica)).send({ patientId, conditionKey: 'leishmaniose-visceral' })));
+    expect(rs.map((r) => (r.status === 201 ? 201 : `${r.status} ${r.body.code ?? ''}`))).toEqual(nomes.map(() => 201));
+    const seqs = rs
+      .map((r) => r.body.numero as string)
+      .map((n) => {
+        expect(n).toMatch(new RegExp(`^${ano}/\\d{6}$`));
+        return Number(n.slice(5));
+      });
+    expect(new Set(seqs).size).toBe(20);
+    expect([...seqs].sort((a, b) => a - b)).toEqual(nomes.map((_, k) => antes + 1 + k));
+  });
 });

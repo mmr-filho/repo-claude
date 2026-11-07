@@ -75,7 +75,8 @@ export class TerritorioService {
 
   /**
    * Imóveis que ganharam posição nova ou mudaram de quarteirão (mapa, GPS, geocodificação, religação à malha, visita
-   * do ACE). Chamado depois do commit; a falha de um ouvinte nunca desfaz a gravação (a varredura dele recupera).
+   * do ACE, visita e cadastro do ACS, cadastro do domicílio). Chamado depois do commit; a falha de um ouvinte nunca
+   * desfaz a gravação (a varredura dele recupera).
    */
   async imoveisPosicionados(ctx: RequestContext, householdIds: string[]) {
     const ids = [...new Set(householdIds)];
@@ -119,36 +120,55 @@ export class TerritorioService {
   /** Fila de pendências do território: sem posição, sem quarteirão ou com posição que não serve ao bloqueio. */
   async imoveis(ctx: RequestContext, q: { situacao: 'SEM_POSICAO' | 'SEM_QUARTEIRAO' | 'BAIXA_PRECISAO' | 'QUARTEIRAO'; blockId?: string; take?: number }) {
     const baixa: PrecisaoGeo[] = ['LOGRADOURO', 'QUARTEIRAO', 'LOCALIDADE', 'SETOR', 'CEP', 'MUNICIPIO'];
-    const where =
-      q.situacao === 'SEM_POSICAO'
-        ? { active: true, OR: [{ latitude: null }, { longitude: null }] }
-        : q.situacao === 'SEM_QUARTEIRAO'
-          ? { active: true, blockId: null, latitude: { not: null } }
-          : q.situacao === 'BAIXA_PRECISAO'
-            ? { active: true, geoPrecision: { in: baixa } }
-            : { active: true, blockId: q.blockId ?? '00000000-0000-0000-0000-000000000000' };
-    const escopo = q.situacao === 'QUARTEIRAO' ? null : await this.escopoDeCampo(ctx);
-    const rows = await ctx.db.household.findMany({
-      where: escopo ? { AND: [where, { OR: escopo }] } : where,
-      orderBy: q.situacao === 'QUARTEIRAO' ? [{ rgSequence: 'asc' }, { number: 'asc' }] : [{ district: 'asc' }, { street: 'asc' }],
-      take: Math.min(q.take ?? 200, 1000),
-      select: {
-        id: true,
-        street: true,
-        number: true,
-        complement: true,
-        district: true,
-        cep: true,
-        propertyType: true,
-        latitude: true,
-        longitude: true,
-        geoPrecision: true,
-        geoSource: true,
-        blockId: true,
-        rgSequence: true,
-        microArea: true,
-      },
-    });
+    const take = Math.min(q.take ?? 200, 1000);
+    const select = {
+      id: true,
+      street: true,
+      number: true,
+      complement: true,
+      district: true,
+      cep: true,
+      propertyType: true,
+      latitude: true,
+      longitude: true,
+      geoPrecision: true,
+      geoSource: true,
+      blockId: true,
+      rgSequence: true,
+      microArea: true,
+    } as const;
+    // ACE e supervisão de campo: pelo quarteirão, em subconsulta (a lista de quarteirões pode ser a malha toda); os ids
+    // vêm na ordem da fila (bairro, rua) e as linhas, pelo Prisma.
+    const noCampo = q.situacao === 'QUARTEIRAO' ? null : this.localizador.quarteiroesDeCampoSql(ctx, TenantPrisma.raw('h.block_id'));
+    let rows: TenantPrisma.HouseholdGetPayload<{ select: typeof select }>[];
+    if (noCampo) {
+      const { sql } = TenantPrisma;
+      const situacao =
+        q.situacao === 'SEM_POSICAO'
+          ? sql`(h.latitude IS NULL OR h.longitude IS NULL)`
+          : q.situacao === 'SEM_QUARTEIRAO'
+            ? sql`h.block_id IS NULL AND h.latitude IS NOT NULL`
+            : sql`h.geo_precision::text = ANY(${baixa}::text[])`;
+      const ids = (await ctx.db.$queryRaw<{ id: string }[]>`SELECT h.id FROM households h WHERE h.active AND ${situacao} AND ${noCampo} ORDER BY h.district, h.street, h.id LIMIT ${take}`).map((r) => r.id);
+      const porId = new Map((ids.length ? await ctx.db.household.findMany({ where: { id: { in: ids } }, select }) : []).map((h) => [h.id, h]));
+      rows = ids.flatMap((id) => porId.get(id) ?? []);
+    } else {
+      const where =
+        q.situacao === 'SEM_POSICAO'
+          ? { active: true, OR: [{ latitude: null }, { longitude: null }] }
+          : q.situacao === 'SEM_QUARTEIRAO'
+            ? { active: true, blockId: null, latitude: { not: null } }
+            : q.situacao === 'BAIXA_PRECISAO'
+              ? { active: true, geoPrecision: { in: baixa } }
+              : { active: true, blockId: q.blockId ?? '00000000-0000-0000-0000-000000000000' };
+      const escopo = q.situacao === 'QUARTEIRAO' ? null : await this.escopoDeCampo(ctx);
+      rows = await ctx.db.household.findMany({
+        where: escopo ? { AND: [where, { OR: escopo }] } : where,
+        orderBy: q.situacao === 'QUARTEIRAO' ? [{ rgSequence: 'asc' }, { number: 'asc' }] : [{ district: 'asc' }, { street: 'asc' }],
+        take,
+        select,
+      });
+    }
     return rows.map((h) => ({ ...h, endereco: [h.street, h.number, h.complement].filter(Boolean).join(', '), precisaoLabel: h.geoPrecision ? PRECISAO_INFO[h.geoPrecision as PrecisaoGeo].label : null }));
   }
 
@@ -174,12 +194,12 @@ export class TerritorioService {
       }),
     ]);
     // Campo (ACS, ACE, supervisão das endemias): marca a posição só dos imóveis da sua área (os demais aparecem, mas sem o
-    // botão). ACE e supervisão pelo quarteirão do imóvel, em memória (a lista da supervisão pode ser a malha toda).
-    const quarteiroesDoCampo = await this.localizador.quarteiroesDeCampo(ctx);
-    const noQuarteirao = quarteiroesDoCampo ? new Set(quarteiroesDoCampo) : null;
-    const escopo = noQuarteirao ? null : await this.escopoDeCampo(ctx);
-    const doCampo = noQuarteirao
-      ? new Set(imoveis.filter((h) => h.blockId && noQuarteirao.has(h.blockId)).map((h) => h.id))
+    // botão). ACE e supervisão pelo quarteirão do imóvel, em subconsulta (a lista da supervisão pode ser a malha toda).
+    const noCampo = this.localizador.quarteiroesDeCampoSql(ctx, TenantPrisma.raw('h.block_id'));
+    const escopo = noCampo ? null : await this.escopoDeCampo(ctx);
+    const visiveis = imoveis.map((h) => h.id);
+    const doCampo = noCampo
+      ? new Set(visiveis.length ? (await ctx.db.$queryRaw<{ id: string }[]>`SELECT h.id FROM households h WHERE h.id = ANY(${visiveis}::uuid[]) AND ${noCampo}`).map((h) => h.id) : [])
       : escopo
         ? new Set((await ctx.db.household.findMany({ where: { id: { in: imoveis.map((h) => h.id) }, OR: escopo }, select: { id: true } })).map((h) => h.id))
         : null;
@@ -212,14 +232,17 @@ export class TerritorioService {
   /** Acrescenta localidade, bairro e contagem de imóveis aos quarteirões do raio. */
   async comNomes<T extends { id: string; localityId: string; neighborhoodId: string | null }>(ctx: RequestContext, lista: T[]) {
     if (!lista.length) return [];
+    // A lista pode ser a zona inteira do ACE (dezenas de milhares de quarteirões): localidades e bairros sem repetição,
+    // e a contagem com a lista num parâmetro só (um IN com um parâmetro por quarteirão passa do limite de 32.767).
     const [locs, bairros, contagem] = await Promise.all([
       ctx.db.locality.findMany({ where: { id: { in: [...new Set(lista.map((b) => b.localityId))] } }, select: { id: true, code: true, name: true } }),
-      ctx.db.neighborhood.findMany({ where: { id: { in: lista.map((b) => b.neighborhoodId).filter((x): x is string => !!x) } }, select: { id: true, name: true } }),
-      ctx.db.household.groupBy({ by: ['blockId'], where: { active: true, blockId: { in: lista.map((b) => b.id) } }, _count: { _all: true } }),
+      ctx.db.neighborhood.findMany({ where: { id: { in: [...new Set(lista.map((b) => b.neighborhoodId).filter((x): x is string => !!x))] } }, select: { id: true, name: true } }),
+      ctx.db.$queryRaw<{ blockId: string; n: number }[]>`
+        SELECT block_id AS "blockId", count(*)::int AS n FROM households WHERE active AND block_id = ANY(${lista.map((b) => b.id)}::uuid[]) GROUP BY block_id`,
     ]);
     const loc = new Map(locs.map((l) => [l.id, l]));
     const bai = new Map(bairros.map((b) => [b.id, b.name]));
-    const cnt = new Map(contagem.map((c) => [c.blockId, c._count._all]));
+    const cnt = new Map(contagem.map((c) => [c.blockId, c.n]));
     return lista.map((b) => ({ ...b, localidade: loc.get(b.localityId) ?? null, bairro: b.neighborhoodId ? (bai.get(b.neighborhoodId) ?? null) : null, imoveis: cnt.get(b.id) ?? 0 }));
   }
 

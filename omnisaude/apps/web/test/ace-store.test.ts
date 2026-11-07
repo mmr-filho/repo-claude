@@ -1,8 +1,9 @@
 import type { OperacaoAce, ResultadoSyncAce } from '@omnisaude/shared';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PacoteCampo } from '@/components/endemias/types';
 import type { ImovelOp, VisitaOp } from '@/lib/ace-campo';
 import type { ItemFilaAce } from '@/lib/ace-store';
+import { FakeIndexedDB } from './fake-indexeddb';
 
 // Banco do aparelho em memória (o IndexedDB de verdade é testado em offline.test.ts) e API simulada.
 const sim = vi.hoisted(() => {
@@ -309,6 +310,25 @@ describe('pacote do aparelho depois do envio (web-offline#2, web-offline#10)', (
     expect(guardado!.data.estoque[0]!.saldo).toBe(48);
   });
 
+  it('descartado durante o envio e aceito pelo servidor: o pacote guardado recebe o efeito uma vez (ninguém mais aplicou)', async () => {
+    sim.stores.cache.set('pacote:ace:un-a:u1', { key: 'pacote:ace:un-a:u1', data: pacote(), savedAt: '2026-11-07T08:00:00Z' });
+    await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+    let liberar!: () => void;
+    const segura = new Promise<void>((r) => (liberar = r));
+    const responder = resposta();
+    sim.post.mockImplementation(async (path: string, body: { operacoes: OperacaoAce[] }) => {
+      await segura;
+      return responder(path, body);
+    });
+    const envio = filaAce.sincronizar(ctxA);
+    await new Promise((r) => setTimeout(r, 5));
+    await filaAce.remover(UUID(1));
+    liberar();
+    expect(await envio).toMatchObject({ enviados: 1, aceitos: [{ id: `id-${UUID(1)}` }] });
+    expect((await pacoteAce.guardado(ctxA))!.data.estoque[0]!.saldo).toBe(48);
+    expect(item(UUID(1))).toBeUndefined();
+  });
+
   it('o download do pacote espera o envio em andamento e tem prazo', async () => {
     await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
     let liberar!: () => void;
@@ -331,5 +351,118 @@ describe('pacote do aparelho depois do envio (web-offline#2, web-offline#10)', (
     expect((sim.post.mock.calls[0]![2] as { signal?: AbortSignal }).signal).toBeInstanceOf(AbortSignal);
     expect(novo.data.estoque[0]!.saldo).toBe(50);
     expect((await pacoteAce.guardado(ctxA))!.data.servidorEm).toBe('2026-11-07T08:00:00Z');
+  });
+
+  describe('duas abas enviando a mesma fila: o larvicida entra uma vez no pacote guardado', () => {
+    // Cada aba é uma cópia nova dos módulos (a ordem de envio é por aba) com a sua conexão ao mesmo IndexedDB simulado; o
+    // servidor responde OK na primeira vez e DUPLICADA nas seguintes, como a sincronização idempotente.
+    const BANCO = 'omnisaude-campo-ace';
+    const CHAVE = 'pacote:ace:un-a:u1';
+    let fake: FakeIndexedDB;
+    const abrirAba = async () => {
+      vi.resetModules();
+      vi.doMock('../src/lib/offline', async (original) => ({ ...(await original<typeof import('../src/lib/offline')>()), estaOnline: () => true }));
+      return import('@/lib/ace-store');
+    };
+    /** Web Locks do navegador: um pedido por vez para o mesmo nome, em ordem de chegada, valendo para todas as abas. */
+    const travasDoNavegador = () => {
+      const filas = new Map<string, Promise<unknown>>();
+      return {
+        pedidos: [] as string[],
+        async request<T>(nome: string, fn: () => Promise<T>): Promise<T> {
+          this.pedidos.push(nome);
+          const antes = filas.get(nome) ?? Promise.resolve();
+          let soltar!: () => void;
+          filas.set(
+            nome,
+            antes.then(() => new Promise<void>((r) => (soltar = r))),
+          );
+          await antes;
+          try {
+            return await fn();
+          } finally {
+            soltar();
+          }
+        },
+      };
+    };
+    const servidor = () => {
+      const recebidos = new Set<string>();
+      return (body: { operacoes: OperacaoAce[] }) => ({
+        resultados: body.operacoes.map((op) => {
+          const status = recebidos.has(op.clientId) ? 'DUPLICADA' : 'OK';
+          recebidos.add(op.clientId);
+          return { clientId: op.clientId, tipo: op.tipo, status, id: `id-${op.clientId}`, erro: null };
+        }),
+      });
+    };
+    const saldoGuardado = () => (fake.linhas(BANCO, 'cache').find((l) => l.key === CHAVE) as { data: PacoteCampo } | undefined)?.data.estoque[0]!.saldo;
+
+    beforeEach(() => {
+      fake = new FakeIndexedDB();
+      vi.stubGlobal('indexedDB', fake);
+      const fila: ItemFilaAce = { clientId: UUID(1), op: { ...visita(UUID(1)), unitId: 'un-a' }, userId: 'u1', unitId: 'un-a', status: 'PENDENTE', erro: null, criadoEm: '2026-11-07T12:00:00Z', rotulo: 'Visita' };
+      fake.criar(BANCO, 1, { fila: { keyPath: 'clientId', linhas: [fila as never] }, cache: { keyPath: 'key', linhas: [{ key: CHAVE, data: pacote(), savedAt: '2026-11-07T08:00:00Z' }] } });
+    });
+    afterEach(() => {
+      vi.doUnmock('../src/lib/offline');
+      vi.unstubAllGlobals();
+    });
+
+    it('com a trava entre abas (Web Locks): a segunda aba espera, não reenvia e não aplica de novo', async () => {
+      const travas = travasDoNavegador();
+      vi.stubGlobal('navigator', { onLine: true, locks: travas });
+      const abaA = await abrirAba();
+      const abaB = await abrirAba();
+      const responder = servidor();
+      let liberar!: () => void;
+      const segura = new Promise<void>((r) => (liberar = r));
+      sim.post.mockImplementation(async (_path: string, body: { operacoes: OperacaoAce[] }) => {
+        await segura;
+        return responder(body);
+      });
+      const envioA = abaA.filaAce.sincronizar(ctxA);
+      const envioB = abaB.filaAce.sincronizar(ctxA);
+      await new Promise((r) => setTimeout(r, 30));
+      expect(sim.post).toHaveBeenCalledTimes(1);
+      liberar();
+      const [rA, rB] = await Promise.all([envioA, envioB]);
+      expect(travas.pedidos).toEqual(['omnisaude-campo-ace:envio', 'omnisaude-campo-ace:envio']);
+      expect(sim.post).toHaveBeenCalledTimes(1);
+      expect(rA).toMatchObject({ enviados: 1, duplicados: 0, restantes: 0 });
+      expect(rB).toMatchObject({ enviados: 0, duplicados: 0, pendentes: 0, aceitos: [] });
+      expect(saldoGuardado()).toBe(48);
+      expect(fake.linhas(BANCO, 'fila')).toEqual([]);
+      expect(fake.conexoes).toHaveLength(2);
+    });
+
+    it('sem a API de travas: OK numa aba e DUPLICADA na outra aplicam o larvicida uma vez só', async () => {
+      vi.stubGlobal('navigator', { onLine: true });
+      const abaA = await abrirAba();
+      const abaB = await abrirAba();
+      const responder = servidor();
+      let primeiraTerminou: Promise<unknown> = Promise.resolve();
+      sim.post.mockImplementation(async (_path: string, body: { operacoes: OperacaoAce[] }) => {
+        // A resposta da segunda aba chega depois que a primeira gravou tudo (tirou o item da fila e aplicou no pacote).
+        if (sim.post.mock.calls.length > 1) await primeiraTerminou;
+        return responder(body);
+      });
+      const envioA = abaA.filaAce.sincronizar(ctxA);
+      const envioB = abaB.filaAce.sincronizar(ctxA);
+      primeiraTerminou = Promise.race([envioA, envioB]);
+      const resumos = await Promise.all([envioA, envioB]);
+      expect(sim.post).toHaveBeenCalledTimes(2);
+      expect(resumos.map((r) => [r.enviados, r.duplicados]).sort()).toEqual([
+        [0, 1],
+        [1, 0],
+      ]);
+      // A tela de cada aba aplica o aceito no pacote que tem em memória; o guardado recebe uma vez.
+      expect(resumos.every((r) => r.aceitos.length === 1)).toBe(true);
+      expect(saldoGuardado()).toBe(48);
+      expect(fake.linhas(BANCO, 'fila')).toEqual([]);
+      expect((await abaA.historicoAce.listar('u1')).map((h) => h.clientId)).toEqual([UUID(1)]);
+      // Uma conexão por aba com o mesmo banco.
+      expect(fake.conexoes).toHaveLength(2);
+    });
   });
 });

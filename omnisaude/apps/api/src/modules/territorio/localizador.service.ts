@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { TenantClient } from '@omnisaude/database';
+import { TenantPrisma, type TenantClient } from '@omnisaude/database';
 import { ampliarCaixa, caixasSeTocam, distanciaAteArea, ORDEM_PRECISAO, pontoNaArea, roleHasPermission, type Area, type Caixa, type PrecisaoGeo, type Posicao } from '@omnisaude/shared';
 import type { RequestContext } from '../../core/context';
 
@@ -97,7 +97,9 @@ export class LocalizadorService {
    * Imóveis que quem trabalha em campo sem 'territorio.editar' alcança. ACS: os da sua equipe e microárea e os ainda sem
    * equipe da unidade do contexto (cadastrados na recepção). ACE (VIG-3a): os quarteirões da sua zona e os das ordens
    * de bloqueio ativas em que foi designado. Supervisão de campo das endemias: os quarteirões das zonas ativas e das
-   * ordens ativas, não o município inteiro. null = todos (quem edita o território e os demais papéis).
+   * ordens ativas, não o município inteiro. null = todos (quem edita o território e os demais papéis). Para ACE e
+   * supervisão o filtro leva a lista de quarteirões, que pode ser a malha toda: numa consulta de imóveis, use
+   * `quarteiroesDeCampoSql`, que não monta a lista.
    */
   async escopoDeCampo(ctx: RequestContext) {
     if (roleHasPermission(ctx.session.role, 'territorio.editar')) return null;
@@ -114,6 +116,22 @@ export class LocalizadorService {
     if (ctx.session.role === 'ACE') return this.quarteiroesDoAce(ctx.db, ctx.session.userId);
     if (ctx.session.role === 'SUPERVISOR_ENDEMIAS') return this.quarteiroesDasEndemias(ctx.db);
     return null;
+  }
+
+  /**
+   * Condição SQL "o quarteirão da coluna é de trabalho" do ACE e da supervisão de campo, em subconsultas: a mesma regra
+   * de `quarteiroesDoAce` e `quarteiroesDasEndemias` sem montar a lista, que pode ser a malha toda (um IN com um
+   * parâmetro por quarteirão passa do limite de 32.767 parâmetros por consulta). null para os demais papéis.
+   */
+  quarteiroesDeCampoSql(ctx: RequestContext, coluna: TenantPrisma.Sql): TenantPrisma.Sql | null {
+    if (roleHasPermission(ctx.session.role, 'territorio.editar')) return null;
+    if (ctx.session.role !== 'ACE' && ctx.session.role !== 'SUPERVISOR_ENDEMIAS') return null;
+    const { sql, empty } = TenantPrisma;
+    const ace = ctx.session.role === 'ACE' ? ctx.session.userId : null;
+    return sql`(${coluna} IN (SELECT zb.block_id FROM vector_zone_blocks zb JOIN vector_zones z ON z.id = zb.zone_id
+        WHERE z.active${ace ? sql` AND z.ace_id = ${ace}::uuid` : empty})
+      OR ${coluna} IN (SELECT ob.block_id FROM blocking_order_blocks ob JOIN blocking_orders o ON o.id = ob.order_id
+        WHERE o.status IN ('ABERTA', 'EM_CAMPO')${ace ? sql` AND EXISTS (SELECT 1 FROM blocking_order_assignees a WHERE a.order_id = o.id AND a.user_id = ${ace}::uuid)` : empty}))`;
   }
 
   /** Quarteirões de trabalho do agente de endemias: zona(s) de que é titular e ordens de bloqueio ativas designadas. */
