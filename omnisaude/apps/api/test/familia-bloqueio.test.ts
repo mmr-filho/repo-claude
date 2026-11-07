@@ -13,7 +13,7 @@ import { pgAvailable, startTestApp, type TestApp } from './harness';
 const enabled = await pgAvailable();
 
 const DIA = 86_400_000;
-const GRADES = ['inc', 'acs', 'nova', 'falha'];
+const GRADES = ['inc', 'acs', 'nova', 'falha', 'unif'];
 
 describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da pessoa na ordem de bloqueio', () => {
   let t: TestApp;
@@ -213,5 +213,17 @@ describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da 
     expect((await ordemDoCaso(n)).status).toBe('AGUARDANDO_LOCALIZACAO');
     await varredura();
     expect((await ordemDoCaso(n)).status).toBe('ABERTA');
+  });
+  it('a unificação de cadastros põe o caso do duplicado no domicílio do cadastro que fica: a ordem abre na hora', async () => {
+    // O cadastro que fica mora num imóvel posicionado; o duplicado, sem domicílio, tem o caso de dengue.
+    await novoPaciente('uf');
+    const { casa } = await novaCasa(ponto('unif', 200, 200), pessoa.uf!.id);
+    const n = await casoSemDomicilio('ud');
+    await t.http().post(`/api/patients/${pessoa.uf!.id}/merge`).set(auth(recepcao)).send({ duplicateId: pessoa.ud!.id }).expect(naoPassou);
+    // Na hora, sem varredura: antes, a ordem só abria na varredura seguinte (até 5 min).
+    const aberta = await ordemDoCaso(n);
+    expect(aberta.status).toBe('ABERTA');
+    expect(aberta.blocks.map((b) => b.blockId)).toContain(bloco('unif', 2, 2));
+    expect(await ligacao(n)).toMatchObject({ householdId: casa, blockId: bloco('unif', 2, 2), active: true });
   });
 });

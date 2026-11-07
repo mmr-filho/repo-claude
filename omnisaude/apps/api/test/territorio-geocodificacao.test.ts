@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { areaM2, caixaDe, centroDe, distanciaM, metrosPorGrau, normalizarArea, normalizarLogradouro, normalizarNumero, type Posicao } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TenantsService } from '../src/core/database';
-import { MOTIVO_FORA_DO_QUARTEIRAO } from '../src/modules/territorio/geocodificacao.service';
+import { MOTIVO_FORA_DO_QUARTEIRAO, MOTIVO_QUARTEIRAO_DESATIVADO } from '../src/modules/territorio/geocodificacao.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 
 const enabled = await pgAvailable();
@@ -20,7 +20,7 @@ const quadrado = (centro: Posicao, lado = 80) => {
 const RUA = 'Rua Sonda Geo';
 
 type Resultado = { clientId: string; status: string; id: string | null; avisos?: string[] };
-type Geocodificacao = { analisados: number; atualizados: number; foraDoQuarteirao: number; avisos: string[]; porPrecisao: Record<string, number> };
+type Geocodificacao = { analisados: number; atualizados: number; foraDoQuarteirao: number; quarteiraoDesativado: number; avisos: string[]; porPrecisao: Record<string, number> };
 
 describe.runIf(enabled)('Território: a geocodificação por endereço não tira o imóvel do quarteirão que ele já tem', () => {
   let t: TestApp;
@@ -145,5 +145,16 @@ describe.runIf(enabled)('Território: a geocodificação por endereço não tira
     expect(segundo.avisos).toEqual([`2 imóvel(is) ficaram como estavam: ${MOTIVO_FORA_DO_QUARTEIRAO}.`]);
     expect(await imovel(centro.id!)).toMatchObject({ blockId: bloco['3'], geoPrecision: 'QUARTEIRAO' });
     expect(await imovel(s7.id)).toMatchObject({ blockId: bloco['3'], latitude: null });
+  });
+  it('o imóvel do ACE num quarteirão desativado na malha fica como está, com o motivo certo no aviso', async () => {
+    const r = await doAce('13', '901');
+    // A malha nova tirou o quarteirão 13 (a zona do ACE o mantém até a supervisão tirá-lo).
+    await db.block.update({ where: { id: bloco['13'] }, data: { active: false } });
+    // O endereço na base do IBGE cai dentro do contorno do 13, que não está mais entre os ativos.
+    await endereco('901', ponto(205, 205));
+    const geo = await geocodificar({ ids: [r.id] });
+    // Antes, contava como "o endereço cai fora do quarteirão", um motivo que não ajuda a resolver.
+    expect(geo).toMatchObject({ analisados: 1, atualizados: 0, foraDoQuarteirao: 0, quarteiraoDesativado: 1, avisos: [`1 imóvel(is) ficaram como estavam: ${MOTIVO_QUARTEIRAO_DESATIVADO}.`] });
+    expect(await imovel(r.id!)).toMatchObject({ blockId: bloco['13'], latitude: null, geoPrecision: null });
   });
 });

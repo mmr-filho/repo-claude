@@ -69,7 +69,7 @@ const RESTRICAO_GENERICA = 'O registro tem um valor que o banco de dados não ac
 /** Passos que a visita segue na cadeia de uniões (a ordem que ficou com outra pode ter sido unificada depois). */
 const MAX_UNIOES = 5;
 
-type OrdemDaVisita = { id: string; status: string; seq: number; year: number; mergedIntoId: string | null };
+type OrdemDaVisita = { id: string; status: string; seq: number; year: number; mergedIntoId: string | null; openedAt: Date };
 const numeroOrdem = (o: { seq: number; year: number }) => `${o.seq}/${o.year}`;
 
 /**
@@ -380,7 +380,7 @@ export class CampoAceService {
     const r = await ctx.db.$transaction(async (tx) => {
       // Uma visita do imóvel por vez: a recuperação depende da ordem em que as visitas dele aconteceram.
       await tx.$executeRaw`SELECT 1 FROM households WHERE id = ${h.id}::uuid FOR NO KEY UPDATE`;
-      const ordem = await this.ordemDaVisita(tx, h.blockId, v, avisos);
+      const ordem = await this.ordemDaVisita(tx, h.blockId, v, avisos, { dataLocal, timeZone: ctx.tenant.timeZone });
       const escopo = { householdId, visitedAt, orderId: ordem?.id ?? null, cycle: ciclo.chave };
       const recuperacao = await this.anteriorPendente(tx, escopo);
       const visita = await tx.vectorVisit.create({
@@ -431,10 +431,13 @@ export class CampoAceService {
       }
       await this.refazerRecuperacaoSeguinte(tx, escopo);
       if (ordem) {
-        // Início em campo: a visita mais antiga da ordem, mesmo a que chega depois (aparelho sem rede).
+        // Início em campo: a visita mais antiga da ordem, mesmo a que chega depois (aparelho sem rede), mas nunca antes da
+        // abertura (relógio do aparelho atrasado). É a âncora de tempo da ordem em campo (BloqueioService.ordensQueAgrupam):
+        // um início antes da abertura deixaria o próprio caso da ordem fora da janela e abriria outra sobre os quarteirões.
+        const inicio = visitedAt > ordem.openedAt ? visitedAt : ordem.openedAt;
         await tx.blockingOrder.updateMany({
-          where: { id: ordem.id, status: { in: ['ABERTA', 'EM_CAMPO', 'CONCLUIDA'] }, OR: [{ startedAt: null }, { startedAt: { gt: visitedAt } }] },
-          data: { startedAt: visitedAt },
+          where: { id: ordem.id, status: { in: ['ABERTA', 'EM_CAMPO', 'CONCLUIDA'] }, OR: [{ startedAt: null }, { startedAt: { gt: inicio } }] },
+          data: { startedAt: inicio },
         });
         await tx.blockingOrder.updateMany({ where: { id: ordem.id, status: 'ABERTA' }, data: { status: 'EM_CAMPO' } });
       }
@@ -455,10 +458,12 @@ export class CampoAceService {
    * Ordem de bloqueio da visita: a informada pelo aparelho, se o imóvel está nela. A unificada a outra depois que o
    * aparelho a levou (CANCELADA com mergedIntoId) leva a visita à ordem que ficou, seguindo a cadeia de uniões, se o
    * quarteirão do imóvel está nela; senão a visita fica sem ordem, como na cancelada. Sem ordem informada, a visita de
-   * bloqueio vai para a ordem ativa mais recente do quarteirão (a mais antiga pode ser de outra transmissão, com o
-   * quarteirão já trabalhado). Cada ordem é lida com a linha travada (ver `ordemTravada`).
+   * bloqueio vai para a ordem ativa mais recente do quarteirão aberta até o dia dela (a mais antiga pode ser de outra
+   * transmissão, com o quarteirão já trabalhado; a aberta depois do dia da visita não existia quando ela foi feita, e a
+   * casa contaria como trabalhada para um caso que ainda não era conhecido). Cada ordem é lida com a linha travada (ver
+   * `ordemTravada`).
    */
-  private async ordemDaVisita(tx: Tx, blockId: string | null, v: VisitaVetorialCampo, avisos: string[]): Promise<OrdemDaVisita | null> {
+  private async ordemDaVisita(tx: Tx, blockId: string | null, v: VisitaVetorialCampo, avisos: string[], dia: { dataLocal: string; timeZone: string }): Promise<OrdemDaVisita | null> {
     const temQuarteirao = async (o: OrdemDaVisita) => !!blockId && !!(await tx.blockingOrderBlock.findUnique({ where: { orderId_blockId: { orderId: o.id, blockId } }, select: { orderId: true } }));
     if (v.ordemId) {
       const informada = await this.ordemTravada(tx, v.ordemId);
@@ -488,18 +493,25 @@ export class CampoAceService {
       return o;
     }
     if (v.atividade !== 'BLOQUEIO' || !blockId) return null;
+    let depoisDaVisita = false;
     // Duas tentativas: a ordem achada pode ter sido unificada ou refeita enquanto a visita esperava a linha.
     for (let tentativa = 0; tentativa < 2; tentativa++) {
-      const achada = await tx.blockingOrder.findFirst({
+      const ativas = await tx.blockingOrder.findMany({
         where: { status: { in: ['ABERTA', 'EM_CAMPO'] }, blocks: { some: { blockId } } },
         orderBy: [{ openedAt: 'desc' }, { id: 'desc' }],
-        select: { id: true },
+        select: { id: true, openedAt: true },
       });
+      const achada = ativas.find((a) => localDateString(a.openedAt, dia.timeZone) <= dia.dataLocal);
+      depoisDaVisita = !achada && ativas.length > 0;
       if (!achada) break;
       const o = await this.ordemTravada(tx, achada.id);
       if (o && (o.status === 'ABERTA' || o.status === 'EM_CAMPO') && (await temQuarteirao(o))) return o;
     }
-    avisos.push('Nenhuma ordem de bloqueio ativa neste quarteirão: visita gravada como bloqueio sem ordem');
+    avisos.push(
+      depoisDaVisita
+        ? 'A ordem de bloqueio deste quarteirão foi aberta depois do dia da visita: visita gravada como bloqueio sem ordem'
+        : 'Nenhuma ordem de bloqueio ativa neste quarteirão: visita gravada como bloqueio sem ordem',
+    );
     return null;
   }
 
@@ -510,7 +522,7 @@ export class CampoAceService {
    */
   private async ordemTravada(tx: Tx, id: string): Promise<OrdemDaVisita | null> {
     await tx.$queryRaw`SELECT id FROM blocking_orders WHERE id = ${id}::uuid FOR KEY SHARE`;
-    return tx.blockingOrder.findUnique({ where: { id }, select: { id: true, status: true, seq: true, year: true, mergedIntoId: true } });
+    return tx.blockingOrder.findUnique({ where: { id }, select: { id: true, status: true, seq: true, year: true, mergedIntoId: true, openedAt: true } });
   }
 
   /**

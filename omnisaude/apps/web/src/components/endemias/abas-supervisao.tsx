@@ -14,7 +14,7 @@ import { api, errorMessage } from '@/lib/api';
 import { fmtDateTime, todayIso } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { BarraProgresso } from './aba-ordens';
-import { avisoLimitePendencias, depositoSugerido, fmtQuantidade, lotesParaResolver, opcoesQuarteiraoZona, opcoesTitular, textoTentativas, valorEntre } from './gestao-regras';
+import { avisoLimitePendencias, depositoSugerido, fmtQuantidade, lotesParaResolver, opcoesQuarteiraoZona, opcoesTitular, rotuloQuarteiroesZona, textoTentativas, valorEntre } from './gestao-regras';
 import type { AgenteEndemias, BaixaPendente, PainelEstoque } from './types';
 
 // ─── Zonas ──────────────────────────────────────────────────────────────────
@@ -80,14 +80,7 @@ export function AbaZonas({ podeGerir }: { podeGerir: boolean }) {
                       <span className="text-amber-700">descoberta</span>
                     )}
                   </TD>
-                  <TD className="max-w-xs text-sm">
-                    {z.quarteiroes.length
-                      ? z.quarteiroes
-                          .map((q) => q.numero)
-                          .sort((a, b) => a.localeCompare(b, 'pt-BR', { numeric: true }))
-                          .join(', ')
-                      : '—'}
-                  </TD>
+                  <TD className="max-w-xs text-sm">{rotuloQuarteiroesZona(z.quarteiroes)}</TD>
                   <TD>
                     <BarraProgresso p={z.progressoCiclo} />
                   </TD>

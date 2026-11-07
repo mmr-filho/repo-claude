@@ -612,8 +612,9 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     expect((await db.vectorVisit.findUniqueOrThrow({ where: { clientId: trab3.clientId } })).recovery).toBe(true);
     expect((await db.vectorVisit.findUniqueOrThrow({ where: { clientId: fech3.clientId } })).recovery).toBe(false);
 
-    // Início em campo: a visita mais antiga, mesmo chegando depois; vale também com a ordem em campo ou concluída.
-    const ordem = await novaOrdem(bloco['22']!, 'ABERTA');
+    // Início em campo: a visita mais antiga, mesmo chegando depois; vale também com a ordem em campo ou concluída. A ordem
+    // foi aberta antes de todas as visitas (o início do campo nunca fica antes da abertura).
+    const ordem = await novaOrdem(bloco['22']!, 'ABERTA', new Date(base - 300 * 60_000));
     const casa4 = await novoImovel(bloco['22']!);
     const bloqueio = (minAtras: number) => visitaAs(casa4, { atividade: 'BLOQUEIO', situacao: 'FECHADO', ordemId: ordem }, minAtras);
     const v30 = bloqueio(30);
@@ -678,9 +679,11 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     const daVisita = (op: { clientId: string }) => db.vectorVisit.findUniqueOrThrow({ where: { clientId: op.clientId } });
     const ordem = (id: string) => db.blockingOrder.findUniqueOrThrow({ where: { id } });
     // Duas uniões seguidas (a 3 foi para a 2, e a 2 depois para a 1): a visita feita na 3 entra na 1, com o início em campo.
-    const o1 = await novaOrdem(bloco['25']!, 'ABERTA');
-    const o2 = await novaOrdem(bloco['25']!, 'ABERTA');
-    const o3 = await novaOrdem(bloco['25']!, 'ABERTA');
+    // As ordens foram abertas antes das visitas (o início do campo nunca fica antes da abertura).
+    const abertas = new Date(Date.now() - 3 * 3600_000);
+    const o1 = await novaOrdem(bloco['25']!, 'ABERTA', abertas);
+    const o2 = await novaOrdem(bloco['25']!, 'ABERTA', abertas);
+    const o3 = await novaOrdem(bloco['25']!, 'ABERTA', abertas);
     await unir(o3, o2);
     await unir(o2, o1);
     const v1 = bloqueio(o3, 30);
@@ -938,7 +941,8 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
       .expect(200);
     expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: levada } })).toMatchObject({ status: 'CANCELADA', mergedIntoId: ficou });
     // O ACE, sem rede, trabalhou o imóvel de P pela ordem do pacote antigo e envia agora: a visita entra na ordem que ficou.
-    const op = visita(p.householdId, { atividade: 'BLOQUEIO', situacao: 'TRABALHADO', ordemId: levada, depositos: { B: { inspecionados: 1, comFoco: 0, eliminados: 1, tratados: 0 } } }, 1);
+    // A visita é de depois da abertura das duas ordens (o aparelho levou a ordem no pacote).
+    const op = visita(p.householdId, { atividade: 'BLOQUEIO', situacao: 'TRABALHADO', ordemId: levada, depositos: { B: { inspecionados: 1, comFoco: 0, eliminados: 1, tratados: 0 } } }, 0);
     const [r] = await resultados(ace, [op]);
     expect(r).toMatchObject({ status: 'OK', avisos: [`A ordem ${await numeroDa(levada)} foi unificada à ordem ${await numeroDa(ficou)}: visita gravada nela`] });
     const gravada = await db.vectorVisit.findUniqueOrThrow({ where: { clientId: op.clientId } });

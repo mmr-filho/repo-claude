@@ -48,6 +48,8 @@ function concentrados(pts: Ponto[], raio: number): boolean {
 /** Motivo, para a tela, dos imóveis que a geocodificação deixou como estavam por causa do quarteirão. */
 export const MOTIVO_FORA_DO_QUARTEIRAO =
   'o endereço na base do IBGE cai fora do quarteirão que o imóvel já tem (escolhido em campo ou ligado antes), e a posição pelo endereço não troca o quarteirão. Confira e marque no mapa';
+/** O quarteirão do imóvel saiu da malha (a zona do ACE o mantém até a supervisão tirá-lo): o endereço não o substitui. */
+export const MOTIVO_QUARTEIRAO_DESATIVADO = 'o quarteirão que o imóvel tem foi desativado na malha, e a posição pelo endereço não troca o quarteirão. Marque o imóvel no mapa para ligá-lo ao quarteirão novo';
 
 /**
  * Geocodificação só local (LGPD: o endereço não sai para serviços externos). Ordem: endereço com número na base do
@@ -103,6 +105,7 @@ export class GeocodificacaoService {
     let atualizados = 0;
     let semResultado = 0;
     let foraDoQuarteirao = 0;
+    let quarteiraoDesativado = 0;
     // Continua de onde a chamada anterior parou (a tela repete enquanto houver "proximo").
     let cursor: string | undefined = input.apos;
     let esgotou = false;
@@ -136,7 +139,10 @@ export class GeocodificacaoService {
         // posição do GPS, ou o ligado antes): só vale quando o ponto cai nesse mesmo quarteirão; fora dele, o imóvel fica
         // como está e é contado à parte, para a supervisão conferir no mapa. Imóvel sem quarteirão segue a regra de sempre.
         if (h.blockId && PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao) && (await this.localizador.quarteiraoDoPonto(ctx.db, r.lat, r.lng))?.id !== h.blockId) {
-          foraDoQuarteirao++;
+          // O quarteirão desativado na malha não está entre os ativos (nem no índice dos centros): o motivo é outro, e o
+          // que resolve é ligar o imóvel ao quarteirão novo.
+          if (centroBloco.has(h.blockId)) foraDoQuarteirao++;
+          else quarteiraoDesativado++;
           continue;
         }
         if (PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao)) {
@@ -154,16 +160,21 @@ export class GeocodificacaoService {
         atualizados++;
       }
     }
-    await this.audit.recordStandalone(ctx, { action: 'territorio.geocodificar', entityType: 'Household', payload: { analisados, atualizados, foraDoQuarteirao, resumo } });
+    await this.audit.recordStandalone(ctx, { action: 'territorio.geocodificar', entityType: 'Household', payload: { analisados, atualizados, foraDoQuarteirao, quarteiraoDesativado, resumo } });
     // Casos ativos dos moradores (ordem de bloqueio) são reavaliados com a posição nova.
     await this.territorio.imoveisPosicionados(ctx, posicionados);
     return {
       analisados,
       atualizados,
       semResultado,
-      // Imóveis com quarteirão cujo endereço cai em outro quarteirão (ou fora da malha): ficaram como estavam.
+      // Imóveis com quarteirão cujo endereço cai em outro quarteirão (ou fora da malha), e imóveis num quarteirão
+      // desativado na malha: ficaram como estavam.
       foraDoQuarteirao,
-      avisos: foraDoQuarteirao ? [`${foraDoQuarteirao} imóvel(is) ficaram como estavam: ${MOTIVO_FORA_DO_QUARTEIRAO}.`] : [],
+      quarteiraoDesativado,
+      avisos: [
+        ...(foraDoQuarteirao ? [`${foraDoQuarteirao} imóvel(is) ficaram como estavam: ${MOTIVO_FORA_DO_QUARTEIRAO}.`] : []),
+        ...(quarteiraoDesativado ? [`${quarteiraoDesativado} imóvel(is) ficaram como estavam: ${MOTIVO_QUARTEIRAO_DESATIVADO}.`] : []),
+      ],
       porPrecisao: resumo,
       baseDeEnderecos: base.length,
       proximo: esgotou || explicito ? null : (cursor ?? null),

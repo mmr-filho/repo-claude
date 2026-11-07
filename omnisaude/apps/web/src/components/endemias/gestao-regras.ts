@@ -180,6 +180,18 @@ export function opcoesQuarteiraoZona(
   return todos.filter((q) => !busca || `${q.numero} ${q.localidade ?? ''} ${q.bairro ?? ''}`.toLowerCase().includes(busca)).map(({ id, numero, localidade, rotulo }) => ({ id, numero, localidade, rotulo }));
 }
 
+/**
+ * Coluna "Quarteirões" da tabela das zonas: os números em ordem, com o desativado na malha marcado como no diálogo da
+ * zona (ele fica na zona até a supervisão tirá-lo).
+ */
+export function rotuloQuarteiroesZona(quarteiroes: readonly { numero: string; ativo: boolean }[]): string {
+  if (!quarteiroes.length) return '—';
+  return [...quarteiroes]
+    .sort((a, b) => a.numero.localeCompare(b.numero, 'pt-BR', { numeric: true }))
+    .map((q) => `${q.numero}${q.ativo ? '' : ' (desativado na malha)'}`)
+    .join(', ');
+}
+
 // ─── Baixas de larvicida pendentes ──────────────────────────────────────────
 
 /**

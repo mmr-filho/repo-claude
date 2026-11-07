@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { opcoesQuarteiraoZona } from '../src/components/endemias/gestao-regras';
+import { opcoesQuarteiraoZona, rotuloQuarteiroesZona } from '../src/components/endemias/gestao-regras';
 
 /*
  * Diálogo da zona (telas da supervisão): o quarteirão desativado na malha que continua na zona aparece marcado, como no
@@ -37,5 +37,21 @@ describe('quarteirões no diálogo da zona', () => {
     expect(opcoesQuarteiraoZona([], livres, '').map((q) => q.rotulo)).toEqual(['Q 40', 'Q 41']);
     // Lista de livres lida depois de outra edição da zona: a caixa não se repete.
     expect(opcoesQuarteiraoZona([{ id: 'q-40', numero: '40', ativo: true }], livres, '').map((q) => q.id)).toEqual(['q-40', 'q-41']);
+  });
+});
+
+describe('quarteirões na tabela das zonas', () => {
+  it('em ordem numérica, com o desativado na malha marcado como no diálogo', () => {
+    expect(
+      rotuloQuarteiroesZona([
+        { numero: '13', ativo: false },
+        { numero: '2', ativo: true },
+        { numero: '12', ativo: true },
+      ]),
+    ).toBe('2, 12, 13 (desativado na malha)');
+  });
+
+  it('zona sem quarteirões mostra o travessão', () => {
+    expect(rotuloQuarteiroesZona([])).toBe('—');
   });
 });

@@ -64,6 +64,9 @@ const GRADES = [
   'tvreab',
   'tvcon',
   'tvcan',
+  'pdant',
+  'pdinf',
+  'pddia',
 ];
 const espera = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const letras = (n: number) => {
@@ -1459,5 +1462,51 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
       await c.end();
     }
     expect(await ordem(o)).toMatchObject({ status: 'CANCELADA', concludedAt: null });
+  });
+  it('dados-docs#4: a visita de bloqueio sem ordem feita antes do dia da abertura não entra na ordem nem vira o início do campo', async () => {
+    await caso('pa1', ponto('pdant', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('pa1');
+    // O aparelho ficou sem rede (ou com o relógio atrasado): a visita de bloqueio sem ordem é de 9 dias antes da abertura.
+    const r = await visitar(casa.pa1!, null, {}, new Date(Date.now() - 9 * DIA).toISOString());
+    expect(r.status).toBe('OK');
+    expect(r.avisos).toEqual(['A ordem de bloqueio deste quarteirão foi aberta depois do dia da visita: visita gravada como bloqueio sem ordem']);
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { id: r.id }, select: { orderId: true } })).toEqual({ orderId: null });
+    // Antes, a visita entrava na ordem com o início do campo 9 dias antes da abertura: o próprio caso ficava fora da janela.
+    expect(await ordem(o)).toMatchObject({ status: 'ABERTA', startedAt: null });
+    // O vizinho de hoje, a 10 m, entra na mesma ordem (antes, abria outra sobre os mesmos quarteirões).
+    await caso('pa2', ponto('pdant', 210, 200), 'dengue', dia(0));
+    expect(await ordemDe('pa2')).toBe(o);
+  });
+
+  it('dados-docs#4: com a ordem informada e o relógio do aparelho atrasado, o início do campo fica na abertura', async () => {
+    await caso('pi1', ponto('pdinf', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('pi1');
+    const aberta = (await ordem(o)).openedAt;
+    const r = await visitar(casa.pi1!, o, {}, new Date(Date.now() - 9 * DIA).toISOString());
+    expect(r.status).toBe('OK');
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { id: r.id }, select: { orderId: true } })).toEqual({ orderId: o });
+    const oo = await ordem(o);
+    expect(oo.status).toBe('EM_CAMPO');
+    // Antes, o início do campo era a hora do aparelho, 9 dias antes da abertura.
+    expect(oo.startedAt?.getTime()).toBe(aberta.getTime());
+    await caso('pi2', ponto('pdinf', 210, 200), 'dengue', dia(0));
+    expect(await ordemDe('pi2')).toBe(o);
+  });
+
+  it('dados-docs#4: a visita de bloqueio sem ordem do mesmo dia da abertura, feita antes da hora dela, entra na ordem', async () => {
+    await caso('pm1', ponto('pddia', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('pm1');
+    const aberta = (await ordem(o)).openedAt;
+    // A visita foi feita no começo do dia de hoje (no fuso da prefeitura), antes da abertura da ordem, agora há pouco.
+    const [inicio] = await consultar<{ t: Date }>(`SELECT (date_trunc('day', now() AT TIME ZONE $1) AT TIME ZONE $1) + interval '1 second' AS t`, [tz]);
+    expect(localDateString(inicio!.t, tz)).toBe(localDateString(aberta, tz));
+    const r = await visitar(casa.pm1!, null, {}, inicio!.t.toISOString());
+    expect(r.status).toBe('OK');
+    expect(r.avisos).toBeUndefined();
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { id: r.id }, select: { orderId: true, visitedAt: true } })).toEqual({ orderId: o, visitedAt: inicio!.t });
+    const oo = await ordem(o);
+    expect(oo.status).toBe('EM_CAMPO');
+    // O início do campo não fica antes da abertura.
+    expect(oo.startedAt?.getTime()).toBe(aberta.getTime());
   });
 });

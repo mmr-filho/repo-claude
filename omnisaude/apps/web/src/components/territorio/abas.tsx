@@ -689,14 +689,16 @@ export function AbaPendencias({
     setBusy('geo');
     try {
       // A API trabalha em lotes: repete enquanto houver imóveis pendentes depois do último analisado.
-      type R = { analisados: number; atualizados: number; semResultado: number; baseDeEnderecos: number; proximo: string | null };
-      const r: R = { analisados: 0, atualizados: 0, semResultado: 0, baseDeEnderecos: 0, proximo: null };
+      type R = { analisados: number; atualizados: number; semResultado: number; foraDoQuarteirao: number; quarteiraoDesativado: number; baseDeEnderecos: number; proximo: string | null };
+      const r: R = { analisados: 0, atualizados: 0, semResultado: 0, foraDoQuarteirao: 0, quarteiraoDesativado: 0, baseDeEnderecos: 0, proximo: null };
       let apos: string | null = null;
       for (let volta = 0; volta < 50; volta++) {
         const parte: R = await api.post<R>('/territorio/imoveis/geocodificar', apos ? { apos } : {});
         r.analisados += parte.analisados;
         r.atualizados += parte.atualizados;
         r.semResultado += parte.semResultado;
+        r.foraDoQuarteirao += parte.foraDoQuarteirao ?? 0;
+        r.quarteiraoDesativado += parte.quarteiraoDesativado ?? 0;
         r.baseDeEnderecos = parte.baseDeEnderecos;
         apos = parte.proximo;
         if (!apos) break;
@@ -706,6 +708,10 @@ export function AbaPendencias({
           ? `${r.atualizados} de ${r.analisados} imóvel(is) localizados pela base local de endereços.`
           : `${r.atualizados} de ${r.analisados} imóvel(is) localizados (sem a base do IBGE: só pelo bairro e quarteirão).`,
       );
+      // A posição pelo endereço não troca o quarteirão que o imóvel já tem (o escolhido pelo ACE em campo): os que ficaram
+      // como estavam continuam na lista, e o motivo diz o que fazer.
+      if (r.foraDoQuarteirao) toast.info(`${r.foraDoQuarteirao} imóvel(is) ficaram como estavam: o endereço na base do IBGE cai fora do quarteirão que o imóvel já tem. Confira e marque no mapa.`);
+      if (r.quarteiraoDesativado) toast.info(`${r.quarteiraoDesativado} imóvel(is) ficaram como estavam: o quarteirão deles foi desativado na malha. Marque o imóvel no mapa para ligá-lo ao quarteirão novo.`);
       if (onAlterado) onAlterado();
       else await lista.reload();
     } catch (err) {

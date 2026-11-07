@@ -1,9 +1,10 @@
-import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { ageInYears, isValidCns, isValidCpf, normalizePersonName, onlyDigits, personNameKey, STATUS_SOLICITACAO, STATUS_TFD, STATUS_SOLICITACAO_LEITO, TIPO_LEITO } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
 import { conflict, DomainError, notFound } from '../../core/errors';
+import { TerritorioService } from '../territorio/territorio.service';
 import type { PatientInput } from './patients.schemas';
 
 export function patientSummary(p: { id: string; name: string; socialName: string | null; cns: string | null; cpf: string | null; birthDate: Date; sex: string; motherName: string | null }) {
@@ -39,9 +40,12 @@ const APPOINTMENT_STATUS: Record<string, string> = {
 
 @Injectable()
 export class PatientsService {
+  private readonly logger = new Logger(PatientsService.name);
+
   constructor(
     private readonly audit: AuditService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    private readonly territorio: TerritorioService,
   ) {}
 
   async search(ctx: RequestContext, q: string, limit = 20) {
@@ -514,7 +518,7 @@ export class PatientsService {
     const fill: Record<string, unknown> = {};
     for (const f of fillable) if (s[f] == null && d[f] != null) fill[f] = d[f];
     if (s.racaCor === '99' && d.racaCor !== '99') fill.racaCor = d.racaCor;
-    return ctx.db.$transaction(async (tx) => {
+    const r = await ctx.db.$transaction(async (tx) => {
       // CPF e CNS são únicos: saem do duplicado antes de irem para o que fica.
       await tx.patient.update({ where: { id: d.id }, data: { cpf: null, cns: null, familyId: null, kinship: null, mergedIntoId: s.id, mergedAt: new Date() } });
       const moved: Record<string, number> = {};
@@ -566,5 +570,20 @@ export class PatientsService {
       await this.audit.record(ctx, tx, { action: 'paciente.unificar', entityType: 'Patient', entityId: s.id, payload: { duplicateId: d.id, moved, filled: Object.keys(fill) } });
       return { survivorId: s.id, duplicateId: d.id, moved, filled: Object.keys(fill) };
     });
+    // Depois do commit: o caso do duplicado (e o do que fica, se ganhou a família do outro) passa a morar no domicílio da
+    // família que ficou. O gancho de posição do território refaz na hora o retrato na ordem de bloqueio. Nunca lança: a
+    // unificação já foi gravada, e a varredura periódica recupera uma falha.
+    const familias = [s.familyId, d.familyId].filter((x): x is string => !!x);
+    if (familias.length)
+      try {
+        const casas = await ctx.db.family.findMany({ where: { id: { in: familias } }, select: { householdId: true } });
+        await this.territorio.imoveisPosicionados(
+          ctx,
+          casas.map((c) => c.householdId),
+        );
+      } catch (err) {
+        this.logger.error(`Aviso da unificação ao território: ${(err as Error).message}`);
+      }
+    return r;
   }
 }

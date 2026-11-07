@@ -96,11 +96,16 @@ entorno.
 ### Geocodificação local
 
 "Localizar pelo endereço" tenta, em ordem: rua e número no CNEFE → quadra e lote (endereço "S/N, QD 12 LT 7") →
-rua sem número (mediana da rua, se os pontos estão concentrados) → centro do bairro ou da localidade (pelo nome ou
-apelido). Candidatos são filtrados pelo município, CEP e bairro; imóvel de outro município não recebe posição daqui,
-e nome de bairro que existe em duas localidades não posiciona ninguém. Os pendentes são percorridos por ordem, em
-lotes de até 20 mil que a tela encadeia, sem repetir sempre os mesmos. Tudo roda no servidor do OmniSaúde; cada
-execução é auditada.
+centro do quarteirão do imóvel (o que já tem quarteirão, como o cadastrado pelo ACE em campo) → rua sem número
+(mediana da rua, se os pontos estão concentrados) → centro do bairro ou da localidade (pelo nome ou apelido).
+Candidatos são filtrados pelo município, CEP e bairro; imóvel de outro município não recebe posição daqui, e nome de
+bairro que existe em duas localidades não posiciona ninguém. Nunca troca uma posição melhor por uma pior, e a posição
+pelo endereço nunca tira o imóvel do quarteirão que ele já tem: o ponto que cai em outro quarteirão deixa o imóvel
+como está, e a tela diz quantos ficaram assim e por quê (endereço fora do quarteirão, ou quarteirão desativado na
+malha), para a supervisão marcar no mapa. A correção do endereço tira só a posição que veio do endereço antigo; o
+quarteirão sai junto só quando foi essa posição que o ligou. Os pendentes são percorridos por ordem, em lotes de até
+20 mil que a tela encadeia, sem repetir sempre os mesmos. Tudo roda no servidor do OmniSaúde; cada execução é
+auditada.
 
 ### Telas
 
