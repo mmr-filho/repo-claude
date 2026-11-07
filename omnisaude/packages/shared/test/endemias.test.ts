@@ -107,13 +107,16 @@ describe('endemias: regras da visita do ACE', () => {
     ).toBe('SATISFATORIO');
   });
 
-  it('agrupamento do bloqueio: até 2× o raio e 7 dias; o mesmo imóvel ou pessoa sempre agrupa', () => {
+  it('agrupamento do bloqueio: até 2× o raio e 7 dias; o mesmo imóvel ou pessoa agrupa sem posição, dentro da janela', () => {
     const a = { ...em(0), dataReferencia: '2026-11-06', householdId: 'h1', patientId: 'p1' };
     expect(casosAgrupam(a, { ...em(299), dataReferencia: '2026-11-01' }, 150, 7)).toBe(true);
     expect(casosAgrupam(a, { ...em(301), dataReferencia: '2026-11-06' }, 150, 7)).toBe(false);
     expect(casosAgrupam(a, { ...em(10), dataReferencia: '2026-10-30' }, 150, 7)).toBe(true);
     expect(casosAgrupam(a, { ...em(10), dataReferencia: '2026-10-29' }, 150, 7)).toBe(false);
-    expect(casosAgrupam(a, { lat: null, lng: null, dataReferencia: '2026-01-01', householdId: 'h1' }, 150, 7)).toBe(true);
+    expect(casosAgrupam(a, { lat: null, lng: null, dataReferencia: '2026-11-02', householdId: 'h1' }, 150, 7)).toBe(true);
+    // O mesmo imóvel (ou a mesma pessoa) semanas depois é outra transmissão: não entra na ordem antiga.
+    expect(casosAgrupam(a, { lat: null, lng: null, dataReferencia: '2026-10-12', householdId: 'h1' }, 150, 7)).toBe(false);
+    expect(casosAgrupam(a, { ...em(5000), dataReferencia: '2026-10-15', patientId: 'p1' }, 150, 7)).toBe(false);
     expect(casosAgrupam(a, { lat: null, lng: null, dataReferencia: '2026-11-06', patientId: 'p1' }, 150, 7)).toBe(true);
     expect(casosAgrupam(a, { lat: null, lng: null, dataReferencia: '2026-11-06' }, 150, 7)).toBe(false);
     expect(progresso(20, 15, 3)).toEqual({ imoveis: 20, trabalhados: 15, pendentes: 3, semVisita: 2, cobertura: 75, pendencia: 15 });

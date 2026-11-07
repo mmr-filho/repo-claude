@@ -13,7 +13,7 @@ export interface Residencia {
   precisao: PrecisaoGeo;
   blockId: string | null;
   fonte: 'cadastro' | 'ficha';
-  /** Domicílio atual do paciente (seguindo a unificação), quando há; a ficha guarda só o retrato da posição. */
+  /** Domicílio atual do paciente (seguindo a unificação), só quando a posição é dele (cadastro, ou ficha a até 100 m). */
   householdId: string | null;
 }
 
@@ -34,14 +34,10 @@ export class MapaCasosService {
     private readonly audit: AuditService,
   ) {}
 
-  /**
-   * Posição da residência do caso: a registrada na ficha (a residência notificada; só existe com posição do imóvel) e,
-   * sem ela, a do domicílio atual do paciente (seguindo a unificação de cadastros duplicados). Domicílio com posição
-   * sem precisão conhecida é tratado como a mais fraca, nunca como GPS.
-   */
-  async residencias(db: TenantClient, ns: { id: string; patientId: string; residenceLat: number | null; residenceLng: number | null; residencePrecision: string | null }[]) {
+  /** Domicílio atual de cada paciente, seguindo a unificação de cadastros duplicados (até 5 saltos). */
+  private async casas(db: Pick<TenantClient, 'patient'>, patientIds: string[]) {
     const casaDe = new Map<string, { id: string; latitude: number | null; longitude: number | null; geoPrecision: string | null; blockId: string | null } | null>();
-    let pendentes = [...new Set(ns.map((n) => n.patientId))];
+    let pendentes = [...new Set(patientIds)];
     const destino = new Map(pendentes.map((id) => [id, id]));
     // Até 5 saltos de unificação (duplicado → sobrevivente).
     for (let salto = 0; salto < 5 && pendentes.length; salto++) {
@@ -59,20 +55,44 @@ export class MapaCasosService {
       }
       pendentes = [...new Set(proximos)];
     }
+    return casaDe;
+  }
+
+  /** Domicílio atual do paciente, com ou sem posição (identidade do caso que ainda não tem posição nenhuma). */
+  async domicilios(db: Pick<TenantClient, 'patient'>, patientIds: string[]): Promise<Map<string, string | null>> {
+    const casaDe = await this.casas(db, patientIds);
+    return new Map(patientIds.map((id) => [id, casaDe.get(id)?.id ?? null]));
+  }
+
+  /**
+   * Posição da residência do caso: a registrada na ficha (a residência notificada; só existe com posição do imóvel) e,
+   * sem ela, a do domicílio atual do paciente (seguindo a unificação de cadastros duplicados). Domicílio com posição
+   * sem precisão conhecida é tratado como a mais fraca, nunca como GPS. O imóvel (householdId) só acompanha a posição
+   * quando ela é desse imóvel: a do cadastro ou a da ficha a até 100 m dele.
+   */
+  async residencias(db: Pick<TenantClient, 'patient'>, ns: { id: string; patientId: string; residenceLat: number | null; residenceLng: number | null; residencePrecision: string | null }[]) {
+    const casaDe = await this.casas(
+      db,
+      ns.map((n) => n.patientId),
+    );
     return new Map<string, Residencia | null>(
       ns.map((n): [string, Residencia | null] => {
         const h = casaDe.get(n.patientId);
         if (n.residenceLat != null && n.residenceLng != null) {
+          // O domicílio atual a até 100 m do retrato é o mesmo imóvel; longe dele é outra casa (mudança de família), e o
+          // caso fica com a residência notificada, sem o imóvel novo.
+          const mesmoImovel = h?.latitude != null && h.longitude != null && distanciaM([h.longitude, h.latitude], [n.residenceLng, n.residenceLat]) <= 100;
           // Ficha anterior à semana 25 sem a precisão: naquela época a posição do domicílio só vinha do GPS.
-          const ficha: Residencia = { lat: n.residenceLat, lng: n.residenceLng, precisao: (n.residencePrecision ?? 'GPS_CAMPO') as PrecisaoGeo, blockId: null, fonte: 'ficha', householdId: h?.id ?? null };
-          // O mesmo imóvel confirmado depois em campo (posição melhor, a até 100 m do retrato) vale mais que o retrato;
-          // longe dele é outra casa (mudança de família) e fica a residência notificada.
-          const melhor =
-            h?.latitude != null &&
-            h.longitude != null &&
-            !!h.geoPrecision &&
-            ORDEM_PRECISAO[h.geoPrecision as PrecisaoGeo] < ORDEM_PRECISAO[ficha.precisao] &&
-            distanciaM([h.longitude, h.latitude], [ficha.lng, ficha.lat]) <= 100;
+          const ficha: Residencia = {
+            lat: n.residenceLat,
+            lng: n.residenceLng,
+            precisao: (n.residencePrecision ?? 'GPS_CAMPO') as PrecisaoGeo,
+            blockId: null,
+            fonte: 'ficha',
+            householdId: mesmoImovel ? h!.id : null,
+          };
+          // O mesmo imóvel confirmado depois em campo (posição melhor) vale mais que o retrato.
+          const melhor = mesmoImovel && !!h!.geoPrecision && ORDEM_PRECISAO[h!.geoPrecision as PrecisaoGeo] < ORDEM_PRECISAO[ficha.precisao];
           return [n.id, melhor ? { lat: h!.latitude!, lng: h!.longitude!, precisao: h!.geoPrecision as PrecisaoGeo, blockId: h!.blockId, fonte: 'cadastro', householdId: h!.id } : ficha];
         }
         if (h?.latitude != null && h.longitude != null)

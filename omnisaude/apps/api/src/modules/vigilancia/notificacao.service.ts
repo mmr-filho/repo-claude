@@ -319,7 +319,7 @@ export class NotificacaoService implements OnModuleInit {
       });
       if (count === 1) {
         await sys.db.notificationEvent.create({ data: { notificationId: ativa.id, kind: 'RESULTADO_EXAME', userId: autor.userId, data: { exame: cat.key, examRequestId: exame.id } } });
-        await this.avisar(sys, ativa);
+        await this.avisar(sys, ativa, { ouvintes: false });
         return [this.avisoExistente(ativa, muda ? prazo.vence : ativa.dueAt, 'CONFIRMADA', autor)];
       }
       // Mudou entre a leitura e a gravação (outra pessoa editou): relê e tenta de novo.
@@ -346,7 +346,7 @@ export class NotificacaoService implements OnModuleInit {
     if (fechada) {
       if (fechada.groupKey === cat.grupo && fechada.status === 'ENCERRADA' && fechada.finalClass === '1') return [];
       await sys.db.notificationEvent.create({ data: { notificationId: fechada.id, kind: 'RESULTADO_APOS_FECHAMENTO', userId: autor.userId, data: { exame: cat.key, examRequestId: exame.id, situacao: fechada.status } } });
-      await this.avisar(sys, fechada);
+      await this.avisar(sys, fechada, { ouvintes: false });
       return [this.avisoExistente(fechada, null, fechada.status === 'ENCERRADA' ? 'ENCERRADA' : 'DESCARTADA', autor)];
     }
     const e = exame.encounterId ? await sys.db.encounter.findUnique({ where: { id: exame.encounterId }, include: { unit: true } }) : null;
@@ -592,7 +592,7 @@ export class NotificacaoService implements OnModuleInit {
     });
     if (count !== 1) return;
     await sys.db.notificationEvent.create({ data: { notificationId: n.id, kind: 'POLICIAL_EXIGIDA', userId: p.autor.userId } });
-    await this.avisar(sys, n);
+    await this.avisar(sys, n, { ouvintes: false });
   }
 
   private async criarRascunho(
@@ -747,10 +747,13 @@ export class NotificacaoService implements OnModuleInit {
   /**
    * Evento em tempo real só com o id: as salas do tenant e da unidade incluem a recepção e os painéis de TV, então
    * nada que indique o agravo (nem "sigiloso" ou o prazo) vai no evento; a tela recarrega pela API, que aplica o alcance.
+   * `ouvintes: false` nas mudanças que não tocam o caso (agravo, datas, situação, residência): ciência, comunicação,
+   * número oficial, prazo vencido, confirmação, exigência policial e resultado de exame registrado.
    */
-  private async avisar(sys: SystemContext, n: { id: string; unitId: string }) {
+  private async avisar(sys: SystemContext, n: { id: string; unitId: string }, opts: { ouvintes?: boolean } = {}) {
     this.realtime.emitToTenant(sys.tenant.id, 'vigilancia:notificacao', { id: n.id });
     this.realtime.emitToUnit(sys.tenant.id, n.unitId, 'vigilancia:notificacao', { id: n.id });
+    if (opts.ouvintes === false) return;
     // Depois do commit, os ouvintes (a ordem de bloqueio das endemias) reagem; a falha nunca desfaz a notificação: a
     // varredura periódica deles recupera.
     for (const ouvinte of this.ouvintes)
@@ -1104,7 +1107,7 @@ export class NotificacaoService implements OnModuleInit {
         await tx.notificationEvent.create({ data: { notificationId: id, kind: 'EDITADA', userId: ctx.session.userId, data: mudanca } });
         await this.audit.record(ctx, tx, { action: 'notificacao.editar', entityType: 'Notification', entityId: id, payload: mudanca });
       });
-      await this.avisar(ctx, n);
+      await this.avisar(ctx, n, { ouvintes: false });
       return this.detalhe(ctx, id);
     }
     if (n.status === 'ENCERRADA') throw new DomainError('ENCERRADA', 'Notificação encerrada: a vigilância municipal reabre para editar', HttpStatus.UNPROCESSABLE_ENTITY);
@@ -1205,7 +1208,7 @@ export class NotificacaoService implements OnModuleInit {
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'CONFIRMADA', userId: ctx.session.userId, data: { semana: semanas.SEM_NOT, sistema: rota.sistema } } });
       await this.audit.record(ctx, tx, { action: 'notificacao.confirmar', entityType: 'Notification', entityId: id, payload: { numero: n.number, agravo: n.conditionKey } });
     });
-    await this.avisar(ctx, n);
+    await this.avisar(ctx, n, { ouvintes: false });
     return this.detalhe(ctx, id);
   }
 
@@ -1250,7 +1253,7 @@ export class NotificacaoService implements OnModuleInit {
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'CIENCIA_SMS', userId: ctx.session.userId } });
       await this.audit.record(ctx, tx, { action: 'notificacao.ciencia', entityType: 'Notification', entityId: id, payload: { numero: n.number } });
     });
-    await this.avisar(ctx, n);
+    await this.avisar(ctx, n, { ouvintes: false });
     return this.detalhe(ctx, id);
   }
 
@@ -1304,7 +1307,7 @@ export class NotificacaoService implements OnModuleInit {
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'COMUNICACAO', userId: ctx.session.userId, data: { esfera: input.target, meio: input.channel } } });
       await this.audit.record(ctx, tx, { action: 'notificacao.comunicar', entityType: 'Notification', entityId: id, payload: { esfera: input.target, meio: input.channel } });
     });
-    await this.avisar(ctx, n);
+    await this.avisar(ctx, n, { ouvintes: false });
     return this.detalhe(ctx, id);
   }
 
@@ -1584,7 +1587,7 @@ export class NotificacaoService implements OnModuleInit {
       if ((err as { code?: string }).code === 'P2002') throw conflict(`O número ${numero} já foi informado para outra notificação do ${SISTEMA_INFO[sistema].label}`);
       throw err;
     }
-    await this.avisar(ctx, n);
+    await this.avisar(ctx, n, { ouvintes: false });
     return this.detalhe(ctx, id);
   }
 
@@ -1603,7 +1606,7 @@ export class NotificacaoService implements OnModuleInit {
       await tx.notificationEvent.create({ data: { notificationId: id, kind: 'DIGITACAO_DESFEITA', userId: ctx.session.userId, notes: motivo.trim(), data: { numeroAnterior: n.officialNumber } } });
       await this.audit.record(ctx, tx, { action: 'notificacao.numero_desfeito', entityType: 'Notification', entityId: id, payload: { numero: n.officialNumber, motivo } });
     });
-    await this.avisar(ctx, n);
+    await this.avisar(ctx, n, { ouvintes: false });
     return this.detalhe(ctx, id);
   }
 
@@ -1890,7 +1893,7 @@ export class NotificacaoService implements OnModuleInit {
       const { count } = await sys.db.notification.updateMany({ where: { id: n.id, overdueAt: null }, data: { overdueAt: agora } });
       if (count !== 1) continue;
       await sys.db.notificationEvent.create({ data: { notificationId: n.id, kind: 'PRAZO_VENCIDO' } });
-      await this.avisar(sys, n);
+      await this.avisar(sys, n, { ouvintes: false });
       resultado.vencidas++;
     }
     return resultado;

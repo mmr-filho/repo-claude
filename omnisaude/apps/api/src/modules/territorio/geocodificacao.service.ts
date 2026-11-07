@@ -3,6 +3,7 @@ import { distanciaM, normalizarLogradouro, normalizarNome, normalizarNumero, qua
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { LocalizadorService, posicaoMelhorOuIgual, PRECISAO_LIGA_QUARTEIRAO } from './localizador.service';
+import { TerritorioService } from './territorio.service';
 
 /** Precisão pelo nível de geocodificação do CNEFE (NV_GEO_COORD). */
 function precisaoDoNivel(nivel: number): PrecisaoGeo {
@@ -54,6 +55,7 @@ export class GeocodificacaoService {
   constructor(
     private readonly localizador: LocalizadorService,
     private readonly audit: AuditService,
+    private readonly territorio: TerritorioService,
   ) {}
 
   async geocodificar(ctx: RequestContext, input: { ids?: string[]; limite?: number; apos?: string }) {
@@ -91,6 +93,7 @@ export class GeocodificacaoService {
     for (const [n, cs] of porNome) if (cs.every((c) => distanciaM([c.lng, c.lat], [cs[0]!.lng, cs[0]!.lat]) < 50)) centroNome.set(n, cs[0]!);
 
     const resumo: Record<string, number> = {};
+    const posicionados: string[] = [];
     let analisados = 0;
     let atualizados = 0;
     let semResultado = 0;
@@ -134,10 +137,13 @@ export class GeocodificacaoService {
         }
         await this.localizador.vincularImovel(ctx.db, h.id);
         resumo[r.precisao] = (resumo[r.precisao] ?? 0) + 1;
+        posicionados.push(h.id);
         atualizados++;
       }
     }
     await this.audit.recordStandalone(ctx, { action: 'territorio.geocodificar', entityType: 'Household', payload: { analisados, atualizados, resumo } });
+    // Casos ativos dos moradores (ordem de bloqueio) são reavaliados com a posição nova.
+    await this.territorio.imoveisPosicionados(ctx, posicionados);
     return { analisados, atualizados, semResultado, porPrecisao: resumo, baseDeEnderecos: base.length, proximo: esgotou || explicito ? null : (cursor ?? null) };
   }
 

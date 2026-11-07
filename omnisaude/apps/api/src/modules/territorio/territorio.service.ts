@@ -1,4 +1,4 @@
-import { HttpStatus, Inject, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { TenantPrisma, tenantSettings, type MasterClient, type TerritorioSettings } from '@omnisaude/database';
 import {
   areaM2,
@@ -47,8 +47,14 @@ export function derivados(a: Area) {
   return { geometry: a as object, minLng, minLat, maxLng, maxLat, centerLat, centerLng };
 }
 
+/** Reação à mudança de posição (ou de quarteirão) de imóveis, depois do commit. */
+export type OuvintePosicaoImovel = (ctx: RequestContext, householdIds: string[]) => Promise<void>;
+
 @Injectable()
 export class TerritorioService {
+  private readonly logger = new Logger('Territorio');
+  private readonly ouvintesPosicao: OuvintePosicaoImovel[] = [];
+
   constructor(
     private readonly localizador: LocalizadorService,
     private readonly audit: AuditService,
@@ -58,6 +64,28 @@ export class TerritorioService {
 
   config(ctx: RequestContext): TerritorioSettings {
     return ctx.tenant.settings.territorio;
+  }
+
+  // ───────────── ouvintes da posição do imóvel ─────────────
+
+  /** A ordem de bloqueio das endemias reavalia os casos dos moradores, sem dependência circular entre módulos. */
+  aoMudarPosicaoImovel(ouvinte: OuvintePosicaoImovel) {
+    this.ouvintesPosicao.push(ouvinte);
+  }
+
+  /**
+   * Imóveis que ganharam posição nova ou mudaram de quarteirão (mapa, GPS, geocodificação, religação à malha, visita
+   * do ACE). Chamado depois do commit; a falha de um ouvinte nunca desfaz a gravação (a varredura dele recupera).
+   */
+  async imoveisPosicionados(ctx: RequestContext, householdIds: string[]) {
+    const ids = [...new Set(householdIds)];
+    if (!ids.length) return;
+    for (const ouvinte of this.ouvintesPosicao)
+      try {
+        await ouvinte(ctx, ids);
+      } catch (err) {
+        this.logger.error(`Ouvinte da posição de ${ids.length} imóvel(is) falhou: ${(err as Error).message}`);
+      }
   }
 
   // ───────────── resumo e pendências ─────────────
@@ -145,9 +173,16 @@ export class TerritorioService {
         take: 6000,
       }),
     ]);
-    // ACS: marca a posição só dos imóveis da sua área (os demais aparecem, mas sem o botão).
-    const escopo = await this.escopoDeCampo(ctx);
-    const doCampo = escopo ? new Set((await ctx.db.household.findMany({ where: { id: { in: imoveis.map((h) => h.id) }, OR: escopo }, select: { id: true } })).map((h) => h.id)) : null;
+    // Campo (ACS, ACE, supervisão das endemias): marca a posição só dos imóveis da sua área (os demais aparecem, mas sem o
+    // botão). ACE e supervisão pelo quarteirão do imóvel, em memória (a lista da supervisão pode ser a malha toda).
+    const quarteiroesDoCampo = await this.localizador.quarteiroesDeCampo(ctx);
+    const noQuarteirao = quarteiroesDoCampo ? new Set(quarteiroesDoCampo) : null;
+    const escopo = noQuarteirao ? null : await this.escopoDeCampo(ctx);
+    const doCampo = noQuarteirao
+      ? new Set(imoveis.filter((h) => h.blockId && noQuarteirao.has(h.blockId)).map((h) => h.id))
+      : escopo
+        ? new Set((await ctx.db.household.findMany({ where: { id: { in: imoveis.map((h) => h.id) }, OR: escopo }, select: { id: true } })).map((h) => h.id))
+        : null;
     return {
       localidades,
       bairros,
@@ -421,12 +456,14 @@ export class TerritorioService {
   }
 
   async desativarQuarteirao(ctx: RequestContext, id: string, motivo: string) {
-    await ctx.db.$transaction(async (tx) => {
+    const soltos = await ctx.db.$transaction(async (tx) => {
       const { count } = await tx.block.updateMany({ where: { id, active: true }, data: { active: false, updatedBy: ctx.session.userId } });
       if (count !== 1) throw notFound('Quarteirão');
-      await tx.$executeRaw`UPDATE households SET block_id = NULL WHERE block_id = ${id}::uuid`;
+      const ids = await tx.$queryRaw<{ id: string }[]>`UPDATE households SET block_id = NULL WHERE block_id = ${id}::uuid RETURNING id`;
       await this.audit.record(ctx, tx, { action: 'territorio.quarteirao_desativar', entityType: 'Block', entityId: id, payload: { motivo } });
+      return ids.map((h) => h.id);
     });
+    await this.imoveisPosicionados(ctx, soltos);
     return { ok: true };
   }
 
@@ -442,9 +479,10 @@ export class TerritorioService {
       },
       select: { id: true, blockId: true },
     });
-    let mudou = 0;
-    for (const h of ids) if ((await this.localizador.vincularImovel(ctx.db, h.id)) !== h.blockId) mudou++;
-    return mudou;
+    const mudaram: string[] = [];
+    for (const h of ids) if ((await this.localizador.vincularImovel(ctx.db, h.id)) !== h.blockId) mudaram.push(h.id);
+    await this.imoveisPosicionados(ctx, mudaram);
+    return mudaram.length;
   }
 
   // ───────────── imóvel ─────────────
@@ -460,12 +498,11 @@ export class TerritorioService {
   async posicionarImovel(ctx: RequestContext, id: string, input: { lat: number; lng: number; origem: 'MAPA' | 'GPS'; accuracyM?: number | null; confianca?: 68 | 95; sequencia?: string | null }) {
     const h = await ctx.db.household.findUnique({ where: { id }, select: { id: true, active: true, latitude: true, longitude: true, geoPrecision: true } });
     if (!h || !h.active) throw notFound('Imóvel');
-    const escopo = await this.escopoDeCampo(ctx);
-    if (escopo) {
-      // ACS: só imóveis da sua área; a sequência do reconhecimento geográfico é de quem edita o território.
-      if (!(await ctx.db.household.count({ where: { id, OR: escopo } }))) throw forbidden('Imóvel fora da sua equipe e microárea');
-      if (input.sequencia !== undefined) throw forbidden('A sequência do imóvel é definida por quem edita o território');
-    }
+    // A sequência do reconhecimento geográfico é de quem edita o território, qualquer que seja o alcance em campo.
+    if (input.sequencia !== undefined && !roleHasPermission(ctx.session.role, 'territorio.editar')) throw forbidden('A sequência do imóvel é definida por quem edita o território');
+    // Campo (ACS, ACE, supervisão das endemias): só imóveis da sua área de trabalho.
+    if (!(await this.localizador.noEscopoDeCampo(ctx, id)))
+      throw forbidden(ctx.session.role === 'ACS' ? 'Imóvel fora da sua equipe e microárea' : 'Imóvel fora da sua área de trabalho (zonas e ordens de bloqueio ativas)');
     let acc: number | null = null;
     if (input.origem === 'GPS') {
       if (input.accuracyM == null) throw new DomainError('GPS_SEM_PRECISAO', 'Leitura de GPS sem a precisão do aparelho', HttpStatus.BAD_REQUEST);
@@ -489,13 +526,16 @@ export class TerritorioService {
       await this.audit.record(ctx, tx, { action: 'territorio.imovel_posicao', entityType: 'Household', entityId: id, payload: { origem: input.origem, precisaoAnterior: h.geoPrecision, acc } });
     });
     const blockId = await this.localizador.vincularImovel(ctx.db, id);
+    await this.imoveisPosicionados(ctx, [id]);
     return { id, precisao, blockId, alerta: acc != null && avaliarGps(acc) === 'ALERTA' ? `Precisão do GPS de ${acc} m (entre 20 e 50 m): confira no mapa` : null };
   }
 
   /** Religa todos os imóveis aos quarteirões (depois de importar ou editar a malha). */
   async vincularTodos(ctx: RequestContext) {
-    const r = await this.localizador.vincularTodos(ctx.db);
+    const mudaram: string[] = [];
+    const r = await this.localizador.vincularTodos(ctx.db, (ids) => mudaram.push(...ids));
     await this.audit.recordStandalone(ctx, { action: 'territorio.vincular_imoveis', entityType: 'Household', payload: r });
+    await this.imoveisPosicionados(ctx, mudaram);
     return r;
   }
 

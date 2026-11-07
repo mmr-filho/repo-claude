@@ -196,9 +196,53 @@ export interface ResultadoSyncAce {
   avisos?: string[];
 }
 
+/** Instante do registro; data ilegível vai para o fim. */
+const instanteDoRegistro = (iso: string) => {
+  const t = Date.parse(iso);
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+};
+
+/**
+ * Ordem de gravação: imóveis novos antes das visitas, cada grupo pelo instante do registro (e não pelo texto:
+ * '…T14:59-03:00' é depois de '…T15:59Z'), para a visita anterior do imóvel ser gravada antes da seguinte.
+ */
 export function ordenarOperacoesAce<T extends { tipo: TipoOperacaoAce; registradoEm: string }>(ops: T[]): T[] {
   const ordem: Record<TipoOperacaoAce, number> = { IMOVEL: 0, VISITA_VETORIAL: 1 };
-  return [...ops].sort((a, b) => ordem[a.tipo] - ordem[b.tipo] || a.registradoEm.localeCompare(b.registradoEm));
+  return [...ops].sort((a, b) => ordem[a.tipo] - ordem[b.tipo] || instanteDoRegistro(a.registradoEm) - instanteDoRegistro(b.registradoEm) || a.registradoEm.localeCompare(b.registradoEm));
+}
+
+/**
+ * Limites do que se registra no aparelho. A API valida cada operação com os mesmos números: o que passa na conferência
+ * do aparelho não é recusado no envio.
+ */
+export const LIMITES_CAMPO_ACE = {
+  /** Cada contagem da tabela de depósitos, larvas e pupas por tubito e depósitos tratados com cada produto. */
+  contagem: 999,
+  tubito: 999,
+  amostras: 99,
+  produtos: 5,
+  /** Na unidade do produto; o estoque guarda três casas decimais (0,001 é o mínimo). */
+  quantidadeMax: 100_000,
+  lote: 40,
+  observacaoVisita: 1000,
+  observacaoImovel: 500,
+  sequencia: 12,
+  logradouro: 160,
+  numero: 20,
+  complemento: 80,
+  /** Raio de incerteza da leitura do GPS, em metros. */
+  precisaoGpsM: 100_000,
+} as const;
+
+/** O texto, sem os espaços das pontas, passa do limite. */
+const textoPassa = (valor: string | null | undefined, max: number) => (valor?.trim().length ?? 0) > max;
+
+function conferirGps(lat: number | null | undefined, lng: number | null | undefined, precisao: number | null | undefined): string[] {
+  const erros: string[] = [];
+  const fora = (n: number | null | undefined, limite: number) => n != null && !(Number.isFinite(n) && Math.abs(n) <= limite);
+  if (fora(lat, 90) || fora(lng, 180)) erros.push('Posição do GPS inválida: faça nova leitura');
+  if (precisao != null && !(Number.isFinite(precisao) && precisao >= 0 && precisao <= LIMITES_CAMPO_ACE.precisaoGpsM)) erros.push('Leitura do GPS sem precisão válida (acima de 100 km): faça nova leitura');
+  return erros;
 }
 
 /**
@@ -206,13 +250,18 @@ export function ordenarOperacoesAce<T extends { tipo: TipoOperacaoAce; registrad
  * vazio é válido. `pontoEstrategico`: o imóvel é PE (sucata em PE pode ser tratada).
  */
 export function conferirVisitaVetorial(v: VisitaVetorialCampo, opts: { pontoEstrategico?: boolean } = {}): string[] {
+  const L = LIMITES_CAMPO_ACE;
   const erros: string[] = [];
+  if (textoPassa(v.observacoes, L.observacaoVisita)) erros.push(`Observação com no máximo ${L.observacaoVisita} caracteres`);
+  erros.push(...conferirGps(v.latitude, v.longitude, v.precisaoGps));
   const pendente = SITUACAO_INFO[v.situacao]?.pendencia ?? true;
   const d = v.depositos ?? {};
   const t = totaisDepositos(d);
   if (pendente) {
-    if (t.inspecionados || (v.amostras?.length ?? 0) || (v.tratamentos?.length ?? 0) || v.ubv) erros.push('Imóvel fechado, recusado ou abandonado não tem depósitos, amostras nem tratamento: registre só a pendência');
-    return erros;
+    // Nenhuma contagem (nem foco sem inspecionado): a pendência só registra que o imóvel não foi trabalhado.
+    if (t.inspecionados || t.comFoco || t.eliminados || t.tratados || (v.amostras?.length ?? 0) || (v.tratamentos?.length ?? 0) || v.ubv)
+      erros.push('Imóvel fechado, recusado ou abandonado não tem depósitos, amostras nem tratamento: registre só a pendência');
+    return [...new Set(erros)];
   }
   for (const tipo of TIPOS_DEPOSITO) {
     const c = d[tipo];
@@ -235,8 +284,9 @@ export function conferirVisitaVetorial(v: VisitaVetorialCampo, opts: { pontoEstr
   const numeros = new Set<number>();
   const porTipo = new Map<TipoDeposito, number>();
   for (const a of amostras) {
-    if (!Number.isInteger(a.numero) || a.numero < 1 || a.numero > 999) erros.push('Número do tubito entre 1 e 999');
+    if (!Number.isInteger(a.numero) || a.numero < 1 || a.numero > L.tubito) erros.push(`Número do tubito entre 1 e ${L.tubito}`);
     else if (numeros.has(a.numero)) erros.push(`Tubito ${a.numero} repetido na visita`);
+    if ([a.larvas, a.pupas].some((n) => n != null && !(Number.isInteger(n) && n >= 0 && n <= L.contagem))) erros.push(`Tubito ${a.numero}: larvas e pupas de 0 a ${L.contagem}`);
     numeros.add(a.numero);
     porTipo.set(a.deposito, (porTipo.get(a.deposito) ?? 0) + 1);
   }
@@ -244,9 +294,14 @@ export function conferirVisitaVetorial(v: VisitaVetorialCampo, opts: { pontoEstr
   const tratamentos = v.tratamentos ?? [];
   if (tratamentos.length > 5) erros.push('No máximo 5 produtos por visita');
   for (const tr of tratamentos) {
-    if (!(tr.quantidade > 0) || tr.quantidade > 100_000) erros.push('Quantidade de larvicida maior que zero');
+    if (!(tr.quantidade > 0)) erros.push('Quantidade de larvicida maior que zero');
+    // O estoque guarda três casas decimais: abaixo de 0,001 a baixa seria zero.
+    else if (Math.round(tr.quantidade * 1000) < 1) erros.push('Quantidade de larvicida de pelo menos 0,001');
+    else if (tr.quantidade > L.quantidadeMax) erros.push('Quantidade de larvicida de no máximo 100.000');
     if (!Number.isInteger(tr.depositos) || tr.depositos < 1) erros.push('Informe quantos depósitos receberam cada produto');
+    else if (tr.depositos > L.contagem) erros.push(`Depósitos tratados com cada produto: no máximo ${L.contagem}`);
     if (!tr.loteId && !tr.loteNumero?.trim()) erros.push('Informe o lote do larvicida usado');
+    else if (textoPassa(tr.loteNumero, L.lote)) erros.push(`Número do lote com no máximo ${L.lote} caracteres`);
   }
   const depositosTratados = tratamentos.reduce((s, tr) => s + (Number.isInteger(tr.depositos) ? tr.depositos : 0), 0);
   if (t.tratados !== depositosTratados)
@@ -255,6 +310,27 @@ export function conferirVisitaVetorial(v: VisitaVetorialCampo, opts: { pontoEstr
         ? 'Depósitos tratados sem o larvicida usado: informe produto, lote e quantidade'
         : `Os produtos somam ${depositosTratados} depósito(s) tratado(s), mas a tabela de depósitos tem ${t.tratados}`,
     );
+  return [...new Set(erros)];
+}
+
+/**
+ * Confere o imóvel novo antes de ir para a fila (no aparelho) e de ser gravado (na API), com os mesmos limites.
+ * Devolve as mensagens de erro; vazio é válido.
+ */
+export function conferirImovelCampo(d: ImovelCampo): string[] {
+  const L = LIMITES_CAMPO_ACE;
+  const erros: string[] = [];
+  if (!d.blockId) erros.push('Escolha o quarteirão do imóvel');
+  if (!d.street?.trim() && !d.observacoes?.trim()) erros.push('Informe o logradouro ou uma referência do imóvel');
+  const textos: [string | null | undefined, number, string][] = [
+    [d.sequencia, L.sequencia, 'Sequência'],
+    [d.street, L.logradouro, 'Logradouro'],
+    [d.number, L.numero, 'Número'],
+    [d.complement, L.complemento, 'Complemento'],
+    [d.observacoes, L.observacaoImovel, 'Observação'],
+  ];
+  for (const [valor, max, nome] of textos) if (textoPassa(valor, max)) erros.push(`${nome} com no máximo ${max} caracteres`);
+  erros.push(...conferirGps(d.latitude, d.longitude, d.precisaoGps));
   return erros;
 }
 
@@ -362,14 +438,16 @@ export interface CasoParaAgrupar {
 const diasEntre = (a: string, b: string) => Math.abs(Date.UTC(+a.slice(0, 4), +a.slice(5, 7) - 1, +a.slice(8, 10)) - Date.UTC(+b.slice(0, 4), +b.slice(5, 7) - 1, +b.slice(8, 10))) / 86_400_000;
 
 /**
- * Duas notificações entram na mesma ordem quando as áreas do bloqueio se tocam (residências a até duas vezes o raio,
- * 300 m com o raio de 150 m) e a diferença entre as datas de referência é de até a janela (7 dias). O mesmo imóvel ou a
- * mesma pessoa sempre caem na mesma ordem ativa, mesmo sem posição.
+ * Duas notificações entram na mesma ordem quando são do mesmo período (diferença entre as datas de referência de até a
+ * janela, 7 dias) e as áreas do bloqueio se tocam (residências a até duas vezes o raio, 300 m com o raio de 150 m). O
+ * mesmo imóvel ou a mesma pessoa no mesmo período caem na mesma ordem, mesmo sem posição; fora da janela é outra
+ * transmissão (Diretrizes de 2025, p. 52: casos do mesmo período e da mesma área).
  */
 export function casosAgrupam(a: CasoParaAgrupar, b: CasoParaAgrupar, raioM: number, janelaDias: number): boolean {
+  if (diasEntre(a.dataReferencia, b.dataReferencia) > janelaDias) return false;
   if ((a.householdId && a.householdId === b.householdId) || (a.patientId && a.patientId === b.patientId)) return true;
   if (a.lat == null || a.lng == null || b.lat == null || b.lng == null) return false;
-  return distanciaM([a.lng, a.lat], [b.lng, b.lat]) <= 2 * raioM && diasEntre(a.dataReferencia, b.dataReferencia) <= janelaDias;
+  return distanciaM([a.lng, a.lat], [b.lng, b.lat]) <= 2 * raioM;
 }
 
 /** Progresso de um quarteirão (ou da ordem toda) para a supervisão. */

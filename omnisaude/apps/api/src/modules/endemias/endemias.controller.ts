@@ -1,61 +1,18 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Put, Query } from '@nestjs/common';
-import { ATIVIDADES_VETORIAIS, codeIn, LOCAIS_UBV, SITUACOES_VISITA, TIPO_IMOVEL, TIPOS_DEPOSITO, type OperacaoAce } from '@omnisaude/shared';
+import { SITUACOES_VISITA } from '@omnisaude/shared';
 import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
 import { zv } from '../../core/zod';
 import { BloqueioService } from './bloqueio.service';
-import { CampoAceService } from './campo.service';
+import { CampoAceService, MAX_OPERACOES_SYNC } from './campo.service';
 import { EstoqueVetorialService } from './estoque-vetorial.service';
 import { SupervisaoEndemiasService } from './supervisao.service';
 
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data no formato AAAA-MM-DD');
 const text = (max: number) => z.string().trim().max(max).nullish();
-const contagem = z.number().int().min(0).max(999);
-const depositosSchema = z.object(Object.fromEntries(TIPOS_DEPOSITO.map((t) => [t, z.object({ inspecionados: contagem, comFoco: contagem, eliminados: contagem, tratados: contagem }).optional()]))).strict();
-const base = { clientId: z.string().uuid(), registradoEm: z.string().datetime({ offset: true }) };
-const imovelSchema = z.object({
-  ...base,
-  tipo: z.literal('IMOVEL'),
-  dados: z.object({
-    blockId: z.string().uuid(),
-    sequencia: text(12),
-    propertyType: z.enum(codeIn(TIPO_IMOVEL)),
-    street: text(160),
-    number: text(20),
-    complement: text(80),
-    latitude: z.number().min(-90).max(90).nullish(),
-    longitude: z.number().min(-180).max(180).nullish(),
-    precisaoGps: z.number().min(0).max(100_000).nullish(),
-    observacoes: text(500),
-  }),
-});
-const visitaSchema = z.object({
-  ...base,
-  tipo: z.literal('VISITA_VETORIAL'),
-  householdId: z.string().uuid().nullish(),
-  householdClientId: z.string().uuid().nullish(),
-  visita: z.object({
-    atividade: z.enum(ATIVIDADES_VETORIAIS),
-    situacao: z.enum(SITUACOES_VISITA),
-    depositos: depositosSchema.nullish(),
-    amostras: z
-      .array(z.object({ numero: z.number().int().min(1).max(999), deposito: z.enum(TIPOS_DEPOSITO), larvas: z.number().int().min(0).max(999).nullish(), pupas: z.number().int().min(0).max(999).nullish() }))
-      .max(99)
-      .nullish(),
-    tratamentos: z
-      .array(z.object({ produtoId: z.string().uuid(), loteId: z.string().uuid().nullish(), loteNumero: text(40), quantidade: z.number().positive().max(100_000), depositos: z.number().int().min(1).max(999) }))
-      .max(5)
-      .nullish(),
-    ubv: z.enum(LOCAIS_UBV).nullish(),
-    acaoEducativa: z.boolean().nullish(),
-    ordemId: z.string().uuid().nullish(),
-    latitude: z.number().min(-90).max(90).nullish(),
-    longitude: z.number().min(-180).max(180).nullish(),
-    precisaoGps: z.number().min(0).max(100_000).nullish(),
-    observacoes: text(1000),
-  }),
-});
-const syncSchema = z.object({ operacoes: z.array(z.discriminatedUnion('tipo', [imovelSchema, visitaSchema])).max(500) });
+// Sincronização do campo: aqui só o envelope; cada operação é validada sozinha no serviço (campo.schema.ts), e a
+// inválida volta ERRO sem derrubar as outras do lote.
+const syncSchema = z.object({ operacoes: z.array(z.unknown()).min(1).max(MAX_OPERACOES_SYNC) });
 const listaSchema = z.object({ situacao: z.enum(['ATIVAS', 'ENCERRADAS', 'TODAS']).optional() });
 const designarSchema = z.object({ agentes: z.array(z.string().uuid()).max(50) });
 const notaSchema = z.object({ nota: text(2000) });
@@ -63,7 +20,9 @@ const motivoSchema = z.object({ motivo: z.string().trim().min(5).max(2000) });
 const zonaSchema = z.object({ nome: z.string().trim().min(1).max(60), aceId: z.string().uuid().nullish(), quarteiroes: z.array(z.string().uuid()).max(2000), ativa: z.boolean().optional(), observacao: text(500) });
 const periodoSchema = z.object({ de: day.optional(), ate: day.optional() });
 const visitasSchema = periodoSchema.extend({ agenteId: z.string().uuid().optional(), situacao: z.enum(SITUACOES_VISITA).optional(), ordemId: z.string().uuid().optional(), quarteiraoId: z.string().uuid().optional() });
-const resolverSchema = z.object({ acao: z.enum(['BAIXAR', 'REGULARIZAR', 'CANCELAR']), loteId: z.string().uuid().nullish(), nota: z.string().trim().min(5).max(1000) });
+// depositoId: depósito de endemias de onde saiu o larvicida (obrigatório quando a unidade da visita não tem depósito).
+const resolverSchema = z.object({ acao: z.enum(['BAIXAR', 'REGULARIZAR', 'CANCELAR']), loteId: z.string().uuid().nullish(), depositoId: z.string().uuid().nullish(), nota: z.string().trim().min(5).max(1000) });
+const estornoSchema = z.object({ motivo: z.string().trim().min(5).max(500) });
 const produtoSchema = z.object({
   code: z
     .string()
@@ -88,7 +47,12 @@ const entradaSchema = z.object({
   lotNumber: z.string().trim().min(1).max(40),
   expiry: day,
   manufacturedAt: day.nullish(),
-  quantity: z.number().positive().max(10_000_000),
+  // O estoque guarda três casas decimais: abaixo de 0,001 a entrada seria zero.
+  quantity: z
+    .number()
+    .positive()
+    .max(10_000_000)
+    .refine((q) => Math.round(q * 1000) >= 1, 'Quantidade mínima de 0,001'),
   document: z.string().trim().min(1).max(60),
   origin: z.enum(['SIES', 'SES', 'MUNICIPIO', 'OUTRA']),
   notes: text(500),
@@ -132,7 +96,7 @@ export class EndemiasController {
   @HttpCode(200)
   @RequirePermission('endemias.campo')
   sync(@Ctx() ctx: RequestContext, @Body(zv(syncSchema)) body: z.infer<typeof syncSchema>) {
-    return this.campo.sync(ctx, body.operacoes as OperacaoAce[]);
+    return this.campo.sync(ctx, body.operacoes);
   }
 
   // ─── Ordens de bloqueio ───
@@ -276,6 +240,21 @@ export class EndemiasController {
   @RequirePermission('endemias.coordenar')
   entrada(@Ctx() ctx: RequestContext, @Body(zv(entradaSchema)) body: z.infer<typeof entradaSchema>) {
     return this.estoque.entrada(ctx, body);
+  }
+
+  /** As 100 entradas de remessa mais recentes, com o estorno quando houver. */
+  @Get('estoque/entradas')
+  @RequirePermission('endemias.supervisionar', 'estoque.ler')
+  entradas(@Ctx() ctx: RequestContext) {
+    return this.estoque.entradas(ctx);
+  }
+
+  /** Estorno da entrada lançada errada (movimento inverso); a mesma guia pode ser lançada de novo. */
+  @Post('estoque/entradas/:id/estorno')
+  @HttpCode(200)
+  @RequirePermission('endemias.coordenar')
+  estornar(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Body(zv(estornoSchema)) body: z.infer<typeof estornoSchema>) {
+    return this.estoque.estornar(ctx, id, body.motivo);
   }
 
   @Post('estoque/lotes/:id/validade')

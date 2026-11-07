@@ -94,16 +94,26 @@ export class LocalizadorService {
   }
 
   /**
-   * Imóveis que o ACS (papel sem 'territorio.editar') alcança: os da sua equipe e microárea e os ainda sem equipe da
-   * unidade do contexto (cadastrados na recepção). null = todos (quem edita o território e os demais papéis).
+   * Imóveis que quem trabalha em campo sem 'territorio.editar' alcança. ACS: os da sua equipe e microárea e os ainda sem
+   * equipe da unidade do contexto (cadastrados na recepção). ACE (VIG-3a): os quarteirões da sua zona e os das ordens
+   * de bloqueio ativas em que foi designado. Supervisão de campo das endemias: os quarteirões das zonas ativas e das
+   * ordens ativas, não o município inteiro. null = todos (quem edita o território e os demais papéis).
    */
   async escopoDeCampo(ctx: RequestContext) {
     if (roleHasPermission(ctx.session.role, 'territorio.editar')) return null;
-    // ACE (VIG-3a): os quarteirões da sua zona e os das ordens de bloqueio ativas em que foi designado.
-    if (ctx.session.role === 'ACE') return [{ blockId: { in: await this.quarteiroesDoAce(ctx.db, ctx.session.userId) } }];
+    const quarteiroes = await this.quarteiroesDeCampo(ctx);
+    if (quarteiroes) return [{ blockId: { in: quarteiroes } }];
     if (ctx.session.role !== 'ACS') return null;
     const lotacoes = await ctx.db.teamMember.findMany({ where: { userId: ctx.session.userId, active: true, team: { unitId: ctx.session.unitId, active: true } }, select: { teamId: true, microArea: true } });
     return [...lotacoes.map((l) => ({ teamId: l.teamId, ...(l.microArea ? { microArea: l.microArea } : {}) })), { teamId: null, unitId: ctx.session.unitId }];
+  }
+
+  /** Quarteirões de trabalho do ACE e da supervisão de campo das endemias; null para os demais papéis. */
+  async quarteiroesDeCampo(ctx: RequestContext): Promise<string[] | null> {
+    if (roleHasPermission(ctx.session.role, 'territorio.editar')) return null;
+    if (ctx.session.role === 'ACE') return this.quarteiroesDoAce(ctx.db, ctx.session.userId);
+    if (ctx.session.role === 'SUPERVISOR_ENDEMIAS') return this.quarteiroesDasEndemias(ctx.db);
+    return null;
   }
 
   /** Quarteirões de trabalho do agente de endemias: zona(s) de que é titular e ordens de bloqueio ativas designadas. */
@@ -115,8 +125,29 @@ export class LocalizadorService {
     return [...new Set([...zona, ...ordens].map((b) => b.blockId))];
   }
 
-  /** O imóvel está ao alcance do ACS (sempre verdadeiro para os demais papéis). */
+  /** Quarteirões de trabalho da supervisão de campo: os de todas as zonas ativas e das ordens de bloqueio ativas. */
+  async quarteiroesDasEndemias(db: Pick<TenantClient, 'vectorZoneBlock' | 'blockingOrderBlock'>): Promise<string[]> {
+    const [zona, ordens] = await Promise.all([
+      db.vectorZoneBlock.findMany({ where: { zone: { active: true } }, select: { blockId: true } }),
+      db.blockingOrderBlock.findMany({ where: { order: { status: { in: ['ABERTA', 'EM_CAMPO'] } } }, select: { blockId: true } }),
+    ]);
+    return [...new Set([...zona, ...ordens].map((b) => b.blockId))];
+  }
+
+  /** O imóvel está ao alcance de quem trabalha em campo (sempre verdadeiro para quem edita o território e os demais papéis). */
   async noEscopoDeCampo(ctx: RequestContext, householdId: string) {
+    if (roleHasPermission(ctx.session.role, 'territorio.editar')) return true;
+    // ACE e supervisão das endemias: pelo quarteirão do imóvel, sem montar a lista (a da supervisão pode ser a malha toda).
+    if (ctx.session.role === 'ACE' || ctx.session.role === 'SUPERVISOR_ENDEMIAS') {
+      const h = await ctx.db.household.findUnique({ where: { id: householdId }, select: { blockId: true } });
+      if (!h?.blockId) return false;
+      const ace = ctx.session.role === 'ACE' ? ctx.session.userId : null;
+      const [zona, ordem] = await Promise.all([
+        ctx.db.vectorZoneBlock.count({ where: { blockId: h.blockId, zone: { active: true, ...(ace ? { aceId: ace } : {}) } } }),
+        ctx.db.blockingOrderBlock.count({ where: { blockId: h.blockId, order: { status: { in: ['ABERTA', 'EM_CAMPO'] }, ...(ace ? { assignees: { some: { userId: ace } } } : {}) } } }),
+      ]);
+      return zona + ordem > 0;
+    }
     const escopo = await this.escopoDeCampo(ctx);
     return !escopo || (await ctx.db.household.count({ where: { id: householdId, OR: escopo } })) > 0;
   }
@@ -135,9 +166,10 @@ export class LocalizadorService {
 
   /**
    * Religa todos os imóveis com posição boa aos quarteirões (depois de importar ou editar a malha). Imóvel com a
-   * posição no centro do quarteirão (precisão QUARTEIRAO) mantém o quarteirão de origem.
+   * posição no centro do quarteirão (precisão QUARTEIRAO) mantém o quarteirão de origem. `aoAlterar` recebe os imóveis
+   * que mudaram de quarteirão (a ordem de bloqueio dos moradores é reavaliada).
    */
-  async vincularTodos(db: Db): Promise<{ analisados: number; comQuarteirao: number; semQuarteirao: number; alterados: number }> {
+  async vincularTodos(db: Db, aoAlterar?: (ids: string[]) => void): Promise<{ analisados: number; comQuarteirao: number; semQuarteirao: number; alterados: number }> {
     const todos = await db.block.findMany({ where: { active: true }, select: { id: true, number: true, localityId: true, neighborhoodId: true, geometry: true, minLng: true, minLat: true, maxLng: true, maxLat: true } });
     const grade = new Grade(todos.map((r) => ({ ...r, geometry: r.geometry as unknown as Area, caixa: caixaDoBloco(r) })));
     const r = { analisados: 0, comQuarteirao: 0, semQuarteirao: 0, alterados: 0 };
@@ -165,6 +197,7 @@ export class LocalizadorService {
       for (const [blockId, ids] of mudancas) {
         await db.$executeRaw`UPDATE households SET block_id = ${blockId}::uuid WHERE id = ANY(${ids}::uuid[])`;
         r.alterados += ids.length;
+        aoAlterar?.(ids);
       }
     }
     return r;

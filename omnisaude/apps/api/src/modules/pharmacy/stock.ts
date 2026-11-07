@@ -16,7 +16,8 @@ export type MovementKind =
   | 'AJUSTE'
   | 'PERDA'
   | 'TRATAMENTO_FOCAL'
-  | 'ENTRADA_REMESSA';
+  | 'ENTRADA_REMESSA'
+  | 'ESTORNO_REMESSA';
 
 export interface MovementRef {
   kind: MovementKind;

@@ -24,9 +24,22 @@ export class RealtimeService {
     return `t:${tenantId}`;
   }
 
+  /** Sala das endemias: só sessões de quem lê, supervisiona ou trabalha em campo nas endemias (nunca painel de TV). */
+  static endemiasRoom(tenantId: string) {
+    return `t:${tenantId}:endemias`;
+  }
+
   /** Evento para todas as unidades do tenant (central de regulação, mapa de leitos). */
   emitToTenant(tenantId: string, event: string, payload: unknown) {
     this.emitRoom(RealtimeService.tenantRoom(tenantId), event, payload);
+  }
+
+  /**
+   * Evento das ordens de bloqueio: a sala do tenant inclui a recepção e os painéis, e o aviso logo depois do da
+   * notificação diria que o caso é de arbovirose.
+   */
+  emitToEndemias(tenantId: string, event: string, payload: unknown) {
+    this.emitRoom(RealtimeService.endemiasRoom(tenantId), event, payload);
   }
 
   emitToUnit(tenantId: string, unitId: string, event: string, payload: unknown) {
