@@ -14,7 +14,7 @@ import { api, errorMessage } from '@/lib/api';
 import { fmtDateTime, todayIso } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { BarraProgresso } from './aba-ordens';
-import { avisoLimitePendencias, depositoSugerido, fmtQuantidade, lotesParaResolver, opcoesTitular, textoTentativas, valorEntre } from './gestao-regras';
+import { avisoLimitePendencias, depositoSugerido, fmtQuantidade, lotesParaResolver, opcoesQuarteiraoZona, opcoesTitular, textoTentativas, valorEntre } from './gestao-regras';
 import type { AgenteEndemias, BaixaPendente, PainelEstoque } from './types';
 
 // ─── Zonas ──────────────────────────────────────────────────────────────────
@@ -123,10 +123,8 @@ function ZonaDialog({ zona, onClose, onSalvo }: { zona: Zona | null; onClose: ()
   // O titular atual fora da lista (sem lotação ativa) aparece como opção própria: o campo mostra o que vai ser enviado.
   const titulares = useMemo(() => opcoesTitular(agentes.data, zona?.agente ?? null), [agentes.data, zona]);
   const titularSemLotacao = titulares.some((t) => t.id === aceId && t.semLotacao);
-  const opcoes = useMemo(() => {
-    const atuais: QuarteiraoLivre[] = (zona?.quarteiroes ?? []).map((q) => ({ id: q.id, numero: q.numero, localidade: null, bairro: null, imoveis: 0 }));
-    return [...atuais, ...(livres.data ?? [])].filter((q) => !filtro.trim() || `${q.numero} ${q.localidade ?? ''} ${q.bairro ?? ''}`.toLowerCase().includes(filtro.trim().toLowerCase()));
-  }, [zona, livres.data, filtro]);
+  // O desativado na malha que continua na zona vem marcado: fica até a supervisão tirá-lo.
+  const opcoes = useMemo(() => opcoesQuarteiraoZona(zona?.quarteiroes ?? [], livres.data ?? [], filtro), [zona, livres.data, filtro]);
   const salvar = async () => {
     setSalvando(true);
     try {
@@ -200,7 +198,7 @@ function ZonaDialog({ zona, onClose, onSalvo }: { zona: Zona | null; onClose: ()
                   })
                 }
               />
-              Q {q.numero}
+              {q.rotulo}
               {q.localidade && <span className="truncate text-xs text-slate-500">{q.localidade}</span>}
             </label>
           ))}

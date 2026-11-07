@@ -334,7 +334,10 @@ export class AcsService {
     }
     /** Membros de famílias que ainda serão criadas neste lote. */
     const membrosPendentes: { familiaClientId: string; patientId: string; kinship: string }[] = [];
-    /** Domicílios que ganharam posição (GPS da visita, cadastro): o território é avisado no fim do lote. */
+    /**
+     * Domicílios que ganharam posição (GPS da visita, cadastro) ou moradores (pessoa incluída na família): o território é
+     * avisado uma vez, no fim do lote, e não a cada membro.
+     */
     const posicionados: string[] = [];
     const resultados: ResultadoSync[] = [];
     for (const op of ordenarOperacoes(operacoes)) {
@@ -355,8 +358,9 @@ export class AcsService {
         resultados.push({ clientId: op.clientId, tipo: op.tipo, status: 'ERRO', id: null, erro: msg });
       }
     }
-    // Depois dos commits (e com as famílias do lote já montadas): a posição nova refaz o retrato dos casos dos moradores
-    // na ordem de bloqueio das endemias, na hora. Nunca lança; a varredura periódica recupera uma falha.
+    // Depois dos commits (e com as famílias do lote já montadas): a posição nova, ou a pessoa que entrou na família, refaz
+    // o retrato dos casos dos moradores na ordem de bloqueio das endemias, na hora. Nunca lança; a varredura periódica
+    // recupera uma falha.
     await this.households.imoveisPosicionados(ctx, posicionados);
     const ok = resultados.filter((r) => r.status === 'OK').length;
     await this.audit.record(ctx, ctx.db, {
@@ -432,7 +436,7 @@ export class AcsService {
     }
     const kinship = op.kinship ?? '09';
     const familyId = op.familyId ?? (op.familiaClientId ? ref.familias.get(op.familiaClientId) : undefined);
-    if (familyId) await this.households.addMember(ctx, familyId, patientId, kinship);
+    if (familyId) await this.households.addMember(ctx, familyId, patientId, kinship, ref.posicionados);
     else if (op.familiaClientId) ref.membrosPendentes.push({ familiaClientId: op.familiaClientId, patientId, kinship });
     return patientId;
   }
@@ -465,7 +469,7 @@ export class AcsService {
     if (family) {
       ref.familias.set(op.clientId, family.id);
       for (const m of ref.membrosPendentes.filter((x) => x.familiaClientId === op.clientId)) {
-        if (m.patientId !== responsavelId) await this.households.addMember(ctx, family.id, m.patientId, m.kinship);
+        if (m.patientId !== responsavelId) await this.households.addMember(ctx, family.id, m.patientId, m.kinship, ref.posicionados);
       }
     }
     return h.id;

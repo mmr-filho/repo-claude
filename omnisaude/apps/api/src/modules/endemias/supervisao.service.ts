@@ -120,10 +120,20 @@ export class SupervisaoEndemiasService {
     const ciclo = cicloBimestral(localDateString(new Date(), ctx.tenant.timeZone));
     const zonas = await ctx.db.vectorZone.findMany({ include: { blocks: true }, orderBy: [{ active: 'desc' }, { name: 'asc' }] });
     const blockIds = zonas.flatMap((z) => z.blocks.map((b) => b.blockId));
+    // A lista de quarteirões vai num parâmetro só (= ANY): as zonas podem somar dezenas de milhares de quarteirões, e um IN
+    // com um parâmetro por quarteirão passa do limite de 32.767 parâmetros por consulta do PostgreSQL.
     const [contagem, visitas, blocos, ace] = await Promise.all([
-      blockIds.length ? ctx.db.household.groupBy({ by: ['blockId'], where: { blockId: { in: blockIds }, active: true }, _count: { _all: true } }) : [],
-      blockIds.length ? ctx.db.vectorVisit.findMany({ where: { blockId: { in: blockIds }, cycle: ciclo.chave }, select: { householdId: true, blockId: true, situation: true }, orderBy: { visitedAt: 'asc' } }) : [],
-      ctx.db.block.findMany({ where: { id: { in: blockIds } }, select: { id: true, number: true, active: true } }),
+      blockIds.length
+        ? ctx.db.$queryRaw<{ blockId: string; n: number }[]>`
+            SELECT block_id AS "blockId", count(*)::int AS n FROM households WHERE active AND block_id = ANY(${blockIds}::uuid[]) GROUP BY block_id`
+        : [],
+      // Da mais antiga para a mais nova: fica a última visita de cada imóvel no ciclo.
+      blockIds.length
+        ? ctx.db.$queryRaw<{ householdId: string; blockId: string | null; situation: SituacaoVisita }[]>`
+            SELECT household_id AS "householdId", block_id AS "blockId", situation::text AS situation FROM vector_visits
+            WHERE cycle = ${ciclo.chave} AND block_id = ANY(${blockIds}::uuid[]) ORDER BY visited_at, id`
+        : [],
+      blockIds.length ? ctx.db.$queryRaw<{ id: string; number: string; active: boolean }[]>`SELECT id, number, active FROM blocks WHERE id = ANY(${blockIds}::uuid[])` : [],
       ctx.db.user.findMany({ where: { id: { in: zonas.map((z) => z.aceId).filter((x): x is string => !!x) } }, select: { id: true, name: true } }),
     ]);
     const ultima = new Map<string, { blockId: string | null; situation: SituacaoVisita }>();
@@ -132,7 +142,7 @@ export class SupervisaoEndemiasService {
       ciclo,
       zonas: zonas.map((z) => {
         const ids = new Set(z.blocks.map((b) => b.blockId));
-        const imoveis = contagem.filter((c) => ids.has(c.blockId!)).reduce((s, c) => s + c._count._all, 0);
+        const imoveis = contagem.filter((c) => ids.has(c.blockId)).reduce((s, c) => s + c.n, 0);
         const doCiclo = [...ultima.values()].filter((v) => v.blockId && ids.has(v.blockId));
         const pendentes = doCiclo.filter((v) => SITUACAO_INFO[v.situation].pendencia).length;
         return {
@@ -150,11 +160,11 @@ export class SupervisaoEndemiasService {
 
   /** Quarteirões ativos sem zona (para montar as zonas). */
   async quarteiroesLivres(ctx: RequestContext) {
-    const blocos = await ctx.db.block.findMany({
-      where: { active: true, NOT: { id: { in: (await ctx.db.vectorZoneBlock.findMany({ select: { blockId: true } })).map((b) => b.blockId) } } },
-      select: { id: true, number: true, localityId: true, neighborhoodId: true },
-      take: 5000,
-    });
+    // Sem montar a lista dos quarteirões das zonas (NOT EXISTS): ela pode passar do limite de 32.767 parâmetros por consulta.
+    const blocos = await ctx.db.$queryRaw<{ id: string; number: string; localityId: string; neighborhoodId: string | null }[]>`
+      SELECT b.id, b.number, b.locality_id AS "localityId", b.neighborhood_id AS "neighborhoodId" FROM blocks b
+      WHERE b.active AND NOT EXISTS (SELECT 1 FROM vector_zone_blocks zb WHERE zb.block_id = b.id)
+      LIMIT 5000`;
     return (await this.territorio.comNomes(ctx, blocos))
       .map((b) => ({ id: b.id, numero: b.number, localidade: b.localidade?.name ?? null, bairro: b.bairro, imoveis: b.imoveis }))
       .sort((a, b) => (a.localidade ?? '').localeCompare(b.localidade ?? '') || a.numero.localeCompare(b.numero, 'pt-BR', { numeric: true }));

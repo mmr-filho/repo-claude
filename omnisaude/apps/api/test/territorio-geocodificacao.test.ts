@@ -1,0 +1,149 @@
+import { randomUUID } from 'node:crypto';
+import { areaM2, caixaDe, centroDe, distanciaM, metrosPorGrau, normalizarArea, normalizarLogradouro, normalizarNumero, type Posicao } from '@omnisaude/shared';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { TenantsService } from '../src/core/database';
+import { MOTIVO_FORA_DO_QUARTEIRAO } from '../src/modules/territorio/geocodificacao.service';
+import { pgAvailable, startTestApp, type TestApp } from './harness';
+
+const enabled = await pgAvailable();
+
+// Grade 5 x 5 de quarteirões de 80 m (ruas de 20 m, passo de 100 m), como em endemias-campo.test.ts: o quarteirão n fica
+// na linha floor((n-1)/5) e na coluna (n-1)%5, com centro em (coluna × 100, linha × 100) metros a partir de O.
+const O: Posicao = [-49.31, -11.93];
+const mpg = metrosPorGrau(O[1]);
+const ponto = (x: number, y: number): Posicao => [O[0] + x / mpg.lng, O[1] + y / mpg.lat];
+const quadrado = (centro: Posicao, lado = 80) => {
+  const a: Posicao = [centro[0] - lado / 2 / mpg.lng, centro[1] - lado / 2 / mpg.lat];
+  const b: Posicao = [centro[0] + lado / 2 / mpg.lng, centro[1] + lado / 2 / mpg.lat];
+  return { type: 'Polygon' as const, coordinates: [[a, [b[0], a[1]], b, [a[0], b[1]], a]] };
+};
+const RUA = 'Rua Sonda Geo';
+
+type Resultado = { clientId: string; status: string; id: string | null; avisos?: string[] };
+type Geocodificacao = { analisados: number; atualizados: number; foraDoQuarteirao: number; avisos: string[]; porPrecisao: Record<string, number> };
+
+describe.runIf(enabled)('Território: a geocodificação por endereço não tira o imóvel do quarteirão que ele já tem', () => {
+  let t: TestApp;
+  let db: Awaited<ReturnType<TenantsService['client']>>;
+  let gestora = '';
+  let ace = '';
+  let recepcao = '';
+  let ibge = '';
+  const bloco: Record<string, string> = {};
+  const auth = (tk: string) => ({ authorization: `Bearer ${tk}` });
+  const imovel = (id: string) => db.household.findUniqueOrThrow({ where: { id } });
+  /** Imóvel novo do ACE no quarteirão escolhido (com ou sem GPS). */
+  async function doAce(numeroQuarteirao: string, numero: string, extra: Record<string, unknown> = {}, rua = RUA) {
+    const op = {
+      clientId: randomUUID(),
+      tipo: 'IMOVEL',
+      registradoEm: new Date(Date.now() - 60_000).toISOString(),
+      dados: { blockId: bloco[numeroQuarteirao], propertyType: '01', street: rua, number: numero, ...extra },
+    };
+    const [r] = (
+      await t
+        .http()
+        .post('/api/endemias/campo/sync')
+        .set(auth(ace))
+        .send({ operacoes: [op] })
+        .expect(200)
+    ).body.resultados as Resultado[];
+    expect(r!.status, JSON.stringify(r)).toBe('OK');
+    return r!;
+  }
+  /** Endereço da base do IBGE (CNEFE, nível 1: coordenada coletada no endereço). */
+  const endereco = (numero: string, p: Posicao, rua = RUA) =>
+    db.addressPoint.create({ data: { externalId: randomUUID(), ibgeCode: ibge, street: rua, streetKey: normalizarLogradouro(rua), number: normalizarNumero(numero), latitude: p[1], longitude: p[0], level: 1 } });
+  const geocodificar = async (body: Record<string, unknown>) => (await t.http().post('/api/territorio/imoveis/geocodificar').set(auth(gestora)).send(body).expect(200)).body as Geocodificacao;
+
+  beforeAll(async () => {
+    t = await startTestApp('terrgeo');
+    gestora = await t.login('gestora', 'UBS Centro', 'GESTOR');
+    ace = await t.login('ace', 'Vigilância em Saúde', 'ACE');
+    recepcao = await t.login('recepcao', 'UBS Centro', 'RECEPCAO');
+    const supervisora = await t.login('supervisora', 'Vigilância em Saúde', 'SUPERVISOR_ENDEMIAS');
+    const tenants = t.app.get(TenantsService);
+    db = await tenants.client((await tenants.resolve(t.slug)).id);
+    ibge = (await db.unit.findFirstOrThrow({ where: { name: 'Vigilância em Saúde' } })).ibgeCode ?? '3550308';
+    const localidade = (await t.http().post('/api/territorio/localidades').set(auth(gestora)).send({ code: '41', name: 'Geocodificação' }).expect(201)).body.id;
+    for (let lin = 0; lin < 5; lin++)
+      for (let col = 0; col < 5; col++) {
+        const area = normalizarArea(quadrado(ponto(col * 100, lin * 100)));
+        const [minLng, minLat, maxLng, maxLat] = caixaDe(area);
+        const [centerLng, centerLat] = centroDe(area);
+        const numero = String(lin * 5 + col + 1);
+        bloco[numero] = (
+          await db.block.create({ data: { localityId: localidade, number: numero, geometry: area as object, minLng, minLat, maxLng, maxLat, centerLat, centerLng, areaM2: areaM2(area), source: 'EDITOR' } })
+        ).id;
+      }
+    const aceId = (await db.user.findFirstOrThrow({ where: { name: { contains: 'Agente de Endemias' } } })).id;
+    await t
+      .http()
+      .post('/api/endemias/zonas')
+      .set(auth(supervisora))
+      .send({ nome: 'Zona Geocodificação', aceId, quarteiroes: Object.values(bloco) })
+      .expect(201);
+  }, 120_000);
+
+  afterAll(async () => {
+    await t?.close();
+  });
+
+  it('S7: o imóvel do ACE sem posição (GPS fora do quarteirão escolhido) fica no quarteirão, sem a posição do endereço de outro', async () => {
+    // GPS 22 m ao sul do quarteirão 3: o imóvel entra no 3, sem posição.
+    const g = ponto(200, -62);
+    const r = await doAce('3', '777', { latitude: g[1], longitude: g[0], precisaoGps: 10 });
+    expect(await imovel(r.id!)).toMatchObject({ blockId: bloco['3'], latitude: null, geoPrecision: null });
+    // O mesmo endereço na base do IBGE cai dentro do quarteirão 8: antes, o imóvel ganhava a posição e ia para o 8.
+    await endereco('777', ponto(200, 100));
+    const geo = await geocodificar({ ids: [r.id] });
+    expect(geo).toMatchObject({ analisados: 1, atualizados: 0, foraDoQuarteirao: 1, avisos: [`1 imóvel(is) ficaram como estavam: ${MOTIVO_FORA_DO_QUARTEIRAO}.`] });
+    expect(await imovel(r.id!)).toMatchObject({ blockId: bloco['3'], latitude: null, longitude: null, geoPrecision: null });
+    // Continua no pacote do agente.
+    const p = (await t.http().get('/api/endemias/campo/pacote').set(auth(ace)).expect(200)).body;
+    expect(p.imoveis.find((i: { id: string }) => i.id === r.id)).toMatchObject({ quarteiraoId: bloco['3'] });
+  });
+
+  it('o ponto do endereço dentro do próprio quarteirão (ou na rua, a até 15 m dele) continua posicionando o imóvel', async () => {
+    const dentro = await doAce('3', '778');
+    const pDentro = ponto(210, 10);
+    await endereco('778', pDentro);
+    const naRua = await doAce('3', '779');
+    // 8 m ao sul do quarteirão 3, na borda da grade: a malha liga o ponto ao 3.
+    const pRua = ponto(230, -48);
+    await endereco('779', pRua);
+    const geo = await geocodificar({ ids: [dentro.id, naRua.id] });
+    expect(geo).toMatchObject({ analisados: 2, atualizados: 2, foraDoQuarteirao: 0, avisos: [], porPrecisao: { ENDERECO: 2 } });
+    for (const [id, p] of [
+      [dentro.id!, pDentro],
+      [naRua.id!, pRua],
+    ] as const) {
+      const h = await imovel(id);
+      expect(h).toMatchObject({ blockId: bloco['3'], geoPrecision: 'ENDERECO', geoSource: 'cnefe:endereco' });
+      expect(distanciaM([h.longitude!, h.latitude!], p)).toBeLessThan(0.5);
+    }
+  });
+
+  it('sem ids (todos os pendentes): o imóvel com quarteirão não muda de quarteirão, nem o que tem só o centro dele; o sem quarteirão segue como sempre', async () => {
+    // Imóvel do ACE sem endereço na base: recebe o centro do próprio quarteirão (como sempre).
+    const centro = await doAce('3', '15', {}, 'Rua Sem Base Geo');
+    // Imóvel da recepção, sem quarteirão: o endereço o posiciona e liga ao quarteirão do ponto (como sempre).
+    const recep = (await t.http().post('/api/households').set(auth(recepcao)).send({ street: RUA, number: '780', ibgeCode: ibge }).expect(201)).body.id as string;
+    await endereco('780', ponto(190, 110));
+    const s7 = await db.household.findFirstOrThrow({ where: { street: RUA, number: '777' } });
+    const primeiro = await geocodificar({});
+    expect(primeiro.foraDoQuarteirao).toBe(1);
+    expect(primeiro.avisos).toEqual([`1 imóvel(is) ficaram como estavam: ${MOTIVO_FORA_DO_QUARTEIRAO}.`]);
+    expect(await imovel(s7.id)).toMatchObject({ blockId: bloco['3'], latitude: null, geoPrecision: null });
+    expect(await imovel(centro.id!)).toMatchObject({ blockId: bloco['3'], geoPrecision: 'QUARTEIRAO', geoSource: 'centro-do-quarteirao' });
+    expect(await imovel(recep)).toMatchObject({ blockId: bloco['8'], geoPrecision: 'ENDERECO' });
+
+    // O endereço do imóvel que tem só o centro do quarteirão aparece na base, dentro do 8: a posição melhor não o tira do 3.
+    await endereco('15', ponto(210, 90), 'Rua Sem Base Geo');
+    const segundo = await geocodificar({});
+    expect(segundo.foraDoQuarteirao).toBe(2);
+    expect(segundo.avisos).toEqual([`2 imóvel(is) ficaram como estavam: ${MOTIVO_FORA_DO_QUARTEIRAO}.`]);
+    expect(await imovel(centro.id!)).toMatchObject({ blockId: bloco['3'], geoPrecision: 'QUARTEIRAO' });
+    expect(await imovel(s7.id)).toMatchObject({ blockId: bloco['3'], latitude: null });
+  });
+});

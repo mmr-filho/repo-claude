@@ -150,6 +150,36 @@ export function opcoesTitular(agentes: readonly AgenteEndemias[] | null, titular
   return lista;
 }
 
+// ─── Quarteirões da zona ────────────────────────────────────────────────────
+
+export interface OpcaoQuarteiraoZona {
+  id: string;
+  numero: string;
+  localidade: string | null;
+  /** "Q 12"; o da zona que a malha desativou, "Q 12 (desativado na malha)". */
+  rotulo: string;
+}
+
+/**
+ * Caixas dos quarteirões no diálogo da zona: os desta zona e depois os livres (ativos e sem zona), filtrados pelo número,
+ * localidade ou bairro. O desativado na malha que continua na zona aparece marcado, como no cadastro do imóvel: a API
+ * aceita salvar a zona com ele (só o quarteirão que entra é conferido), e ele fica até a supervisão tirá-lo; depois de
+ * sair, não volta (não está entre os livres).
+ */
+export function opcoesQuarteiraoZona(
+  daZona: readonly { id: string; numero: string; ativo: boolean }[],
+  livres: readonly { id: string; numero: string; localidade: string | null; bairro: string | null }[],
+  filtro: string,
+): OpcaoQuarteiraoZona[] {
+  const busca = filtro.trim().toLowerCase();
+  const naZona = new Set(daZona.map((q) => q.id));
+  const todos = [
+    ...daZona.map((q) => ({ id: q.id, numero: q.numero, localidade: null, bairro: null, rotulo: `Q ${q.numero}${q.ativo ? '' : ' (desativado na malha)'}` })),
+    ...livres.filter((q) => !naZona.has(q.id)).map((q) => ({ id: q.id, numero: q.numero, localidade: q.localidade, bairro: q.bairro, rotulo: `Q ${q.numero}` })),
+  ];
+  return todos.filter((q) => !busca || `${q.numero} ${q.localidade ?? ''} ${q.bairro ?? ''}`.toLowerCase().includes(busca)).map(({ id, numero, localidade, rotulo }) => ({ id, numero, localidade, rotulo }));
+}
+
 // ─── Baixas de larvicida pendentes ──────────────────────────────────────────
 
 /**

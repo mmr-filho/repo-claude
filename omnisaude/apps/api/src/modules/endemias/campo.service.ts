@@ -112,17 +112,22 @@ export class CampoAceService {
       select: { id: true, street: true, number: true, complement: true, district: true, propertyType: true, blockId: true, rgSequence: true, latitude: true, longitude: true, geoPrecision: true, vectorNotes: true },
     });
     const ordemIds = ordens.map((o) => o.id);
+    // Cada lista (imóveis e ordens) vai num parâmetro só (= ANY): a área do agente pode ter dezenas de milhares de imóveis,
+    // e o IN do Prisma, com um parâmetro por imóvel e sem poder dividir a consulta por causa da ordenação, passa do limite
+    // de 32.767 parâmetros por consulta do PostgreSQL. As listas de quarteirões e de imóveis acima, sem ordenação, o
+    // Prisma divide sozinho.
     const visitas = imoveis.length
-      ? await ctx.db.vectorVisit.findMany({
-          where: { householdId: { in: imoveis.map((i) => i.id) }, OR: [{ cycle: ciclo.chave }, ...(ordemIds.length ? [{ orderId: { in: ordemIds } }] : [])] },
-          select: { householdId: true, situation: true, visitedAt: true, orderId: true, cycle: true },
-          orderBy: { visitedAt: 'asc' },
-        })
+      ? await ctx.db.$queryRaw<{ householdId: string; situacao: string; em: string; orderId: string | null; cycle: string }[]>`
+          SELECT household_id AS "householdId", situation::text AS situacao, to_char(visited_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS em, order_id AS "orderId", cycle
+          FROM vector_visits
+          WHERE household_id = ANY(${imoveis.map((i) => i.id)}::uuid[]) AND (cycle = ${ciclo.chave} OR order_id = ANY(${ordemIds}::uuid[]))
+          ORDER BY visited_at, id`
       : [];
     const noCiclo = new Map<string, { situacao: string; em: string }>();
     const naOrdem = new Map<string, { situacao: string; em: string }>();
+    // Da mais antiga para a mais nova: fica a última visita do imóvel no ciclo e em cada ordem.
     for (const v of visitas) {
-      const r = { situacao: v.situation, em: v.visitedAt.toISOString() };
+      const r = { situacao: v.situacao, em: v.em };
       if (v.cycle === ciclo.chave) noCiclo.set(v.householdId, r);
       if (v.orderId) naOrdem.set(`${v.orderId}:${v.householdId}`, r);
     }

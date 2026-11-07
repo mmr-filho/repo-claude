@@ -52,10 +52,46 @@ const ouvintes = new Set<() => void>();
 const avisar = () => ouvintes.forEach((f) => f());
 
 /**
- * Registro em gravação (registrarNaFila): o envio que começa no meio espera ele entrar inteiro ou sair da fila antes de
- * ler, para não levar só parte dele (ex.: o responsável sem o domicílio novo). Nunca rejeita.
+ * Travas da fila do ACS, nesta aba e entre as abas do app (o banco do aparelho é o mesmo), em duas medidas para o registro
+ * nunca esperar a rede:
+ * - TRAVA_FILA, curta: a gravação de cada registro e a leitura da fila pelo envio. O envio que começa no meio de um
+ *   registro de duas operações (o responsável e o domicílio novo), nesta aba ou noutra, espera ele entrar inteiro ou sair
+ *   da fila, e não leva só o responsável (que sairia da fila com a falha da segunda gravação depois de ir ao servidor, e
+ *   salvar de novo criaria outro). O registro espera no máximo uma dessas leituras.
+ * - TRAVA_ENVIO, longa: o envio inteiro, com a espera pelo servidor (sem prazo: com sinal fraco, leva minutos). Duas abas
+ *   não mandam a mesma fila ao mesmo tempo: a segunda lê a fila depois que a primeira tirou dela o que levou. Só o envio
+ *   pega esta, sempre antes da curta (nunca o contrário, sem impasse).
+ * Entre abas vale a trava do navegador (Web Locks API, com nomes do ACS: a do ACE é outra); sem ela (navegador antigo,
+ * página fora de HTTPS) ou com o pedido recusado, a ordem é só desta aba.
  */
-let gravacaoEmCurso: Promise<unknown> = Promise.resolve();
+const TRAVA_FILA = 'omnisaude-campo-acs:fila';
+const TRAVA_ENVIO = 'omnisaude-campo-acs:envio';
+const ultimaDaTrava = new Map<string, Promise<unknown>>();
+function emOrdem<T>(trava: string, fn: () => Promise<T>): Promise<T> {
+  const rodar = () => entreAbas(trava, fn);
+  const r = (ultimaDaTrava.get(trava) ?? Promise.resolve()).then(rodar, rodar);
+  // A próxima desta trava espera esta terminar, com sucesso ou com falha.
+  const fim = r.catch(() => undefined);
+  ultimaDaTrava.set(trava, fim);
+  return r;
+}
+
+async function entreAbas<T>(trava: string, fn: () => Promise<T>): Promise<T> {
+  const travas = typeof navigator === 'undefined' ? undefined : (navigator as { locks?: LockManager }).locks;
+  if (typeof travas?.request !== 'function') return fn();
+  let rodou = false;
+  try {
+    return await travas.request(trava, () => {
+      rodou = true;
+      return fn();
+    });
+  } catch (e) {
+    if (rodou) throw e;
+    // O navegador recusou a trava (ex.: documento sem permissão): segue só com a ordem desta aba.
+    console.warn('Trava entre abas indisponível', e);
+    return fn();
+  }
+}
 
 export const filaCampo = {
   async listar(): Promise<ItemFila[]> {
@@ -78,76 +114,84 @@ export const filaCampo = {
     avisar();
   },
   /**
-   * Envia o que está pendente e devolve o resumo; fora da rede, não faz nada. Não lança: a falha do banco do aparelho no
-   * meio do envio vem em `falha`, e a lista da fila é avisada de qualquer jeito.
+   * Envia o que está pendente e devolve o resumo; fora da rede, não faz nada. Um envio por vez, nesta aba e entre as abas
+   * (TRAVA_ENVIO): o que outra aba já levou não vai de novo. Não lança: a falha do banco do aparelho no meio do envio vem
+   * em `falha`, e a lista da fila é avisada de qualquer jeito.
    */
   async sincronizar(): Promise<ResumoEnvioAcs> {
     const resumo: ResumoEnvioAcs = { enviados: 0, duplicados: 0, erros: 0, offline: false, falha: null };
     if (!estaOnline()) return { ...resumo, offline: true };
-    try {
-      await gravacaoEmCurso;
-      const pendentes = (await this.listar()).filter((i) => i.status === 'PENDENTE');
-      if (!pendentes.length) return resumo;
-      const ops = ordenarOperacoes(pendentes.map((i) => i.op));
-      for (let i = 0; i < ops.length; i += 100) {
-        const lote = ops.slice(i, i + 100);
-        let resultados: ResultadoSync[];
-        try {
-          resultados = (await api.post<{ resultados: ResultadoSync[] }>('/acs/sync', { operacoes: lote })).resultados;
-        } catch (err) {
-          if (err instanceof ApiError && err.status === 0) return { ...resumo, offline: true };
-          // Lote recusado inteiro (validação): marca cada item com a mensagem.
-          for (const op of lote) {
-            const item = pendentes.find((p) => p.clientId === op.clientId);
-            if (item) await local.put('fila', { ...item, status: 'ERRO', erro: err instanceof Error ? err.message : String(err) });
+    return emOrdem(TRAVA_ENVIO, async () => {
+      try {
+        // Só a leitura fica na trava curta: o registro gravado agora (nesta aba ou noutra) entra inteiro, ou fica para o
+        // próximo envio, e não espera a resposta do servidor.
+        const pendentes = await emOrdem(TRAVA_FILA, async () => (await this.listar()).filter((i) => i.status === 'PENDENTE'));
+        if (!pendentes.length) return resumo;
+        const ops = ordenarOperacoes(pendentes.map((i) => i.op));
+        for (let i = 0; i < ops.length; i += 100) {
+          const lote = ops.slice(i, i + 100);
+          let resultados: ResultadoSync[];
+          try {
+            resultados = (await api.post<{ resultados: ResultadoSync[] }>('/acs/sync', { operacoes: lote })).resultados;
+          } catch (err) {
+            if (err instanceof ApiError && err.status === 0) return { ...resumo, offline: true };
+            // Lote recusado inteiro (validação): marca cada item com a mensagem.
+            const erro = err instanceof Error ? err.message : String(err);
+            for (const op of lote) if (await marcarErro(op.clientId, erro)) resumo.erros++;
+            continue;
           }
-          resumo.erros += lote.length;
-          continue;
-        }
-        const historico = await historicoEnvios.listar();
-        try {
-          for (const r of resultados) {
-            const item = pendentes.find((p) => p.clientId === r.clientId);
-            if (!item) continue;
-            if (r.status === 'ERRO') {
-              await local.put('fila', { ...item, status: 'ERRO', erro: r.erro });
-              resumo.erros++;
-              continue;
+          const historico = await historicoEnvios.listar();
+          try {
+            for (const r of resultados) {
+              const item = pendentes.find((p) => p.clientId === r.clientId);
+              if (!item) continue;
+              if (r.status === 'ERRO') {
+                if (await marcarErro(r.clientId, r.erro)) resumo.erros++;
+                continue;
+              }
+              await local.delete('fila', r.clientId);
+              historico.unshift({ clientId: r.clientId, tipo: r.tipo, rotulo: item.rotulo, id: r.id, em: new Date().toISOString() });
+              if (r.status === 'OK') resumo.enviados++;
+              else resumo.duplicados++;
             }
-            await local.delete('fila', r.clientId);
-            historico.unshift({ clientId: r.clientId, tipo: r.tipo, rotulo: item.rotulo, id: r.id, em: new Date().toISOString() });
-            if (r.status === 'OK') resumo.enviados++;
-            else resumo.duplicados++;
+          } finally {
+            await historicoEnvios.salvar(historico.slice(0, 200));
           }
-        } finally {
-          await historicoEnvios.salvar(historico.slice(0, 200));
         }
+      } catch (e) {
+        // O servidor pode já ter gravado o que não saiu da fila: no próximo envio ele responde DUPLICADA e nada se repete.
+        resumo.falha = e instanceof Error ? e.message : String(e);
+      } finally {
+        avisar();
       }
-    } catch (e) {
-      // O servidor pode já ter gravado o que não saiu da fila: no próximo envio ele responde DUPLICADA e nada se repete.
-      resumo.falha = e instanceof Error ? e.message : String(e);
-    } finally {
-      avisar();
-    }
-    return resumo;
+      return resumo;
+    });
   },
 };
 
 /**
- * Registro feito num formulário: grava as operações na fila (todas ou nenhuma) e dispara o envio sem esperar por ele. A
- * falha ao gravar volta para o formulário (nada ficou guardado, e salvar de novo não duplica). A do envio não volta: o
- * registro já está na fila, e o formulário aberto com o erro levaria o agente a salvar de novo, com outro clientId (o
- * registro em dobro). Quem envia avisa o resultado (toast).
+ * Registro feito num formulário: grava as operações na fila (todas ou nenhuma, na trava curta: nenhum envio lê a fila no
+ * meio) e dispara o envio sem esperar por ele. A falha ao gravar volta para o formulário (nada ficou guardado, e salvar de
+ * novo não duplica). A do envio não volta: o registro já está na fila, e o formulário aberto com o erro levaria o agente a
+ * salvar de novo, com outro clientId (o registro em dobro). Quem envia avisa o resultado (toast).
  */
 export async function registrarNaFila(ops: OperacaoCampo[], rotulo: string, enviar: () => Promise<unknown>): Promise<void> {
-  const gravacao = gravarInteiro(ops, rotulo);
-  const anterior = gravacaoEmCurso;
-  gravacaoEmCurso = anterior.then(() => gravacao.catch(() => undefined));
-  await gravacao;
+  await emOrdem(TRAVA_FILA, () => gravarInteiro(ops, rotulo));
   // Sem esperar: o formulário fecha já, e nada do envio (nem uma falha imediata) volta para ele.
   void Promise.resolve()
     .then(enviar)
     .catch((e) => console.warn('Envio em segundo plano não concluído', e));
+}
+
+/**
+ * Marca o erro do servidor no registro que ainda está na fila, e diz se marcou: o descartado durante o envio (nesta aba ou
+ * noutra) não volta para a fila com o erro, como no app do ACE.
+ */
+async function marcarErro(clientId: string, erro: string | null): Promise<boolean> {
+  const atual = await local.get<ItemFila>('fila', clientId);
+  if (!atual) return false;
+  await local.put('fila', { ...atual, status: 'ERRO', erro } satisfies ItemFila);
+  return true;
 }
 
 /** Todas as operações na fila, ou nenhuma: se uma falhar, as que já tinham entrado saem, e a falha sobe. */

@@ -3,7 +3,7 @@ import { avaliarGps, onlyDigits, type PrecisaoGeo } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { DomainError, notFound } from '../../core/errors';
-import { LocalizadorService } from '../territorio/localizador.service';
+import { LocalizadorService, PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
 import { TerritorioService } from '../territorio/territorio.service';
 import { patientSummary } from './patients.service';
 
@@ -108,8 +108,8 @@ export class HouseholdsService {
   }
 
   /**
-   * `posicionados`: quem grava em lote (a sincronização do ACS) junta aqui os imóveis que ganharam posição e avisa o
-   * território no fim; sem ele, o aviso sai logo depois do commit.
+   * `posicionados`: quem grava em lote (a sincronização do ACS) junta aqui os imóveis que ganharam posição (ou
+   * moradores) e avisa o território no fim; sem ele, o aviso sai logo depois do commit.
    */
   async create(ctx: RequestContext, input: HouseholdInput & { family?: FamilyInput | null }, posicionados?: string[]) {
     const geo = this.geo(input, null);
@@ -122,7 +122,8 @@ export class HouseholdsService {
       await this.audit.record(ctx, tx, { action: 'domicilio.cadastrar', entityType: 'Household', entityId: h.id, payload: input });
       return h.id;
     });
-    if ('geoPrecision' in geo) await this.avisarPosicao(ctx, id, posicionados);
+    // Posição nova, ou o responsável da família nova que passou a morar aqui.
+    if ('geoPrecision' in geo || input.family?.responsibleId) await this.avisarPosicao(ctx, id, posicionados);
     return this.view(await ctx.db.household.findUniqueOrThrow({ where: { id }, include: householdInclude }));
   }
 
@@ -142,14 +143,20 @@ export class HouseholdsService {
     return this.view(await ctx.db.household.findUniqueOrThrow({ where: { id }, include: householdInclude }));
   }
 
+  /**
+   * Depois do commit: o imóvel ganhou (ou perdeu) posição, ou alguém entrou na família dele ou saiu dela. O gancho de
+   * posição do território refaz na hora o retrato dos casos ativos dos moradores (e dos que guardam o imóvel) na ordem de
+   * bloqueio. Em lote (`posicionados`), só junta o imóvel; quem grava o lote avisa uma vez, no fim.
+   */
   private async avisarPosicao(ctx: RequestContext, id: string, posicionados?: string[]) {
     if (posicionados) posicionados.push(id);
     else await this.imoveisPosicionados(ctx, [id]);
   }
 
   /**
-   * Imóveis que ganharam posição nova (ou a perderam), depois do commit: o território avisa os ouvintes, e a ordem de
-   * bloqueio refaz o retrato dos casos dos moradores. Nunca lança: a falha não desfaz o cadastro (a varredura recupera).
+   * Imóveis que ganharam posição nova (ou a perderam) ou mudaram de moradores, depois do commit: o território avisa os
+   * ouvintes, e a ordem de bloqueio refaz o retrato dos casos dos moradores. Nunca lança: a falha não desfaz o cadastro
+   * (a varredura recupera).
    */
   async imoveisPosicionados(ctx: RequestContext, ids: string[]) {
     try {
@@ -171,69 +178,88 @@ export class HouseholdsService {
 
   /**
    * Precisão da posição quando ela muda: a enviada (o app do ACS manda o raio do GPS) ou GPS em campo. Sem posição,
-   * a precisão e o quarteirão saem junto.
+   * a precisão e o quarteirão saem junto (na correção do endereço, só o quarteirão que veio da posição do endereço).
    */
   private geo(input: HouseholdInput, atual: AtualGeo | null) {
     const semPosicao = { latitude: null, longitude: null, geoPrecision: null, geoSource: null, geoAccuracyM: null, geoAt: null, blockId: null };
     const naoMuda = { latitude: undefined, longitude: undefined };
     // Endereço corrigido sem leitura nova: a posição que veio do endereço antigo (base do IBGE, centro de rua ou de
-    // bairro) deixa de valer; GPS e marcação no mapa são do imóvel e ficam.
-    const posicaoDoEndereco = !!atual && atual.latitude != null && !!atual.geoPrecision && !POSICAO_DE_CAMPO.includes(atual.geoPrecision as PrecisaoGeo);
+    // bairro) deixa de valer; GPS e marcação no mapa são do imóvel e ficam. O centro do quarteirão também fica: vem do
+    // quarteirão que o imóvel já tem (o escolhido pelo ACE em campo), não do endereço. E o quarteirão só sai junto com a
+    // posição que o ligou a ele (endereço ou face de quadra na base do IBGE); o escolhido em campo fica.
+    const precisaoAtual = (atual?.geoPrecision ?? null) as PrecisaoGeo | null;
+    const posicaoDoEndereco = !!atual && atual.latitude != null && !!precisaoAtual && !POSICAO_DE_CAMPO.includes(precisaoAtual) && precisaoAtual !== 'QUARTEIRAO';
+    const semPosicaoDoEndereco = precisaoAtual && PRECISAO_LIGA_QUARTEIRAO.includes(precisaoAtual) ? semPosicao : { ...semPosicao, blockId: undefined };
     const enderecoMudou = !!atual && enderecoAlterado(this.data(input), atual);
-    if (input.latitude === undefined && input.longitude === undefined) return posicaoDoEndereco && enderecoMudou ? semPosicao : {};
+    if (input.latitude === undefined && input.longitude === undefined) return posicaoDoEndereco && enderecoMudou ? semPosicaoDoEndereco : {};
     // Só uma das coordenadas no corpo: a outra continua a atual.
     const lat = input.latitude !== undefined ? input.latitude : (atual?.latitude ?? null);
     const lng = input.longitude !== undefined ? input.longitude : (atual?.longitude ?? null);
     if (lat == null || lng == null) return atual?.latitude != null ? semPosicao : {};
-    if (atual && atual.latitude === lat && atual.longitude === lng && input.geoPrecision === undefined) return posicaoDoEndereco && enderecoMudou ? semPosicao : naoMuda;
+    if (atual && atual.latitude === lat && atual.longitude === lng && input.geoPrecision === undefined) return posicaoDoEndereco && enderecoMudou ? semPosicaoDoEndereco : naoMuda;
     // Leitura do GPS acima de 50 m (rede ou ambiente fechado) não serve à posição do imóvel: não é gravada.
-    if (input.geoAccuracyM != null && avaliarGps(input.geoAccuracyM) === 'NOVA_LEITURA') return posicaoDoEndereco && enderecoMudou ? semPosicao : naoMuda;
+    if (input.geoAccuracyM != null && avaliarGps(input.geoAccuracyM) === 'NOVA_LEITURA') return posicaoDoEndereco && enderecoMudou ? semPosicaoDoEndereco : naoMuda;
     return { geoPrecision: input.geoPrecision ?? ('GPS_CAMPO' as const), geoSource: 'cadastro', geoAccuracyM: input.geoAccuracyM ?? null, geoAt: new Date() };
   }
 
   async createFamily(ctx: RequestContext, householdId: string, input: FamilyInput) {
     const h = await ctx.db.household.findUnique({ where: { id: householdId } });
     if (!h) throw notFound('Domicílio');
-    return ctx.db.$transaction(async (tx) => {
+    const familia = await ctx.db.$transaction(async (tx) => {
       const f = await this.newFamily(ctx, tx, householdId, input);
       return this.familyView(await tx.family.findUniqueOrThrow({ where: { id: f.id }, include: familyInclude }));
     });
+    // O responsável passou a morar neste domicílio: o caso dele na ordem de bloqueio é refeito na hora.
+    if (input.responsibleId) await this.avisarPosicao(ctx, householdId);
+    return familia;
   }
 
   async updateFamily(ctx: RequestContext, id: string, input: FamilyInput) {
     const f = await ctx.db.family.findUnique({ where: { id } });
     if (!f) throw notFound('Família');
-    return ctx.db.$transaction(async (tx) => {
+    const familia = await ctx.db.$transaction(async (tx) => {
       await tx.family.update({ where: { id }, data: { recordNumber: input.recordNumber ?? undefined, incomeBracket: input.incomeBracket ?? undefined } });
       if (input.responsibleId) await this.setResponsible(tx, id, input.responsibleId);
       await this.audit.record(ctx, tx, { action: 'familia.atualizar', entityType: 'Family', entityId: id, payload: input });
       return this.familyView(await tx.family.findUniqueOrThrow({ where: { id }, include: familyInclude }));
     });
+    // O responsável novo pode ter vindo de outra família (outro domicílio).
+    if (input.responsibleId) await this.avisarPosicao(ctx, f.householdId);
+    return familia;
   }
 
-  /** Inclui um paciente na família (ele sai de qualquer outra); parentesco "00" o torna responsável. */
-  async addMember(ctx: RequestContext, familyId: string, patientId: string, kinship: string) {
+  /**
+   * Inclui um paciente na família (ele sai de qualquer outra); parentesco "00" o torna responsável. Depois do commit, o
+   * caso dele na ordem de bloqueio é refeito com o domicílio novo (em lote, `posicionados`, como em `create`).
+   */
+  async addMember(ctx: RequestContext, familyId: string, patientId: string, kinship: string, posicionados?: string[]) {
     const f = await ctx.db.family.findUnique({ where: { id: familyId } });
     if (!f) throw notFound('Família');
     const p = await ctx.db.patient.findUnique({ where: { id: patientId } });
     if (!p || p.mergedIntoId) throw notFound('Paciente');
-    return ctx.db.$transaction(async (tx) => {
+    const familia = await ctx.db.$transaction(async (tx) => {
       await tx.patient.update({ where: { id: patientId }, data: { familyId, kinship } });
       if (kinship === '00') await this.setResponsible(tx, familyId, patientId);
       await this.audit.record(ctx, tx, { action: 'familia.incluir_membro', entityType: 'Family', entityId: familyId, payload: { patientId, kinship } });
       return this.familyView(await tx.family.findUniqueOrThrow({ where: { id: familyId }, include: familyInclude }));
     });
+    // Já era da família (só o parentesco mudou): o domicílio é o mesmo.
+    if (p.familyId !== familyId) await this.avisarPosicao(ctx, f.householdId, posicionados);
+    return familia;
   }
 
   async removeMember(ctx: RequestContext, familyId: string, patientId: string) {
     const f = await ctx.db.family.findUnique({ where: { id: familyId } });
     if (!f) throw notFound('Família');
-    return ctx.db.$transaction(async (tx) => {
-      await tx.patient.updateMany({ where: { id: patientId, familyId }, data: { familyId: null, kinship: null } });
+    const { familia, saiu } = await ctx.db.$transaction(async (tx) => {
+      const { count } = await tx.patient.updateMany({ where: { id: patientId, familyId }, data: { familyId: null, kinship: null } });
       if (f.responsibleId === patientId) await tx.family.update({ where: { id: familyId }, data: { responsibleId: null } });
       await this.audit.record(ctx, tx, { action: 'familia.remover_membro', entityType: 'Family', entityId: familyId, payload: { patientId } });
-      return this.familyView(await tx.family.findUniqueOrThrow({ where: { id: familyId }, include: familyInclude }));
+      return { familia: this.familyView(await tx.family.findUniqueOrThrow({ where: { id: familyId }, include: familyInclude })), saiu: count > 0 };
     });
+    // A pessoa ficou sem domicílio: o caso dela, que guardava este imóvel, é refeito na hora.
+    if (saiu) await this.avisarPosicao(ctx, f.householdId);
+    return familia;
   }
 
   private async newFamily(ctx: RequestContext, tx: Parameters<AuditService['record']>[1], householdId: string, input: FamilyInput) {

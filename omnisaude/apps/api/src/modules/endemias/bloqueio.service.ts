@@ -93,11 +93,11 @@ function dataDeCorte(agora: Date) {
 
 /**
  * Ordem de bloqueio de transmissão (VIG-3a). Cada notificação de dengue, chikungunya ou Zika entra numa ordem: a ordem
- * ativa com algum caso do mesmo período (até 7 dias, contados também da primeira data da ordem, sem cadeia) e da mesma
- * área (até duas vezes o raio), ou do mesmo imóvel ou pessoa no período (Diretrizes de 2025, p. 52), ou uma nova. A
- * ordem cobre a união dos quarteirões no raio de cada residência (150 m, medidos até a borda), é designada aos ACE
- * titulares das zonas atingidas e acompanha o trabalho de campo. Uma trava consultiva serializa as decisões, então duas
- * notificações simultâneas não abrem duas ordens. Sem nome do paciente.
+ * ativa com algum caso do mesmo período (até 7 dias; antes do campo, contados também da primeira data da ordem, sem
+ * cadeia; depois, do início do campo) e da mesma área (até duas vezes o raio), ou do mesmo imóvel ou pessoa no período
+ * (Diretrizes de 2025, p. 52), ou uma nova. A ordem cobre a união dos quarteirões no raio de cada residência (150 m,
+ * medidos até a borda), é designada aos ACE titulares das zonas atingidas e acompanha o trabalho de campo. Uma trava
+ * consultiva serializa as decisões, então duas notificações simultâneas não abrem duas ordens. Sem nome do paciente.
  */
 @Injectable()
 export class BloqueioService implements OnModuleInit {
@@ -361,7 +361,8 @@ export class BloqueioService implements OnModuleInit {
   /**
    * Une duas ordens ativas (rotina única): a sem trabalho de campo vai para a outra; se nenhuma tem, a mais nova vai para
    * a mais antiga. Os casos ativos e os agentes designados à mão passam ao destino, e a de origem é cancelada com a
-   * referência da unificação. Não une (null) se as duas já têm campo ou se a ordem unida passaria da janela.
+   * referência da unificação. Não une (null) se as duas já têm campo ou se a ordem unida sairia da janela: sem campo, o
+   * período dos casos; com o destino em campo, o início do campo (a mesma âncora de `ordensQueAgrupam`).
    */
   private async unir(tx: Tx, sys: SystemContext, a: string, b: string): Promise<string[] | null> {
     // As duas linhas travadas, em ordem fixa: a visita que chega agora a uma delas espera o fim da união.
@@ -377,13 +378,16 @@ export class BloqueioService implements OnModuleInit {
     const campoB = ob._count.visits > 0;
     if (campoA && campoB) return null;
     const [origem, destino] = campoA ? [ob, oa] : campoB ? [oa, ob] : oa.openedAt <= ob.openedAt ? [ob, oa] : [oa, ob];
-    // Sem cadeia: os casos da ordem unida continuam do mesmo período (e do período do campo, se o destino já começou).
-    const datas = [...origem.cases, ...destino.cases].map((c) => localDateString(c.referenceDate, 'UTC')).sort();
     const janela = sys.tenant.settings.endemias.janelaAgrupamentoDias;
-    if (datas.length && diasDepois(datas.at(-1)!, datas[0]!) > janela) return null;
     if (destino.startedAt) {
+      // Destino em campo: cada caso da origem começou no máximo a janela depois do início do campo (o mais antigo também
+      // serve, que o trabalho veio depois), sem a regra do período.
       const inicio = localDateString(destino.startedAt, sys.tenant.timeZone);
       if (origem.cases.some((c) => diasDepois(localDateString(c.referenceDate, 'UTC'), inicio) > janela)) return null;
+    } else {
+      // Sem campo nas duas, sem cadeia: os casos da ordem unida continuam num período só.
+      const datas = [...origem.cases, ...destino.cases].map((c) => localDateString(c.referenceDate, 'UTC')).sort();
+      if (datas.length && diasDepois(datas.at(-1)!, datas[0]!) > janela) return null;
     }
     await tx.blockingOrderCase.updateMany({ where: { orderId: origem.id, active: true }, data: { orderId: destino.id } });
     const manuais = await tx.blockingOrderAssignee.findMany({ where: { orderId: origem.id, assignedBy: { not: null } } });
@@ -403,10 +407,12 @@ export class BloqueioService implements OnModuleInit {
 
   /**
    * As ordens ativas em que o caso entra, da mais antiga para a mais nova. Algum caso ativo dela agrupa com ele (mesmo
-   * imóvel ou pessoa, ou área, no mesmo período) e, sem cadeia, com ele a ordem continua num período só (todas as datas
-   * de referência a até a janela da menor) e o caso não começou mais que a janela depois do início do campo. A ordem em
-   * campo também recebe o caso pela identidade de um caso que saiu dela (reclassificação) ou por morar num quarteirão que
-   * ela já cobre.
+   * imóvel ou pessoa, ou área, no mesmo período); a ordem em campo também recebe o caso pela identidade de um caso que
+   * saiu dela (reclassificação) ou por morar num quarteirão que ela já cobre. A âncora de tempo depende do campo: sem
+   * campo, sem cadeia, com o caso a ordem continua num período só (todas as datas de referência a até a janela umas das
+   * outras); com campo, a ordem é a ação que começou no início do campo e serve ao caso que começou até a janela depois
+   * dele (e ao mais antigo, que o trabalho veio depois), sem a regra do período (a data corrigida para trás de um caso
+   * dela, que fica, não fecha a ordem ao vizinho novo).
    */
   private async ordensQueAgrupam(tx: Tx, sys: SystemContext, caso: CasoAvaliado, exceto?: string): Promise<string[]> {
     const raioM = sys.tenant.settings.territorio.raioBloqueioM;
@@ -437,10 +443,12 @@ export class BloqueioService implements OnModuleInit {
     if (!candidatas.size) return [];
     const ordens = await tx.blockingOrder.findMany({ where: { id: { in: [...candidatas] } }, select: { id: true, openedAt: true, startedAt: true } });
     const validas = ordens.filter((o) => {
+      // Em campo, a âncora é o início do campo (o trabalho feito mais que a janela antes do começo do caso não serve a
+      // ele), e o período dos casos não conta.
+      if (o.startedAt) return diasDepois(caso.dataReferencia, localDateString(o.startedAt, sys.tenant.timeZone)) <= janela;
+      // Sem campo, sem cadeia: com o caso, as datas de referência da ordem continuam a até a janela umas das outras.
       const p = periodo.get(o.id);
-      if (p && (diasDepois(caso.dataReferencia, p.de) > janela || diasDepois(p.ate, caso.dataReferencia) > janela)) return false;
-      // Campo iniciado antes do começo do caso além da janela: o trabalho feito não serve a ele.
-      return !o.startedAt || diasDepois(caso.dataReferencia, localDateString(o.startedAt, sys.tenant.timeZone)) <= janela;
+      return !p || (diasDepois(caso.dataReferencia, p.de) <= janela && diasDepois(p.ate, caso.dataReferencia) <= janela);
     });
     validas.sort((x, y) => x.openedAt.getTime() - y.openedAt.getTime() || x.id.localeCompare(y.id));
     return validas.map((o) => o.id);
@@ -825,14 +833,29 @@ export class BloqueioService implements OnModuleInit {
     return this.montar(ctx, id);
   }
 
+  /**
+   * Conclusão, reabertura e cancelamento travam a linha da ordem (FOR UPDATE) antes de ler e gravar: a visita do ACE,
+   * que lê a ordem com FOR KEY SHARE (ver `CampoService.ordemTravada`), espera o fim e vê a situação final (não entra
+   * calada numa ordem que acabou de ser cancelada ou concluída), e a que entrou antes conta no progresso e na situação.
+   * Devolve a situação com a linha travada (a de agora, mesmo depois de esperar outra gravação).
+   */
+  private async travarOrdem(tx: Tx, id: string): Promise<string | null> {
+    const [o] = await tx.$queryRaw<{ status: string }[]>`SELECT status::text AS status FROM blocking_orders WHERE id = ${id}::uuid FOR UPDATE`;
+    return o?.status ?? null;
+  }
+
   async concluir(ctx: RequestContext, id: string, nota?: string | null) {
     const o = await this.exigirOrdem(ctx, id);
     if (o.status !== 'ABERTA' && o.status !== 'EM_CAMPO') throw conflict(`A ordem está ${STATUS_ORDEM_LABEL[o.status as StatusOrdem].toLowerCase()}`);
-    const p = (await this.progressos(ctx.db, [{ id, blocks: await ctx.db.blockingOrderBlock.findMany({ where: { orderId: id }, select: { blockId: true } }) }])).get(id)!.total;
     const texto = nota?.trim() ?? '';
-    if ((p.semVisita > 0 || p.pendentes > 0) && texto.length < 10)
-      throw new DomainError('JUSTIFICATIVA', `Ficaram ${p.semVisita} imóvel(is) sem visita e ${p.pendentes} pendente(s): justifique a conclusão (mínimo de 10 caracteres)`, HttpStatus.UNPROCESSABLE_ENTITY);
     await ctx.db.$transaction(async (tx) => {
+      // A ordem cancelada ou unificada enquanto a conclusão esperava a linha não pede justificativa: mudou.
+      const status = await this.travarOrdem(tx, id);
+      if (status !== 'ABERTA' && status !== 'EM_CAMPO') throw conflict('A ordem mudou enquanto você concluía; abra de novo');
+      // Progresso lido com a linha travada: conta as visitas que entraram até agora.
+      const p = (await this.progressos(tx, [{ id, blocks: await tx.blockingOrderBlock.findMany({ where: { orderId: id }, select: { blockId: true } }) }])).get(id)!.total;
+      if ((p.semVisita > 0 || p.pendentes > 0) && texto.length < 10)
+        throw new DomainError('JUSTIFICATIVA', `Ficaram ${p.semVisita} imóvel(is) sem visita e ${p.pendentes} pendente(s): justifique a conclusão (mínimo de 10 caracteres)`, HttpStatus.UNPROCESSABLE_ENTITY);
       const { count } = await tx.blockingOrder.updateMany({
         where: { id, status: { in: ['ABERTA', 'EM_CAMPO'] } },
         data: { status: 'CONCLUIDA', concludedAt: new Date(), concludedBy: ctx.session.userId, conclusionNote: texto || null },
@@ -847,8 +870,10 @@ export class BloqueioService implements OnModuleInit {
   async reabrir(ctx: RequestContext, id: string, motivo: string) {
     const o = await this.exigirOrdem(ctx, id);
     if (o.status !== 'CONCLUIDA') throw conflict('Só ordem concluída pode ser reaberta');
-    const comVisita = (await ctx.db.vectorVisit.count({ where: { orderId: id } })) > 0;
     await ctx.db.$transaction(async (tx) => {
+      await this.travarOrdem(tx, id);
+      // Contadas com a linha travada: a visita que entrou na ordem concluída até agora a reabre em campo.
+      const comVisita = (await tx.vectorVisit.count({ where: { orderId: id } })) > 0;
       const { count } = await tx.blockingOrder.updateMany({ where: { id, status: 'CONCLUIDA' }, data: { status: comVisita ? 'EM_CAMPO' : 'ABERTA', concludedAt: null, concludedBy: null } });
       if (count !== 1) throw conflict('A ordem mudou enquanto você reabria; abra de novo');
       await this.audit.record(ctx, tx, { action: 'endemias.ordem_reabrir', entityType: 'BlockingOrder', entityId: id, payload: { numero: numeroOrdem(o), motivo: motivo.trim() } });
@@ -862,6 +887,7 @@ export class BloqueioService implements OnModuleInit {
     const o = await this.exigirOrdem(ctx, id);
     if (!ativa(o.status)) throw conflict('A ordem já está encerrada');
     await ctx.db.$transaction(async (tx) => {
+      await this.travarOrdem(tx, id);
       const { count } = await tx.blockingOrder.updateMany({
         where: { id, status: { in: [...ORDEM_ATIVA] } },
         data: { status: 'CANCELADA', cancelledAt: new Date(), cancelledBy: ctx.session.userId, cancelReason: motivo.trim() },

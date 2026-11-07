@@ -211,6 +211,8 @@ describe('corrigir registro recusado (web-offline#11, sync-estoque#10)', () => {
   it('imóvel corrigido com outro quarteirão vai com o mesmo clientId; a visita dele volta a pendente e vai junto', async () => {
     await filaAce.adicionar(imovel(UUID(10)), ctxA, 'Imóvel novo · Q 19');
     await filaAce.adicionar(visita(UUID(11), { householdId: null, householdClientId: UUID(10) }), ctxA, 'Visita no imóvel novo');
+    // O imóvel vai no mesmo envio que a visita e é recusado: para a visita, o servidor responde com o texto do imóvel que
+    // deu erro neste envio (campo.service.ts, aplicarVisita). O do imóvel fora do envio, ainda não aceito, é outro.
     sim.post.mockImplementation(
       resposta((op) =>
         op.tipo === 'IMOVEL'

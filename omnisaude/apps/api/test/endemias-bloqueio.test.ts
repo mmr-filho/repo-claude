@@ -54,6 +54,16 @@ const GRADES = [
   'dom8',
   'dom8n',
   'datd',
+  'id7c',
+  'rcamp',
+  'ucamp',
+  'ucamp2',
+  'tcan',
+  'tcon',
+  'treab',
+  'tvreab',
+  'tvcon',
+  'tvcan',
 ];
 const espera = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const letras = (n: number) => {
@@ -369,6 +379,76 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(pacote.ordens.map((x: { id: string }) => x.id)).not.toContain(o);
   });
 
+  // ─── bloqueio#4, terceira rodada: conclusão, reabertura e cancelamento travam a linha da ordem ─────
+  /**
+   * A ação parada no meio, depois de gravar a situação e antes do COMMIT (a trilha de auditoria travada por fora),
+   * enquanto a visita do ACE chega. Sem a trava da linha, a visita lia a situação de antes e entrava na ordem sem aviso
+   * (a visita só parava depois, ao gravar o início do campo); com ela, espera a ação terminar e vê a situação final.
+   */
+  async function visitaNoMeio(acao: () => PromiseLike<unknown>, visita: () => ReturnType<typeof visitar>) {
+    const c = await pgc();
+    try {
+      await c.query('BEGIN');
+      await c.query('LOCK TABLE audit_entries IN ACCESS EXCLUSIVE MODE');
+      // O supertest devolve um "thenable" sem finally: vira promessa de verdade.
+      const feita = Promise.resolve(acao());
+      expect(await esperar(async () => (await esperas('audit_entries')) > 0)).toBe(true);
+      let terminou = false;
+      const enviada = visita().finally(() => (terminou = true));
+      await esperar(async () => terminou || (await esperas('audit_entries', true)) > 0, 5000);
+      await c.query('COMMIT');
+      await feita;
+      return await enviada;
+    } finally {
+      await c.query('ROLLBACK').catch(() => undefined);
+      await c.end();
+    }
+  }
+
+  it('bloqueio#4: a visita que chega no meio do cancelamento espera e fica sem a ordem cancelada, com o aviso', async () => {
+    await caso('tc1', ponto('tcan', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('tc1');
+    expect((await ordem(o)).status).toBe('ABERTA');
+    const r = await visitaNoMeio(
+      () => t.http().post(`/api/endemias/bloqueios/${o}/cancelar`).set(auth(coordenador)).send({ motivo: 'Epidemia: a ação passa a ser por área' }).expect(200),
+      () => visitar(casa.tc1!, o),
+    );
+    const fim = await ordem(o);
+    expect(fim).toMatchObject({ status: 'CANCELADA', startedAt: null });
+    expect(r).toMatchObject({ status: 'OK', avisos: [`A ordem ${fim.seq}/${fim.year} foi cancelada: visita gravada sem a ordem`] });
+    expect((await db.vectorVisit.findUniqueOrThrow({ where: { id: r.id } })).orderId).toBeNull();
+    expect(await db.vectorVisit.count({ where: { orderId: o } })).toBe(0);
+  });
+
+  it('bloqueio#4: a visita de bloqueio sem ordem informada que chega no meio da conclusão não entra na ordem concluída', async () => {
+    await caso('tk1', ponto('tcon', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('tk1');
+    expect((await db.household.findUniqueOrThrow({ where: { id: casa.tk1! } })).blockId).toBe(bloco('tcon', 2, 2));
+    const r = await visitaNoMeio(
+      () => t.http().post(`/api/endemias/bloqueios/${o}/concluir`).set(auth(supervisora)).send({ nota: 'Concluída pela supervisão nesta data' }).expect(200),
+      () => visitar(casa.tk1!, null),
+    );
+    expect(r).toMatchObject({ status: 'OK', avisos: ['Nenhuma ordem de bloqueio ativa neste quarteirão: visita gravada como bloqueio sem ordem'] });
+    expect((await db.vectorVisit.findUniqueOrThrow({ where: { id: r.id } })).orderId).toBeNull();
+    expect(await ordem(o)).toMatchObject({ status: 'CONCLUIDA', startedAt: null });
+  });
+
+  it('bloqueio#4: a visita que chega no meio da reabertura entra na ordem reaberta, sem o aviso de concluída, e a põe em campo', async () => {
+    await caso('tr1', ponto('treab', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('tr1');
+    await t.http().post(`/api/endemias/bloqueios/${o}/concluir`).set(auth(supervisora)).send({ nota: 'Concluída pela supervisão nesta data' }).expect(200);
+    const r = await visitaNoMeio(
+      () => t.http().post(`/api/endemias/bloqueios/${o}/reabrir`).set(auth(supervisora)).send({ motivo: 'Novo caso confirmado na área' }).expect(200),
+      () => visitar(casa.tr1!, o),
+    );
+    expect(r.status).toBe('OK');
+    expect(r.avisos).toBeUndefined();
+    expect((await db.vectorVisit.findUniqueOrThrow({ where: { id: r.id } })).orderId).toBe(o);
+    const fim = await ordem(o);
+    expect(fim.status).toBe('EM_CAMPO');
+    expect(fim.startedAt).not.toBeNull();
+  });
+
   // ─── bloqueio#1 ─────────────────────────────────────────────────────────────
   it('bloqueio#1: ordem sem posição com dois casos, localizada perto de outra, vai inteira para ela (na hora, sem varredura)', async () => {
     await caso('q1', ponto('u1a', 200, 200), 'dengue', dia(-1));
@@ -531,14 +611,19 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     const ok = await ordemDe('k1');
     expect(await ordemDe('k2')).toBe(ok);
     expect(await ordemDe('k3')).not.toBe(ok);
-    // Com o campo iniciado, a mesma regra: o caso de hoje a 100 m do primeiro abre outra ordem (o quarteirão é trabalhado de novo).
+    // Com o campo iniciado, a âncora passa a ser o início do campo (terceira rodada), e não o período dos casos: a ordem
+    // é a ação que começou hoje e serve a quem começou até 7 dias depois dela (e aos mais antigos, que o trabalho veio
+    // depois). O caso de hoje a 100 m do primeiro entra nela; antes, abria outra ordem e o quarteirão era trabalhado de novo.
     await caso('m3a', ponto('cadc', 0, 0), 'dengue', dia(-12));
     const om = await ordemDe('m3a');
     expect((await visitar(casa.m3a!, om)).status).toBe('OK');
     await caso('m3b', ponto('cadc', 250, 0), 'dengue', dia(-6));
     expect(await ordemDe('m3b')).toBe(om);
+    const total = await db.blockingOrder.count();
     await caso('m3c', ponto('cadc', 100, 0), 'dengue', dia(0));
-    expect(await ordemDe('m3c')).not.toBe(om);
+    expect(await ordemDe('m3c')).toBe(om);
+    expect(await db.blockingOrder.count()).toBe(total);
+    expect(datasAtivas(await ordem(om))).toEqual([dia(-12), dia(-6), dia(0)]);
   });
 
   it('dados-docs#4: o caso mais antigo que a primeira data da ordem também não estica o período além da janela', async () => {
@@ -668,6 +753,69 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(antes.blocks.every((b) => depois.blocks.some((x) => x.blockId === b.blockId))).toBe(true);
   });
 
+  // ─── dados-docs#4, terceira rodada: em campo, a âncora é o início do campo ──
+  it('dados-docs#4: com a ordem em campo, a data corrigida para trás fica nela e não fecha a ordem ao vizinho novo', async () => {
+    await caso('ec1', ponto('rcamp', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('ec1');
+    await caso('ec2', ponto('rcamp', 250, 200), 'dengue', dia(-2));
+    expect(await ordemDe('ec2')).toBe(o);
+    expect((await visitar(casa.ec1!, o)).status).toBe('OK');
+    expect((await ordem(o)).status).toBe('EM_CAMPO');
+    // A vigilância corrige os sintomas do segundo para 15 dias atrás: ele fica na ordem (o trabalho feito vale).
+    await corrigirSintomas('ec2', dia(-15));
+    expect(await ligacao('ec2')).toMatchObject({ orderId: o, active: true });
+    expect(datasAtivas(await ordem(o))).toEqual([dia(-15), dia(-1)]);
+    // Caso novo hoje, a 10 m do primeiro. Em campo o período dos casos (D-15 a D-1) não conta: o campo começou hoje e
+    // serve a ele. Entra na ordem; antes, abria outra sobre os mesmos quarteirões (trabalho de campo em dobro).
+    const total = await db.blockingOrder.count();
+    await caso('ec3', ponto('rcamp', 210, 200), 'dengue', dia(0));
+    expect(await ordemDe('ec3')).toBe(o);
+    expect(await db.blockingOrder.count()).toBe(total);
+    const depois = await ordem(o);
+    expect(depois.status).toBe('EM_CAMPO');
+    expect(datasAtivas(depois)).toEqual([dia(-15), dia(-1), dia(0)]);
+  });
+
+  it('dados-docs#4: a ordem sem campo vai para a ordem em campo se os casos dela começaram até 7 dias depois do início do campo', async () => {
+    // D: caso de 10 dias atrás, com o campo começando hoje.
+    await caso('ud1', ponto('ucamp', 200, 200), 'dengue', dia(-10));
+    const d = await ordemDe('ud1');
+    expect((await visitar(casa.ud1!, d)).status).toBe('OK');
+    // G: caso de ontem sem posição na notificação (segue o cadastro do imóvel), aguardando a localização numa ordem própria.
+    await novoPaciente('ug1');
+    await novaCasa('ug1', null, paciente.ug1!);
+    await notificar('ug1', paciente.ug1!, 'dengue', dia(-1));
+    const g = await ordemDe('ug1');
+    expect(g).not.toBe(d);
+    // Localizado num quarteirão que D cobre, a 100 m do caso dela: com G, o período dos casos iria de D-10 a D-1 (9 dias),
+    // mas o caso de G começou depois do início do campo de D, dentro da janela. G vai inteira para D (antes, as duas
+    // ficavam abertas sobre os mesmos quarteirões).
+    await posicionar(casa.ug1!, ponto('ucamp', 300, 200));
+    expect(await ordemDe('ug1')).toBe(d);
+    expect(await ordem(g)).toMatchObject({ status: 'CANCELADA', mergedIntoId: d });
+    const depois = await ordem(d);
+    expect(depois.status).toBe('EM_CAMPO');
+    expect(datasAtivas(depois)).toEqual([dia(-10), dia(-1)]);
+    // Com o campo de 10 dias atrás, a ordem de dois moradores (sintomas há 4 dias e ontem) não vai: o de ontem começou
+    // mais de 7 dias depois do início do campo, e cada caso da origem precisa caber nele. As duas ordens ficam.
+    await caso('ud2', ponto('ucamp2', 200, 200), 'dengue', dia(-12));
+    const d2 = await ordemDe('ud2');
+    expect((await visitar(casa.ud2!, d2)).status).toBe('OK');
+    await db.blockingOrder.update({ where: { id: d2 }, data: { startedAt: new Date(Date.now() - 10 * DIA) } });
+    await novoPaciente('ug2');
+    await novaCasa('ug2', null, paciente.ug2!);
+    await novoPaciente('ug3');
+    await membro(familia.ug2!, paciente.ug3!);
+    await notificar('ug2', paciente.ug2!, 'dengue', dia(-4));
+    await notificar('ug3', paciente.ug3!, 'dengue', dia(-1));
+    const g2 = await ordemDe('ug2');
+    expect(await ordemDe('ug3')).toBe(g2);
+    await posicionar(casa.ug2!, ponto('ucamp2', 300, 200));
+    expect(await ordem(g2)).toMatchObject({ status: 'ABERTA', mergedIntoId: null });
+    expect(datasAtivas(await ordem(g2))).toEqual([dia(-4), dia(-1)]);
+    expect(datasAtivas(await ordem(d2))).toEqual([dia(-12)]);
+  });
+
   it('dados-docs#4: a data corrigida para mais de 30 dias, ou com a abertura automática desligada, só tira o caso da ordem sem campo', async () => {
     await caso('dd1', ponto('datd', 200, 200), 'dengue', dia(-1));
     const o = await ordemDe('dd1');
@@ -706,11 +854,30 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     await caso('h1', ponto('id7a', 200, 200), 'dengue', dia(-25));
     const oh = await ordemDe('h1');
     expect((await visitar(casa.h1!, oh)).status).toBe('OK');
+    // Campo iniciado há 10 dias: o trabalho feito não serve ao morador doente hoje, e o mesmo imóvel não passa por cima
+    // da janela. (Com o campo começando hoje, ele entra pelo quarteirão: ver o teste seguinte.)
+    await db.blockingOrder.update({ where: { id: oh }, data: { startedAt: new Date(Date.now() - 10 * DIA) } });
     await novoPaciente('h2');
     await membro(familia.h1!, paciente.h2!);
     await notificar('h2', paciente.h2!, 'dengue', dia(0));
     expect(await ordemDe('h2')).not.toBe(oh);
     expect(ativas(await ordem(oh))).toBe(1);
+  });
+
+  it('dados-docs#4 e bloqueio#7: com o campo começando hoje, o morador doente hoje entra na ordem do caso de semanas atrás', async () => {
+    // O cenário que o teste anterior fixava até a segunda rodada (campo de hoje, caso de 25 dias atrás): em campo, a âncora
+    // passou a ser o início do campo (terceira rodada), e o trabalho que começa agora serve a quem adoeceu hoje. Ele entra
+    // pelo quarteirão que a ordem cobre, e não pela identidade (o caso de 25 dias atrás continua fora da janela dele).
+    await caso('h3', ponto('id7c', 200, 200), 'dengue', dia(-25));
+    const oh = await ordemDe('h3');
+    expect((await visitar(casa.h3!, oh)).status).toBe('OK');
+    await novoPaciente('h4');
+    await membro(familia.h3!, paciente.h4!);
+    const total = await db.blockingOrder.count();
+    await notificar('h4', paciente.h4!, 'dengue', dia(0));
+    expect(await ordemDe('h4')).toBe(oh);
+    expect(await db.blockingOrder.count()).toBe(total);
+    expect(ativas(await ordem(oh))).toBe(2);
   });
 
   it('bloqueio#7: o caso de quem mudou de casa guarda a residência notificada, sem o imóvel novo', async () => {
@@ -1208,5 +1375,89 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(o.status).toBe('EM_CAMPO');
     expect(o.blocks.map((b) => b.blockId)).toContain(bloco('mal', 2, 2));
     expect((await ligacao('ml'))!.blockId).toBe(bloco('mal', 2, 2));
+  });
+
+  // ─── bloqueio#4, terceira rodada: a ação que chega no meio da visita (no fim do arquivo: não muda os pacientes de antes) ─
+  /**
+   * A visita parada no fim, já dentro da ordem e antes do COMMIT (a trilha de auditoria travada por fora), e a ação da
+   * supervisão disparada nesse instante. Com a trava da linha, a ação espera a visita terminar e confere a situação, o
+   * progresso e as visitas depois dela; antes, lia tudo sem a visita e só esperava ao gravar a situação.
+   */
+  async function acaoNoMeioDaVisita(visita: () => ReturnType<typeof visitar>, acao: () => PromiseLike<{ status: number; body: unknown }>) {
+    const c = await pgc();
+    try {
+      await c.query('BEGIN');
+      await c.query('LOCK TABLE audit_entries IN ACCESS EXCLUSIVE MODE');
+      const enviada = visita();
+      expect(await esperar(async () => (await esperas('audit_entries')) > 0)).toBe(true);
+      // O supertest devolve um "thenable" sem finally: vira promessa de verdade.
+      const feita = Promise.resolve(acao());
+      const parou = await esperar(async () => (await esperas('audit_entries', true)) > 0, 5000);
+      await c.query('COMMIT');
+      return { visita: await enviada, acao: await feita, parou };
+    } finally {
+      await c.query('ROLLBACK').catch(() => undefined);
+      await c.end();
+    }
+  }
+
+  it('bloqueio#4: a reabertura que chega no meio da visita à ordem concluída conta essa visita e põe a ordem em campo', async () => {
+    await caso('tv1', ponto('tvreab', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('tv1');
+    await t.http().post(`/api/endemias/bloqueios/${o}/concluir`).set(auth(supervisora)).send({ nota: 'Concluída pela supervisão nesta data' }).expect(200);
+    const r = await acaoNoMeioDaVisita(
+      () => visitar(casa.tv1!, o),
+      () => t.http().post(`/api/endemias/bloqueios/${o}/reabrir`).set(auth(supervisora)).send({ motivo: 'Novo caso confirmado na área' }),
+    );
+    expect(r.parou).toBe(true);
+    expect(r.acao.status).toBe(200);
+    const fim = await ordem(o);
+    expect(r.visita).toMatchObject({ status: 'OK', avisos: [`A ordem ${fim.seq}/${fim.year} já estava concluída: a visita entrou nela`] });
+    expect((await db.vectorVisit.findUniqueOrThrow({ where: { id: r.visita.id } })).orderId).toBe(o);
+    // A visita entrou antes da reabertura: a ordem volta em campo (antes, voltava aberta com a visita dentro).
+    expect(fim.status).toBe('EM_CAMPO');
+    expect(fim.startedAt).not.toBeNull();
+  });
+
+  it('bloqueio#4: a conclusão sem nota que chega no meio da visita ao último imóvel vê o progresso completo', async () => {
+    await caso('tv2', ponto('tvcon', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('tv2');
+    const r = await acaoNoMeioDaVisita(
+      () => visitar(casa.tv2!, o),
+      () => t.http().post(`/api/endemias/bloqueios/${o}/concluir`).set(auth(supervisora)).send({}),
+    );
+    // O único imóvel da ordem foi trabalhado pela visita que entrou antes: sem justificativa (antes, 422 JUSTIFICATIVA).
+    expect(r.acao.status).toBe(200);
+    expect(r.parou).toBe(true);
+    expect(r.visita.status).toBe('OK');
+    expect(r.visita.avisos).toBeUndefined();
+    expect(await ordem(o)).toMatchObject({ status: 'CONCLUIDA', conclusionNote: null });
+    expect(await db.vectorVisit.count({ where: { orderId: o } })).toBe(1);
+  });
+
+  it('bloqueio#4: a conclusão sem nota que espera o cancelamento em curso diz que a ordem mudou, sem pedir justificativa', async () => {
+    await caso('tv3', ponto('tvcan', 200, 200), 'dengue', dia(-1));
+    const o = await ordemDe('tv3');
+    const c = await pgc();
+    try {
+      await c.query('BEGIN');
+      await c.query('LOCK TABLE audit_entries IN ACCESS EXCLUSIVE MODE');
+      // O cancelamento para na trilha, com a linha da ordem travada e a situação já gravada.
+      const cancelamento = Promise.resolve(t.http().post(`/api/endemias/bloqueios/${o}/cancelar`).set(auth(coordenador)).send({ motivo: 'Epidemia: a ação passa a ser por área' }));
+      expect(await esperar(async () => (await esperas('audit_entries')) > 0)).toBe(true);
+      // A conclusão lê a ordem ainda aberta, com o imóvel sem visita, e espera a linha.
+      const conclusao = Promise.resolve(t.http().post(`/api/endemias/bloqueios/${o}/concluir`).set(auth(supervisora)).send({}));
+      expect(await esperar(async () => (await esperas('audit_entries', true)) > 0, 5000)).toBe(true);
+      await c.query('COMMIT');
+      expect((await cancelamento).status).toBe(200);
+      // Com a linha, vê a ordem cancelada: conflito, e não o pedido de justificativa (422) para uma ordem que já acabou.
+      const r = await conclusao;
+      expect(r.status).toBe(409);
+      expect(r.body).toMatchObject({ code: 'CONFLITO', message: 'A ordem mudou enquanto você concluía; abra de novo' });
+    } finally {
+      await c.query('ROLLBACK').catch(() => undefined);
+      await c.end();
+    }
+    expect(await ordem(o)).toMatchObject({ status: 'CANCELADA', concludedAt: null });
   });
 });

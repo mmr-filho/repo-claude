@@ -45,10 +45,15 @@ function concentrados(pts: Ponto[], raio: number): boolean {
   return pts.every((p) => distanciaM(c, [p.longitude, p.latitude]) <= raio);
 }
 
+/** Motivo, para a tela, dos imóveis que a geocodificação deixou como estavam por causa do quarteirão. */
+export const MOTIVO_FORA_DO_QUARTEIRAO =
+  'o endereço na base do IBGE cai fora do quarteirão que o imóvel já tem (escolhido em campo ou ligado antes), e a posição pelo endereço não troca o quarteirão. Confira e marque no mapa';
+
 /**
  * Geocodificação só local (LGPD: o endereço não sai para serviços externos). Ordem: endereço com número na base do
- * IBGE (CNEFE), quadra e lote do complemento, logradouro sem número, centro do quarteirão do imóvel, centro do bairro
- * ou da localidade pelo nome. Nunca troca uma posição melhor (GPS em campo, mapa) por uma pior.
+ * IBGE (CNEFE), quadra e lote do complemento, centro do quarteirão do imóvel (o que já tem quarteirão), logradouro sem
+ * número, centro do bairro ou da localidade pelo nome. Nunca troca uma posição melhor (GPS em campo, mapa) por uma
+ * pior, e a posição pelo endereço nunca tira o imóvel do quarteirão que ele já tem (o escolhido pelo ACE em campo manda).
  */
 @Injectable()
 export class GeocodificacaoService {
@@ -97,6 +102,7 @@ export class GeocodificacaoService {
     let analisados = 0;
     let atualizados = 0;
     let semResultado = 0;
+    let foraDoQuarteirao = 0;
     // Continua de onde a chamada anterior parou (a tela repete enquanto houver "proximo").
     let cursor: string | undefined = input.apos;
     let esgotou = false;
@@ -126,6 +132,13 @@ export class GeocodificacaoService {
         if (!posicaoMelhorOuIgual(r.precisao, h.geoPrecision as PrecisaoGeo | null)) continue;
         // Mesma precisão: só troca quando pedida para este imóvel (endereço corrigido) e o ponto mudou.
         if (h.geoPrecision === r.precisao && h.latitude != null && (!explicito || (h.latitude === r.lat && h.longitude === r.lng))) continue;
+        // A posição pelo endereço nunca tira o imóvel do quarteirão que ele já tem (o escolhido pelo ACE em campo, sem a
+        // posição do GPS, ou o ligado antes): só vale quando o ponto cai nesse mesmo quarteirão; fora dele, o imóvel fica
+        // como está e é contado à parte, para a supervisão conferir no mapa. Imóvel sem quarteirão segue a regra de sempre.
+        if (h.blockId && PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao) && (await this.localizador.quarteiraoDoPonto(ctx.db, r.lat, r.lng))?.id !== h.blockId) {
+          foraDoQuarteirao++;
+          continue;
+        }
         if (PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao)) {
           // Posição do imóvel: muda o cadastro (vai na ficha domiciliar do e-SUS).
           await ctx.db.household.update({ where: { id: h.id }, data: { latitude: r.lat, longitude: r.lng, geoPrecision: r.precisao, geoSource: r.fonte, geoAccuracyM: null, geoAt: new Date() } });
@@ -141,10 +154,20 @@ export class GeocodificacaoService {
         atualizados++;
       }
     }
-    await this.audit.recordStandalone(ctx, { action: 'territorio.geocodificar', entityType: 'Household', payload: { analisados, atualizados, resumo } });
+    await this.audit.recordStandalone(ctx, { action: 'territorio.geocodificar', entityType: 'Household', payload: { analisados, atualizados, foraDoQuarteirao, resumo } });
     // Casos ativos dos moradores (ordem de bloqueio) são reavaliados com a posição nova.
     await this.territorio.imoveisPosicionados(ctx, posicionados);
-    return { analisados, atualizados, semResultado, porPrecisao: resumo, baseDeEnderecos: base.length, proximo: esgotou || explicito ? null : (cursor ?? null) };
+    return {
+      analisados,
+      atualizados,
+      semResultado,
+      // Imóveis com quarteirão cujo endereço cai em outro quarteirão (ou fora da malha): ficaram como estavam.
+      foraDoQuarteirao,
+      avisos: foraDoQuarteirao ? [`${foraDoQuarteirao} imóvel(is) ficaram como estavam: ${MOTIVO_FORA_DO_QUARTEIRAO}.`] : [],
+      porPrecisao: resumo,
+      baseDeEnderecos: base.length,
+      proximo: esgotou || explicito ? null : (cursor ?? null),
+    };
   }
 
   private tentar(
@@ -189,16 +212,19 @@ export class GeocodificacaoService {
       const r = decidir(pts, 'cnefe:quadra-lote');
       if (r) return r;
     }
+    // Imóvel que já tem quarteirão (o escolhido pelo ACE em campo): o centro dele (dezenas de metros, e dentro do próprio
+    // quarteirão) vale mais que a mediana da rua sem o número, que pode cair em outro quarteirão e, por ser pior, nunca
+    // seria trocada pelo centro na rodada seguinte.
+    if (h.blockId) {
+      const b = idx.centroBloco.get(h.blockId);
+      if (b) return { lat: b.centerLat, lng: b.centerLng, precisao: 'QUARTEIRAO', fonte: 'centro-do-quarteirao' };
+    }
     if (rua) {
       const pts = filtrar(idx.porRua.get(rua) ?? []);
       if (pts.length && concentrados(pts, 600)) {
         const [lng, lat] = mediana(pts);
         return { lat, lng, precisao: 'LOGRADOURO', fonte: 'cnefe:logradouro' };
       }
-    }
-    if (h.blockId) {
-      const b = idx.centroBloco.get(h.blockId);
-      if (b) return { lat: b.centerLat, lng: b.centerLng, precisao: 'QUARTEIRAO', fonte: 'centro-do-quarteirao' };
     }
     const c = bairro ? idx.centroNome.get(bairro) : undefined;
     if (c) return { lat: c.lat, lng: c.lng, precisao: 'LOCALIDADE', fonte: 'centro-do-bairro' };
