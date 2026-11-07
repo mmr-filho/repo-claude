@@ -303,14 +303,18 @@ export class BloqueioService implements OnModuleInit {
   }
 
   /**
-   * O caso mudou (posição, data, imóvel) ou voltou à ordem. Ordem ainda sem trabalho de campo cujo caso agora agrupa
-   * com outra ordem ativa vira uma só com ela; senão, refaz os quarteirões da própria ordem.
+   * O caso mudou (posição, data, imóvel) ou voltou à ordem. Se agora agrupa com outra ordem ativa e uma das duas ainda
+   * não tem trabalho de campo, viram uma só (a sem campo vai para a outra); senão, refaz os quarteirões da própria ordem.
    */
   private async acomodar(tx: Tx, sys: SystemContext, orderId: string, caso: CasoAvaliado): Promise<string[]> {
-    if (!(await this.temTrabalhoDeCampo(tx, orderId))) {
-      const outra = await this.ordemQueAgrupa(tx, sys, caso, orderId);
-      const unidas = outra ? await this.unir(tx, sys, orderId, outra) : null;
+    const campo = await this.temTrabalhoDeCampo(tx, orderId);
+    let tentativas = 0;
+    for (const outra of await this.ordensQueAgrupam(tx, sys, caso, orderId)) {
+      // Duas ordens com trabalho de campo não se unem (cada uma guarda o seu); a união confere de novo, com as linhas travadas.
+      if (campo && (await this.temTrabalhoDeCampo(tx, outra))) continue;
+      const unidas = await this.unir(tx, sys, orderId, outra);
       if (unidas) return unidas;
+      if (++tentativas === 3) break;
     }
     await this.recalcular(tx, orderId);
     return [orderId];
@@ -358,13 +362,19 @@ export class BloqueioService implements OnModuleInit {
     return [destino.id, origem.id];
   }
 
+  /** A ordem ativa mais antiga em que o caso entra (ver `ordensQueAgrupam`). */
+  private async ordemQueAgrupa(tx: Tx, sys: SystemContext, caso: CasoAvaliado): Promise<string | null> {
+    return (await this.ordensQueAgrupam(tx, sys, caso))[0] ?? null;
+  }
+
   /**
-   * A ordem ativa mais antiga em que o caso entra. Algum caso ativo dela agrupa com ele (mesmo imóvel ou pessoa, ou área,
-   * no mesmo período) e, sem cadeia, o caso fica na janela da menor data de referência dos casos ativos da ordem e não
-   * começou mais que a janela depois do início do campo. A ordem em campo também recebe o caso pela identidade de um
-   * caso que saiu dela (reclassificação) ou por morar num quarteirão que ela já cobre.
+   * As ordens ativas em que o caso entra, da mais antiga para a mais nova. Algum caso ativo dela agrupa com ele (mesmo
+   * imóvel ou pessoa, ou área, no mesmo período) e, sem cadeia, com ele a ordem continua num período só (todas as datas
+   * de referência a até a janela da menor) e o caso não começou mais que a janela depois do início do campo. A ordem em
+   * campo também recebe o caso pela identidade de um caso que saiu dela (reclassificação) ou por morar num quarteirão que
+   * ela já cobre.
    */
-  private async ordemQueAgrupa(tx: Tx, sys: SystemContext, caso: CasoAvaliado, exceto?: string): Promise<string | null> {
+  private async ordensQueAgrupam(tx: Tx, sys: SystemContext, caso: CasoAvaliado, exceto?: string): Promise<string[]> {
     const raioM = sys.tenant.settings.territorio.raioBloqueioM;
     const janela = sys.tenant.settings.endemias.janelaAgrupamentoDias;
     const semExceto = exceto ? { id: { not: exceto } } : {};
@@ -377,27 +387,29 @@ export class BloqueioService implements OnModuleInit {
       where: { status: 'EM_CAMPO', ...semExceto, OR: [{ cases: { some: { active: false, OR: identidade } } }, ...(caso.blockId ? [{ blocks: { some: { blockId: caso.blockId } } }] : [])] },
       select: { id: true, cases: { where: { active: false, OR: identidade }, select: { referenceDate: true } }, blocks: caso.blockId ? { where: { blockId: caso.blockId }, select: { blockId: true } } : false },
     });
-    const menor = new Map<string, string>();
+    // Período de cada ordem: a menor e a maior data de referência dos casos ativos.
+    const periodo = new Map<string, { de: string; ate: string }>();
     const candidatas = new Set<string>();
     for (const c of ativos) {
       const data = localDateString(c.referenceDate, 'UTC');
-      if (!menor.has(c.orderId) || data < menor.get(c.orderId)!) menor.set(c.orderId, data);
+      const p = periodo.get(c.orderId);
+      periodo.set(c.orderId, { de: !p || data < p.de ? data : p.de, ate: !p || data > p.ate ? data : p.ate });
       if (casosAgrupam(caso, { lat: c.lat, lng: c.lng, householdId: c.householdId, patientId: c.patientId, dataReferencia: data }, raioM, janela)) candidatas.add(c.orderId);
     }
     for (const o of emCampo) {
       const pelaIdentidade = o.cases.some((c) => Math.abs(diasDepois(caso.dataReferencia, localDateString(c.referenceDate, 'UTC'))) <= janela);
       if (pelaIdentidade || (o.blocks?.length ?? 0) > 0) candidatas.add(o.id);
     }
-    if (!candidatas.size) return null;
+    if (!candidatas.size) return [];
     const ordens = await tx.blockingOrder.findMany({ where: { id: { in: [...candidatas] } }, select: { id: true, openedAt: true, startedAt: true } });
     const validas = ordens.filter((o) => {
-      const m = menor.get(o.id);
-      if (m && Math.abs(diasDepois(caso.dataReferencia, m)) > janela) return false;
+      const p = periodo.get(o.id);
+      if (p && (diasDepois(caso.dataReferencia, p.de) > janela || diasDepois(p.ate, caso.dataReferencia) > janela)) return false;
       // Campo iniciado antes do começo do caso além da janela: o trabalho feito não serve a ele.
       return !o.startedAt || diasDepois(caso.dataReferencia, localDateString(o.startedAt, sys.tenant.timeZone)) <= janela;
     });
-    validas.sort((x, y) => x.openedAt.getTime() - y.openedAt.getTime());
-    return validas[0]?.id ?? null;
+    validas.sort((x, y) => x.openedAt.getTime() - y.openedAt.getTime() || x.id.localeCompare(y.id));
+    return validas.map((o) => o.id);
   }
 
   private async criarOrdem(tx: Tx, sys: SystemContext, caso: CasoAvaliado): Promise<string> {
@@ -454,8 +466,7 @@ export class BloqueioService implements OnModuleInit {
     }
     // Situação: só as passagens entre aguardar a localização e aberta; o campo, a conclusão e o cancelamento são de quem
     // os faz (com a linha travada, a leitura acima é a atual).
-    const status: StatusOrdem | null =
-      o.status === 'AGUARDANDO_LOCALIZACAO' && comPosicao.length ? 'ABERTA' : o.status === 'ABERTA' && !emCampo && !comPosicao.length && o.cases.length ? 'AGUARDANDO_LOCALIZACAO' : null;
+    const status: StatusOrdem | null = o.status === 'AGUARDANDO_LOCALIZACAO' && comPosicao.length ? 'ABERTA' : o.status === 'ABERTA' && !emCampo && !comPosicao.length && o.cases.length ? 'AGUARDANDO_LOCALIZACAO' : null;
     if (status) await tx.blockingOrder.updateMany({ where: { id: orderId, status: o.status }, data: { status } });
     await tx.blockingOrder.update({
       where: { id: orderId },
@@ -751,8 +762,7 @@ export class BloqueioService implements OnModuleInit {
     const entram = agentes.filter((u) => !atuais.has(u));
     const saem = [...atuais].filter((u) => !agentes.includes(u));
     const validos = new Set(await this.elegiveis(ctx.db, entram));
-    if (entram.some((u) => !validos.has(u)))
-      throw new DomainError('AGENTE_INVALIDO', 'Só agentes de endemias ou supervisores de campo com lotação ativa (e usuário ativo) podem ser designados', HttpStatus.BAD_REQUEST);
+    if (entram.some((u) => !validos.has(u))) throw new DomainError('AGENTE_INVALIDO', 'Só agentes de endemias ou supervisores de campo com lotação ativa (e usuário ativo) podem ser designados', HttpStatus.BAD_REQUEST);
     await ctx.db.$transaction(async (tx) => {
       await tx.blockingOrderAssignee.deleteMany({ where: { orderId: id, userId: { notIn: agentes } } });
       if (entram.length) await tx.blockingOrderAssignee.createMany({ data: entram.map((userId) => ({ orderId: id, userId, assignedBy: ctx.session.userId })), skipDuplicates: true });

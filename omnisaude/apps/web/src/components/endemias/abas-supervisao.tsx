@@ -14,7 +14,8 @@ import { api, errorMessage } from '@/lib/api';
 import { fmtDateTime, todayIso } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { BarraProgresso } from './aba-ordens';
-import type { AgenteEndemias } from './types';
+import { avisoLimitePendencias, depositoSugerido, fmtQuantidade, lotesParaResolver, opcoesTitular, textoTentativas, valorEntre } from './gestao-regras';
+import type { AgenteEndemias, BaixaPendente, PainelEstoque } from './types';
 
 // ─── Zonas ──────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,8 @@ interface QuarteiraoLivre {
 /** Zonas de trabalho dos ACE: o conjunto de quarteirões que cada agente percorre a cada ciclo. */
 export function AbaZonas({ podeGerir }: { podeGerir: boolean }) {
   const zonas = useApi<{ ciclo: { ciclo: number; ano: number }; zonas: Zona[] }>('/endemias/zonas');
+  // Para a supervisão, marca o titular que perdeu a lotação de campo (a zona fica sem quem a percorra).
+  const agentes = useApi<AgenteEndemias[]>(podeGerir ? '/endemias/agentes' : null);
   const [editando, setEditando] = useState<Zona | 'nova' | null>(null);
   return (
     <Card>
@@ -67,7 +70,16 @@ export function AbaZonas({ podeGerir }: { podeGerir: boolean }) {
                   <TD className="font-medium">
                     {z.nome} {!z.ativa && <Badge>inativa</Badge>}
                   </TD>
-                  <TD>{z.agente?.nome ?? <span className="text-amber-700">descoberta</span>}</TD>
+                  <TD>
+                    {z.agente ? (
+                      <>
+                        {z.agente.nome}
+                        {agentes.data && !agentes.data.some((a) => a.id === z.agente?.id) && <div className="text-xs text-amber-700">sem lotação ativa</div>}
+                      </>
+                    ) : (
+                      <span className="text-amber-700">descoberta</span>
+                    )}
+                  </TD>
                   <TD className="max-w-xs text-sm">
                     {z.quarteiroes.length
                       ? z.quarteiroes
@@ -108,6 +120,9 @@ function ZonaDialog({ zona, onClose, onSalvo }: { zona: Zona | null; onClose: ()
   const [escolhidos, setEscolhidos] = useState<Set<string>>(new Set(zona?.quarteiroes.map((q) => q.id) ?? []));
   const [filtro, setFiltro] = useState('');
   const [salvando, setSalvando] = useState(false);
+  // O titular atual fora da lista (sem lotação ativa) aparece como opção própria: o campo mostra o que vai ser enviado.
+  const titulares = useMemo(() => opcoesTitular(agentes.data, zona?.agente ?? null), [agentes.data, zona]);
+  const titularSemLotacao = titulares.some((t) => t.id === aceId && t.semLotacao);
   const opcoes = useMemo(() => {
     const atuais: QuarteiraoLivre[] = (zona?.quarteiroes ?? []).map((q) => ({ id: q.id, numero: q.numero, localidade: null, bairro: null, imoveis: 0 }));
     return [...atuais, ...(livres.data ?? [])].filter((q) => !filtro.trim() || `${q.numero} ${q.localidade ?? ''} ${q.bairro ?? ''}`.toLowerCase().includes(filtro.trim().toLowerCase()));
@@ -152,14 +167,15 @@ function ZonaDialog({ zona, onClose, onSalvo }: { zona: Zona | null; onClose: ()
           <Field label="Agente titular" htmlFor="zona-ace">
             <Select id="zona-ace" value={aceId} onChange={(e) => setAceId(e.target.value)}>
               <option value="">Descoberta (sem titular)</option>
-              {agentes.data?.map((a) => (
+              {titulares.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.nome}
+                  {a.rotulo}
                 </option>
               ))}
             </Select>
           </Field>
         </div>
+        {titularSemLotacao && <Alert tone="warn">O titular desta zona está sem lotação ativa de campo: escolha outro agente ou deixe a zona descoberta.</Alert>}
         {zona && (
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={ativa} onChange={(e) => setAtiva(e.target.checked)} /> Zona ativa
@@ -332,23 +348,13 @@ interface PendenciaImovel {
   situacaoLabel: string;
   ultimaEm: string;
   agente: string | null;
+  /** Visitas não trabalhadas desde a última trabalhada; delas, as com o imóvel fechado e as recusas. */
   tentativas: number;
+  fechados: number;
+  recusas: number;
   naOrdem: boolean;
+  /** Duas visitas com o imóvel fechado em dias e turnos alternados em até 10 dias (Lei 13.301/2016, art. 1º, § 2º, II). */
   ausenciaDocumentada: boolean;
-}
-interface BaixaPendente {
-  id: string;
-  visitadoEm: string;
-  agente: string | null;
-  imovel: string | null;
-  produtoId: string;
-  produto: string;
-  unidade: string;
-  loteId: string | null;
-  lote: string | null;
-  quantidade: number;
-  motivo: string | null;
-  motivoLabel: string | null;
 }
 
 /** Imóveis pendentes (fechado, recusado, abandonado) e baixas de larvicida que ficaram para a supervisão. */
@@ -356,14 +362,24 @@ export function AbaPendencias() {
   const imoveis = useApi<PendenciaImovel[]>('/endemias/pendencias');
   const baixas = useApi<BaixaPendente[]>('/endemias/estoque/pendentes');
   const [resolvendo, setResolvendo] = useState<BaixaPendente | null>(null);
+  const limite = imoveis.data ? avisoLimitePendencias(imoveis.data.length) : null;
+  const comRecusa = imoveis.data?.filter((p) => p.recusas > 0).length ?? 0;
   return (
     <div className="space-y-3">
       <Card>
-        <CardHeader title="Imóveis pendentes" description="Última visita no ciclo atual ou numa ordem ativa foi fechado, recusado ou abandonado. Volte em outro dia e turno (fim de semana inclusive)." />
+        <CardHeader
+          title="Imóveis pendentes"
+          description={`Última visita no ciclo atual ou numa ordem ativa foi fechado, recusado ou abandonado. Volte em outro dia e turno (fim de semana inclusive).${comRecusa ? ` ${comRecusa} imóvel(is) com recusa.` : ''}`}
+        />
         <CardBody className="p-0">
           {imoveis.loading && !imoveis.data && <Spinner className="p-4" />}
           {imoveis.error && <Alert tone="error">{imoveis.error}</Alert>}
           {imoveis.data && !imoveis.data.length && <EmptyState title="Nenhum imóvel pendente" />}
+          {limite && (
+            <Alert tone="warn" className="m-3">
+              {limite}
+            </Alert>
+          )}
           {!!imoveis.data?.length && (
             <Table>
               <THead>
@@ -391,7 +407,10 @@ export function AbaPendencias() {
                     </TD>
                     <TD>
                       {p.tentativas}
-                      {p.ausenciaDocumentada && <div className="text-xs text-slate-600">2 tentativas em dias e turnos diferentes em 10 dias</div>}
+                      <div className="text-xs text-slate-500">{textoTentativas(p)}</div>
+                      {p.ausenciaDocumentada && (
+                        <div className="max-w-[16rem] text-xs text-slate-600">Ausência: 2 visitas com o imóvel fechado em dias e turnos diferentes em até 10 dias (confira se foram comunicadas ao morador)</div>
+                      )}
                     </TD>
                     <TD>{fmtDateTime(p.ultimaEm)}</TD>
                     <TD>{p.agente}</TD>
@@ -401,7 +420,8 @@ export function AbaPendencias() {
             </Table>
           )}
           <p className="px-4 py-2 text-xs text-slate-500">
-            Imóvel recusado ou abandonado segue o rito do código de posturas do município (notificação e intimação do responsável). O ingresso forçado da Lei 13.301/2016 só vale com emergência em saúde pública declarada.
+            A ausência da Lei 13.301/2016 (art. 1º, § 2º, II) conta só o imóvel fechado, em duas visitas comunicadas; a recusa (§ 2º, III) e o abandono (§ 2º, I) são outras hipóteses. Imóvel recusado ou abandonado segue
+            o rito do código de posturas do município (notificação e intimação do responsável). O ingresso forçado só vale com emergência em saúde pública declarada.
           </p>
         </CardBody>
       </Card>
@@ -418,6 +438,7 @@ export function AbaPendencias() {
                   <TH>Visita</TH>
                   <TH>Produto</TH>
                   <TH>Lote e quantidade</TH>
+                  <TH>Unidade e depósito</TH>
                   <TH>Motivo</TH>
                   <TH />
                 </tr>
@@ -433,7 +454,11 @@ export function AbaPendencias() {
                     </TD>
                     <TD>{b.produto}</TD>
                     <TD>
-                      {b.lote ?? '—'} · {b.quantidade.toLocaleString('pt-BR')} {b.unidade}
+                      {b.lote ?? '—'} · {fmtQuantidade(b.quantidade)} {b.unidade}
+                    </TD>
+                    <TD className="text-sm">
+                      <div>{b.unidadeVisita ?? '—'}</div>
+                      <div className="text-xs text-slate-500">{b.deposito ?? 'sem depósito de endemias'}</div>
                     </TD>
                     <TD>{b.motivoLabel}</TD>
                     <TD>
@@ -462,19 +487,30 @@ export function AbaPendencias() {
   );
 }
 
+/**
+ * Resolver a baixa pendente: a supervisão vê a unidade da visita e escolhe o depósito de endemias de onde saiu o
+ * larvicida (obrigatório quando a unidade da visita não tem depósito) e o lote desse depósito.
+ */
 function ResolverBaixa({ baixa, onClose, onFeito }: { baixa: BaixaPendente; onClose: () => void; onFeito: () => void }) {
   const toast = useToast();
-  const estoque = useApi<{ produtos: { id: string; lotes: { loteId: string; lote: string; saldo: number; validade: string; deposito: string }[] }[] }>('/endemias/estoque');
+  const estoque = useApi<PainelEstoque>('/endemias/estoque');
   const [acao, setAcao] = useState<'BAIXAR' | 'REGULARIZAR' | 'CANCELAR'>('BAIXAR');
-  const [loteId, setLoteId] = useState(baixa.loteId ?? '');
+  // null enquanto a supervisão não escolhe: vale o sugerido (o depósito da baixa, senão o da unidade da visita; o lote da visita).
+  const [depositoEscolhido, setDeposito] = useState<string | null>(null);
+  const [loteEscolhido, setLote] = useState<string | null>(null);
   const [nota, setNota] = useState('');
   const [enviando, setEnviando] = useState(false);
-  const lotes = estoque.data?.produtos.find((p) => p.id === baixa.produtoId)?.lotes ?? [];
+  const depositos = estoque.data?.depositos ?? [];
+  const depositoId = valorEntre(depositoEscolhido ?? depositoSugerido(baixa, depositos), depositos);
+  const lotesDoProduto = estoque.data?.produtos.find((p) => p.id === baixa.produtoId)?.lotes ?? [];
+  const opcoesLote = acao === 'CANCELAR' ? [] : lotesParaResolver({ acao, lotes: lotesDoProduto, depositoId, baixa });
+  const loteId = valorEntre(loteEscolhido ?? baixa.loteId ?? '', opcoesLote);
   const enviar = async () => {
     setEnviando(true);
     try {
-      await api.post(`/endemias/estoque/pendentes/${baixa.id}/resolver`, { acao, loteId: acao === 'CANCELAR' ? null : loteId || null, nota: nota.trim() });
-      toast.success(acao === 'CANCELAR' ? 'Baixa cancelada' : acao === 'REGULARIZAR' ? 'Estoque regularizado e baixado' : 'Baixa feita');
+      const cancelar = acao === 'CANCELAR';
+      await api.post(`/endemias/estoque/pendentes/${baixa.id}/resolver`, { acao, loteId: cancelar ? null : loteId || null, depositoId: cancelar ? null : depositoId || null, nota: nota.trim() });
+      toast.success(cancelar ? 'Baixa cancelada' : acao === 'REGULARIZAR' ? 'Estoque regularizado e baixado' : 'Baixa feita');
       onFeito();
     } catch (e) {
       toast.error(errorMessage(e));
@@ -487,39 +523,62 @@ function ResolverBaixa({ baixa, onClose, onFeito }: { baixa: BaixaPendente; onCl
       open
       onOpenChange={(v) => !v && onClose()}
       title="Resolver baixa de larvicida"
-      description={`${baixa.produto} · ${baixa.quantidade} ${baixa.unidade} · ${baixa.motivoLabel ?? ''}`}
+      description={`${baixa.produto} · ${fmtQuantidade(baixa.quantidade)} ${baixa.unidade}${baixa.lote ? ` · lote ${baixa.lote}` : ''} · ${baixa.motivoLabel ?? ''}`}
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>
             Voltar
           </Button>
-          <Button onClick={enviar} loading={enviando} disabled={nota.trim().length < 5 || (acao !== 'CANCELAR' && !loteId)}>
+          <Button onClick={enviar} loading={enviando} disabled={nota.trim().length < 5 || (acao !== 'CANCELAR' && (!depositoId || !loteId))}>
             Confirmar
           </Button>
         </>
       }
     >
       <div className="space-y-3">
+        <div className="rounded-lg bg-slate-50 p-3 text-sm">
+          <div>
+            <span className="text-slate-500">Visita:</span> {fmtDateTime(baixa.visitadoEm)} · {baixa.agente ?? '—'} · {baixa.imovel ?? '—'}
+          </div>
+          <div>
+            <span className="text-slate-500">Unidade da visita:</span> {baixa.unidadeVisita ?? '—'} · <span className="text-slate-500">depósito da baixa:</span> {baixa.deposito ?? 'nenhum'}
+          </div>
+        </div>
+        {!baixa.depositoId && acao !== 'CANCELAR' && <Alert tone="info">A unidade da visita não tinha depósito de endemias: escolha o depósito de onde saiu o larvicida.</Alert>}
+        {estoque.error && <Alert tone="error">{estoque.error}</Alert>}
         <Field label="O que fazer" htmlFor="baixa-acao">
           <Select id="baixa-acao" value={acao} onChange={(e) => setAcao(e.target.value as typeof acao)}>
-            <option value="BAIXAR">Baixar no lote (escolha o lote com saldo)</option>
+            <option value="BAIXAR">Baixar no lote (escolha o depósito e o lote com saldo)</option>
             <option value="REGULARIZAR">Regularizar: o estoque físico tinha o produto (ajuste e baixa)</option>
             <option value="CANCELAR">Cancelar: registro errado, sem efeito no estoque</option>
           </Select>
         </Field>
         {acao !== 'CANCELAR' && (
-          <Field label="Lote" htmlFor="baixa-lote">
-            <Select id="baixa-lote" value={loteId} onChange={(e) => setLoteId(e.target.value)}>
-              <option value="">Escolha</option>
-              {lotes.map((l) => (
-                <option key={l.loteId} value={l.loteId}>
-                  {l.lote} · saldo {l.saldo} · {l.deposito}
-                </option>
-              ))}
-            </Select>
-          </Field>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Depósito de endemias" htmlFor="baixa-deposito">
+              <Select id="baixa-deposito" value={depositoId} onChange={(e) => setDeposito(e.target.value)}>
+                <option value="">Escolha</option>
+                {depositos.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.nome} · {d.unidade}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Lote" htmlFor="baixa-lote" hint={depositoId && !opcoesLote.length ? 'Nenhum lote do produto com saldo neste depósito. Se o estoque físico tinha o produto, use Regularizar.' : undefined}>
+              <Select id="baixa-lote" value={loteId} onChange={(e) => setLote(e.target.value)} disabled={!depositoId}>
+                <option value="">{depositoId ? 'Escolha' : 'Escolha antes o depósito'}</option>
+                {opcoesLote.map((l) => (
+                  <option key={l.id} value={l.id} disabled={l.desabilitado}>
+                    {l.rotulo}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
         )}
-        {acao === 'REGULARIZAR' && <Alert tone="warn">Faz um ajuste de entrada só da diferença e baixa o tratamento. Programe a contagem do lote no depósito.</Alert>}
+        {estoque.loading && !estoque.data && <Spinner />}
+        {acao === 'REGULARIZAR' && <Alert tone="warn">Faz um ajuste de entrada só da diferença no depósito escolhido e baixa o tratamento. Programe a contagem do lote no depósito.</Alert>}
         <Field label="Nota (mínimo de 5 caracteres)" htmlFor="baixa-nota">
           <Textarea id="baixa-nota" rows={2} value={nota} onChange={(e) => setNota(e.target.value)} />
         </Field>

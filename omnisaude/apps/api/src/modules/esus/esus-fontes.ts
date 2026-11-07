@@ -1,4 +1,4 @@
-import type { TenantClient } from '@omnisaude/database';
+import type { TenantClient, TenantPrisma } from '@omnisaude/database';
 import {
   buildAtendimentoIndividual,
   buildAtendimentoOdontologico,
@@ -40,6 +40,8 @@ export interface FichaGerada {
   ine: string | null;
   ficha: LediObject;
   summary: Record<string, unknown>;
+  /** Registros de origem que entraram na ficha (esus_record_items); vazio nos cadastros, que são atualizações. */
+  itens: string[];
 }
 
 export interface FonteContexto {
@@ -53,6 +55,13 @@ export interface FonteContexto {
   cadastroLotacao: Lotacao;
   /** Ficha anterior (uuid) por origem, para marcar atualizações de cadastro. */
   previousUuid: (sourceType: string, sourceId: string) => string | undefined;
+  /**
+   * Reprocessamento: só os registros das fichas reprocessadas (ids por tipo de origem), sem o filtro do período nem do
+   * que já foi exportado. Cada ficha nova junta registros de uma só ficha antiga (`fichaDe`) e leva o uuid dela.
+   */
+  reprocesso?: { ids: ReadonlyMap<string, readonly string[]>; fichaDe: (kind: number, sourceType: string, sourceId: string) => { id: string; uuid: string } | undefined };
+  /** Registros do período que ficaram de fora por já estarem numa ficha de algum lote. */
+  estatistica: { jaExportados: number };
 }
 
 type Db = TenantClient;
@@ -80,15 +89,93 @@ function cidadao(p: { name: string; socialName: string | null; birthDate: Date; 
   return { name: p.name, socialName: p.socialName, birthDate: p.birthDate, sex: p.sex, cpf: p.cpf, cns: p.cns, justificativaSemCpf: p.cpf ? null : p.homeless ? 5 : JUSTIFICATIVA_SEM_CPF_PADRAO };
 }
 
-async function lotacoes(db: Db, unitId: string, userIds: string[]): Promise<Map<string, Lotacao & { name: string }>> {
-  const users = await db.user.findMany({ where: { id: { in: userIds } }, include: { assignments: { where: { unitId, active: true } }, teamMembers: { where: { active: true }, include: { team: true } } } });
-  const out = new Map<string, Lotacao & { name: string }>();
-  for (const u of users) {
-    const team = u.teamMembers.find((m) => m.team.unitId === unitId && m.team.active)?.team;
-    const assignment = u.assignments[0];
-    out.set(u.id, { cns: u.cns ?? '', cbo: assignment?.cbo ?? '', cnes: '', ine: team?.ine ?? null, name: u.name });
-  }
+/** Ids por consulta: o PostgreSQL aceita no máximo 32.767 parâmetros, e um IN com dezenas de milhares de ids passa disso. */
+export const LOTE_IDS = 5_000;
+
+/** Consulta por ids em lotes de até LOTE_IDS. */
+export async function emLotes<T>(ids: readonly string[], fn: (lote: string[]) => Promise<T[]>): Promise<T[]> {
+  const out: T[] = [];
+  for (let i = 0; i < ids.length; i += LOTE_IDS) out.push(...(await fn(ids.slice(i, i + LOTE_IDS))));
   return out;
+}
+
+/** Profissional na unidade: lotações ativas (papel e CBO) e participações ativas em equipes ativas (CBO e INE). */
+interface Profissional {
+  name: string;
+  cns: string;
+  lotacoes: { role: string; cbo: string }[];
+  equipes: { teamId: string; cbo: string; ine: string | null }[];
+}
+
+async function profissionais(db: Db, unitId: string, userIds: string[]): Promise<Map<string, Profissional>> {
+  const users = await emLotes(userIds, (lote) =>
+    db.user.findMany({
+      where: { id: { in: lote } },
+      include: { assignments: { where: { unitId, active: true } }, teamMembers: { where: { active: true, team: { unitId, active: true } }, include: { team: true } } },
+    }),
+  );
+  return new Map(
+    users.map((u) => [
+      u.id,
+      { name: u.name, cns: u.cns ?? '', lotacoes: u.assignments.map((a) => ({ role: a.role, cbo: a.cbo })), equipes: u.teamMembers.map((m) => ({ teamId: m.teamId, cbo: m.cbo, ine: m.team.ine })) },
+    ]),
+  );
+}
+
+/** Cabeçalho das fichas de atendimento, procedimentos e vacina: a CBO da lotação na unidade e a equipe dessa CBO (sem ela, a primeira equipe do profissional na unidade). */
+function lotacaoAtendimento(p: Profissional | undefined, cnes: string): Lotacao {
+  const cbo = p?.lotacoes[0]?.cbo ?? '';
+  const equipe = p?.equipes.find((e) => e.cbo === cbo) ?? p?.equipes[0];
+  return { cns: p?.cns ?? '', cbo, cnes, ine: equipe?.ine ?? null };
+}
+
+/** Papéis da lotação de cada visita: o ACS na visita domiciliar; o agente de endemias (ou o supervisor de campo) na vetorial. */
+const PAPEIS_DA_VISITA: Record<'HomeVisit' | 'VectorVisit', readonly string[]> = { HomeVisit: ['ACS'], VectorVisit: ['ACE', 'SUPERVISOR_ENDEMIAS'] };
+
+/**
+ * Cabeçalho da ficha de visita, resolvido na exportação: a CBO gravada na visita quando o modelo a aceita; senão a da
+ * lotação ativa do profissional na unidade no papel daquela visita, para a correção da lotação valer no reprocessamento.
+ * O INE é o da equipe em que o profissional está com essa CBO (com mais de uma, a das visitas); sem equipe com essa CBO,
+ * a ficha vai sem INE, para a produção não ser creditada a uma equipe em que ele não atua com essa ocupação.
+ */
+function lotacaoVisita(p: Profissional | undefined, sourceType: 'HomeVisit' | 'VectorVisit', cboDaVisita: string, cnes: string, equipesDasVisitas: (string | null)[]): Lotacao {
+  const aceita = (cbo: string) => CBO_POR_MODELO.VISITA_DOMICILIAR.includes(cbo);
+  const papeis = PAPEIS_DA_VISITA[sourceType];
+  const doPapel = (p?.lotacoes ?? []).filter((l) => papeis.includes(l.role)).sort((a, b) => papeis.indexOf(a.role) - papeis.indexOf(b.role));
+  const cbo = aceita(cboDaVisita) ? cboDaVisita : ((doPapel.find((l) => aceita(l.cbo)) ?? doPapel[0])?.cbo ?? cboDaVisita);
+  const comCbo = (p?.equipes ?? []).filter((e) => e.cbo === cbo);
+  const vezes = (teamId: string) => equipesDasVisitas.filter((t) => t === teamId).length;
+  const equipe = comCbo.length > 1 ? [...comCbo].sort((a, b) => vezes(b.teamId) - vezes(a.teamId))[0] : comCbo[0];
+  return { cns: p?.cns ?? '', cbo, cnes, ine: equipe?.ine ?? null };
+}
+
+/** Linhas da fonte: no lote, as do período; no reprocessamento, só as das fichas regeradas (pelos ids, sem o período). */
+async function linhas<T extends { id: string }>(ctx: FonteContexto, sourceType: string, doPeriodo: () => Promise<T[]>, dosIds: (ids: string[]) => Promise<T[]>, momento: (r: T) => Date): Promise<T[]> {
+  if (!ctx.reprocesso) return doPeriodo();
+  const ids = ctx.reprocesso.ids.get(sourceType) ?? [];
+  const rows = ids.length ? await emLotes(ids, dosIds) : [];
+  return rows.sort((a, b) => momento(a).getTime() - momento(b).getTime() || a.id.localeCompare(b.id));
+}
+
+/**
+ * Tira os registros que já estão numa ficha deste tipo, de qualquer lote e em qualquer situação (esus_record_items): o
+ * lote novo do mesmo período leva só o que faltou, como a visita sincronizada depois do envio, sem repetir o resto.
+ */
+async function naoExportados<T extends { id: string }>(ctx: FonteContexto, kind: number, sourceType: string, rows: T[]): Promise<T[]> {
+  if (ctx.reprocesso || !rows.length) return rows;
+  const itens = await emLotes(
+    rows.map((r) => r.id),
+    (lote) => ctx.db.esusRecordItem.findMany({ where: { kind, sourceType, sourceId: { in: lote } }, select: { sourceId: true } }),
+  );
+  if (!itens.length) return rows;
+  const ja = new Set(itens.map((i) => i.sourceId));
+  ctx.estatistica.jaExportados += ja.size;
+  return rows.filter((r) => !ja.has(r.id));
+}
+
+/** Uuid da ficha: novo no lote; no reprocessamento, o da ficha regerada, dentro do arquivo e no DadoTransporte. */
+function uuidDa(ctx: FonteContexto, kind: number, sourceType: string, sourceId: string): string {
+  return ctx.reprocesso?.fichaDe(kind, sourceType, sourceId)?.uuid ?? lediUuid(ctx.unit.cnes);
 }
 
 function medicoesFromTriage(
@@ -131,18 +218,27 @@ function problemas(codes: string[]): { ciap?: string; cid10?: string }[] {
   return out;
 }
 
-/** Agrupa itens por profissional e dia local: uma ficha por grupo (até 99 atendimentos). */
-function groupByProfessionalDay<T>(items: T[], key: (i: T) => { userId: string; at: Date }, timeZone: string): Map<string, { userId: string; day: string; items: T[] }> {
-  const groups = new Map<string, { userId: string; day: string; items: T[] }>();
+/**
+ * Agrupa por profissional (e CBO, nas visitas) e dia local: uma ficha por grupo, até 99 registros. No reprocessamento,
+ * também pela ficha antiga, para registros de fichas diferentes nunca se misturarem.
+ */
+function agrupar<T extends { id: string }>(
+  ctx: FonteContexto,
+  kind: number,
+  sourceType: string,
+  items: T[],
+  key: (i: T) => { userId: string; cbo?: string; at: Date },
+): { userId: string; cbo: string; day: string; items: T[] }[] {
+  const groups = new Map<string, { userId: string; cbo: string; day: string; items: T[] }>();
   for (const item of items) {
     const k = key(item);
-    const day = localDate(k.at, timeZone);
-    const id = `${k.userId}|${day}`;
-    const g = groups.get(id) ?? { userId: k.userId, day, items: [] };
+    const day = localDate(k.at, ctx.timeZone);
+    const id = [k.userId, k.cbo ?? '', day, ctx.reprocesso?.fichaDe(kind, sourceType, item.id)?.id ?? ''].join('|');
+    const g = groups.get(id) ?? { userId: k.userId, cbo: k.cbo ?? '', day, items: [] };
     g.items.push(item);
     groups.set(id, g);
   }
-  return groups;
+  return [...groups.values()];
 }
 
 function chunks<T>(items: T[], size: number): T[][] {
@@ -163,18 +259,33 @@ function dayStart(day: string, timeZone: string): Date {
 
 export async function fichasAtendimento(ctx: FonteContexto): Promise<FichaGerada[]> {
   const { db, unit, timeZone } = ctx;
-  const notes = await db.clinicalNote.findMany({
-    where: { status: 'ASSINADO', kind: { in: ['SOAP', 'EVOLUCAO', 'ODONTOGRAMA'] }, signedAt: { gte: ctx.from, lte: ctx.to }, encounter: { unitId: unit.id, status: 'ENCERRADO' } },
-    include: { encounter: { include: { patient: true, triages: { orderBy: { classifiedAt: 'desc' }, take: 1 }, examRequests: true } } },
-    orderBy: { signedAt: 'asc' },
-  });
-  const lots = await lotacoes(db, unit.id, [...new Set(notes.map((n) => n.authorId))]);
+  const where = { status: 'ASSINADO', kind: { in: ['SOAP', 'EVOLUCAO', 'ODONTOGRAMA'] }, encounter: { unitId: unit.id, status: 'ENCERRADO' } } satisfies TenantPrisma.ClinicalNoteWhereInput;
+  const include = { encounter: { include: { patient: true, triages: { orderBy: { classifiedAt: 'desc' }, take: 1 }, examRequests: true } } } satisfies TenantPrisma.ClinicalNoteInclude;
+  const notes = await linhas(
+    ctx,
+    'ClinicalNote',
+    () => db.clinicalNote.findMany({ where: { ...where, signedAt: { gte: ctx.from, lte: ctx.to } }, include, orderBy: { signedAt: 'asc' } }),
+    (ids) => db.clinicalNote.findMany({ where: { ...where, id: { in: ids } }, include }),
+    (n) => n.signedAt ?? new Date(0),
+  );
+  const clinical = await naoExportados(
+    ctx,
+    TIPO_DADO.ATENDIMENTO_INDIVIDUAL,
+    'ClinicalNote',
+    notes.filter((n) => n.kind !== 'ODONTOGRAMA'),
+  );
+  const odonto = await naoExportados(
+    ctx,
+    TIPO_DADO.ATENDIMENTO_ODONTOLOGICO,
+    'ClinicalNote',
+    notes.filter((n) => n.kind === 'ODONTOGRAMA'),
+  );
+  const profs = await profissionais(db, unit.id, [...new Set([...clinical, ...odonto].map((n) => n.authorId))]);
   const out: FichaGerada[] = [];
-  const clinical = notes.filter((n) => n.kind !== 'ODONTOGRAMA');
-  const odonto = notes.filter((n) => n.kind === 'ODONTOGRAMA');
 
-  for (const g of groupByProfessionalDay(clinical, (n) => ({ userId: n.authorId, at: n.signedAt! }), timeZone).values()) {
-    const lot = lots.get(g.userId);
+  for (const g of agrupar(ctx, TIPO_DADO.ATENDIMENTO_INDIVIDUAL, 'ClinicalNote', clinical, (n) => ({ userId: n.authorId, at: n.signedAt! }))) {
+    const prof = profs.get(g.userId);
+    const lot = lotacaoAtendimento(prof, unit.cnes);
     for (const part of chunks(g.items, 99)) {
       const atendimentos: AtendimentoIndividualInput[] = part.map((n) => {
         const e = n.encounter;
@@ -193,27 +304,29 @@ export async function fichasAtendimento(ctx: FonteContexto): Promise<FichaGerada
           exames: e.examRequests.map((x) => ({ codigo: x.sigtapCode, solicitado: true, avaliado: x.status === 'RESULTADO' })),
         };
       });
-      const uuid = lediUuid(unit.cnes);
       const first = part[0]!;
+      const uuid = uuidDa(ctx, TIPO_DADO.ATENDIMENTO_INDIVIDUAL, 'ClinicalNote', first.id);
       out.push({
         kind: TIPO_DADO.ATENDIMENTO_INDIVIDUAL,
         uuid,
         sourceType: 'ClinicalNote',
         sourceId: first.id,
         patientId: part.length === 1 ? first.encounter.patientId : null,
-        ine: lot?.ine ?? null,
+        ine: lot.ine ?? null,
         ficha: buildAtendimentoIndividual({
           uuid,
-          header: { principal: { cns: lot?.cns ?? '', cbo: lot?.cbo ?? '', cnes: unit.cnes, ine: lot?.ine }, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge },
+          header: { principal: lot, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge },
           atendimentos,
         }),
-        summary: { profissional: lot?.name ?? g.userId, dia: g.day, atendimentos: part.length, registros: part.map((n) => n.id) },
+        summary: { profissional: prof?.name ?? g.userId, dia: g.day, atendimentos: part.length, registros: part.map((n) => n.id) },
+        itens: part.map((n) => n.id),
       });
     }
   }
 
-  for (const g of groupByProfessionalDay(odonto, (n) => ({ userId: n.authorId, at: n.signedAt! }), timeZone).values()) {
-    const lot = lots.get(g.userId);
+  for (const g of agrupar(ctx, TIPO_DADO.ATENDIMENTO_ODONTOLOGICO, 'ClinicalNote', odonto, (n) => ({ userId: n.authorId, at: n.signedAt! }))) {
+    const prof = profs.get(g.userId);
+    const lot = lotacaoAtendimento(prof, unit.cnes);
     for (const part of chunks(g.items, 99)) {
       const atendimentos: AtendimentoOdontologicoInput[] = part.map((n) => {
         const e = n.encounter;
@@ -238,21 +351,22 @@ export async function fichasAtendimento(ctx: FonteContexto): Promise<FichaGerada
           medicoes: medicoesFromTriage(e.triages[0]),
         };
       });
-      const uuid = lediUuid(unit.cnes);
       const first = part[0]!;
+      const uuid = uuidDa(ctx, TIPO_DADO.ATENDIMENTO_ODONTOLOGICO, 'ClinicalNote', first.id);
       out.push({
         kind: TIPO_DADO.ATENDIMENTO_ODONTOLOGICO,
         uuid,
         sourceType: 'ClinicalNote',
         sourceId: first.id,
         patientId: part.length === 1 ? first.encounter.patientId : null,
-        ine: lot?.ine ?? null,
+        ine: lot.ine ?? null,
         ficha: buildAtendimentoOdontologico({
           uuid,
-          header: { principal: { cns: lot?.cns ?? '', cbo: lot?.cbo ?? '', cnes: unit.cnes, ine: lot?.ine }, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge },
+          header: { principal: lot, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge },
           atendimentos,
         }),
-        summary: { profissional: lot?.name ?? g.userId, dia: g.day, atendimentos: part.length, registros: part.map((n) => n.id) },
+        summary: { profissional: prof?.name ?? g.userId, dia: g.day, atendimentos: part.length, registros: part.map((n) => n.id) },
+        itens: part.map((n) => n.id),
       });
     }
   }
@@ -263,15 +377,25 @@ export async function fichasAtendimento(ctx: FonteContexto): Promise<FichaGerada
 
 export async function fichasProcedimentos(ctx: FonteContexto): Promise<FichaGerada[]> {
   const { db, unit, timeZone } = ctx;
-  const triages = await db.triage.findMany({
-    where: { classifiedAt: { gte: ctx.from, lte: ctx.to }, encounter: { unitId: unit.id } },
-    include: { encounter: { include: { patient: true } } },
-    orderBy: { classifiedAt: 'asc' },
-  });
-  const lots = await lotacoes(db, unit.id, [...new Set(triages.map((t) => t.nurseId))]);
+  const where = { encounter: { unitId: unit.id } } satisfies TenantPrisma.TriageWhereInput;
+  const include = { encounter: { include: { patient: true } } } satisfies TenantPrisma.TriageInclude;
+  const triages = await naoExportados(
+    ctx,
+    TIPO_DADO.PROCEDIMENTOS,
+    'Triage',
+    await linhas(
+      ctx,
+      'Triage',
+      () => db.triage.findMany({ where: { ...where, classifiedAt: { gte: ctx.from, lte: ctx.to } }, include, orderBy: { classifiedAt: 'asc' } }),
+      (ids) => db.triage.findMany({ where: { ...where, id: { in: ids } }, include }),
+      (t) => t.classifiedAt,
+    ),
+  );
+  const profs = await profissionais(db, unit.id, [...new Set(triages.map((t) => t.nurseId))]);
   const out: FichaGerada[] = [];
-  for (const g of groupByProfessionalDay(triages, (t) => ({ userId: t.nurseId, at: t.classifiedAt }), timeZone).values()) {
-    const lot = lots.get(g.userId);
+  for (const g of agrupar(ctx, TIPO_DADO.PROCEDIMENTOS, 'Triage', triages, (t) => ({ userId: t.nurseId, at: t.classifiedAt }))) {
+    const prof = profs.get(g.userId);
+    const lot = lotacaoAtendimento(prof, unit.cnes);
     for (const part of chunks(g.items, 99)) {
       const atendimentos: ProcedimentoAtendimentoInput[] = part.map((t) => ({
         cidadao: cidadao(t.encounter.patient),
@@ -289,21 +413,22 @@ export async function fichasProcedimentos(ctx: FonteContexto): Promise<FichaGera
         medicaoPeso: part.filter((t) => t.weightKg !== null).length,
         medicaoAltura: part.filter((t) => t.heightCm !== null).length,
       };
-      const uuid = lediUuid(unit.cnes);
+      const uuid = uuidDa(ctx, TIPO_DADO.PROCEDIMENTOS, 'Triage', part[0]!.id);
       out.push({
         kind: TIPO_DADO.PROCEDIMENTOS,
         uuid,
         sourceType: 'Triage',
         sourceId: part[0]!.id,
         patientId: part.length === 1 ? part[0]!.encounter.patientId : null,
-        ine: lot?.ine ?? null,
+        ine: lot.ine ?? null,
         ficha: buildProcedimentos({
           uuid,
-          header: { cns: lot?.cns ?? '', cbo: lot?.cbo ?? '', cnes: unit.cnes, ine: lot?.ine, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge },
+          header: { ...lot, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge },
           atendimentos,
           totais,
         }),
-        summary: { profissional: lot?.name ?? g.userId, dia: g.day, atendimentos: part.length, registros: part.map((t) => t.id) },
+        summary: { profissional: prof?.name ?? g.userId, dia: g.day, atendimentos: part.length, registros: part.map((t) => t.id) },
+        itens: part.map((t) => t.id),
       });
     }
   }
@@ -351,11 +476,23 @@ function fabricanteRnds(name: string): string | undefined {
 
 export async function fichasVacinacao(ctx: FonteContexto): Promise<FichaGerada[]> {
   const { db, unit, timeZone } = ctx;
-  const rows = await db.vaccination.findMany({ where: { unitId: unit.id, appliedAt: { gte: ctx.from, lte: ctx.to } }, include: { patient: true }, orderBy: { appliedAt: 'asc' } });
-  const lots = await lotacoes(db, unit.id, [...new Set(rows.map((v) => v.professionalId))]);
+  const rows = await naoExportados(
+    ctx,
+    TIPO_DADO.VACINACAO,
+    'Vaccination',
+    await linhas(
+      ctx,
+      'Vaccination',
+      () => db.vaccination.findMany({ where: { unitId: unit.id, appliedAt: { gte: ctx.from, lte: ctx.to } }, include: { patient: true }, orderBy: { appliedAt: 'asc' } }),
+      (ids) => db.vaccination.findMany({ where: { unitId: unit.id, id: { in: ids } }, include: { patient: true } }),
+      (v) => v.appliedAt,
+    ),
+  );
+  const profs = await profissionais(db, unit.id, [...new Set(rows.map((v) => v.professionalId))]);
   const out: FichaGerada[] = [];
-  for (const g of groupByProfessionalDay(rows, (v) => ({ userId: v.professionalId, at: v.appliedAt }), timeZone).values()) {
-    const lot = lots.get(g.userId);
+  for (const g of agrupar(ctx, TIPO_DADO.VACINACAO, 'Vaccination', rows, (v) => ({ userId: v.professionalId, at: v.appliedAt }))) {
+    const prof = profs.get(g.userId);
+    const lot = lotacaoAtendimento(prof, unit.cnes);
     for (const part of chunks(g.items, 99)) {
       const atendimentos: VacinacaoAtendimentoInput[] = part.map((v) => ({
         cidadao: cidadao(v.patient),
@@ -374,16 +511,17 @@ export async function fichasVacinacao(ctx: FonteContexto): Promise<FichaGerada[]
           },
         ],
       }));
-      const uuid = lediUuid(unit.cnes);
+      const uuid = uuidDa(ctx, TIPO_DADO.VACINACAO, 'Vaccination', part[0]!.id);
       out.push({
         kind: TIPO_DADO.VACINACAO,
         uuid,
         sourceType: 'Vaccination',
         sourceId: part[0]!.id,
         patientId: part.length === 1 ? part[0]!.patientId : null,
-        ine: lot?.ine ?? null,
-        ficha: buildVacinacao({ uuid, header: { cns: lot?.cns ?? '', cbo: lot?.cbo ?? '', cnes: unit.cnes, ine: lot?.ine, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge }, atendimentos }),
-        summary: { profissional: lot?.name ?? g.userId, dia: g.day, atendimentos: part.length, registros: part.map((v) => v.id) },
+        ine: lot.ine ?? null,
+        ficha: buildVacinacao({ uuid, header: { ...lot, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge }, atendimentos }),
+        summary: { profissional: prof?.name ?? g.userId, dia: g.day, atendimentos: part.length, registros: part.map((v) => v.id) },
+        itens: part.map((v) => v.id),
       });
     }
   }
@@ -396,14 +534,31 @@ const dec = (x: unknown) => (x === null || x === undefined ? null : Number(x));
 
 export async function fichasVisitaDomiciliar(ctx: FonteContexto): Promise<FichaGerada[]> {
   const { db, unit, timeZone } = ctx;
-  const rows = await db.homeVisit.findMany({ where: { unitId: unit.id, visitedAt: { gte: ctx.from, lte: ctx.to } }, include: { patient: true }, orderBy: { visitedAt: 'asc' } });
-  const lots = await lotacoes(db, unit.id, [...new Set(rows.map((v) => v.professionalId))]);
+  const rows = await naoExportados(
+    ctx,
+    TIPO_DADO.VISITA_DOMICILIAR,
+    'HomeVisit',
+    await linhas(
+      ctx,
+      'HomeVisit',
+      () => db.homeVisit.findMany({ where: { unitId: unit.id, visitedAt: { gte: ctx.from, lte: ctx.to } }, include: { patient: true }, orderBy: { visitedAt: 'asc' } }),
+      (ids) => db.homeVisit.findMany({ where: { unitId: unit.id, id: { in: ids } }, include: { patient: true } }),
+      (v) => v.visitedAt,
+    ),
+  );
+  const profs = await profissionais(db, unit.id, [...new Set(rows.map((v) => v.professionalId))]);
   const out: FichaGerada[] = [];
   // Uma ficha por profissional, CBO e dia: quem tem duas lotações na unidade (ACS e ACE) não mistura as ocupações.
-  for (const g of groupByProfessionalDay(rows, (v) => ({ userId: `${v.professionalId}|${v.cbo ?? ''}`, at: v.visitedAt }), timeZone).values()) {
-    const [userId, cboDaVisita] = g.userId.split('|') as [string, string];
-    const lot = lots.get(userId);
+  for (const g of agrupar(ctx, TIPO_DADO.VISITA_DOMICILIAR, 'HomeVisit', rows, (v) => ({ userId: v.professionalId, cbo: v.cbo ?? '', at: v.visitedAt }))) {
+    const prof = profs.get(g.userId);
     for (const part of chunks(g.items, 99)) {
+      const lot = lotacaoVisita(
+        prof,
+        'HomeVisit',
+        g.cbo,
+        unit.cnes,
+        part.map((v) => v.teamId),
+      );
       const visitas: VisitaDomiciliarInput[] = part.map((v) => ({
         turno: (v.turno as 1 | 2 | 3) ?? turnoFromDate(v.visitedAt, timeZone),
         cidadao: v.patient ? cidadao(v.patient) : null,
@@ -423,20 +578,17 @@ export async function fichasVisitaDomiciliar(ctx: FonteContexto): Promise<FichaG
         latitude: v.latitude,
         longitude: v.longitude,
       }));
-      const uuid = lediUuid(unit.cnes);
+      const uuid = uuidDa(ctx, TIPO_DADO.VISITA_DOMICILIAR, 'HomeVisit', part[0]!.id);
       out.push({
         kind: TIPO_DADO.VISITA_DOMICILIAR,
         uuid,
         sourceType: 'HomeVisit',
         sourceId: part[0]!.id,
         patientId: part.length === 1 ? (part[0]!.patientId ?? null) : null,
-        ine: lot?.ine ?? null,
-        ficha: buildVisitaDomiciliar({
-          uuid,
-          header: { cns: lot?.cns ?? '', cbo: cboDaVisita || lot?.cbo || '', cnes: unit.cnes, ine: lot?.ine, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge },
-          visitas,
-        }),
-        summary: { profissional: lot?.name ?? userId, dia: g.day, visitas: part.length, registros: part.map((v) => v.id) },
+        ine: lot.ine ?? null,
+        ficha: buildVisitaDomiciliar({ uuid, header: { ...lot, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge }, visitas }),
+        summary: { profissional: prof?.name ?? g.userId, dia: g.day, visitas: part.length, registros: part.map((v) => v.id) },
+        itens: part.map((v) => v.id),
       });
     }
   }
@@ -456,19 +608,32 @@ const TIPOS_COMO_DOMICILIO = new Set(['01', '07', '08', '09', '10', '11', '99'])
  */
 export async function fichasVisitaVetorial(ctx: FonteContexto): Promise<FichaGerada[]> {
   const { db, unit, timeZone } = ctx;
-  const rows = await db.vectorVisit.findMany({ where: { unitId: unit.id, visitedAt: { gte: ctx.from, lte: ctx.to } }, orderBy: { visitedAt: 'asc' } });
+  const rows = await naoExportados(
+    ctx,
+    TIPO_DADO.VISITA_DOMICILIAR,
+    'VectorVisit',
+    await linhas(
+      ctx,
+      'VectorVisit',
+      () => db.vectorVisit.findMany({ where: { unitId: unit.id, visitedAt: { gte: ctx.from, lte: ctx.to } }, orderBy: { visitedAt: 'asc' } }),
+      (ids) => db.vectorVisit.findMany({ where: { unitId: unit.id, id: { in: ids } } }),
+      (v) => v.visitedAt,
+    ),
+  );
   if (!rows.length) return [];
-  const lots = await lotacoes(db, unit.id, [...new Set(rows.map((v) => v.userId))]);
+  const profs = await profissionais(db, unit.id, [...new Set(rows.map((v) => v.userId))]);
   const domicilios = [...new Set(rows.filter((v) => TIPOS_COMO_DOMICILIO.has(v.propertyType) && v.situation === 'TRABALHADO').map((v) => v.householdId))];
-  const familias = domicilios.length
-    ? await db.family.findMany({ where: { householdId: { in: domicilios }, active: true, responsibleId: { not: null } }, include: { responsible: true }, orderBy: { createdAt: 'asc' } })
-    : [];
+  const familias = await emLotes(domicilios, (lote) =>
+    db.family.findMany({ where: { householdId: { in: lote }, active: true, responsibleId: { not: null } }, include: { responsible: true }, orderBy: { createdAt: 'asc' } }),
+  );
+  // Com várias famílias no domicílio, o responsável da mais antiga (os lotes de ids não mudam a ordem dentro do domicílio).
+  familias.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   const responsavel = new Map<string, NonNullable<(typeof familias)[number]['responsible']>>();
   for (const f of familias) if (f.responsible && !f.responsible.mergedIntoId && !responsavel.has(f.householdId)) responsavel.set(f.householdId, f.responsible);
   const out: FichaGerada[] = [];
-  for (const g of groupByProfessionalDay(rows, (v) => ({ userId: `${v.userId}|${v.cbo}`, at: v.visitedAt }), timeZone).values()) {
-    const [userId, cbo] = g.userId.split('|') as [string, string];
-    const lot = lots.get(userId);
+  for (const g of agrupar(ctx, TIPO_DADO.VISITA_DOMICILIAR, 'VectorVisit', rows, (v) => ({ userId: v.userId, cbo: v.cbo, at: v.visitedAt }))) {
+    const prof = profs.get(g.userId);
+    const lot = lotacaoVisita(prof, 'VectorVisit', g.cbo, unit.cnes, []);
     for (const part of chunks(g.items, 99)) {
       const visitas: VisitaDomiciliarInput[] = part.map((v) => {
         const p = TIPOS_COMO_DOMICILIO.has(v.propertyType) && v.situation === 'TRABALHADO' ? responsavel.get(v.householdId) : undefined;
@@ -485,16 +650,17 @@ export async function fichasVisitaVetorial(ctx: FonteContexto): Promise<FichaGer
           longitude: v.longitude,
         };
       });
-      const uuid = lediUuid(unit.cnes);
+      const uuid = uuidDa(ctx, TIPO_DADO.VISITA_DOMICILIAR, 'VectorVisit', part[0]!.id);
       out.push({
         kind: TIPO_DADO.VISITA_DOMICILIAR,
         uuid,
         sourceType: 'VectorVisit',
         sourceId: part[0]!.id,
         patientId: null,
-        ine: lot?.ine ?? null,
-        ficha: buildVisitaDomiciliar({ uuid, header: { cns: lot?.cns ?? '', cbo, cnes: unit.cnes, ine: lot?.ine, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge }, visitas }),
-        summary: { profissional: lot?.name ?? userId, dia: g.day, visitas: part.length, registros: part.map((v) => v.id) },
+        ine: lot.ine ?? null,
+        ficha: buildVisitaDomiciliar({ uuid, header: { ...lot, dataAtendimento: dayStart(g.day, timeZone), codigoIbge: ctx.codigoIbge }, visitas }),
+        summary: { profissional: prof?.name ?? g.userId, dia: g.day, visitas: part.length, registros: part.map((v) => v.id) },
+        itens: part.map((v) => v.id),
       });
     }
   }
@@ -517,19 +683,20 @@ const CID_MENTAL = /^F/;
 
 export async function fichasCadastroIndividual(ctx: FonteContexto): Promise<FichaGerada[]> {
   const { db, unit } = ctx;
-  const patients = await db.patient.findMany({
-    where: {
-      mergedIntoId: null,
-      updatedAt: { gte: ctx.from, lte: ctx.to },
-      OR: [{ family: { household: { unitId: unit.id } } }, { encounters: { some: { unitId: unit.id } } }],
-    },
-    include: { family: { include: { responsible: true, household: true } }, conditions: { where: { active: true } } },
-    orderBy: { updatedAt: 'asc' },
-  });
+  const where = { mergedIntoId: null, OR: [{ family: { household: { unitId: unit.id } } }, { encounters: { some: { unitId: unit.id } } }] } satisfies TenantPrisma.PatientWhereInput;
+  const include = { family: { include: { responsible: true, household: true } }, conditions: { where: { active: true } } } satisfies TenantPrisma.PatientInclude;
+  // O cadastro é atualização (vai de novo quando muda): não entra no registro do que já foi exportado.
+  const patients = await linhas(
+    ctx,
+    'Patient',
+    () => db.patient.findMany({ where: { ...where, updatedAt: { gte: ctx.from, lte: ctx.to } }, include, orderBy: { updatedAt: 'asc' } }),
+    (ids) => db.patient.findMany({ where: { ...where, id: { in: ids } }, include }),
+    (p) => p.updatedAt,
+  );
   const out: FichaGerada[] = [];
   for (const p of patients) {
     const previous = ctx.previousUuid('Patient', p.id);
-    const uuid = lediUuid(unit.cnes);
+    const uuid = uuidDa(ctx, TIPO_DADO.CADASTRO_INDIVIDUAL, 'Patient', p.id);
     const responsible = p.family?.responsibleId === p.id || p.kinship === '00';
     const resp = p.family?.responsible && !responsible ? p.family.responsible : null;
     const cids = p.conditions.filter((c) => c.system === 'CID10').map((c) => c.code.toUpperCase());
@@ -584,6 +751,7 @@ export async function fichasCadastroIndividual(ctx: FonteContexto): Promise<Fich
           : undefined,
       }),
       summary: { cidadao: p.socialName ?? p.name, atualizacao: !!previous, dia: localDate(p.updatedAt, ctx.timeZone) },
+      itens: [],
     });
   }
   return out;
@@ -594,15 +762,19 @@ const posicaoDoImovel = (h: { geoPrecision: string | null }) => !!h.geoPrecision
 
 export async function fichasCadastroDomiciliar(ctx: FonteContexto): Promise<FichaGerada[]> {
   const { db, unit } = ctx;
-  const households = await db.household.findMany({
-    where: { active: true, unitId: unit.id, updatedAt: { gte: ctx.from, lte: ctx.to } },
-    include: { team: true, families: { where: { active: true }, include: { responsible: true, members: { where: { mergedIntoId: null }, select: { id: true } } } } },
-    orderBy: { updatedAt: 'asc' },
-  });
+  const where = { active: true, unitId: unit.id } satisfies TenantPrisma.HouseholdWhereInput;
+  const include = { team: true, families: { where: { active: true }, include: { responsible: true, members: { where: { mergedIntoId: null }, select: { id: true } } } } } satisfies TenantPrisma.HouseholdInclude;
+  const households = await linhas(
+    ctx,
+    'Household',
+    () => db.household.findMany({ where: { ...where, updatedAt: { gte: ctx.from, lte: ctx.to } }, include, orderBy: { updatedAt: 'asc' } }),
+    (ids) => db.household.findMany({ where: { ...where, id: { in: ids } }, include }),
+    (h) => h.updatedAt,
+  );
   const out: FichaGerada[] = [];
   for (const h of households) {
     const previous = ctx.previousUuid('Household', h.id);
-    const uuid = lediUuid(unit.cnes);
+    const uuid = uuidDa(ctx, TIPO_DADO.CADASTRO_DOMICILIAR, 'Household', h.id);
     out.push({
       kind: TIPO_DADO.CADASTRO_DOMICILIAR,
       uuid,
@@ -642,6 +814,7 @@ export async function fichasCadastroDomiciliar(ctx: FonteContexto): Promise<Fich
         longitude: posicaoDoImovel(h) ? h.longitude : null,
       }),
       summary: { domicilio: [h.street, h.number, h.district].filter(Boolean).join(', '), familias: h.families.length, atualizacao: !!previous, dia: localDate(h.updatedAt, ctx.timeZone) },
+      itens: [],
     });
   }
   return out;

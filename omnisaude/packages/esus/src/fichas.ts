@@ -602,7 +602,11 @@ export function buildVisitaDomiciliar(input: FichaVisitaDomiciliarInput): LediOb
       const cpf = c ? cpfOf(c) : undefined;
       const realizada = v.desfecho === 1;
       const mede = realizada && !naoDomicilio;
-      const motivos = realizada ? [...new Set(v.motivos)].filter((m) => !naoDomicilio || MOTIVOS_FORA_DO_DOMICILIO.has(m)) : [];
+      // Fora do domicílio, os motivos não aceitos saem quando sobra ao menos um aceito; se nenhum é aceito, ficam todos
+      // para a validação apontar o motivo e a visita (e não acusar uma visita sem motivo).
+      const unicos = [...new Set(v.motivos)];
+      const aceitos = naoDomicilio ? unicos.filter((m) => MOTIVOS_FORA_DO_DOMICILIO.has(m)) : unicos;
+      const motivos = realizada ? (aceitos.length ? aceitos : unicos) : [];
       const glicemia = mede ? (v.glicemia ?? undefined) : undefined;
       return {
         turno: v.turno,

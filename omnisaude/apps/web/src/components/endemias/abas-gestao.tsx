@@ -1,45 +1,35 @@
 'use client';
 
-import { TIPOS_DEPOSITO, type IndicesLarvarios } from '@omnisaude/shared';
+import { TIPOS_DEPOSITO, type IndicesLarvarios, type PositividadeAtividade } from '@omnisaude/shared';
 import { useEffect, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader, EmptyState, Stat } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
-import { Field, Input, Select } from '@/components/ui/input';
+import { Field, Input, Select, Textarea } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
-import { fmtDate, todayIso } from '@/lib/format';
+import { fmtDate, fmtDateTime, todayIso } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
-import { GRUPO_LABEL } from './types';
-
-const qtd = (n: number) => (Math.round(n * 1000) / 1000).toLocaleString('pt-BR');
+import { fmtIndice, fmtPercentual, fmtQuantidade as qtd, lerQuantidadeEntrada, textoSeraLancado } from './gestao-regras';
+import { GRUPO_LABEL, type EntradaRemessa, type PainelEstoque } from './types';
 
 // ─── Estoque de larvicidas ──────────────────────────────────────────────────
 
-interface PainelEstoque {
-  depositos: { id: string; nome: string; unidade: string }[];
-  produtos: {
-    id: string;
-    codigo: string;
-    descricao: string;
-    principioAtivo: string | null;
-    concentracao: string | null;
-    forma: string | null;
-    unidade: string;
-    tipo: 'LARVICIDA' | 'ADULTICIDA';
-    consumo30d: number;
-    baixasPendentes: number;
-    lotes: { loteId: string; lote: string; validade: string; vencido: boolean; deposito: string; unidade: string; saldo: number }[];
-  }[];
-}
+const ORIGEM_LABEL: Record<string, string> = { SIES: 'Ministério da Saúde (SIES)', SES: 'Secretaria Estadual', MUNICIPIO: 'Município', OUTRA: 'Outra' };
 
 /** Larvicidas por lote no depósito de endemias, entrada por remessa (SIES/SES) e prorrogação de validade por nota técnica. */
 export function AbaEstoque({ podeLancar }: { podeLancar: boolean }) {
   const painel = useApi<PainelEstoque>('/endemias/estoque');
+  const entradas = useApi<EntradaRemessa[]>('/endemias/estoque/entradas');
   const [dialogo, setDialogo] = useState<'produto' | 'entrada' | { loteId: string; lote: string; validade: string } | null>(null);
+  const [estornando, setEstornando] = useState<EntradaRemessa | null>(null);
+  const recarregar = () => {
+    void painel.reload();
+    void entradas.reload();
+  };
   return (
     <div className="space-y-3">
       <Card>
@@ -69,7 +59,9 @@ export function AbaEstoque({ podeLancar }: { podeLancar: boolean }) {
               <div key={p.id} className="rounded-lg border border-slate-200">
                 <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 px-3 py-2">
                   <div>
-                    <div className="font-medium">{p.descricao}</div>
+                    <div className="font-medium">
+                      {p.descricao} {!p.ativo && <Badge>inativo</Badge>}
+                    </div>
                     <div className="text-xs text-slate-500">
                       {p.codigo} · {p.tipo === 'LARVICIDA' ? 'larvicida' : 'adulticida'}
                       {p.concentracao ? ` · ${p.concentracao}` : ''}
@@ -136,9 +128,84 @@ export function AbaEstoque({ podeLancar }: { podeLancar: boolean }) {
           </p>
         </CardBody>
       </Card>
-      {dialogo === 'produto' && <ProdutoDialog onClose={() => setDialogo(null)} onFeito={() => void painel.reload()} />}
-      {dialogo === 'entrada' && painel.data && <EntradaDialog produtos={painel.data.produtos} onClose={() => setDialogo(null)} onFeito={() => void painel.reload()} />}
-      {dialogo && typeof dialogo === 'object' && <ValidadeDialog lote={dialogo} onClose={() => setDialogo(null)} onFeito={() => void painel.reload()} />}
+      <Card>
+        <CardHeader
+          title="Entradas recentes"
+          description="As 100 últimas entradas por remessa. A entrada lançada errada (quantidade, lote ou validade) se corrige pelo estorno; depois, a mesma guia pode ser lançada de novo."
+        />
+        <CardBody className="p-0">
+          {entradas.loading && !entradas.data && <Spinner className="p-4" />}
+          {entradas.error && <Alert tone="error">{entradas.error}</Alert>}
+          {entradas.data && !entradas.data.length && <EmptyState title="Nenhuma entrada lançada" />}
+          {!!entradas.data?.length && (
+            <div className="overflow-x-auto">
+              <Table>
+                <THead>
+                  <tr>
+                    <TH>Recebida em</TH>
+                    <TH>Guia</TH>
+                    <TH>Insumo e lote</TH>
+                    <TH>Quantidade</TH>
+                    <TH>Depósito</TH>
+                    <TH>Situação</TH>
+                    {podeLancar && <TH />}
+                  </tr>
+                </THead>
+                <TBody>
+                  {entradas.data.map((e) => (
+                    <TR key={e.id}>
+                      <TD className="whitespace-nowrap">
+                        {fmtDateTime(e.recebidaEm)}
+                        <div className="text-xs text-slate-500">{e.recebidaPor ?? '—'}</div>
+                      </TD>
+                      <TD>
+                        {e.documento}
+                        <div className="text-xs text-slate-500">{ORIGEM_LABEL[e.origem] ?? e.origem}</div>
+                      </TD>
+                      <TD>
+                        {e.produto ?? '—'}
+                        <div className="text-xs text-slate-500">lote {e.lote ?? '—'}</div>
+                      </TD>
+                      <TD className={e.estornadaEm ? 'whitespace-nowrap text-slate-400 line-through' : 'whitespace-nowrap'}>
+                        {qtd(e.quantidade)} {e.unidade ?? ''}
+                      </TD>
+                      <TD>
+                        {e.deposito ?? '—'}
+                        <div className="text-xs text-slate-500">{e.unidadeDeposito ?? ''}</div>
+                      </TD>
+                      <TD>
+                        {e.estornadaEm ? (
+                          <>
+                            <Badge>estornada</Badge>
+                            <div className="max-w-[16rem] text-xs text-slate-500">
+                              {fmtDateTime(e.estornadaEm)} por {e.estornadaPor ?? '—'}: {e.motivoEstorno}
+                            </div>
+                          </>
+                        ) : (
+                          <Badge tone="green">lançada</Badge>
+                        )}
+                      </TD>
+                      {podeLancar && (
+                        <TD>
+                          {!e.estornadaEm && (
+                            <Button size="sm" variant="ghost" onClick={() => setEstornando(e)}>
+                              Estornar
+                            </Button>
+                          )}
+                        </TD>
+                      )}
+                    </TR>
+                  ))}
+                </TBody>
+              </Table>
+            </div>
+          )}
+        </CardBody>
+      </Card>
+      {dialogo === 'produto' && <ProdutoDialog onClose={() => setDialogo(null)} onFeito={recarregar} />}
+      {dialogo === 'entrada' && painel.data && <EntradaDialog produtos={painel.data.produtos} onClose={() => setDialogo(null)} onFeito={recarregar} />}
+      {dialogo && typeof dialogo === 'object' && <ValidadeDialog lote={dialogo} onClose={() => setDialogo(null)} onFeito={recarregar} />}
+      {estornando && <EstornoDialog entrada={estornando} onClose={() => setEstornando(null)} onFeito={recarregar} />}
     </div>
   );
 }
@@ -208,13 +275,17 @@ function ProdutoDialog({ onClose, onFeito }: { onClose: () => void; onFeito: () 
 
 function EntradaDialog({ produtos, onClose, onFeito }: { produtos: PainelEstoque['produtos']; onClose: () => void; onFeito: () => void }) {
   const toast = useToast();
-  const [f, setF] = useState({ productId: produtos[0]?.id ?? '', lotNumber: '', expiry: '', manufacturedAt: '', quantity: '', document: '', origin: 'SIES', notes: '' });
+  const ativos = produtos.filter((p) => p.ativo);
+  const [f, setF] = useState({ productId: ativos[0]?.id ?? '', lotNumber: '', expiry: '', manufacturedAt: '', quantity: '', document: '', origin: 'SIES', notes: '' });
   const [enviando, setEnviando] = useState(false);
   const unidade = produtos.find((p) => p.id === f.productId)?.unidade ?? '';
+  // Formato brasileiro: "25.000" são 25 mil (não 25); o que for ambíguo não é lançado.
+  const quantidade = lerQuantidadeEntrada(f.quantity);
   const salvar = async () => {
+    if (quantidade.valor === null) return;
     setEnviando(true);
     try {
-      await api.post('/endemias/estoque/entradas', { ...f, quantity: Number(f.quantity.replace(',', '.')), manufacturedAt: f.manufacturedAt || null, notes: f.notes || null });
+      await api.post('/endemias/estoque/entradas', { ...f, quantity: quantidade.valor, manufacturedAt: f.manufacturedAt || null, notes: f.notes || null });
       toast.success('Entrada lançada no depósito de endemias');
       onFeito();
       onClose();
@@ -235,8 +306,8 @@ function EntradaDialog({ produtos, onClose, onFeito }: { produtos: PainelEstoque
           <Button variant="secondary" onClick={onClose}>
             Cancelar
           </Button>
-          <Button onClick={salvar} loading={enviando} disabled={!f.productId || !f.lotNumber.trim() || !f.expiry || !(Number(f.quantity.replace(',', '.')) > 0) || !f.document.trim()}>
-            Lançar
+          <Button onClick={salvar} loading={enviando} disabled={!f.productId || !f.lotNumber.trim() || !f.expiry || quantidade.valor === null || !f.document.trim()}>
+            {quantidade.valor === null ? 'Lançar' : `Lançar ${qtd(quantidade.valor)} ${unidade}`.trim()}
           </Button>
         </>
       }
@@ -244,7 +315,7 @@ function EntradaDialog({ produtos, onClose, onFeito }: { produtos: PainelEstoque
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Insumo" htmlFor="en-prod" className="sm:col-span-2">
           <Select id="en-prod" value={f.productId} onChange={(e) => setF({ ...f, productId: e.target.value })}>
-            {produtos.map((p) => (
+            {ativos.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.descricao}
               </option>
@@ -254,8 +325,8 @@ function EntradaDialog({ produtos, onClose, onFeito }: { produtos: PainelEstoque
         <Field label="Lote" htmlFor="en-lote">
           <Input id="en-lote" value={f.lotNumber} onChange={(e) => setF({ ...f, lotNumber: e.target.value.toUpperCase() })} />
         </Field>
-        <Field label={`Quantidade (${unidade})`} htmlFor="en-qtd">
-          <Input id="en-qtd" inputMode="decimal" value={f.quantity} onChange={(e) => setF({ ...f, quantity: e.target.value })} />
+        <Field label={`Quantidade (${unidade})`} htmlFor="en-qtd" error={quantidade.erro} hint="Vírgula nas casas decimais e ponto no milhar (25.000 são 25 mil)">
+          <Input id="en-qtd" inputMode="decimal" value={f.quantity} onChange={(e) => setF({ ...f, quantity: e.target.value })} placeholder="Ex.: 25.000" />
         </Field>
         <Field label="Validade" htmlFor="en-val">
           <Input id="en-val" type="date" value={f.expiry} onChange={(e) => setF({ ...f, expiry: e.target.value })} />
@@ -268,11 +339,65 @@ function EntradaDialog({ produtos, onClose, onFeito }: { produtos: PainelEstoque
         </Field>
         <Field label="Origem" htmlFor="en-orig">
           <Select id="en-orig" value={f.origin} onChange={(e) => setF({ ...f, origin: e.target.value })}>
-            <option value="SIES">Ministério da Saúde (SIES)</option>
-            <option value="SES">Secretaria Estadual</option>
-            <option value="MUNICIPIO">Município</option>
-            <option value="OUTRA">Outra</option>
+            {Object.entries(ORIGEM_LABEL).map(([v, l]) => (
+              <option key={v} value={v}>
+                {l}
+              </option>
+            ))}
           </Select>
+        </Field>
+        {quantidade.valor !== null && (
+          <p className="rounded-lg bg-brand-50 px-3 py-2 text-sm font-medium text-brand-800 sm:col-span-2" role="status">
+            {textoSeraLancado(quantidade.valor, unidade)}
+            {f.lotNumber.trim() ? ` no lote ${f.lotNumber.trim()}` : ''}
+          </p>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+/** Estorno da entrada lançada errada: movimento inverso auditado; depois dele, a mesma guia pode ser lançada de novo. */
+function EstornoDialog({ entrada, onClose, onFeito }: { entrada: EntradaRemessa; onClose: () => void; onFeito: () => void }) {
+  const toast = useToast();
+  const [motivo, setMotivo] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  const estornar = async () => {
+    setEnviando(true);
+    try {
+      await api.post(`/endemias/estoque/entradas/${entrada.id}/estorno`, { motivo: motivo.trim() });
+      toast.success('Entrada estornada: a guia pode ser lançada de novo');
+      onFeito();
+      onClose();
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setEnviando(false);
+    }
+  };
+  return (
+    <Dialog
+      open
+      onOpenChange={(v) => !v && onClose()}
+      title={`Estornar a entrada da guia ${entrada.documento}`}
+      description={`${entrada.produto ?? '—'} · lote ${entrada.lote ?? '—'} · ${qtd(entrada.quantidade)} ${entrada.unidade ?? ''} · ${entrada.deposito ?? '—'}`}
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>
+            Voltar
+          </Button>
+          <Button variant="danger" onClick={estornar} loading={enviando} disabled={motivo.trim().length < 5}>
+            Estornar
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <Alert tone="warn">
+          Sai do depósito toda a quantidade desta entrada, num movimento de estorno registrado na trilha de auditoria. Só é possível se o lote ainda tiver esse saldo no depósito: o que já foi usado em campo não volta.
+        </Alert>
+        <Field label="Motivo (de 5 a 500 caracteres)" htmlFor="es-motivo">
+          <Textarea id="es-motivo" rows={2} maxLength={500} value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Ex.: lançada como 25 G em vez de 25.000 G" />
         </Field>
       </div>
     </Dialog>
@@ -335,6 +460,7 @@ interface Resumo {
   recusados: number;
   abandonados: number;
   recuperados: number;
+  /** Imóveis distintos com foco em qualquer atividade (o índice é só do levantamento). */
   imoveisComFoco: number;
   depositosInspecionados: number;
   depositosComFoco: number;
@@ -346,13 +472,13 @@ interface Resumo {
 }
 interface Producao {
   periodo: { de: string; ate: string };
-  total: Resumo & { indices: IndicesLarvarios };
+  /** Índices só do levantamento (LI e LI+T); as outras atividades têm a positividade à parte. */
+  total: Resumo & { indices: IndicesLarvarios; positividade: PositividadeAtividade[] };
   agentes: (Resumo & { id: string; nome: string | null })[];
   localidades: { id: string; codigo: string; nome: string; visitas: number; indices: IndicesLarvarios }[];
 }
 
 const CLASSE = { SATISFATORIO: { label: 'Satisfatório', tone: 'green' }, ALERTA: { label: 'Alerta', tone: 'amber' }, RISCO: { label: 'Risco', tone: 'red' } } as const;
-const num = (n: number | null) => (n === null ? '—' : n.toLocaleString('pt-BR'));
 
 export function AbaProducao() {
   const [de, setDe] = useState(todayIso(-30));
@@ -378,28 +504,62 @@ export function AbaProducao() {
           {t && (
             <>
               <div className="grid gap-3 sm:grid-cols-4">
-                <Stat label="Imóveis trabalhados" value={t.trabalhados} tone="good" hint={`${t.recuperados} recuperado(s)`} />
+                <Stat label="Imóveis trabalhados" value={t.trabalhados} tone="good" hint={`visitas de todas as atividades · ${t.recuperados} recuperado(s)`} />
                 <Stat
                   label="Pendências"
                   value={t.fechados + t.recusados + t.abandonados}
                   tone={t.fechados + t.recusados + t.abandonados ? 'warn' : 'default'}
                   hint={`${t.fechados} fechados · ${t.recusados} recusados · ${t.abandonados} abandonados`}
                 />
-                <Stat label="Imóveis com foco" value={t.imoveisComFoco} tone={t.imoveisComFoco ? 'bad' : 'default'} hint={`${t.depositosComFoco} depósito(s) com foco · ${t.amostras} tubito(s)`} />
+                <Stat label="Imóveis com foco" value={t.imoveisComFoco} tone={t.imoveisComFoco ? 'bad' : 'default'} hint={`em qualquer atividade · ${t.depositosComFoco} depósito(s) com foco · ${t.amostras} tubito(s)`} />
                 <Stat label="Depósitos" value={t.depositosInspecionados} hint={`${t.depositosEliminados} eliminados · ${t.depositosTratados} tratados`} />
+              </div>
+              <div>
+                <h3 className="text-sm font-medium text-slate-700">Índices do levantamento (LI e LI+T)</h3>
+                <p className="text-xs text-slate-500">
+                  {t.indices.imoveisInspecionados
+                    ? `${t.indices.imoveisInspecionados} imóvel(is) inspecionado(s) em LI ou LI+T, cada um pela última visita trabalhada no período; ${t.indices.imoveisComFoco} com foco.`
+                    : 'Nenhum imóvel trabalhado em LI ou LI+T no período: sem índice. As outras atividades (tratamento, bloqueio, PE, DF, PVE) são buscas dirigidas e não entram no índice.'}
+                </p>
               </div>
               <div className="grid gap-3 sm:grid-cols-4">
                 <Stat
-                  label="IIP (predial)"
-                  value={t.indices.iip === null ? '—' : `${num(t.indices.iip)}%`}
-                  tone={t.indices.classe === 'RISCO' ? 'bad' : t.indices.classe === 'ALERTA' ? 'warn' : 'good'}
+                  label="IIP (LI e LI+T)"
+                  value={fmtPercentual(t.indices.iip)}
+                  tone={t.indices.classe === 'RISCO' ? 'bad' : t.indices.classe === 'ALERTA' ? 'warn' : t.indices.classe ? 'good' : 'default'}
                   hint={t.indices.classe ? CLASSE[t.indices.classe].label : undefined}
                 />
-                <Stat label="Índice de Breteau" value={num(t.indices.ib)} hint="depósitos com foco por 100 imóveis" />
-                <Stat label="Índice de recipientes" value={t.indices.ir === null ? '—' : `${num(t.indices.ir)}%`} />
+                <Stat label="Breteau (LI e LI+T)" value={fmtIndice(t.indices.ib)} hint="depósitos com foco por 100 imóveis" />
+                <Stat label="Recipientes (LI e LI+T)" value={fmtPercentual(t.indices.ir)} hint="depósitos com foco por depósitos inspecionados" />
                 <Stat label="Larvicida usado" value={t.larvicida.map((l) => `${qtd(l.quantidade)} ${l.unidade}`).join(' · ') || '—'} hint={`${t.nebulizados} imóvel(is) nebulizado(s)`} />
               </div>
-              <div className="text-xs text-slate-600">Por tipo de recipiente (ITR): {TIPOS_DEPOSITO.map((d) => `${d} ${t.indices.itr[d] === null ? '—' : `${num(t.indices.itr[d])}%`}`).join(' · ')}</div>
+              <div className="text-xs text-slate-600">Por tipo de recipiente (ITR, LI e LI+T): {TIPOS_DEPOSITO.map((d) => `${d} ${fmtPercentual(t.indices.itr[d])}`).join(' · ')}</div>
+              {t.positividade.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-medium text-slate-700">Positividade das outras atividades</h3>
+                  <p className="text-xs text-slate-500">Imóveis com foco entre os trabalhados em cada atividade no período. Não é índice de infestação: são buscas dirigidas.</p>
+                  <Table>
+                    <THead>
+                      <tr>
+                        <TH>Atividade</TH>
+                        <TH>Imóveis trabalhados</TH>
+                        <TH>Com foco</TH>
+                        <TH>Positividade</TH>
+                      </tr>
+                    </THead>
+                    <TBody>
+                      {t.positividade.map((a) => (
+                        <TR key={a.atividade}>
+                          <TD>{a.label}</TD>
+                          <TD>{a.imoveisInspecionados}</TD>
+                          <TD>{a.imoveisComFoco}</TD>
+                          <TD>{fmtPercentual(a.percentual)}</TD>
+                        </TR>
+                      ))}
+                    </TBody>
+                  </Table>
+                </div>
+              )}
             </>
           )}
         </CardBody>
@@ -444,14 +604,14 @@ export function AbaProducao() {
       )}
       {!!p.data?.localidades.length && (
         <Card>
-          <CardHeader title="Por localidade" />
+          <CardHeader title="Por localidade" description="Índices do levantamento (LI e LI+T) de cada localidade; as visitas são de todas as atividades." />
           <CardBody className="p-0">
             <Table>
               <THead>
                 <tr>
                   <TH>Localidade</TH>
                   <TH>Visitas</TH>
-                  <TH>Imóveis inspecionados</TH>
+                  <TH>Imóveis inspecionados (LI e LI+T)</TH>
                   <TH>IIP</TH>
                   <TH>Breteau</TH>
                   <TH>Classe</TH>
@@ -465,8 +625,8 @@ export function AbaProducao() {
                     </TD>
                     <TD>{l.visitas}</TD>
                     <TD>{l.indices.imoveisInspecionados}</TD>
-                    <TD>{l.indices.iip === null ? '—' : `${num(l.indices.iip)}%`}</TD>
-                    <TD>{num(l.indices.ib)}</TD>
+                    <TD>{fmtPercentual(l.indices.iip)}</TD>
+                    <TD>{fmtIndice(l.indices.ib)}</TD>
                     <TD>{l.indices.classe ? <Badge tone={CLASSE[l.indices.classe].tone}>{CLASSE[l.indices.classe].label}</Badge> : '—'}</TD>
                   </TR>
                 ))}

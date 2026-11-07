@@ -16,7 +16,8 @@ import { api, errorMessage } from '@/lib/api';
 import { fmtDate, fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useRealtime } from '@/lib/realtime';
-import { GRUPO_LABEL, TOM_STATUS, type AgenteEndemias, type OrdemDetalhe, type OrdemResumo } from './types';
+import { avisoLimiteOrdens, marcarAgente, opcoesDesignacao, pedidoAcaoOrdem, temDistancia, textoAgravos, textoDistancia, textoMinimoAcao, trocarAcaoOrdem, type AcaoOrdem, type EstadoAcaoOrdem } from './gestao-regras';
+import { TOM_STATUS, type AgenteEndemias, type OrdemDetalhe, type OrdemResumo } from './types';
 
 const pct = (n: number | null) => (n === null ? '—' : `${n.toLocaleString('pt-BR')}%`);
 
@@ -42,6 +43,7 @@ export function AbaOrdens({ podeGerir, podeCancelar, ordemInicial }: { podeGerir
   const lista = useApi<OrdemResumo[]>(`/endemias/bloqueios?situacao=${situacao}`, [situacao]);
   const [aberta, setAberta] = useState<string | null>(ordemInicial ?? null);
   useRealtime('endemias:ordem', () => void lista.reload());
+  const aviso = lista.data ? avisoLimiteOrdens(situacao, lista.data.length) : null;
 
   return (
     <div className="space-y-3">
@@ -61,6 +63,11 @@ export function AbaOrdens({ podeGerir, podeCancelar, ordemInicial }: { podeGerir
           {lista.loading && !lista.data && <Spinner className="p-4" />}
           {lista.error && <Alert tone="error">{lista.error}</Alert>}
           {lista.data && !lista.data.length && <EmptyState title="Nenhuma ordem nesta situação" />}
+          {aviso && (
+            <Alert tone="warn" className="m-3">
+              {aviso}
+            </Alert>
+          )}
           {!!lista.data?.length && (
             <div className="overflow-x-auto">
               <Table>
@@ -95,7 +102,7 @@ export function AbaOrdens({ podeGerir, podeCancelar, ordemInicial }: { podeGerir
                       <TD>
                         {o.casos}
                         {o.casosDescartados ? <span className="text-xs text-slate-500"> (+{o.casosDescartados} descartado)</span> : null}
-                        <div className="text-xs text-slate-500">{o.grupos.map((g) => GRUPO_LABEL[g] ?? g).join(', ')}</div>
+                        {o.grupos.length > 0 && <div className="text-xs text-slate-500">{textoAgravos(o.grupos)}</div>}
                       </TD>
                       <TD>{o.quarteiroes}</TD>
                       <TD>
@@ -132,12 +139,16 @@ function OrdemDialog({ id, onClose, onMudou, podeGerir, podeCancelar }: { id: st
   const toast = useToast();
   const d = useApi<OrdemDetalhe>(`/endemias/bloqueios/${id}`, [id]);
   const agentes = useApi<AgenteEndemias[]>(podeGerir ? '/endemias/agentes' : null);
-  const [acao, setAcao] = useState<'concluir' | 'reabrir' | 'cancelar' | 'designar' | null>(null);
-  const [texto, setTexto] = useState('');
+  const [{ acao, texto }, setEstado] = useState<EstadoAcaoOrdem>(trocarAcaoOrdem(null));
+  const abrir = (a: AcaoOrdem | null) => setEstado(trocarAcaoOrdem(a));
   const [escolhidos, setEscolhidos] = useState<string[]>([]);
   const [enviando, setEnviando] = useState(false);
   useRealtime<{ id: string }>('endemias:ordem', (p) => (p.id === id ? void d.reload() : undefined));
   const o = d.data;
+  // Elegíveis mais os designados que perderam a lotação (só para desmarcar): nenhum designado fica oculto no envio.
+  const opcoes = useMemo(() => (o && agentes.data ? opcoesDesignacao(agentes.data, o.agentes) : []), [o, agentes.data]);
+  const semLotacao = new Set(opcoes.filter((a) => !a.elegivel).map((a) => a.id));
+  const minimo = o && acao ? textoMinimoAcao(acao, o.progresso) : 0;
 
   const camadas = useMemo<CamadasMapa | null>(
     () =>
@@ -169,12 +180,10 @@ function OrdemDialog({ id, onClose, onMudou, podeGerir, podeCancelar }: { id: st
     if (!o || !acao) return;
     setEnviando(true);
     try {
-      if (acao === 'designar') await api.post(`/endemias/bloqueios/${id}/agentes`, { agentes: escolhidos });
-      else if (acao === 'concluir') await api.post(`/endemias/bloqueios/${id}/concluir`, { nota: texto.trim() || null });
-      else await api.post(`/endemias/bloqueios/${id}/${acao}`, { motivo: texto.trim() });
+      const pedido = pedidoAcaoOrdem(id, acao, texto, escolhidos);
+      await api.post(pedido.caminho, pedido.corpo);
       toast.success(acao === 'designar' ? 'Agentes designados' : acao === 'concluir' ? 'Ordem concluída' : acao === 'reabrir' ? 'Ordem reaberta' : 'Ordem cancelada');
-      setAcao(null);
-      setTexto('');
+      abrir(null);
       await d.reload();
       onMudou();
     } catch (e) {
@@ -196,6 +205,8 @@ function OrdemDialog({ id, onClose, onMudou, podeGerir, podeCancelar }: { id: st
   };
 
   const ativa = o && ['AGUARDANDO_LOCALIZACAO', 'ABERTA', 'EM_CAMPO'].includes(o.status);
+  // A distância só vem para a vigilância; para a gestão e a supervisão a coluna some.
+  const comDistancia = !!o && temDistancia(o.quarteiroes);
   return (
     <Dialog
       open
@@ -222,10 +233,7 @@ function OrdemDialog({ id, onClose, onMudou, podeGerir, podeCancelar }: { id: st
             <div className="rounded-lg bg-slate-50 p-3 text-sm">
               <div className="text-xs text-slate-500">Casos ligados</div>
               <div className="text-lg font-semibold">{o.casos.ativos}</div>
-              <div className="text-xs text-slate-500">
-                {o.grupos.map((g) => GRUPO_LABEL[g] ?? g).join(', ')}
-                {o.casos.semPosicao ? ` · ${o.casos.semPosicao} sem posição` : ''}
-              </div>
+              <div className="text-xs text-slate-500">{[textoAgravos(o.grupos), o.casos.semPosicao ? `${o.casos.semPosicao} sem posição` : ''].filter(Boolean).join(' · ')}</div>
             </div>
             <div className="rounded-lg bg-slate-50 p-3 text-sm">
               <div className="text-xs text-slate-500">Período dos casos</div>
@@ -254,7 +262,7 @@ function OrdemDialog({ id, onClose, onMudou, podeGerir, podeCancelar }: { id: st
                 <tr>
                   <TH>Quarteirão</TH>
                   <TH>Localidade · bairro</TH>
-                  <TH>Distância</TH>
+                  {comDistancia && <TH>Distância</TH>}
                   <TH>Imóveis</TH>
                   <TH>Progresso</TH>
                   <TH>Cobertura</TH>
@@ -267,7 +275,7 @@ function OrdemDialog({ id, onClose, onMudou, podeGerir, podeCancelar }: { id: st
                       {q.numero} {q.ocorrencia && <Badge tone="red">início</Badge>}
                     </TD>
                     <TD>{[q.localidade, q.bairro].filter(Boolean).join(' · ') || '—'}</TD>
-                    <TD>{Math.round(q.distanciaM)} m</TD>
+                    {comDistancia && <TD>{textoDistancia(q.distanciaM)}</TD>}
                     <TD>{q.progresso.imoveis}</TD>
                     <TD>
                       <BarraProgresso p={q.progresso} />
@@ -280,7 +288,19 @@ function OrdemDialog({ id, onClose, onMudou, podeGerir, podeCancelar }: { id: st
           </div>
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="text-slate-500">Agentes:</span>
-            {o.agentes.length ? o.agentes.map((a) => <Badge key={a.id}>{a.nome}</Badge>) : <span className="text-amber-700">ninguém designado</span>}
+            {o.agentes.length ? (
+              o.agentes.map((a) =>
+                semLotacao.has(a.id) ? (
+                  <Badge key={a.id} tone="amber">
+                    {a.nome} · sem lotação ativa
+                  </Badge>
+                ) : (
+                  <Badge key={a.id}>{a.nome}</Badge>
+                ),
+              )
+            ) : (
+              <span className="text-amber-700">ninguém designado</span>
+            )}
           </div>
           {o.status === 'CONCLUIDA' && (
             <Alert tone="success">
@@ -302,15 +322,15 @@ function OrdemDialog({ id, onClose, onMudou, podeGerir, podeCancelar }: { id: st
                   variant="secondary"
                   onClick={() => {
                     setEscolhidos(o.agentes.map((a) => a.id));
-                    setAcao('designar');
+                    abrir('designar');
                   }}
                 >
                   Designar agentes
                 </Button>
               )}
-              {(o.status === 'ABERTA' || o.status === 'EM_CAMPO') && <Button onClick={() => setAcao('concluir')}>Concluir</Button>}
+              {(o.status === 'ABERTA' || o.status === 'EM_CAMPO') && <Button onClick={() => abrir('concluir')}>Concluir</Button>}
               {o.status === 'CONCLUIDA' && (
-                <Button variant="secondary" onClick={() => setAcao('reabrir')}>
+                <Button variant="secondary" onClick={() => abrir('reabrir')}>
                   Reabrir
                 </Button>
               )}
@@ -320,7 +340,7 @@ function OrdemDialog({ id, onClose, onMudou, podeGerir, podeCancelar }: { id: st
                 </Button>
               )}
               {ativa && podeCancelar && (
-                <Button variant="danger" onClick={() => setAcao('cancelar')}>
+                <Button variant="danger" onClick={() => abrir('cancelar')}>
                   Cancelar ordem
                 </Button>
               )}
@@ -331,23 +351,37 @@ function OrdemDialog({ id, onClose, onMudou, podeGerir, podeCancelar }: { id: st
               {acao === 'designar' ? (
                 <fieldset className="space-y-1">
                   <legend className="text-sm font-medium">Agentes que executam a ordem</legend>
-                  {agentes.data?.map((a) => (
-                    <label key={a.id} className="flex items-center gap-2 text-sm">
-                      <input type="checkbox" checked={escolhidos.includes(a.id)} onChange={(e) => setEscolhidos(e.target.checked ? [...escolhidos, a.id] : escolhidos.filter((x) => x !== a.id))} />
-                      {a.nome} <span className="text-xs text-slate-500">{a.unidades.join(', ')}</span>
-                    </label>
-                  ))}
+                  {agentes.loading && !agentes.data && <Spinner />}
+                  {agentes.error && <Alert tone="error">{agentes.error}</Alert>}
+                  {opcoes.map((a) => {
+                    const marcado = escolhidos.includes(a.id);
+                    return (
+                      <label key={a.id} className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={marcado} disabled={!a.elegivel && !marcado} onChange={(e) => setEscolhidos(marcarAgente(escolhidos, a, e.target.checked))} />
+                        {a.nome} {a.elegivel ? <span className="text-xs text-slate-500">{a.unidades.join(', ')}</span> : <span className="text-xs text-amber-700">sem lotação ativa: desmarque para tirar da ordem</span>}
+                      </label>
+                    );
+                  })}
                 </fieldset>
               ) : (
-                <Field label={acao === 'concluir' ? 'Justificativa (obrigatória se ficou imóvel sem visita ou pendente)' : acao === 'reabrir' ? 'Motivo da reabertura' : 'Motivo do cancelamento'} htmlFor="ordem-texto">
-                  <Textarea id="ordem-texto" rows={2} value={texto} onChange={(e) => setTexto(e.target.value)} />
+                <Field
+                  label={
+                    acao === 'concluir'
+                      ? minimo
+                        ? `Justificativa (obrigatória: ficou imóvel sem visita ou pendente; mínimo de ${minimo} caracteres)`
+                        : 'Justificativa (opcional)'
+                      : `${acao === 'reabrir' ? 'Motivo da reabertura' : 'Motivo do cancelamento'} (mínimo de ${minimo} caracteres)`
+                  }
+                  htmlFor="ordem-texto"
+                >
+                  <Textarea id="ordem-texto" rows={2} value={texto} onChange={(e) => setEstado({ acao, texto: e.target.value })} />
                 </Field>
               )}
               <div className="flex justify-end gap-2">
-                <Button variant="secondary" onClick={() => setAcao(null)}>
+                <Button variant="secondary" onClick={() => abrir(null)}>
                   Voltar
                 </Button>
-                <Button variant={acao === 'cancelar' ? 'danger' : 'primary'} onClick={enviar} loading={enviando}>
+                <Button variant={acao === 'cancelar' ? 'danger' : 'primary'} onClick={enviar} loading={enviando} disabled={texto.trim().length < minimo || (acao === 'designar' && !agentes.data)}>
                   Confirmar
                 </Button>
               </div>

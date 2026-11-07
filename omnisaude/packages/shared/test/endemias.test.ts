@@ -29,7 +29,7 @@ describe('endemias: regras da visita do ACE', () => {
     const b = conferirVisitaVetorial({ ...base, depositos: { B: { inspecionados: 1, comFoco: 0, eliminados: 0, tratados: 1 } }, tratamentos: [{ produtoId: 'x', loteId: 'l', quantidade: 1, depositos: 1 }] });
     expect(b.join()).toMatch(/Depósito B não recebe larvicida/);
     const d2 = { ...base, depositos: { D2: { inspecionados: 1, comFoco: 0, eliminados: 0, tratados: 1 } }, tratamentos: [{ produtoId: 'x', loteId: 'l', quantidade: 1, depositos: 1 }] };
-    expect(conferirVisitaVetorial(d2).join()).toMatch(/só recebe larvicida em ponto estratégico/);
+    expect(conferirVisitaVetorial(d2)).toContain('Depósito D2: elimine; lixo e entulho não recebem larvicida — só a sucata de ponto estratégico pode ser tratada');
     expect(conferirVisitaVetorial(d2, { pontoEstrategico: true })).toEqual([]);
     // Um tubito por depósito com foco; números de 1 a 999 sem repetir.
     expect(
@@ -67,7 +67,10 @@ describe('endemias: regras da visita do ACE', () => {
 
   it('motivos da ficha do e-SUS: 34 a 37 conforme o trabalho feito; recusada ou ausente sem motivo; nenhum vira 28', () => {
     expect(motivosEsusVisitaVetorial({ situacao: 'TRABALHADO', acaoEducativa: true, depositos: { C: { inspecionados: 2, comFoco: 1, eliminados: 1, tratados: 1 } } })).toEqual(['34', '35', '36', '37']);
-    expect(motivosEsusVisitaVetorial({ situacao: 'TRABALHADO', ubv: 'INTRA' })).toEqual(['37']);
+    // Nebulização (UBV) é adulticida espacial, não tratamento focal: sozinha vai como 28, ou 34 com ação educativa.
+    expect(motivosEsusVisitaVetorial({ situacao: 'TRABALHADO', ubv: 'INTRA' })).toEqual(['28']);
+    expect(motivosEsusVisitaVetorial({ situacao: 'TRABALHADO', ubv: 'PERI', acaoEducativa: true })).toEqual(['34']);
+    expect(motivosEsusVisitaVetorial({ situacao: 'TRABALHADO', ubv: 'INTRA_PERI', tratamentos: [{}] })).toEqual(['37']);
     expect(motivosEsusVisitaVetorial({ situacao: 'TRABALHADO', depositos: { A1: { inspecionados: 1, comFoco: 0, eliminados: 0, tratados: 0 } } })).toEqual(['28']);
     expect(motivosEsusVisitaVetorial({ situacao: 'FECHADO', acaoEducativa: true })).toEqual([]);
     expect(totaisDepositos({ A1: { inspecionados: 1, comFoco: 1, eliminados: 0, tratados: 1 }, E: { inspecionados: 2, comFoco: 0, eliminados: 2, tratados: 0 } })).toEqual({
@@ -92,18 +95,25 @@ describe('endemias: regras da visita do ACE', () => {
 
   it('índices larvários: cada imóvel conta uma vez, pela última visita trabalhada', () => {
     const i = indicesLarvarios([
-      { imovelId: 'a', situacao: 'FECHADO' },
-      { imovelId: 'a', situacao: 'TRABALHADO', depositos: { A2: { inspecionados: 2, comFoco: 1, eliminados: 0, tratados: 1 }, B: { inspecionados: 3, comFoco: 1, eliminados: 1, tratados: 0 } } },
-      { imovelId: 'b', situacao: 'TRABALHADO', depositos: { C: { inspecionados: 1, comFoco: 0, eliminados: 0, tratados: 0 } } },
-      { imovelId: 'c', situacao: 'TRABALHADO', depositos: { D1: { inspecionados: 4, comFoco: 2, eliminados: 4, tratados: 0 } } },
-      { imovelId: 'd', situacao: 'RECUSADO' },
+      { imovelId: 'a', atividade: 'LI_T', situacao: 'FECHADO' },
+      { imovelId: 'a', atividade: 'LI_T', situacao: 'TRABALHADO', depositos: { A2: { inspecionados: 2, comFoco: 1, eliminados: 0, tratados: 1 }, B: { inspecionados: 3, comFoco: 1, eliminados: 1, tratados: 0 } } },
+      { imovelId: 'b', atividade: 'LI', situacao: 'TRABALHADO', depositos: { C: { inspecionados: 1, comFoco: 0, eliminados: 0, tratados: 0 } } },
+      { imovelId: 'c', atividade: 'LI_T', situacao: 'TRABALHADO', depositos: { D1: { inspecionados: 4, comFoco: 2, eliminados: 4, tratados: 0 } } },
+      { imovelId: 'd', atividade: 'LI_T', situacao: 'RECUSADO' },
     ]);
-    expect(i).toMatchObject({ imoveisInspecionados: 3, imoveisComFoco: 2, depositosInspecionados: 10, depositosComFoco: 4, iip: 66.7, ib: 133.3, ir: 40, classe: 'RISCO' });
+    // Duas casas, como a Nota Informativa nº 11/2026.
+    expect(i).toMatchObject({ imoveisInspecionados: 3, imoveisComFoco: 2, depositosInspecionados: 10, depositosComFoco: 4, iip: 66.67, ib: 133.33, ir: 40, classe: 'RISCO' });
     expect(i.itr).toMatchObject({ A2: 25, B: 25, D1: 50, C: 0 });
     expect(indicesLarvarios([]).iip).toBeNull();
     expect(
-      indicesLarvarios(Array.from({ length: 200 }, (_, k) => ({ imovelId: String(k), situacao: 'TRABALHADO' as const, depositos: k < 1 ? { A1: { inspecionados: 1, comFoco: 1, eliminados: 0, tratados: 0 } } : {} })))
-        .classe,
+      indicesLarvarios(
+        Array.from({ length: 200 }, (_, k) => ({
+          imovelId: String(k),
+          atividade: 'LI' as const,
+          situacao: 'TRABALHADO' as const,
+          depositos: k < 1 ? { A1: { inspecionados: 1, comFoco: 1, eliminados: 0, tratados: 0 } } : {},
+        })),
+      ).classe,
     ).toBe('SATISFATORIO');
   });
 

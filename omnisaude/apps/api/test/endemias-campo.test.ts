@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { TenantsService } from '../src/core/database';
 import { CampoAceService } from '../src/modules/endemias/campo.service';
 import { ehConflitoPassageiro, restricaoCheckViolada } from '../src/modules/endemias/erros-banco';
+import { LocalizadorService } from '../src/modules/territorio/localizador.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 
 const enabled = await pgAvailable();
@@ -158,7 +159,7 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     expect(JSON.stringify(p)).not.toMatch(/tuberculose/);
   });
 
-  it('o GPS da visita não troca o quarteirão do imóvel; longe dele, a posição fica só na visita, com aviso', async () => {
+  it('o GPS da visita não troca o quarteirão do imóvel, nem na religação da malha; fora dele, a posição fica só na visita, com aviso', async () => {
     // 22 m ao sul do quarteirão 3 (borda sul da grade): antes desligava o imóvel do quarteirão (block_id nulo).
     const casa3 = await novoImovel(bloco['3']!);
     const g = ponto(200, -62);
@@ -175,15 +176,38 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     const casa13 = await novoImovel(bloco['13']!);
     const g2 = ponto(262, 200);
     const [r2] = await resultados(ace, [visita(casa13, { situacao: 'FECHADO', latitude: g2[1], longitude: g2[0], precisaoGps: 15 }, 19)]);
-    expect(r2!.avisos?.join(' ')).toMatch(/22 m do quarteirão 13/);
+    expect(r2!.avisos).toEqual(['O GPS da visita ficou mais perto do quarteirão 14 que do 13, o do imóvel (a 22 m dele): a posição do imóvel não foi alterada (a supervisão confere)']);
     expect(await db.household.findUniqueOrThrow({ where: { id: casa13 } })).toMatchObject({ blockId: bloco['13'], latitude: null });
 
-    // Agente na rua, 12 m do 13 e 8 m do 14: dentro da tolerância do 13, a posição é gravada e o quarteirão continua o 13.
+    // Agente na rua, 12 m do 13 e 8 m do 14: dentro da tolerância do 13, mas a malha ligaria o ponto ao 14 (o mais
+    // perto); gravado no imóvel, a próxima religação da malha o moveria. A posição fica só na visita.
+    const localizador = t.app.get(LocalizadorService);
     const outra13 = await novoImovel(bloco['13']!);
     const g3 = ponto(252, 200);
+    expect((await localizador.quarteiraoDoPonto(db, g3[1], g3[0]))?.id).toBe(bloco['14']);
     const [r3] = await resultados(ace, [visita(outra13, { situacao: 'FECHADO', latitude: g3[1], longitude: g3[0], precisaoGps: 12 }, 18)]);
-    expect(r3!.avisos).toBeUndefined();
-    expect(await db.household.findUniqueOrThrow({ where: { id: outra13 } })).toMatchObject({ blockId: bloco['13'], latitude: g3[1], longitude: g3[0], geoPrecision: 'GPS_CAMPO', geoSource: 'visita-ace' });
+    expect(r3!.avisos).toEqual(['O GPS da visita ficou mais perto do quarteirão 14 que do 13, o do imóvel (a 12 m dele): a posição do imóvel não foi alterada (a supervisão confere)']);
+    expect(await db.household.findUniqueOrThrow({ where: { id: outra13 } })).toMatchObject({ blockId: bloco['13'], latitude: null });
+
+    // Na rua, 5 m do 13 (15 m do 14): a posição é gravada, o quarteirão continua o 13 e a religação não o move.
+    const mais13 = await novoImovel(bloco['13']!);
+    const g4 = ponto(245, 200);
+    const [r4] = await resultados(ace, [visita(mais13, { situacao: 'FECHADO', latitude: g4[1], longitude: g4[0], precisaoGps: 12 }, 17)]);
+    expect(r4!.avisos).toBeUndefined();
+    expect(await db.household.findUniqueOrThrow({ where: { id: mais13 } })).toMatchObject({ blockId: bloco['13'], latitude: g4[1], longitude: g4[0], geoPrecision: 'GPS_CAMPO', geoSource: 'visita-ace' });
+    expect(await localizador.vincularImovel(db, mais13)).toBe(bloco['13']);
+
+    // Quarteirão do imóvel desativado na malha: a visita não posiciona (a supervisão confere o quarteirão).
+    const casa18 = await novoImovel(bloco['18']!);
+    await db.block.update({ where: { id: bloco['18']! }, data: { active: false } });
+    try {
+      const g5 = ponto(200, 300);
+      const [r5] = await resultados(ace, [visita(casa18, { situacao: 'FECHADO', latitude: g5[1], longitude: g5[0], precisaoGps: 8 }, 16)]);
+      expect(r5!.avisos).toEqual(['O quarteirão 18 do imóvel foi desativado na malha: a posição do imóvel não foi alterada (a supervisão confere)']);
+      expect(await db.household.findUniqueOrThrow({ where: { id: casa18 } })).toMatchObject({ blockId: bloco['18'], latitude: null });
+    } finally {
+      await db.block.update({ where: { id: bloco['18']! }, data: { active: true } });
+    }
   });
 
   it('baixas com os mesmos lotes em ordem inversa, ao mesmo tempo, não se travam (deadlock) nem voltam ERRO', async () => {
@@ -205,14 +229,18 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
       for (const r of rs) status.push(`${r.status}:${r.body.resultados?.[0]?.status}:${r.body.resultados?.[0]?.erro ?? ''}`);
     }
     expect(status.filter((s) => s !== '200:OK:')).toEqual([]);
-    // Saldos travados na ordem dos lotes: nenhuma transação foi desfeita para repetir.
-    expect(espiao).toHaveBeenCalledTimes(12);
-    espiao.mockRestore();
-    expect(await saldoNo(A.loteId, depositoVig)).toBe(antes.A - 6);
-    expect(await saldoNo(B.loteId, depositoVig)).toBe(antes.B - 6);
     // As linhas mantêm a ordem em que vieram do aparelho.
     const ultima = await db.vectorVisit.findFirstOrThrow({ where: { householdId: casas[1]! }, orderBy: { syncedAt: 'desc' }, include: { treatments: { orderBy: { seq: 'asc' } } } });
     expect(ultima.treatments.map((x) => x.lotNumber)).toEqual(['BTI2509', 'BTI2601']);
+    // Fim de expediente: dois aparelhos com 30 visitas cada, a ordem dos lotes alternada de visita em visita.
+    const lote30 = (casa: string, k: number) => Array.from({ length: 30 }, (_, i) => visita(casa, { depositos: dep, tratamentos: (i + k) % 2 ? linhas(B, A) : linhas(A, B) }, 300 - i));
+    const [d1, d2] = await Promise.all([resultados(ace, lote30(casas[0]!, 0)), resultados(supervisora, lote30(casas[1]!, 1))]);
+    expect([...d1, ...d2].filter((x) => x.status !== 'OK')).toEqual([]);
+    // Saldos travados na ordem dos lotes: nenhuma transação foi desfeita para repetir.
+    expect(espiao).toHaveBeenCalledTimes(72);
+    espiao.mockRestore();
+    expect(await saldoNo(A.loteId, depositoVig)).toBe(antes.A - 36);
+    expect(await saldoNo(B.loteId, depositoVig)).toBe(antes.B - 36);
   });
 
   it('conflito entre transações é repetido no servidor; o que sobra volta TENTAR_DE_NOVO, sem detalhe técnico, e o imóvel leva junto as visitas', async () => {
@@ -257,8 +285,13 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
       expect((await db.vectorVisit.findUniqueOrThrow({ where: { clientId: dele.clientId } })).householdId).toBe(a[0]!.id);
     }
     // O imóvel nunca chegou (descartado no aparelho): a visita volta ERRO, visível na fila.
-    const orfa = { clientId: randomUUID(), tipo: 'VISITA_VETORIAL', registradoEm: em(5), householdClientId: randomUUID(), visita: { atividade: 'LI', situacao: 'FECHADO' } };
-    expect((await resultados(ace, [orfa]))[0]).toMatchObject({ status: 'ERRO', erro: 'O imóvel desta visita não foi cadastrado (a operação do imóvel deu erro)' });
+    const orfa = () => ({ clientId: randomUUID(), tipo: 'VISITA_VETORIAL', registradoEm: em(5), householdClientId: randomUUID(), visita: { atividade: 'LI', situacao: 'FECHADO' } });
+    expect((await resultados(ace, [orfa()]))[0]).toMatchObject({ status: 'ERRO', erro: 'O imóvel desta visita não foi cadastrado (a operação do imóvel deu erro)' });
+    // A espera pelo imóvel de outro envio é uma só por lote (antes, ~0,5 s por visita: 30 visitas levavam 15 s).
+    const inicio = Date.now();
+    const rs = await resultados(ace, Array.from({ length: 30 }, orfa));
+    expect(rs.every((x) => x.status === 'ERRO')).toBe(true);
+    expect(Date.now() - inicio).toBeLessThan(6000);
   });
 
   it('operação fora do formato volta ERRO sozinha, com o campo e o motivo em português; as outras do lote são gravadas', async () => {
@@ -291,6 +324,9 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     // Imóvel novo sem logradouro nem referência: a mesma conferência do aparelho.
     const [semRua] = await resultados(ace, [imovelOp(bloco['12']!, { street: null })]);
     expect(semRua).toMatchObject({ status: 'ERRO', erro: 'Informe o logradouro ou uma referência do imóvel' });
+    // Já gravada antes (a resposta se perdeu) e reenviada num formato que a validação de hoje recusa: sai da fila.
+    const [reenvio] = await resultados(ace, [{ ...boa, visita: { ...boa.visita, observacoes: 'a'.repeat(1001) } }]);
+    expect(reenvio).toMatchObject({ clientId: boa.clientId, status: 'DUPLICADA', id: de(boa).id });
   });
 
   it('a conferência compartilhada (aparelho e API) cobre os mesmos limites, com as mensagens que o app mostra', () => {
@@ -425,6 +461,30 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     const [r240] = await resultados(ace, [v240]);
     expect(r240!.avisos?.join(' ')).toMatch(/já estava concluída/);
     expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'CONCLUIDA', startedAt: new Date(await visitedAt(v240)) });
+  });
+
+  it('a recuperação da visita seguinte é refeita pelo escopo dela: o bloqueio trabalhado no meio do ciclo é a anterior da rotina', async () => {
+    const ordem = await novaOrdem(bloco['21']!, 'EM_CAMPO');
+    const casa = await novoImovel(bloco['21']!);
+    const trabalhado = { B: { inspecionados: 1, comFoco: 0, eliminados: 1, tratados: 0 } };
+    const fechado = visita(casa, { atividade: 'LI', situacao: 'FECHADO' }, 480);
+    const bloqueio = visita(casa, { atividade: 'BLOQUEIO', situacao: 'TRABALHADO', ordemId: ordem, depositos: trabalhado }, 300);
+    const rotina = visita(casa, { atividade: 'LI', situacao: 'TRABALHADO', depositos: trabalhado }, 120);
+    for (const [tk, op] of [
+      [ace, bloqueio],
+      [ace, rotina],
+      [supervisora, fechado],
+    ] as const)
+      expect((await resultados(tk, [op]))[0]!.status).toBe('OK');
+    const recuperacao = async (op: { clientId: string }) => (await db.vectorVisit.findUniqueOrThrow({ where: { clientId: op.clientId } })).recovery;
+    // O fechado das 8 h chegou por último, mas a anterior da rotina das 14 h no ciclo é o bloqueio trabalhado das 11 h.
+    expect(await recuperacao(rotina)).toBe(false);
+    expect(await recuperacao(bloqueio)).toBe(false);
+    expect(await recuperacao(fechado)).toBe(false);
+    // Um fechado entre o bloqueio e a rotina faz da rotina uma recuperação.
+    const fechadoDepois = visita(casa, { atividade: 'LI', situacao: 'FECHADO' }, 200);
+    expect((await resultados(supervisora, [fechadoDepois]))[0]!.status).toBe('OK');
+    expect(await recuperacao(rotina)).toBe(true);
   });
 
   it('visita de bloqueio sem a ordem informada vai para a ordem ativa mais recente do quarteirão', async () => {

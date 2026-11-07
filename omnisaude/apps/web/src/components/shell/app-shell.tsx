@@ -8,9 +8,10 @@ import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Spinner } from '@/components/ui/misc';
 import { useToast } from '@/components/ui/toast';
-import { errorMessage } from '@/lib/api';
+import { BASE_PATH, errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { NAV } from '@/lib/nav';
+import { avisarServiceWorker, registrarServiceWorker } from '@/lib/offline';
 import { useSession } from '@/lib/session';
 import { LibrasCallButton } from './libras-call';
 import { PopsPanel } from './pops-panel';
@@ -30,6 +31,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (!session.loading && !session.me) router.replace('/login');
   }, [session.loading, session.me, router]);
   useEffect(() => setDrawer(false), [pathname]);
+  // Service worker das telas de campo: registrado em qualquer tela autenticada (o agente abre o app pelo início e vai
+  // a campo), e avisado do que cada tela carregou, inclusive na navegação pelo menu, que não baixa o documento.
+  const logado = !!session.me;
+  useEffect(() => {
+    if (logado) registrarServiceWorker(BASE_PATH);
+  }, [logado]);
+  useEffect(() => {
+    if (!logado) return;
+    const t = setTimeout(avisarServiceWorker, 3000);
+    return () => clearTimeout(t);
+  }, [logado, pathname]);
   // Senha provisória (cadastro ou redefinição pela administração): só a troca libera as demais telas.
   const provisional = !!session.me?.user.mustChangePassword;
   useEffect(() => {
@@ -163,4 +175,3 @@ function Brand({ tenant }: { tenant: string }) {
     </div>
   );
 }
-

@@ -1,6 +1,24 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { tenantSettings, type EndemiasSettings, type MasterClient } from '@omnisaude/database';
-import { ATIVIDADE_INFO, cicloBimestral, fromZonedParts, indicesLarvarios, localDateString, progresso, SITUACAO_INFO, TIPO_IMOVEL, type AtividadeVetorial, type Depositos, type SituacaoVisita } from '@omnisaude/shared';
+import {
+  ATIVIDADE_INFO,
+  ATIVIDADES_INDICE,
+  ATIVIDADES_VETORIAIS,
+  cicloBimestral,
+  fromZonedParts,
+  indicesDaContagem,
+  localDateString,
+  positividadeAtividade,
+  progresso,
+  SITUACAO_INFO,
+  TIPO_IMOVEL,
+  TIPOS_DEPOSITO,
+  type AtividadeVetorial,
+  type ContagemIndices,
+  type Depositos,
+  type SituacaoVisita,
+  type TipoDeposito,
+} from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { MASTER_DB, TenantsService } from '../../core/database';
@@ -11,6 +29,59 @@ const DIA = 86_400_000;
 const inicioDoDia = (iso: string, tz: string) => fromZonedParts({ year: +iso.slice(0, 4), month: +iso.slice(5, 7), day: +iso.slice(8, 10), hour: 0, minute: 0, second: 0 }, tz);
 const diaSeguinte = (iso: string) => new Date(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10) + 1)).toISOString().slice(0, 10);
 const endereco = (h: { street: string | null; number: string | null; complement?: string | null } | undefined) => (h ? [h.street, h.number, h.complement].filter(Boolean).join(', ') || 'Sem endereço' : null);
+/** Dias de calendário entre duas datas AAAA-MM-DD. */
+const diasEntre = (a: string, b: string) => Math.abs(Date.UTC(+a.slice(0, 4), +a.slice(5, 7) - 1, +a.slice(8, 10)) - Date.UTC(+b.slice(0, 4), +b.slice(5, 7) - 1, +b.slice(8, 10))) / DIA;
+
+/** Teto da lista de pendências: os imóveis com a última visita mais recente. */
+export const MAX_PENDENCIAS = 2000;
+
+/**
+ * "Ausência" da Lei 13.301/2016 (art. 1º, § 2º, II): duas visitas com o imóvel fechado, em dias e períodos (turnos)
+ * alternados, dentro do intervalo de dez dias. Recusa (§ 2º, III) e abandono (§ 2º, I) são outras hipóteses e não
+ * contam. A lei pede visitas "devidamente comunicadas": o aviso prévio não é registrado aqui e fica a cargo da equipe.
+ */
+function ausenciaComprovada(fechamentos: { dia: string; turno: number }[]) {
+  return fechamentos.some((a, i) => fechamentos.slice(i + 1).some((b) => a.dia !== b.dia && a.turno !== b.turno && diasEntre(a.dia, b.dia) <= 10));
+}
+
+interface LinhaPendencia {
+  imovelId: string;
+  situacao: SituacaoVisita;
+  ultimaEm: string;
+  ordemId: string | null;
+  street: string | null;
+  number: string | null;
+  complement: string | null;
+  tipoImovel: string | null;
+  sequencia: string | null;
+  quarteirao: string | null;
+  agente: string | null;
+  tentativas: number;
+  fechados: number;
+  recusas: number;
+  diasFechado: string[] | null;
+  turnosFechado: number[] | null;
+}
+
+interface LinhaResumo {
+  agenteId: string | null;
+  total: boolean;
+  visitas: number;
+  trabalhados: number;
+  fechados: number;
+  recusados: number;
+  abandonados: number;
+  recuperados: number;
+  imoveisComFoco: number;
+  depositosInspecionados: number;
+  depositosComFoco: number;
+  depositosEliminados: number;
+  depositosTratados: number;
+  amostras: number;
+  nebulizados: number;
+}
+
+type LinhaIndice = { localidadeId: string | null; total: boolean; imoveisInspecionados: number; imoveisComFoco: number; depositosInspecionados: number; depositosComFoco: number } & Record<TipoDeposito, number>;
 
 /**
  * Supervisão de campo das endemias (VIG-3a): zonas de trabalho dos ACE (conjunto de quarteirões), visitas registradas,
@@ -92,12 +163,14 @@ export class SupervisaoEndemiasService {
   async salvarZona(ctx: RequestContext, id: string | null, input: { nome: string; aceId?: string | null; quarteiroes: string[]; ativa?: boolean; observacao?: string | null }) {
     const nome = input.nome.trim();
     const blocos = [...new Set(input.quarteiroes)];
-    if (input.aceId && !(await ctx.db.userAssignment.count({ where: { userId: input.aceId, active: true, role: { in: ['ACE', 'SUPERVISOR_ENDEMIAS'] } } })))
-      throw new DomainError('AGENTE_INVALIDO', 'O titular da zona precisa ser agente de endemias (ou supervisor de campo) com lotação ativa', HttpStatus.BAD_REQUEST);
-    if (blocos.length && (await ctx.db.block.count({ where: { id: { in: blocos }, active: true } })) !== blocos.length)
-      throw new DomainError('QUARTEIRAO_INVALIDO', 'Algum quarteirão não existe ou foi desativado', HttpStatus.BAD_REQUEST);
     const atual = id ? await ctx.db.vectorZone.findUnique({ where: { id } }) : null;
     if (id && !atual) throw notFound('Zona');
+    // Só o titular novo precisa estar apto (usuário ativo com lotação de campo ativa). O atual, mesmo sem lotação, fica
+    // até a supervisão trocá-lo: editar o nome ou os quarteirões não obriga a trocar o titular na hora.
+    if (input.aceId && input.aceId !== atual?.aceId && !(await ctx.db.userAssignment.count({ where: { userId: input.aceId, active: true, role: { in: ['ACE', 'SUPERVISOR_ENDEMIAS'] }, user: { active: true } } })))
+      throw new DomainError('AGENTE_INVALIDO', 'O titular da zona precisa ser agente de endemias (ou supervisor de campo) ativo, com lotação ativa', HttpStatus.BAD_REQUEST);
+    if (blocos.length && (await ctx.db.block.count({ where: { id: { in: blocos }, active: true } })) !== blocos.length)
+      throw new DomainError('QUARTEIRAO_INVALIDO', 'Algum quarteirão não existe ou foi desativado', HttpStatus.BAD_REQUEST);
     const ocupados = await ctx.db.vectorZoneBlock.findMany({ where: { blockId: { in: blocos }, ...(id ? { zoneId: { not: id } } : {}) }, include: { zone: { select: { name: true } } } });
     if (ocupados.length) {
       const numeros = await ctx.db.block.findMany({ where: { id: { in: ocupados.map((o) => o.blockId) } }, select: { id: true, number: true } });
@@ -186,129 +259,208 @@ export class SupervisaoEndemiasService {
 
   /**
    * Imóveis com pendência no ciclo atual ou numa ordem ativa (a última visita foi fechado, recusado ou abandonado), com
-   * as tentativas. Duas tentativas em dias e turnos diferentes em até 10 dias documentam a "ausência" da Lei 13.301/2016
-   * (art. 1º, § 2º, II), que só autoriza o ingresso forçado com emergência declarada (ESPIN); fora dela, vale o código de
-   * posturas do município.
+   * as tentativas desde a última visita trabalhada. A conta é toda no banco, sobre todas as visitas do ciclo e das ordens
+   * ativas; a saída traz até MAX_PENDENCIAS imóveis, os de última visita mais recente primeiro. A "ausência" da Lei
+   * 13.301/2016 (art. 1º, § 2º, II) só autoriza o ingresso forçado com emergência declarada (ESPIN); fora dela, vale o
+   * código de posturas do município.
    */
   async pendencias(ctx: RequestContext) {
-    const ciclo = cicloBimestral(localDateString(new Date(), ctx.tenant.timeZone));
-    const ativas = await ctx.db.blockingOrder.findMany({ where: { status: { in: ['ABERTA', 'EM_CAMPO'] } }, select: { id: true } });
-    const visitas = await ctx.db.vectorVisit.findMany({
-      where: { OR: [{ cycle: ciclo.chave }, ...(ativas.length ? [{ orderId: { in: ativas.map((a) => a.id) } }] : [])] },
-      select: { householdId: true, situation: true, visitedAt: true, turno: true, userId: true, blockId: true, orderId: true },
-      orderBy: { visitedAt: 'asc' },
-      take: 20_000,
-    });
-    const porImovel = new Map<string, typeof visitas>();
-    for (const v of visitas) porImovel.set(v.householdId, [...(porImovel.get(v.householdId) ?? []), v]);
-    const pendentes = [...porImovel.entries()].filter(([, vs]) => SITUACAO_INFO[vs.at(-1)!.situation].pendencia);
-    const [imoveis, agentes, blocos] = await Promise.all([
-      ctx.db.household.findMany({ where: { id: { in: pendentes.map(([id]) => id) } }, select: { id: true, street: true, number: true, complement: true, propertyType: true, rgSequence: true } }),
-      ctx.db.user.findMany({ where: { id: { in: [...new Set(pendentes.flatMap(([, vs]) => vs.map((v) => v.userId)))] } }, select: { id: true, name: true } }),
-      ctx.db.block.findMany({ where: { id: { in: [...new Set(pendentes.map(([, vs]) => vs.at(-1)!.blockId).filter((x): x is string => !!x))] } }, select: { id: true, number: true } }),
-    ]);
     const tz = ctx.tenant.timeZone;
-    return pendentes
-      .map(([id, vs]) => {
-        const ultima = vs.at(-1)!;
-        const tentativas = vs.filter((v) => SITUACAO_INFO[v.situation].pendencia && v.situation !== 'ABANDONADO');
-        const recentes = tentativas.filter((v) => ultima.visitedAt.getTime() - v.visitedAt.getTime() <= 10 * DIA);
-        const dias = new Set(recentes.map((v) => localDateString(v.visitedAt, tz)));
-        const turnos = new Set(recentes.map((v) => v.turno));
-        const h = imoveis.find((i) => i.id === id);
-        return {
-          imovelId: id,
-          imovel: endereco(h),
-          sequencia: h?.rgSequence ?? null,
-          tipo: TIPO_IMOVEL[h?.propertyType ?? '01'] ?? 'Outros',
-          quarteirao: blocos.find((b) => b.id === ultima.blockId)?.number ?? null,
-          situacao: ultima.situation,
-          situacaoLabel: SITUACAO_INFO[ultima.situation].label,
-          ultimaEm: ultima.visitedAt.toISOString(),
-          agente: agentes.find((a) => a.id === ultima.userId)?.name ?? null,
-          tentativas: vs.filter((v) => SITUACAO_INFO[v.situation].pendencia).length,
-          naOrdem: !!ultima.orderId,
-          ausenciaDocumentada: ultima.situation !== 'ABANDONADO' && dias.size >= 2 && turnos.size >= 2,
-        };
-      })
-      .sort((a, b) => b.tentativas - a.tentativas || a.ultimaEm.localeCompare(b.ultimaEm));
+    const ciclo = cicloBimestral(localDateString(new Date(), tz));
+    const ativas = (await ctx.db.blockingOrder.findMany({ where: { status: { in: ['ABERTA', 'EM_CAMPO'] } }, select: { id: true } })).map((o) => o.id);
+    const linhas = await ctx.db.$queryRaw<LinhaPendencia[]>`
+      WITH v0 AS (
+        -- ordem 1 é a última visita do imóvel.
+        SELECT id, household_id, situation::text AS situacao, visited_at, turno, user_id, block_id, order_id,
+          row_number() OVER (PARTITION BY household_id ORDER BY visited_at DESC, id DESC) AS ordem
+        FROM vector_visits
+        WHERE cycle = ${ciclo.chave} OR order_id = ANY(${ativas}::uuid[])
+      ),
+      v AS (
+        SELECT *, min(ordem) FILTER (WHERE situacao = 'TRABALHADO') OVER (PARTITION BY household_id) AS ordem_trabalhado
+        FROM v0
+      ),
+      pendentes AS (
+        SELECT household_id, situacao, visited_at, user_id, block_id, order_id
+        FROM v WHERE ordem = 1 AND situacao <> 'TRABALHADO'
+        ORDER BY visited_at DESC, household_id LIMIT ${MAX_PENDENCIAS}
+      ),
+      tentativas AS (
+        SELECT household_id, count(*)::int AS tentativas,
+          (count(*) FILTER (WHERE situacao = 'FECHADO'))::int AS fechados,
+          (count(*) FILTER (WHERE situacao = 'RECUSADO'))::int AS recusas,
+          array_agg(((visited_at AT TIME ZONE 'UTC') AT TIME ZONE ${tz})::date::text ORDER BY visited_at) FILTER (WHERE situacao = 'FECHADO') AS "diasFechado",
+          array_agg(turno ORDER BY visited_at) FILTER (WHERE situacao = 'FECHADO') AS "turnosFechado"
+        FROM v
+        WHERE situacao <> 'TRABALHADO' AND (ordem_trabalhado IS NULL OR ordem < ordem_trabalhado) AND household_id IN (SELECT household_id FROM pendentes)
+        GROUP BY household_id
+      )
+      SELECT p.household_id AS "imovelId", p.situacao, to_char(p.visited_at, 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "ultimaEm", p.order_id AS "ordemId",
+        h.street, h.number, h.complement, h.property_type AS "tipoImovel", h.rg_sequence AS sequencia, b.number AS quarteirao, u.name AS agente,
+        t.tentativas, t.fechados, t.recusas, t."diasFechado", t."turnosFechado"
+      FROM pendentes p
+      JOIN tentativas t ON t.household_id = p.household_id
+      LEFT JOIN households h ON h.id = p.household_id
+      LEFT JOIN blocks b ON b.id = p.block_id
+      LEFT JOIN users u ON u.id = p.user_id
+      ORDER BY p.visited_at DESC, p.household_id`;
+    return linhas.map((l) => {
+      const dias = l.diasFechado ?? [];
+      const turnos = l.turnosFechado ?? [];
+      return {
+        imovelId: l.imovelId,
+        imovel: endereco(l),
+        sequencia: l.sequencia,
+        tipo: TIPO_IMOVEL[l.tipoImovel ?? '01'] ?? 'Outros',
+        quarteirao: l.quarteirao,
+        situacao: l.situacao,
+        situacaoLabel: SITUACAO_INFO[l.situacao].label,
+        ultimaEm: l.ultimaEm,
+        agente: l.agente,
+        tentativas: l.tentativas,
+        fechados: l.fechados,
+        recusas: l.recusas,
+        naOrdem: !!l.ordemId,
+        // Só com o imóvel ainda fechado: se depois alguém foi achado e recusou, a hipótese passa a ser a recusa.
+        ausenciaDocumentada: l.situacao === 'FECHADO' && ausenciaComprovada(dias.map((dia, i) => ({ dia, turno: Number(turnos[i]) }))),
+      };
+    });
   }
 
   // ─── Produção e índices ────────────────────────────────────────────────────
 
+  /**
+   * Produção do período por agente e por localidade, toda agregada no banco (sem limite de visitas). O resumo conta as
+   * visitas de todas as atividades, como os boletins de campo; "imóveis com foco" são imóveis distintos com foco em
+   * qualquer atividade. Os índices (IIP, IB, IR, ITR) são só do levantamento, LI e LI+T: de cada imóvel, a última visita
+   * trabalhada dessas atividades no período. As outras atividades com visita no período têm a positividade à parte.
+   */
   async producao(ctx: RequestContext, q: { de: string; ate: string }) {
     const tz = ctx.tenant.timeZone;
-    const rows = await ctx.db.vectorVisit.findMany({
-      where: { visitedAt: { gte: inicioDoDia(q.de, tz), lt: inicioDoDia(diaSeguinte(q.ate), tz) } },
-      select: {
-        id: true,
-        userId: true,
-        householdId: true,
-        blockId: true,
-        situation: true,
-        recovery: true,
-        deposits: true,
-        depositsInspected: true,
-        depositsPositive: true,
-        depositsEliminated: true,
-        depositsTreated: true,
-        samplesCount: true,
-        ubv: true,
-        visitedAt: true,
-      },
-      orderBy: { visitedAt: 'asc' },
-      take: 50_000,
-    });
-    const [agentes, tratamentos, blocos] = await Promise.all([
-      ctx.db.user.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.userId))] } }, select: { id: true, name: true } }),
-      rows.length
-        ? ctx.db.vectorTreatment.findMany({
-            where: { visitId: { in: rows.map((r) => r.id) }, stockStatus: { not: 'CANCELADO' } },
-            select: { visitId: true, quantity: true, product: { select: { id: true, description: true, unit: true } } },
-          })
-        : [],
-      ctx.db.block.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.blockId).filter((x): x is string => !!x))] } }, select: { id: true, localityId: true } }),
+    // visited_at é timestamp sem fuso, gravado em UTC: o texto ISO convertido em timestamp não depende do fuso da sessão.
+    const de = inicioDoDia(q.de, tz).toISOString();
+    const ate = inicioDoDia(diaSeguinte(q.ate), tz).toISOString();
+    const levantamento = [...ATIVIDADES_INDICE];
+    const [resumos, larvicidas, contagens, outras, visitasPorLocalidade] = await Promise.all([
+      ctx.db.$queryRaw<LinhaResumo[]>`
+        SELECT user_id AS "agenteId", GROUPING(user_id) = 1 AS total, count(*)::int AS visitas,
+          (count(*) FILTER (WHERE situation = 'TRABALHADO'))::int AS trabalhados,
+          (count(*) FILTER (WHERE situation = 'FECHADO'))::int AS fechados,
+          (count(*) FILTER (WHERE situation = 'RECUSADO'))::int AS recusados,
+          (count(*) FILTER (WHERE situation = 'ABANDONADO'))::int AS abandonados,
+          (count(*) FILTER (WHERE recovery AND situation = 'TRABALHADO'))::int AS recuperados,
+          (count(DISTINCT household_id) FILTER (WHERE deposits_positive > 0))::int AS "imoveisComFoco",
+          coalesce(sum(deposits_inspected), 0)::int AS "depositosInspecionados",
+          coalesce(sum(deposits_positive), 0)::int AS "depositosComFoco",
+          coalesce(sum(deposits_eliminated), 0)::int AS "depositosEliminados",
+          coalesce(sum(deposits_treated), 0)::int AS "depositosTratados",
+          coalesce(sum(samples_count), 0)::int AS amostras,
+          (count(*) FILTER (WHERE coalesce(ubv, '') <> ''))::int AS nebulizados
+        FROM vector_visits
+        WHERE visited_at >= ${de}::timestamp AND visited_at < ${ate}::timestamp
+        GROUP BY GROUPING SETS ((user_id), ())`,
+      ctx.db.$queryRaw<{ agenteId: string | null; total: boolean; produtoId: string; quantidade: number }[]>`
+        SELECT v.user_id AS "agenteId", GROUPING(v.user_id) = 1 AS total, t.product_id AS "produtoId", sum(t.quantity)::float8 AS quantidade
+        FROM vector_treatments t JOIN vector_visits v ON v.id = t.visit_id
+        WHERE v.visited_at >= ${de}::timestamp AND v.visited_at < ${ate}::timestamp AND t.stock_status <> 'CANCELADO'
+        GROUP BY GROUPING SETS ((v.user_id, t.product_id), (t.product_id))`,
+      ctx.db.$queryRaw<LinhaIndice[]>`
+        WITH ultima AS (
+          SELECT DISTINCT ON (household_id) household_id, block_id, deposits, deposits_inspected, deposits_positive
+          FROM vector_visits
+          WHERE visited_at >= ${de}::timestamp AND visited_at < ${ate}::timestamp AND situation = 'TRABALHADO' AND activity::text = ANY(${levantamento}::text[])
+          ORDER BY household_id, visited_at DESC, id DESC
+        )
+        SELECT b.locality_id AS "localidadeId", GROUPING(b.locality_id) = 1 AS total, count(*)::int AS "imoveisInspecionados",
+          (count(*) FILTER (WHERE u.deposits_positive > 0))::int AS "imoveisComFoco",
+          coalesce(sum(u.deposits_inspected), 0)::int AS "depositosInspecionados",
+          coalesce(sum(u.deposits_positive), 0)::int AS "depositosComFoco",
+          coalesce(sum((u.deposits->'A1'->>'comFoco')::int), 0)::int AS "A1",
+          coalesce(sum((u.deposits->'A2'->>'comFoco')::int), 0)::int AS "A2",
+          coalesce(sum((u.deposits->'B'->>'comFoco')::int), 0)::int AS "B",
+          coalesce(sum((u.deposits->'C'->>'comFoco')::int), 0)::int AS "C",
+          coalesce(sum((u.deposits->'D1'->>'comFoco')::int), 0)::int AS "D1",
+          coalesce(sum((u.deposits->'D2'->>'comFoco')::int), 0)::int AS "D2",
+          coalesce(sum((u.deposits->'E'->>'comFoco')::int), 0)::int AS "E"
+        FROM ultima u LEFT JOIN blocks b ON b.id = u.block_id
+        GROUP BY GROUPING SETS ((b.locality_id), ())`,
+      ctx.db.$queryRaw<{ atividade: AtividadeVetorial; inspecionados: number; comFoco: number }[]>`
+        SELECT activity::text AS atividade,
+          (count(DISTINCT household_id) FILTER (WHERE situation = 'TRABALHADO'))::int AS inspecionados,
+          (count(DISTINCT household_id) FILTER (WHERE situation = 'TRABALHADO' AND deposits_positive > 0))::int AS "comFoco"
+        FROM vector_visits
+        WHERE visited_at >= ${de}::timestamp AND visited_at < ${ate}::timestamp AND NOT (activity::text = ANY(${levantamento}::text[]))
+        GROUP BY activity`,
+      ctx.db.$queryRaw<{ localidadeId: string; visitas: number }[]>`
+        SELECT b.locality_id AS "localidadeId", count(*)::int AS visitas
+        FROM vector_visits v JOIN blocks b ON b.id = v.block_id
+        WHERE v.visited_at >= ${de}::timestamp AND v.visited_at < ${ate}::timestamp
+        GROUP BY b.locality_id`,
     ]);
-    const porAgente = new Map<string, typeof rows>();
-    for (const r of rows) porAgente.set(r.userId, [...(porAgente.get(r.userId) ?? []), r]);
-    const larvicida = (vs: Set<string>) => {
-      const m = new Map<string, { produto: string; unidade: string; quantidade: number }>();
-      for (const t of tratamentos)
-        if (vs.has(t.visitId)) {
-          const a = m.get(t.product.id) ?? { produto: t.product.description, unidade: t.product.unit, quantidade: 0 };
-          a.quantidade = Math.round((a.quantidade + Number(t.quantity)) * 1000) / 1000;
-          m.set(t.product.id, a);
-        }
-      return [...m.values()];
-    };
-    const resumo = (vs: typeof rows) => ({
-      visitas: vs.length,
-      trabalhados: vs.filter((v) => v.situation === 'TRABALHADO').length,
-      fechados: vs.filter((v) => v.situation === 'FECHADO').length,
-      recusados: vs.filter((v) => v.situation === 'RECUSADO').length,
-      abandonados: vs.filter((v) => v.situation === 'ABANDONADO').length,
-      recuperados: vs.filter((v) => v.recovery && v.situation === 'TRABALHADO').length,
-      imoveisComFoco: new Set(vs.filter((v) => v.depositsPositive > 0).map((v) => v.householdId)).size,
-      depositosInspecionados: vs.reduce((s, v) => s + v.depositsInspected, 0),
-      depositosComFoco: vs.reduce((s, v) => s + v.depositsPositive, 0),
-      depositosEliminados: vs.reduce((s, v) => s + v.depositsEliminated, 0),
-      depositosTratados: vs.reduce((s, v) => s + v.depositsTreated, 0),
-      amostras: vs.reduce((s, v) => s + v.samplesCount, 0),
-      nebulizados: vs.filter((v) => !!v.ubv).length,
-      larvicida: larvicida(new Set(vs.map((v) => v.id))),
+    const unicos = (xs: (string | null)[]) => [...new Set(xs.filter((x): x is string => !!x))];
+    const [agentes, produtos, localidades] = await Promise.all([
+      ctx.db.user.findMany({ where: { id: { in: unicos(resumos.map((r) => r.agenteId)) } }, select: { id: true, name: true } }),
+      ctx.db.product.findMany({ where: { id: { in: unicos(larvicidas.map((l) => l.produtoId)) } }, select: { id: true, description: true, unit: true } }),
+      ctx.db.locality.findMany({ where: { id: { in: unicos(visitasPorLocalidade.map((l) => l.localidadeId)) } }, select: { id: true, code: true, name: true } }),
+    ]);
+    const larvicida = (agenteId: string | null) =>
+      larvicidas
+        .filter((l) => (agenteId === null ? l.total : !l.total && l.agenteId === agenteId))
+        .map((l) => {
+          const p = produtos.find((x) => x.id === l.produtoId);
+          return { produto: p?.description ?? '—', unidade: p?.unit ?? '', quantidade: Math.round(Number(l.quantidade) * 1000) / 1000 };
+        })
+        .sort((a, b) => a.produto.localeCompare(b.produto, 'pt-BR'));
+    const resumo = (r: LinhaResumo | undefined, agenteId: string | null) => ({
+      visitas: r?.visitas ?? 0,
+      trabalhados: r?.trabalhados ?? 0,
+      fechados: r?.fechados ?? 0,
+      recusados: r?.recusados ?? 0,
+      abandonados: r?.abandonados ?? 0,
+      recuperados: r?.recuperados ?? 0,
+      imoveisComFoco: r?.imoveisComFoco ?? 0,
+      depositosInspecionados: r?.depositosInspecionados ?? 0,
+      depositosComFoco: r?.depositosComFoco ?? 0,
+      depositosEliminados: r?.depositosEliminados ?? 0,
+      depositosTratados: r?.depositosTratados ?? 0,
+      amostras: r?.amostras ?? 0,
+      nebulizados: r?.nebulizados ?? 0,
+      larvicida: larvicida(agenteId),
     });
-    const indice = (vs: typeof rows) => indicesLarvarios(vs.map((v) => ({ imovelId: v.householdId, situacao: v.situation, depositos: v.deposits as Depositos | null })));
-    const localidadeDoBloco = new Map(blocos.map((b) => [b.id, b.localityId]));
-    const localidades = await ctx.db.locality.findMany({ where: { id: { in: [...new Set(blocos.map((b) => b.localityId))] } }, select: { id: true, code: true, name: true } });
+    const contagem = (l: LinhaIndice | undefined): ContagemIndices => ({
+      imoveisInspecionados: l?.imoveisInspecionados ?? 0,
+      imoveisComFoco: l?.imoveisComFoco ?? 0,
+      depositosInspecionados: l?.depositosInspecionados ?? 0,
+      depositosComFoco: l?.depositosComFoco ?? 0,
+      focoPorTipo: Object.fromEntries(TIPOS_DEPOSITO.map((t) => [t, l?.[t] ?? 0])),
+    });
+    // Na ordem das atividades (T, bloqueio, PE, DF, PVE), só as que tiveram visita no período.
+    const positividade = ATIVIDADES_VETORIAIS.flatMap((a) => {
+      const o = ATIVIDADES_INDICE.includes(a) ? undefined : outras.find((x) => x.atividade === a);
+      return o ? [positividadeAtividade(a, o.inspecionados, o.comFoco)] : [];
+    });
     return {
       periodo: { de: q.de, ate: q.ate },
-      total: { ...resumo(rows), indices: indice(rows) },
-      agentes: [...porAgente.entries()].map(([id, vs]) => ({ id, nome: agentes.find((a) => a.id === id)?.name ?? null, ...resumo(vs) })).sort((a, b) => b.trabalhados - a.trabalhados),
+      total: {
+        ...resumo(
+          resumos.find((r) => r.total),
+          null,
+        ),
+        indices: indicesDaContagem(contagem(contagens.find((c) => c.total))),
+        positividade,
+      },
+      agentes: resumos
+        .filter((r): r is LinhaResumo & { agenteId: string } => !r.total && !!r.agenteId)
+        .map((r) => ({ id: r.agenteId, nome: agentes.find((a) => a.id === r.agenteId)?.name ?? null, ...resumo(r, r.agenteId) }))
+        .sort((a, b) => b.trabalhados - a.trabalhados || (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR')),
       localidades: localidades
-        .map((l) => {
-          const vs = rows.filter((r) => r.blockId && localidadeDoBloco.get(r.blockId) === l.id);
-          return { id: l.id, codigo: l.code, nome: l.name, visitas: vs.length, indices: indice(vs) };
-        })
+        .map((l) => ({
+          id: l.id,
+          codigo: l.code,
+          nome: l.name,
+          visitas: visitasPorLocalidade.find((x) => x.localidadeId === l.id)?.visitas ?? 0,
+          indices: indicesDaContagem(contagem(contagens.find((c) => !c.total && c.localidadeId === l.id))),
+        }))
         .sort((a, b) => a.codigo.localeCompare(b.codigo, 'pt-BR', { numeric: true })),
     };
   }

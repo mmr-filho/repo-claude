@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { conferirEntradaVisita } from '@omnisaude/esus';
 import {
   ageInYears,
   avaliarGps,
@@ -472,7 +473,17 @@ export class AcsService {
     if (invalido) throw new DomainError('MOTIVO_INVALIDO', `Motivo de visita desconhecido: ${invalido}`);
     const tipoImovel = v.tipoImovel ?? household?.propertyType ?? '01';
     if (!TIPO_IMOVEL[tipoImovel]) throw new DomainError('TIPO_IMOVEL_INVALIDO', 'Tipo de imóvel inválido');
-    if (!patientId && tipoImovel === '01' && v.desfecho === '1') throw new DomainError('PESSOA_OBRIGATORIA', 'Visita realizada a um domicílio precisa informar a pessoa visitada');
+    // O que a ficha de visita do e-SUS recusaria é erro aqui, e não uma ficha do dia inteira inválida no lote.
+    const medida = (x: number | null | undefined) => x !== null && x !== undefined;
+    const problema = conferirEntradaVisita({
+      tipoImovel,
+      desfecho: v.desfecho,
+      motivos,
+      pessoa: !!patientId,
+      medicao: [v.pesoKg, v.alturaCm, v.sistolica, v.diastolica, v.temperatura, v.glicemia].some(medida),
+      pesoOuAltura: medida(v.pesoKg) || medida(v.alturaCm),
+    });
+    if (problema) throw new DomainError(problema.codigo, problema.mensagem);
     const visitedAt = this.quando(op.registradoEm);
     const turno = v.turno ?? turnoDaHora(zonedParts(visitedAt, ctx.tenant.timeZone).hour);
     const microArea = v.microArea ?? household?.microArea ?? ref.lot?.microArea ?? null;

@@ -443,8 +443,11 @@ describe.runIf(enabled)('VIG-3a: ACE em campo e ordem de bloqueio de transmissã
     const p = (await t.http().get(`/api/endemias/producao?de=${hoje}&ate=${hoje}`).set(auth(vig)).expect(200)).body;
     expect(p.total).toMatchObject({ trabalhados: 4, fechados: 1, recuperados: 1, amostras: 2 });
     expect(p.total.larvicida.find((l: { unidade: string }) => l.unidade === 'G').quantidade).toBe(3.5);
-    // 4 imóveis trabalhados, 2 com foco (o terreno e o A1 da casa 4): IIP 50%.
-    expect(p.total.indices).toMatchObject({ imoveisInspecionados: 4, imoveisComFoco: 2, iip: 50, classe: 'RISCO' });
+    // Imóveis com foco em qualquer atividade: o terreno (bloqueio) e a casa 4 (LI+T).
+    expect(p.total.imoveisComFoco).toBe(2);
+    // Os índices são só do levantamento (LI e LI+T): a casa 4, com foco no A1. O bloqueio fica na positividade à parte.
+    expect(p.total.indices).toMatchObject({ imoveisInspecionados: 1, imoveisComFoco: 1, iip: 100, classe: 'RISCO' });
+    expect(p.total.positividade).toEqual([{ atividade: 'BLOQUEIO', label: 'Bloqueio de transmissão', imoveisInspecionados: 3, imoveisComFoco: 1, percentual: 33.33 }]);
     expect(p.agentes[0].id).toBe(aceId);
   });
 

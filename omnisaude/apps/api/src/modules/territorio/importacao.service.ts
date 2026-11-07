@@ -22,7 +22,7 @@ import { DomainError, notFound } from '../../core/errors';
 import { StorageService } from '../../core/storage.service';
 import { ArquivoInvalido, lerCnefe, lerMalha, type EnderecoCnefe } from './leitor-malha';
 import { LocalizadorService } from './localizador.service';
-import { derivados, TRAVA_QUARTEIROES } from './territorio.service';
+import { derivados, TerritorioService, TRAVA_QUARTEIROES } from './territorio.service';
 
 export type TipoImportacao = 'LOCALIDADES' | 'BAIRROS' | 'QUARTEIROES' | 'ENDERECOS';
 
@@ -70,6 +70,7 @@ export class ImportacaoTerritorioService {
     private readonly storage: StorageService,
     private readonly audit: AuditService,
     private readonly localizador: LocalizadorService,
+    private readonly territorio: TerritorioService,
   ) {}
 
   historico(ctx: RequestContext) {
@@ -427,7 +428,10 @@ export class ImportacaoTerritorioService {
       },
       { timeout: 300_000 },
     );
-    const vinculo = await this.localizador.vincularTodos(ctx.db);
+    const mudaram: string[] = [];
+    const vinculo = await this.localizador.vincularTodos(ctx.db, (ids) => mudaram.push(...ids));
+    // Imóveis que mudaram de quarteirão com a malha nova: a ordem de bloqueio dos moradores é reavaliada.
+    await this.territorio.imoveisPosicionados(ctx, mudaram);
     return { criados, atualizados, desativados, erros: erros.slice(0, 50), totalErros: erros.length, sobreposicoes, avisos, imoveis: vinculo };
   }
 }

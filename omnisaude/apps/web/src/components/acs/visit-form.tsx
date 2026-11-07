@@ -8,6 +8,7 @@ import { Dialog } from '@/components/ui/dialog';
 import { Field, Input, Select, Textarea } from '@/components/ui/input';
 import { Alert } from '@/components/ui/misc';
 import { obterPosicao, uuid } from '@/lib/offline';
+import { conferirEntradaVisita, MOTIVOS_FORA_DO_DOMICILIO, TIPOS_IMOVEL_NAO_DOMICILIO } from './visita-regras';
 
 export interface PessoaVisitavel {
   /** Id no servidor ou, para quem ainda não foi sincronizado, o clientId. */
@@ -28,6 +29,10 @@ export interface DomicilioVisitavel {
   /** Posição aproximada (centro de rua ou de bairro): a leitura do GPS na visita a substitui. */
   posicaoAproximada?: boolean;
 }
+
+const MEDICOES_VAZIAS = { pesoKg: '', alturaCm: '', sistolica: '', diastolica: '', temperatura: '', glicemia: '', tipoGlicemia: '4' };
+/** Visita periódica (29) é o motivo inicial no domicílio; fora dele não vale, e o agente escolhe o motivo. */
+const motivosIniciais = (tipoImovel: string) => (TIPOS_IMOVEL_NAO_DOMICILIO.has(tipoImovel) ? [] : ['29']);
 
 const agoraLocal = () => {
   const d = new Date();
@@ -58,7 +63,7 @@ export function VisitForm({
   const [foraDaArea, setForaDaArea] = useState(false);
   const [tipoImovel, setTipoImovel] = useState(domicilio?.propertyType ?? '01');
   const [quando, setQuando] = useState(agoraLocal());
-  const [med, setMed] = useState({ pesoKg: '', alturaCm: '', sistolica: '', diastolica: '', temperatura: '', glicemia: '', tipoGlicemia: '4' });
+  const [med, setMed] = useState(MEDICOES_VAZIAS);
   const [posicao, setPosicao] = useState<{ latitude: number; longitude: number; precisao: number | null } | null>(null);
   const [obs, setObs] = useState('');
   const [erro, setErro] = useState<string | null>(null);
@@ -67,14 +72,15 @@ export function VisitForm({
 
   useEffect(() => {
     if (aberto) {
-      setPessoaId(pessoaInicial ?? '');
+      const tipo = domicilio?.propertyType ?? '01';
+      setPessoaId(TIPOS_IMOVEL_NAO_DOMICILIO.has(tipo) ? '' : (pessoaInicial ?? ''));
       setDesfecho('1');
-      setMotivos(['29']);
+      setMotivos(motivosIniciais(tipo));
       setCompartilhada(false);
       setForaDaArea(false);
-      setTipoImovel(domicilio?.propertyType ?? '01');
+      setTipoImovel(tipo);
       setQuando(agoraLocal());
-      setMed({ pesoKg: '', alturaCm: '', sistolica: '', diastolica: '', temperatura: '', glicemia: '', tipoGlicemia: '4' });
+      setMed(MEDICOES_VAZIAS);
       setPosicao(null);
       setObs('');
       setErro(null);
@@ -83,6 +89,16 @@ export function VisitForm({
 
   const toggle = (codigo: string) => setMotivos((m) => (m.includes(codigo) ? m.filter((x) => x !== codigo) : [...m, codigo]));
   const num = (s: string) => (s.trim() === '' ? null : Number(s.replace(',', '.')));
+  const naoDomicilio = TIPOS_IMOVEL_NAO_DOMICILIO.has(tipoImovel);
+
+  /** Fora do domicílio a visita não identifica pessoa nem leva medição, e só alguns motivos valem. */
+  function mudarTipo(tipo: string) {
+    setTipoImovel(tipo);
+    if (!TIPOS_IMOVEL_NAO_DOMICILIO.has(tipo)) return;
+    setPessoaId('');
+    setMed(MEDICOES_VAZIAS);
+    setMotivos((m) => m.filter((x) => MOTIVOS_FORA_DO_DOMICILIO.has(x)));
+  }
 
   async function localizar() {
     setLocalizando(true);
@@ -98,7 +114,16 @@ export function VisitForm({
   async function salvar() {
     setErro(null);
     if (!motivos.length) return setErro('Marque ao menos um motivo da visita');
-    if (!pessoaId && tipoImovel === '01' && desfecho === '1') return setErro('Visita realizada a um domicílio precisa informar a pessoa visitada');
+    const medidas = [med.pesoKg, med.alturaCm, med.sistolica, med.diastolica, med.temperatura, med.glicemia].map(num);
+    const problema = conferirEntradaVisita({
+      tipoImovel,
+      desfecho,
+      motivos,
+      pessoa: !!pessoaId,
+      medicao: medidas.some((x) => x !== null),
+      pesoOuAltura: medidas[0] !== null || medidas[1] !== null,
+    });
+    if (problema) return setErro(problema.mensagem);
     const registradoEm = new Date(quando);
     if (Number.isNaN(registradoEm.getTime())) return setErro('Informe a data e a hora da visita');
     if (registradoEm.getTime() > Date.now() + 60_000) return setErro('A visita não pode estar no futuro');
@@ -164,7 +189,7 @@ export function VisitForm({
         {erro && <Alert tone="error">{erro}</Alert>}
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Pessoa visitada" htmlFor="visita-pessoa">
-            <Select id="visita-pessoa" value={pessoaId} onChange={(e) => setPessoaId(e.target.value)}>
+            <Select id="visita-pessoa" value={pessoaId} onChange={(e) => setPessoaId(e.target.value)} disabled={naoDomicilio}>
               <option value="">Visita ao imóvel (sem pessoa)</option>
               {pessoas.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -192,14 +217,19 @@ export function VisitForm({
         </fieldset>
         <fieldset>
           <legend className="mb-1 text-sm font-medium">Motivos da visita</legend>
+          {naoDomicilio && (
+            <p className="mb-2 text-xs text-slate-600" id="visita-motivos-fora">
+              Fora do domicílio valem só cadastramento, convite para atividades coletivas, orientação/prevenção, controle ambiental e vetorial e outros; a visita não identifica pessoa nem leva medições.
+            </p>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             {MOTIVOS_VISITA.map((g) => (
               <div key={g.titulo} className="rounded-lg border border-slate-200 p-2">
                 <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">{g.titulo}</p>
                 <div className="flex flex-col">
                   {g.motivos.map((m) => (
-                    <label key={m.codigo} className="flex min-h-9 items-center gap-2 text-sm">
-                      <input type="checkbox" checked={motivos.includes(m.codigo)} onChange={() => toggle(m.codigo)} />
+                    <label key={m.codigo} className={`flex min-h-9 items-center gap-2 text-sm ${naoDomicilio && !MOTIVOS_FORA_DO_DOMICILIO.has(m.codigo) ? 'text-slate-400' : ''}`}>
+                      <input type="checkbox" checked={motivos.includes(m.codigo)} disabled={naoDomicilio && !MOTIVOS_FORA_DO_DOMICILIO.has(m.codigo)} onChange={() => toggle(m.codigo)} />
                       {m.descricao}
                     </label>
                   ))}
@@ -210,7 +240,7 @@ export function VisitForm({
         </fieldset>
         <div className="grid gap-3 sm:grid-cols-3">
           <Field label="Tipo de imóvel" htmlFor="visita-imovel">
-            <Select id="visita-imovel" value={tipoImovel} onChange={(e) => setTipoImovel(e.target.value)}>
+            <Select id="visita-imovel" value={tipoImovel} onChange={(e) => mudarTipo(e.target.value)}>
               {Object.entries(TIPO_IMOVEL).map(([k, v]) => (
                 <option key={k} value={k}>
                   {v}
@@ -227,7 +257,7 @@ export function VisitForm({
             Fora da minha área
           </label>
         </div>
-        <details className="rounded-lg border border-slate-200 p-3">
+        <details className={`rounded-lg border border-slate-200 p-3 ${naoDomicilio ? 'hidden' : ''}`}>
           <summary className="cursor-pointer text-sm font-medium">Medições (opcional)</summary>
           <div className="mt-3 grid gap-3 sm:grid-cols-3">
             <Field label="Peso (kg)" htmlFor="visita-peso">

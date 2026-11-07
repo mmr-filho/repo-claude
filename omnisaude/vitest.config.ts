@@ -39,6 +39,8 @@ export default defineConfig({
           fileParallelism: false,
         },
       },
+      // Lógica da web (app de campo sem internet e regras das telas), com os atalhos do tsconfig da web.
+      'apps/web/vitest.config.ts',
     ],
   },
 });

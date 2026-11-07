@@ -23,7 +23,7 @@ import {
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { DomainError, notFound } from '../../core/errors';
-import { LocalizadorService, PRECISAO_LIGA_QUARTEIRAO, TOLERANCIA_QUARTEIRAO_M } from '../territorio/localizador.service';
+import { LocalizadorService, PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
 import { TerritorioService } from '../territorio/territorio.service';
 import { validarOperacaoAce } from './campo.schema';
 import { ehConflitoPassageiro, restricaoCheckViolada, violouUnico } from './erros-banco';
@@ -169,25 +169,28 @@ export class CampoAceService {
     if (entrada.length > MAX_OPERACOES_SYNC) throw new DomainError('LOTE_GRANDE', `Envie no máximo ${MAX_OPERACOES_SYNC} operações por vez`, HttpStatus.BAD_REQUEST);
     const resultados: ResultadoSyncAce[] = [];
     // Cada operação é validada sozinha: a inválida volta ERRO e não derruba as outras do lote.
-    const operacoes: OperacaoAce[] = [];
-    for (const bruta of entrada) {
-      const v = validarOperacaoAce(bruta);
-      if (v.ok) operacoes.push(v.op);
-      else resultados.push({ clientId: v.clientId, tipo: v.tipo, status: 'ERRO', id: null, erro: v.erro });
-    }
-    const refs = new Set<string>();
-    for (const op of operacoes) {
-      refs.add(op.clientId);
-      if (op.tipo === 'VISITA_VETORIAL' && op.householdClientId) refs.add(op.householdClientId);
-    }
+    const validadas = entrada.map(validarOperacaoAce);
+    const operacoes = validadas.flatMap((v) => (v.ok ? [v.op] : []));
+    /** clientIds deste lote, válidos ou não. */
+    const noLote = new Set(validadas.flatMap((v) => (v.ok ? [v.op.clientId] : v.clientId ? [v.clientId] : [])));
+    const refs = new Set(noLote);
+    for (const op of operacoes) if (op.tipo === 'VISITA_VETORIAL' && op.householdClientId) refs.add(op.householdClientId);
     const anteriores = refs.size ? await ctx.db.fieldSyncOp.findMany({ where: { clientId: { in: [...refs] } } }) : [];
     const feitas = new Map(anteriores.map((a) => [a.clientId, a]));
+    for (const v of validadas) {
+      if (v.ok) continue;
+      // Já gravada (reenvio depois de a resposta se perder): sai da fila, mesmo que não passe mais na validação atual.
+      const feita = v.clientId ? feitas.get(v.clientId) : undefined;
+      resultados.push(feita ? { clientId: v.clientId, tipo: v.tipo, status: 'DUPLICADA', id: feita.entityId, erro: null } : { clientId: v.clientId, tipo: v.tipo, status: 'ERRO', id: null, erro: v.erro });
+    }
     /** clientId do imóvel criado em campo → id no servidor (neste lote ou em sincronizações anteriores). */
     const ids = new Map<string, string>();
     for (const a of anteriores) if (a.entityId) ids.set(a.clientId, a.entityId);
+    // Imóvel novo de outro envio que outra requisição (outra aba) ainda pode estar gravando: espera por ele uma vez.
+    const deFora = [...new Set(operacoes.flatMap((op) => (op.tipo === 'VISITA_VETORIAL' && op.householdClientId && !ids.has(op.householdClientId) && !noLote.has(op.householdClientId) ? [op.householdClientId] : [])))];
+    if (deFora.length) for (const [clientId, id] of await this.imoveisEmGravacao(ctx, deFora)) ids.set(clientId, id);
     /** Operações que ficaram para o próximo envio: as visitas de um imóvel novo adiado ficam junto com ele. */
     const adiadas = new Set<string>();
-    const noLote = new Set(operacoes.map((op) => op.clientId));
     for (const op of ordenarOperacoesAce(operacoes)) {
       const feita = feitas.get(op.clientId);
       if (feita) {
@@ -199,17 +202,10 @@ export class CampoAceService {
         resultados.push({ clientId: op.clientId, tipo: op.tipo, status: 'ERRO', id: null, erro: OUTRA_LOTACAO });
         continue;
       }
-      if (op.tipo === 'VISITA_VETORIAL' && op.householdClientId && !ids.has(op.householdClientId)) {
-        if (adiadas.has(op.householdClientId)) {
-          adiadas.add(op.clientId);
-          resultados.push({ clientId: op.clientId, tipo: op.tipo, status: 'TENTAR_DE_NOVO', id: null, erro: 'O imóvel novo desta visita ficou para o próximo envio: a visita vai junto com ele' });
-          continue;
-        }
-        // Fora deste lote, o imóvel novo pode estar sendo gravado agora por outra requisição (outra aba): espera e relê.
-        if (!noLote.has(op.householdClientId)) {
-          const id = await this.imovelEmGravacao(ctx, op.householdClientId);
-          if (id) ids.set(op.householdClientId, id);
-        }
+      if (op.tipo === 'VISITA_VETORIAL' && op.householdClientId && adiadas.has(op.householdClientId)) {
+        adiadas.add(op.clientId);
+        resultados.push({ clientId: op.clientId, tipo: op.tipo, status: 'TENTAR_DE_NOVO', id: null, erro: 'O imóvel novo desta visita ficou para o próximo envio: a visita vai junto com ele' });
+        continue;
       }
       try {
         const r = await this.comNovasTentativas(() => (op.tipo === 'IMOVEL' ? this.aplicarImovel(ctx, op) : this.aplicarVisita(ctx, op, ids)));
@@ -256,14 +252,15 @@ export class CampoAceService {
     return { resultados, sincronizadoEm: new Date().toISOString() };
   }
 
-  /** Id do imóvel novo que outra requisição ainda pode estar gravando (até ~0,5 s); null se não aparecer. */
-  private async imovelEmGravacao(ctx: RequestContext, clientId: string): Promise<string | null> {
-    for (let i = 0; i < 4; i++) {
+  /** Ids dos imóveis novos que outra requisição ainda pode estar gravando (espera até ~0,5 s); os que não aparecem ficam de fora. */
+  private async imoveisEmGravacao(ctx: RequestContext, clientIds: string[]): Promise<Map<string, string>> {
+    const achados = new Map<string, string>();
+    for (let i = 0; i < 4 && achados.size < clientIds.length; i++) {
       await new Promise((r) => setTimeout(r, 120));
-      const feita = await ctx.db.fieldSyncOp.findUnique({ where: { clientId }, select: { entityId: true } });
-      if (feita?.entityId) return feita.entityId;
+      const feitas = await ctx.db.fieldSyncOp.findMany({ where: { clientId: { in: clientIds.filter((c) => !achados.has(c)) } }, select: { clientId: true, entityId: true } });
+      for (const f of feitas) if (f.entityId) achados.set(f.clientId, f.entityId);
     }
-    return null;
+    return achados;
   }
 
   /** Repete a operação que o PostgreSQL desfez por conflito com outra transação (deadlock, serialização). */
@@ -371,20 +368,16 @@ export class CampoAceService {
       });
       if (!ordem) avisos.push('Nenhuma ordem de bloqueio ativa neste quarteirão: visita gravada como bloqueio sem ordem');
     }
-    const t = totaisDepositos(v.depositos);
     const pendente = SITUACAO_INFO[v.situacao].pendencia;
+    // Imóvel não trabalhado (fechado, recusado, abandonado) não tem contagem de depósitos.
+    const t = totaisDepositos(pendente ? null : v.depositos);
     const gps = this.gpsBom(v.latitude, v.longitude, v.precisaoGps);
     const posiciona = gps && (await this.posicionaPelaVisita(ctx, h, v, avisos));
     const r = await ctx.db.$transaction(async (tx) => {
       // Uma visita do imóvel por vez: a recuperação depende da ordem em que as visitas dele aconteceram.
       await tx.$executeRaw`SELECT 1 FROM households WHERE id = ${h.id}::uuid FOR NO KEY UPDATE`;
-      // Recuperação: o imóvel estava pendente na última visita anterior do mesmo ciclo (ou da mesma ordem).
-      const anterior = await tx.vectorVisit.findFirst({
-        where: { householdId, visitedAt: { lt: visitedAt }, ...(ordem ? { orderId: ordem.id } : { cycle: ciclo.chave }) },
-        orderBy: [{ visitedAt: 'desc' }, { id: 'desc' }],
-        select: { situation: true },
-      });
-      const recuperacao = !!anterior && SITUACAO_INFO[anterior.situation].pendencia;
+      const escopo = { householdId, visitedAt, orderId: ordem?.id ?? null, cycle: ciclo.chave };
+      const recuperacao = await this.anteriorPendente(tx, escopo);
       const visita = await tx.vectorVisit.create({
         data: {
           clientId: op.clientId,
@@ -431,7 +424,7 @@ export class CampoAceService {
         // Só o imóvel sem quarteirão é ligado pelo ponto; o quarteirão escolhido pelo agente não muda pela visita.
         if (posicionou && !h.blockId) await this.localizador.vincularImovel(tx, h.id);
       }
-      await this.refazerRecuperacaoSeguinte(tx, { householdId, visitedAt, orderId: ordem?.id ?? null, ciclo: ciclo.chave, pendente });
+      await this.refazerRecuperacaoSeguinte(tx, escopo);
       if (ordem) {
         // Início em campo: a visita mais antiga da ordem, mesmo a que chega depois (aparelho sem rede).
         await tx.blockingOrder.updateMany({
@@ -455,36 +448,57 @@ export class CampoAceService {
 
   /**
    * O GPS da visita posiciona o imóvel ainda sem posição boa, dentro da zona ou das ordens do agente. Com quarteirão, só
-   * se o ponto cair nele ou a até a tolerância da malha (rua, erro do GPS); um ponto mais longe fica só na visita, com
-   * aviso, porque gravá-lo no imóvel o tiraria do quarteirão na próxima religação da malha. Sem quarteirão, o ponto
-   * posiciona e liga o imóvel, como no app do ACS.
+   * quando a malha ligaria o ponto a esse mesmo quarteirão (dentro dele, ou na rua a até a tolerância e mais perto dele
+   * que de outro): a visita não troca o quarteirão do imóvel, nem agora nem na próxima religação da malha. Um ponto fora
+   * disso fica só na visita, com aviso para a supervisão. Sem quarteirão, o ponto posiciona e liga o imóvel.
    */
   private async posicionaPelaVisita(ctx: RequestContext, h: { id: string; blockId: string | null; latitude: number | null; geoPrecision: string | null }, v: VisitaVetorialCampo, avisos: string[]): Promise<boolean> {
     if (h.latitude != null && h.geoPrecision && PRECISAO_LIGA_QUARTEIRAO.includes(h.geoPrecision as PrecisaoGeo)) return false;
     if (!(await this.localizador.noEscopoDeCampo(ctx, h.id))) return false;
     if (!h.blockId) return true;
-    const bloco = await ctx.db.block.findUnique({ where: { id: h.blockId }, select: { number: true, geometry: true } });
+    const [bloco, daMalha] = await Promise.all([
+      ctx.db.block.findUnique({ where: { id: h.blockId }, select: { number: true, geometry: true, active: true } }),
+      this.localizador.quarteiraoDoPonto(ctx.db, v.latitude!, v.longitude!),
+    ]);
     if (!bloco) return false;
-    const dist = distanciaAteArea([v.longitude!, v.latitude!], bloco.geometry as unknown as Area);
-    if (dist <= TOLERANCIA_QUARTEIRAO_M) return true;
-    avisos.push(`O GPS da visita ficou a ${Math.round(dist)} m do quarteirão ${bloco.number}: a posição do imóvel não foi alterada (a supervisão confere)`);
+    if (daMalha?.id === h.blockId) return true;
+    const dist = Math.round(distanciaAteArea([v.longitude!, v.latitude!], bloco.geometry as unknown as Area));
+    const motivo = !bloco.active
+      ? `O quarteirão ${bloco.number} do imóvel foi desativado na malha`
+      : daMalha
+        ? `O GPS da visita ficou mais perto do quarteirão ${daMalha.number} que do ${bloco.number}, o do imóvel (a ${dist} m dele)`
+        : `O GPS da visita ficou a ${dist} m do quarteirão ${bloco.number}`;
+    avisos.push(`${motivo}: a posição do imóvel não foi alterada (a supervisão confere)`);
     return false;
   }
 
+  /** Recuperação: o imóvel estava pendente na visita anterior do mesmo escopo (a mesma ordem; sem ordem, o mesmo ciclo). */
+  private async anteriorPendente(tx: Tx, v: { householdId: string; visitedAt: Date; orderId: string | null; cycle: string }): Promise<boolean> {
+    const anterior = await tx.vectorVisit.findFirst({
+      where: { householdId: v.householdId, visitedAt: { lt: v.visitedAt }, ...(v.orderId ? { orderId: v.orderId } : { cycle: v.cycle }) },
+      orderBy: [{ visitedAt: 'desc' }, { id: 'desc' }],
+      select: { situation: true },
+    });
+    return !!anterior && SITUACAO_INFO[anterior.situation].pendencia;
+  }
+
   /**
-   * A visita que chega fora de ordem (outro agente sem rede, pendência reenviada) passa a ser a anterior da visita
-   * seguinte do imóvel: a seguinte da mesma ordem e a seguinte sem ordem do mesmo ciclo têm a recuperação refeita, como
-   * se as visitas tivessem chegado na ordem em que aconteceram.
+   * A visita que chega fora de ordem (outro agente sem rede, pendência reenviada) pode ser a anterior da visita seguinte
+   * do imóvel: a seguinte da mesma ordem e a seguinte sem ordem do mesmo ciclo têm a recuperação refeita, como se as
+   * visitas tivessem chegado na ordem em que aconteceram.
    */
-  private async refazerRecuperacaoSeguinte(tx: Tx, p: { householdId: string; visitedAt: Date; orderId: string | null; ciclo: string; pendente: boolean }) {
-    const escopos = [...(p.orderId ? [{ orderId: p.orderId }] : []), { orderId: null, cycle: p.ciclo }];
+  private async refazerRecuperacaoSeguinte(tx: Tx, p: { householdId: string; visitedAt: Date; orderId: string | null; cycle: string }) {
+    const escopos = [...(p.orderId ? [{ orderId: p.orderId }] : []), { orderId: null, cycle: p.cycle }];
     for (const escopo of escopos) {
       const seguinte = await tx.vectorVisit.findFirst({
         where: { householdId: p.householdId, visitedAt: { gt: p.visitedAt }, ...escopo },
         orderBy: [{ visitedAt: 'asc' }, { id: 'asc' }],
-        select: { id: true, recovery: true },
+        select: { id: true, recovery: true, householdId: true, visitedAt: true, orderId: true, cycle: true },
       });
-      if (seguinte && seguinte.recovery !== p.pendente) await tx.vectorVisit.update({ where: { id: seguinte.id }, data: { recovery: p.pendente } });
+      if (!seguinte) continue;
+      // Refeita pelo escopo da própria seguinte: entre as duas pode haver visita de outra ordem no mesmo ciclo.
+      const recuperacao = await this.anteriorPendente(tx, seguinte);
+      if (seguinte.recovery !== recuperacao) await tx.vectorVisit.update({ where: { id: seguinte.id }, data: { recovery: recuperacao } });
     }
   }
 }

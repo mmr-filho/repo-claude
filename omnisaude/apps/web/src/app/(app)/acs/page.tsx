@@ -15,10 +15,10 @@ import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { TabPanel, Tabs } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
-import { BASE_PATH, errorMessage } from '@/lib/api';
+import { errorMessage } from '@/lib/api';
 import { comCache, filaCampo, historicoEnvios, useFila, type Enviado, type ItemFila } from '@/lib/acs-store';
 import { fmtDate, fmtDateTime, todayIso } from '@/lib/format';
-import { registrarServiceWorker, useOnline } from '@/lib/offline';
+import { useOnline } from '@/lib/offline';
 import { useSession } from '@/lib/session';
 import type { PatientSummary } from '@/lib/types';
 
@@ -182,9 +182,6 @@ export default function AcsPage() {
     [sincronizando, toast, carregarTerritorio, carregarVisitas],
   );
 
-  useEffect(() => {
-    registrarServiceWorker(BASE_PATH);
-  }, []);
   useEffect(() => {
     void carregarTerritorio();
     void carregarVisitas();

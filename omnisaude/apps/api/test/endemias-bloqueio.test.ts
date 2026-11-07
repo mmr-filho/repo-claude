@@ -16,7 +16,36 @@ const enabled = await pgAvailable();
 const DIA = 86_400_000;
 const NOMES = ['Alice', 'Bernardo', 'Cecilia', 'Davi', 'Elisa', 'Fabio', 'Gabriela', 'Heitor', 'Iara', 'Joaquim', 'Laura', 'Murilo'];
 const SOBRENOMES = ['Andrade', 'Barbosa', 'Cardoso', 'Duarte', 'Esteves', 'Ferraz'];
-const GRADES = ['v9', 'r4a', 'r4b', 'r4c', 'u1a', 'u1b', 'u1c', 'u1d', 'r2a', 'r2b', 'u3', 'cad', 'cadc', 'ini', 'id7a', 'id7b', 'id7bn', 'gps8', 'prog', 'des', 'seg1', 'seg3', 'lat11', 'ws7', 'var5', 'var5b'];
+const GRADES = [
+  'v9',
+  'r4a',
+  'r4b',
+  'r4c',
+  'u1a',
+  'u1b',
+  'u1c',
+  'u1d',
+  'r2a',
+  'r2b',
+  'u3',
+  'cad',
+  'cadc',
+  'ini',
+  'id7a',
+  'id7b',
+  'id7bn',
+  'gps8',
+  'prog',
+  'des',
+  'seg1',
+  'seg3',
+  'lat11',
+  'ws7',
+  'var5',
+  'var5b',
+  'cadv',
+  'sim',
+];
 const espera = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const letras = (n: number) => {
   let s = '';
@@ -64,7 +93,7 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     await c.connect();
     return c;
   };
-  const consultar = async <T,>(sql: string, params: unknown[] = []) => {
+  const consultar = async <T>(sql: string, params: unknown[] = []) => {
     const c = await pgc();
     try {
       return (await c.query(sql, params)).rows as T[];
@@ -164,10 +193,42 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
       householdId,
       visita: { atividade: 'BLOQUEIO', situacao: 'TRABALHADO', ...(ordemId ? { ordemId } : {}), depositos: { B: { inspecionados: 1, comFoco: 0, eliminados: 1, tratados: 0 } }, acaoEducativa: true, ...extra },
     };
-    const r = (await t.http().post('/api/endemias/campo/sync').set(auth(ace)).send({ operacoes: [op] }).expect(200)).body;
+    const r = (
+      await t
+        .http()
+        .post('/api/endemias/campo/sync')
+        .set(auth(ace))
+        .send({ operacoes: [op] })
+        .expect(200)
+    ).body;
     return r.resultados[0] as { status: string; id: string; avisos?: string[]; erro?: string };
   };
   const ativas = (o: { cases: { active: boolean }[] }) => o.cases.filter((c) => c.active).length;
+
+  let localidade = '';
+  let numeroQuarteirao = 0;
+  /** Grade de 5 x 5 quarteirões de 80 m (ruas de 20 m) a partir da origem da grade. */
+  async function criarGrade(g: string) {
+    blocos[g] = [];
+    for (let lin = 0; lin < 5; lin++)
+      for (let col = 0; col < 5; col++) {
+        const c = ponto(g, col * 100, lin * 100);
+        const m = metrosPorGrau(c[1]);
+        const a: Posicao = [c[0] - 40 / m.lng, c[1] - 40 / m.lat];
+        const b: Posicao = [c[0] + 40 / m.lng, c[1] + 40 / m.lat];
+        const area = normalizarArea({ type: 'Polygon' as const, coordinates: [[a, [b[0], a[1]], b, [a[0], b[1]], a]] });
+        const [minLng, minLat, maxLng, maxLat] = caixaDe(area);
+        const [centerLng, centerLat] = centroDe(area);
+        numeroQuarteirao++;
+        blocos[g]!.push(
+          (
+            await db.block.create({
+              data: { localityId: localidade, number: String(numeroQuarteirao), geometry: area as object, minLng, minLat, maxLng, maxLat, centerLat, centerLng, areaM2: areaM2(area), source: 'EDITOR' },
+            })
+          ).id,
+        );
+      }
+  }
 
   beforeAll(async () => {
     t = await startTestApp('endbloqueio');
@@ -184,26 +245,9 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     tz = info.timeZone;
     tenantDb = info.db.name;
     db = await tenants.client(info.id);
-    const localidade = (await t.http().post('/api/territorio/localidades').set(auth(gestora)).send({ code: '6', name: 'Bloqueio Correcoes' }).expect(201)).body.id;
+    localidade = (await t.http().post('/api/territorio/localidades').set(auth(gestora)).send({ code: '6', name: 'Bloqueio Correcoes' }).expect(201)).body.id;
     GRADES.forEach((g, i) => (origem[g] = [-47.3 + i * 0.05, -12.9]));
-    let n = 0;
-    for (const g of GRADES) {
-      blocos[g] = [];
-      for (let lin = 0; lin < 5; lin++)
-        for (let col = 0; col < 5; col++) {
-          const c = ponto(g, col * 100, lin * 100);
-          const m = metrosPorGrau(c[1]);
-          const a: Posicao = [c[0] - 40 / m.lng, c[1] - 40 / m.lat];
-          const b: Posicao = [c[0] + 40 / m.lng, c[1] + 40 / m.lat];
-          const area = normalizarArea({ type: 'Polygon' as const, coordinates: [[a, [b[0], a[1]], b, [a[0], b[1]], a]] });
-          const [minLng, minLat, maxLng, maxLat] = caixaDe(area);
-          const [centerLng, centerLat] = centroDe(area);
-          n++;
-          blocos[g]!.push(
-            (await db.block.create({ data: { localityId: localidade, number: String(n), geometry: area as object, minLng, minLat, maxLng, maxLat, centerLat, centerLng, areaM2: areaM2(area), source: 'EDITOR' } })).id,
-          );
-        }
-    }
+    for (const g of GRADES) await criarGrade(g);
     aceId = (await db.user.findFirstOrThrow({ where: { cpf: completeCpf('100000016') } })).id;
     supId = (await db.user.findFirstOrThrow({ where: { cpf: completeCpf('100000017') } })).id;
     const vigUnit = await db.unit.findFirstOrThrow({ where: { name: 'Vigilância em Saúde' } });
@@ -280,7 +324,8 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
         .then((r) => r);
       expect(await esperar(async () => (await esperas('blocking_order_assignees')) > 0)).toBe(true);
       let terminou = false;
-      const feita = acao(o).finally(() => (terminou = true));
+      // O supertest devolve um "thenable" sem finally: vira promessa de verdade.
+      const feita = Promise.resolve(acao(o)).finally(() => (terminou = true));
       // Sem a trava da linha a ação termina no meio do recálculo; com ela, espera o recálculo acabar.
       await esperar(async () => terminou || (await esperas('blocking_order_assignees', true)) > 0, 5000);
       await c.query('COMMIT');
@@ -323,7 +368,12 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(await ordemDe('p1b')).toBe(op);
     expect((await ordem(op)).status).toBe('AGUARDANDO_LOCALIZACAO');
     // A supervisão já tinha designado alguém à mão na ordem que aguardava: vai junto.
-    await t.http().post(`/api/endemias/bloqueios/${op}/agentes`).set(auth(supervisora)).send({ agentes: [supId] }).expect(200);
+    await t
+      .http()
+      .post(`/api/endemias/bloqueios/${op}/agentes`)
+      .set(auth(supervisora))
+      .send({ agentes: [supId] })
+      .expect(200);
     await posicionar(casa.p1!, ponto('u1a', 260, 200));
     expect(await ordemDe('p1')).toBe(oq);
     expect(await ordemDe('p1b')).toBe(oq);
@@ -371,6 +421,29 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(await ordem(or)).toMatchObject({ status: 'CANCELADA', mergedIntoId: oq });
   });
 
+  it('bloqueio#1 e #3: o caso da ordem em campo que passa a agrupar com uma ordem sem visitas traz essa ordem para a sua', async () => {
+    // A: imóvel sem posição na notificação (o caso segue o cadastro), localizado e já trabalhado em campo.
+    await novoPaciente('sa');
+    await novaCasa('sa', null, paciente.sa!);
+    await notificar('sa', paciente.sa!, 'dengue', dia(-1));
+    const oa = await ordemDe('sa');
+    await posicionar(casa.sa!, ponto('sim', 0, 0));
+    expect((await visitar(casa.sa!, oa)).status).toBe('OK');
+    expect((await ordem(oa)).status).toBe('EM_CAMPO');
+    // B: a 400 m, no mesmo período, numa ordem própria ainda sem visitas.
+    await caso('sb', ponto('sim', 400, 0), 'dengue', dia(-1));
+    const ob = await ordemDe('sb');
+    expect(ob).not.toBe(oa);
+    // A posição de A é corrigida no mapa: a 250 m de B, as duas ordens viram uma só, a que já está em campo.
+    await posicionar(casa.sa!, ponto('sim', 150, 0));
+    expect(await ordemDe('sb')).toBe(oa);
+    expect(await ordem(ob)).toMatchObject({ status: 'CANCELADA', mergedIntoId: oa });
+    const a = await ordem(oa);
+    expect(a.status).toBe('EM_CAMPO');
+    expect(ativas(a)).toBe(2);
+    expect(a.blocks.map((b) => b.blockId)).toContain(bloco('sim', 4, 0));
+  });
+
   it('bloqueio#1: dois moradores do mesmo imóvel sem posição nenhuma ficam numa ordem só, pelo imóvel', async () => {
     await novoPaciente('m1');
     const h = await novaCasa('m1', null, paciente.m1!);
@@ -394,7 +467,12 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     const ox = await ordemDe('x1');
     expect((await visitar(casa.x1!, ox)).status).toBe('OK');
     await t.http().post(`/api/vigilancia/notificacoes/${notificacao.x1}/confirmar`).set(auth(vig)).expect(200);
-    await t.http().post(`/api/vigilancia/notificacoes/${notificacao.x1}/encerrar`).set(auth(vig)).send({ investigadaEm: dia(0), classificacao: '2', encerradaEm: dia(0) }).expect(200);
+    await t
+      .http()
+      .post(`/api/vigilancia/notificacoes/${notificacao.x1}/encerrar`)
+      .set(auth(vig))
+      .send({ investigadaEm: dia(0), classificacao: '2', encerradaEm: dia(0) })
+      .expect(200);
     expect(await ligacao('x1')).toMatchObject({ active: false, orderId: ox });
     expect((await ordem(ox)).status).toBe('EM_CAMPO');
     const antes = await db.blockingOrder.count();
@@ -423,7 +501,12 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     const oa = await ordemDe('a1');
     const ob = await ordemDe('b1');
     expect(ob).not.toBe(oa);
-    await t.http().patch(`/api/vigilancia/notificacoes/${notificacao.b1}`).set(auth(vig)).send({ symptomsOnset: dia(-6) }).expect(200);
+    await t
+      .http()
+      .patch(`/api/vigilancia/notificacoes/${notificacao.b1}`)
+      .set(auth(vig))
+      .send({ symptomsOnset: dia(-6) })
+      .expect(200);
     expect(await ordemDe('b1')).toBe(oa);
     expect(await ordem(ob)).toMatchObject({ status: 'CANCELADA', mergedIntoId: oa });
     expect(ativas(await ordem(oa))).toBe(2);
@@ -445,6 +528,18 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(await ordemDe('m3b')).toBe(om);
     await caso('m3c', ponto('cadc', 100, 0), 'dengue', dia(0));
     expect(await ordemDe('m3c')).not.toBe(om);
+  });
+
+  it('dados-docs#4: o caso mais antigo que a primeira data da ordem também não estica o período além da janela', async () => {
+    await caso('v1', ponto('cadv', 0, 0), 'dengue', dia(-2));
+    const ov = await ordemDe('v1');
+    // 6 dias antes do primeiro: a ordem passa a ir de D-8 a D-2.
+    await caso('v2', ponto('cadv', 100, 0), 'dengue', dia(-8));
+    expect(await ordemDe('v2')).toBe(ov);
+    // 2 dias antes do segundo, mas 8 antes do primeiro: com ele a ordem teria 8 dias (cadeia pelo começo).
+    await caso('v3', ponto('cadv', 50, 0), 'dengue', dia(-10));
+    expect(await ordemDe('v3')).not.toBe(ov);
+    expect(ativas(await ordem(ov))).toBe(2);
   });
 
   it('dados-docs#4 e bloqueio#2: a ordem em campo sem caso ativo recebe pelo quarteirão, dentro da janela do início do campo', async () => {
@@ -496,7 +591,10 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     const centro = await db.block.findUniqueOrThrow({ where: { id: bloco('gps8', 2, 2) } });
     await novoPaciente('c1');
     const h = await novaCasa('c1', null, paciente.c1!);
-    await db.household.update({ where: { id: h }, data: { latitude: centro.centerLat, longitude: centro.centerLng, geoPrecision: 'QUARTEIRAO', geoSource: 'centro-do-quarteirao', blockId: centro.id, geoAt: new Date() } });
+    await db.household.update({
+      where: { id: h },
+      data: { latitude: centro.centerLat, longitude: centro.centerLng, geoPrecision: 'QUARTEIRAO', geoSource: 'centro-do-quarteirao', blockId: centro.id, geoAt: new Date() },
+    });
     await notificar('c1', paciente.c1!, 'dengue', dia(-1));
     const oc = await ordemDe('c1');
     const antes = await ordem(oc);
@@ -545,7 +643,12 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(o.assignees.map((a) => a.userId)).toEqual([ace2Id]);
     expect(await auto(od)).toBe(1);
     // A supervisão troca o titular por ela mesma.
-    await t.http().post(`/api/endemias/bloqueios/${od}/agentes`).set(auth(supervisora)).send({ agentes: [supId] }).expect(200);
+    await t
+      .http()
+      .post(`/api/endemias/bloqueios/${od}/agentes`)
+      .set(auth(supervisora))
+      .send({ agentes: [supId] })
+      .expect(200);
     // Caso novo no mesmo quarteirão (nenhum quarteirão novo) e o recálculo pela supervisão: o titular retirado não volta.
     await caso('d2', ponto('des', -10, -10), 'dengue', dia(-1));
     expect(await ordemDe('d2')).toBe(od);
@@ -563,7 +666,12 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(o.assignees.find((a) => a.userId === ace2Id)!.assignedBy).toBeNull();
     expect(await auto(od)).toBe(2);
     // Titular que perdeu a lotação não é designado sozinho (travaria a redesignação pela tela).
-    await t.http().post(`/api/endemias/bloqueios/${od}/agentes`).set(auth(supervisora)).send({ agentes: [supId] }).expect(200);
+    await t
+      .http()
+      .post(`/api/endemias/bloqueios/${od}/agentes`)
+      .set(auth(supervisora))
+      .send({ agentes: [supId] })
+      .expect(200);
     await db.userAssignment.updateMany({ where: { userId: ace2Id }, data: { active: false } });
     await caso('d4', ponto('des', 200, 0), 'dengue', dia(-1));
     expect(await ordemDe('d4')).toBe(od);
@@ -575,7 +683,12 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
 
   it('web-offline#9: ao designar, só quem entra é validado; o já designado sem lotação ativa pode ficar ou sair', async () => {
     const od = await ordemDe('d1');
-    await t.http().post(`/api/endemias/bloqueios/${od}/agentes`).set(auth(supervisora)).send({ agentes: [supId, ace2Id] }).expect(200);
+    await t
+      .http()
+      .post(`/api/endemias/bloqueios/${od}/agentes`)
+      .set(auth(supervisora))
+      .send({ agentes: [supId, ace2Id] })
+      .expect(200);
     await db.userAssignment.updateMany({ where: { userId: ace2Id }, data: { active: false } });
     // A tela reenvia a lista com o agente que perdeu a lotação e acrescenta outro: aceito.
     await t
@@ -585,7 +698,12 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
       .send({ agentes: [supId, ace2Id, aceId] })
       .expect(200);
     // Tirar o inelegível: aceito.
-    await t.http().post(`/api/endemias/bloqueios/${od}/agentes`).set(auth(supervisora)).send({ agentes: [supId, aceId] }).expect(200);
+    await t
+      .http()
+      .post(`/api/endemias/bloqueios/${od}/agentes`)
+      .set(auth(supervisora))
+      .send({ agentes: [supId, aceId] })
+      .expect(200);
     expect((await ordem(od)).assignees.map((a) => a.userId).sort()).toEqual([aceId, supId].sort());
     // Acrescentar quem não é elegível: recusado (lotação encerrada, ou usuário desativado com a lotação ativa).
     const r = await t
@@ -658,9 +776,21 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect((await db.household.findUniqueOrThrow({ where: { id: dentro } })).rgSequence).toBeNull();
     // O mapa da supervisão oferece a ação só no imóvel da zona.
     const caixa = (p: Posicao) => `${p[0] - 0.0005},${p[1] - 0.0005},${p[0] + 0.0005},${p[1] + 0.0005}`;
-    const m1 = (await t.http().get(`/api/territorio/mapa?bbox=${caixa(perto)}`).set(auth(supervisora)).expect(200)).body;
+    const m1 = (
+      await t
+        .http()
+        .get(`/api/territorio/mapa?bbox=${caixa(perto)}`)
+        .set(auth(supervisora))
+        .expect(200)
+    ).body;
     expect(m1.imoveis.find((i: { id: string }) => i.id === dentro).campo).toBe(true);
-    const m2 = (await t.http().get(`/api/territorio/mapa?bbox=${caixa(ponto('seg3', 3000, 3000))}`).set(auth(supervisora)).expect(200)).body;
+    const m2 = (
+      await t
+        .http()
+        .get(`/api/territorio/mapa?bbox=${caixa(ponto('seg3', 3000, 3000))}`)
+        .set(auth(supervisora))
+        .expect(200)
+    ).body;
     expect(m2.imoveis.find((i: { id: string }) => i.id === fora).campo).toBe(false);
   });
 
@@ -752,12 +882,10 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
   }, 60_000);
 
   // ─── bloqueio#5 ─────────────────────────────────────────────────────────────
-  /** Cópias de uma notificação (mesmas colunas), com as trocas dadas em SQL. */
-  async function copiar(c: Client, molde: string, quantas: number, prefixo: string, sobre: Record<string, string>) {
+  /** Cópias de uma notificação (mesmas colunas), com as trocas dadas em SQL; `base` separa a numeração de cada lote. */
+  async function copiar(c: Client, molde: string, quantas: number, prefixo: string, sobre: Record<string, string>, base: number) {
     const cols = (await c.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'notifications' AND table_schema = 'public' ORDER BY ordinal_position`)).rows.map((r) => r.column_name as string);
-    const expr = cols.map((col) =>
-      col === 'id' ? 'gen_random_uuid()' : col === 'seq' ? '800000 + g' : col === 'number' ? `'${prefixo}/' || (800000 + g)` : col in sobre ? sobre[col] : `t."${col}"`,
-    );
+    const expr = cols.map((col) => (col === 'id' ? 'gen_random_uuid()' : col === 'seq' ? `${base} + g` : col === 'number' ? `'${prefixo}/' || (${base} + g)` : col in sobre ? sobre[col] : `t."${col}"`));
     await c.query(`INSERT INTO notifications (${cols.map((x) => `"${x}"`).join(', ')}) SELECT ${expr.join(', ')} FROM notifications t, generate_series(1, ${quantas}) g WHERE t.id = $1`, [molde]);
   }
 
@@ -766,7 +894,7 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     const c = await pgc();
     try {
       // 500 notificações conhecidas há 40 dias, sem ordem: avaliar recusa (mais de 30 dias).
-      await copiar(c, notificacao.y0!, 500, 'VELHA', { known_at: `now() - interval '40 days'`, symptoms_onset: 'NULL', created_at: `now() - interval '40 days'` });
+      await copiar(c, notificacao.y0!, 500, 'VELHA', { known_at: `now() - interval '40 days'`, symptoms_onset: 'NULL', created_at: `now() - interval '40 days'` }, 800000);
     } finally {
       await c.end();
     }
@@ -788,7 +916,7 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     const enchimento = (await db.blockingOrder.create({ data: { year: 2091, seq: 1, status: 'ABERTA', radiusM: 150, groups: ['dengue'] } })).id;
     const c = await pgc();
     try {
-      await copiar(c, molde, 1000, 'ENCH', {});
+      await copiar(c, molde, 1000, 'ENCH', {}, 810000);
       // Casos com ids menores que qualquer uuid v7: são os primeiros na ordem do id.
       await c.query(
         `INSERT INTO blocking_order_cases (id, order_id, notification_id, patient_id, household_id, group_key, condition_key, lat, lng, precision, block_id, reference_date, active, linked_at)
@@ -818,4 +946,23 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
       await db.blockingOrder.delete({ where: { id: enchimento } });
     }
   }, 180_000);
+
+  // ─── contrato 13 (bloqueio#5 e bloqueio#8): religar os imóveis à malha ───────
+  it('a malha que chega depois (religação dos imóveis) refaz na hora a ordem em campo, que a varredura não revisita', async () => {
+    // Um lugar sem malha nenhuma, longe das outras grades.
+    origem.mal = [-47.3 + (GRADES.length + 2) * 0.05, -12.9];
+    await caso('ml', ponto('mal', 200, 200), 'dengue', dia(-1));
+    const om = await ordemDe('ml');
+    expect(await ordem(om)).toMatchObject({ status: 'ABERTA', blocks: [] });
+    expect((await ligacao('ml'))!.blockId).toBeNull();
+    // A ordem já está em campo: a varredura só revisita caso de ordem em campo cujo imóvel mudou de posição.
+    await db.blockingOrder.update({ where: { id: om }, data: { status: 'EM_CAMPO', startedAt: new Date() } });
+    await criarGrade('mal');
+    await t.http().post('/api/territorio/imoveis/vincular').set(auth(gestora)).expect(200);
+    expect((await db.household.findUniqueOrThrow({ where: { id: casa.ml! } })).blockId).toBe(bloco('mal', 2, 2));
+    const o = await ordem(om);
+    expect(o.status).toBe('EM_CAMPO');
+    expect(o.blocks.map((b) => b.blockId)).toContain(bloco('mal', 2, 2));
+    expect((await ligacao('ml'))!.blockId).toBe(bloco('mal', 2, 2));
+  });
 });

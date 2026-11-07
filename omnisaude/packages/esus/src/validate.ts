@@ -1,5 +1,18 @@
 import { isValidCns, isValidCpf } from '@omnisaude/shared';
-import { CBO_POR_MODELO, CONDUTA, CONDUTA_ODONTO, DESFECHO_VISITA, JUSTIFICATIVA_SEM_CPF, LOCAL_ATENDIMENTO, MOTIVO_VISITA, TIPO_ATENDIMENTO, TIPO_DADO, TIPO_GLICEMIA, TIPO_IMOVEL_LEDI } from './codes';
+import {
+  CBO_POR_MODELO,
+  CONDUTA,
+  CONDUTA_ODONTO,
+  DESFECHO_VISITA,
+  JUSTIFICATIVA_SEM_CPF,
+  LOCAL_ATENDIMENTO,
+  MOTIVO_VISITA,
+  TIPO_ATENDIMENTO,
+  TIPO_DADO,
+  TIPO_GLICEMIA,
+  TIPO_IMOVEL_LEDI,
+  TIPO_IMOVEL_PARA_LEDI,
+} from './codes';
 import { MOTIVOS_FORA_DO_DOMICILIO, TIPOS_IMOVEL_NAO_DOMICILIO } from './fichas';
 import { normalizeName } from './ledi';
 import { lediFields } from './thrift';
@@ -298,6 +311,70 @@ function checkVacinacao(c: Checker, o: LediObject) {
 /** Motivos que não se referem a uma pessoa: convite, outros e o controle ambiental e vetorial (ação educativa, foco, ação mecânica, tratamento). */
 const MOTIVOS_SEM_PESSOA = new Set([27, 28, 34, 35, 36, 37]);
 
+/**
+ * Motivos que pedem a pessoa identificada (LEDI 8.7.0): busca ativa (2, 3, 4, 30), acompanhamento (5 a 24, 32, 33, 38),
+ * egresso de internação (25) e orientação/prevenção (31). Cadastramento (1) e visita periódica (29) não pedem.
+ */
+export const MOTIVOS_EXIGEM_PESSOA: ReadonlySet<number> = new Set([2, 3, 4, 30, ...Array.from({ length: 20 }, (_, i) => i + 5), 32, 33, 38, 25, 31]);
+
+/** Abrigo, ILPI, unidade prisional, socioeducativa, delegacia e outros: a pessoa só é obrigatória pelo motivo ou pela medição. */
+export const TIPOS_IMOVEL_PESSOA_PELO_MOTIVO: ReadonlySet<number> = new Set([7, 8, 9, 10, 11, 99]);
+
+/**
+ * A visita realizada sem pessoa identificada é recusada? No domicílio (01) a regra do produto pede a pessoa, salvo nos
+ * motivos que não são de uma pessoa (o controle vetorial do ACE); nos tipos 07 a 11 e 99, o LEDI só a pede com motivo de
+ * busca ativa ou acompanhamento, 25, 31 ou com peso ou altura; fora do domicílio não há pessoa.
+ */
+function semPessoaRecusada(tipoDeImovel: number, motivos: number[], pesoOuAltura: boolean): string | null {
+  if (tipoDeImovel === 1) return !motivos.length || motivos.some((m) => !MOTIVOS_SEM_PESSOA.has(m)) ? 'visita realizada a domicílio precisa identificar a pessoa visitada (CNS ou CPF)' : null;
+  if (TIPOS_IMOVEL_PESSOA_PELO_MOTIVO.has(tipoDeImovel) && (pesoOuAltura || motivos.some((m) => MOTIVOS_EXIGEM_PESSOA.has(m))))
+    return 'motivo de busca ativa, acompanhamento, egresso de internação ou orientação (ou peso e altura) precisa identificar a pessoa visitada (CNS ou CPF)';
+  return null;
+}
+
+export interface VisitaNaEntrada {
+  /** Tipo de imóvel no código do cadastro ('01' domicílio...). */
+  tipoImovel: string;
+  /** '1' realizada, '2' recusada, '3' ausente. */
+  desfecho: string;
+  motivos: string[];
+  pessoa: boolean;
+  /** Alguma medição (peso, altura, pressão, temperatura ou glicemia). */
+  medicao: boolean;
+  pesoOuAltura: boolean;
+}
+
+/**
+ * Confere a visita do ACS na entrada (app e sincronização), antes de ir para o lote: o que o PEC recusaria na ficha de
+ * visita domiciliar e territorial vira erro na hora, e não uma ficha do dia inteira inválida. Devolve o código e a
+ * mensagem do primeiro problema, ou null.
+ */
+export function conferirEntradaVisita(v: VisitaNaEntrada): { codigo: string; mensagem: string } | null {
+  const tipo = TIPO_IMOVEL_PARA_LEDI[v.tipoImovel] ?? 1;
+  const realizada = v.desfecho === '1';
+  const motivos = v.motivos.map(Number);
+  if (TIPOS_IMOVEL_NAO_DOMICILIO.has(tipo)) {
+    if (v.pessoa)
+      return {
+        codigo: 'PESSOA_FORA_DO_DOMICILIO',
+        mensagem: 'Em imóvel que não é domicílio (comércio, terreno baldio, ponto estratégico, escola, creche, igreja ou CASAI) a visita não identifica pessoa: registre a visita ao imóvel',
+      };
+    if (v.medicao) return { codigo: 'MEDICAO_FORA_DO_DOMICILIO', mensagem: 'Em imóvel que não é domicílio a visita não leva medições (peso, altura, pressão, temperatura ou glicemia)' };
+    if (realizada && motivos.some((m) => !MOTIVOS_FORA_DO_DOMICILIO.has(m)))
+      return {
+        codigo: 'MOTIVO_FORA_DO_DOMICILIO',
+        mensagem:
+          'Em imóvel que não é domicílio a visita só aceita os motivos cadastramento, convite para atividades coletivas, orientação/prevenção, controle ambiental e vetorial (ação educativa, imóvel com foco, ação mecânica, tratamento focal) e outros',
+      };
+    return null;
+  }
+  if (!realizada || v.pessoa) return null;
+  if (tipo === 1) return { codigo: 'PESSOA_OBRIGATORIA', mensagem: 'Visita realizada a um domicílio precisa informar a pessoa visitada' };
+  if (semPessoaRecusada(tipo, motivos, v.pesoOuAltura))
+    return { codigo: 'PESSOA_OBRIGATORIA', mensagem: 'Visita com motivo de busca ativa, acompanhamento, egresso de internação ou orientação (ou com peso e altura) precisa informar a pessoa visitada' };
+  return null;
+}
+
 function checkVisitaDomiciliar(c: Checker, o: LediObject) {
   c.required(o, '$', 'FichaVisitaDomiciliarMasterThrift');
   const h = obj(o.headerTransport);
@@ -352,9 +429,11 @@ function checkVisitaDomiciliar(c: Checker, o: LediObject) {
       if (v.dtNascimento === undefined) c.add(`${p}.dtNascimento`, 'data de nascimento obrigatória quando a pessoa é identificada');
       if (v.sexo === undefined) c.add(`${p}.sexo`, 'sexo obrigatório quando a pessoa é identificada');
       c.dateNotFuture(v.dtNascimento, `${p}.dtNascimento`);
-    } else if (!naoDomicilio && realizada && (!motivos.length || motivos.some((m) => !MOTIVOS_SEM_PESSOA.has(Number(m)))))
-      // Acompanhamento e busca ativa são da pessoa; a visita só de controle vetorial pode não identificar ninguém.
-      c.add(`${p}.cnsCidadao`, 'visita realizada a domicílio precisa identificar a pessoa visitada (CNS ou CPF)');
+    } else if (realizada) {
+      const pesoOuAltura = v.pesoAcompanhamentoNutricional !== undefined || v.alturaAcompanhamentoNutricional !== undefined;
+      const recusa = semPessoaRecusada(num(v.tipoDeImovel) ?? 1, motivos.map(Number), pesoOuAltura);
+      if (recusa) c.add(`${p}.cnsCidadao`, recusa);
+    }
     const lat = num(v.latitude);
     const lng = num(v.longitude);
     if ((lat === undefined) !== (lng === undefined)) c.add(`${p}.latitude`, 'latitude e longitude devem vir juntas');

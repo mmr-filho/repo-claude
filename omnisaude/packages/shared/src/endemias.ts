@@ -37,6 +37,8 @@ export const DEPOSITO_INFO: Record<TipoDeposito, { grupo: string; descricao: str
     tratamento: 'ULTIMA_ALTERNATIVA',
   },
   D1: { grupo: 'Passíveis de remoção', descricao: 'Pneus e outros materiais rodantes (câmaras de ar, manchões)', tratamento: 'ULTIMA_ALTERNATIVA' },
+  // Lixo e entulho se eliminam; só a sucata de ponto estratégico pode receber larvicida (o modelo não separa a sucata
+  // dentro do D2: em PE a coluna de tratados fica liberada).
   D2: { grupo: 'Passíveis de remoção', descricao: 'Lixo (plásticos, garrafas PET, latas), sucata e entulho de construção', tratamento: 'SO_PONTO_ESTRATEGICO' },
   E: { grupo: 'Naturais', descricao: 'Bromélias e outras axilas de folhas, buracos em árvores e rochas, restos de animais (cascas, carapaças)', tratamento: 'NAO_TRATAR' },
 };
@@ -267,8 +269,8 @@ export function conferirVisitaVetorial(v: VisitaVetorialCampo, opts: { pontoEstr
     const c = d[tipo];
     if (!c) continue;
     const nums = [c.inspecionados, c.comFoco, c.eliminados, c.tratados];
-    if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 999)) {
-      erros.push(`Depósito ${tipo}: use números inteiros de 0 a 999`);
+    if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > L.contagem)) {
+      erros.push(`Depósito ${tipo}: use números inteiros de 0 a ${L.contagem}`);
       continue;
     }
     if (c.comFoco > c.inspecionados) erros.push(`Depósito ${tipo}: mais depósitos com foco do que inspecionados`);
@@ -276,11 +278,13 @@ export function conferirVisitaVetorial(v: VisitaVetorialCampo, opts: { pontoEstr
     const regra = DEPOSITO_INFO[tipo].tratamento;
     if (c.tratados > 0 && (regra === 'NAO_TRATAR' || (regra === 'SO_PONTO_ESTRATEGICO' && !opts.pontoEstrategico)))
       erros.push(
-        regra === 'NAO_TRATAR' ? `Depósito ${tipo} não recebe larvicida: elimine ou oriente (Manual do LIRAa, 2013)` : `Depósito ${tipo} (lixo e entulho) só recebe larvicida em ponto estratégico; fora dele, elimine`,
+        regra === 'NAO_TRATAR'
+          ? `Depósito ${tipo} não recebe larvicida: elimine ou oriente (Manual do LIRAa, 2013)`
+          : `Depósito ${tipo}: elimine; lixo e entulho não recebem larvicida — só a sucata de ponto estratégico pode ser tratada`,
       );
   }
   const amostras = v.amostras ?? [];
-  if (amostras.length > 99) erros.push('No máximo 99 amostras por visita');
+  if (amostras.length > L.amostras) erros.push(`No máximo ${L.amostras} amostras por visita`);
   const numeros = new Set<number>();
   const porTipo = new Map<TipoDeposito, number>();
   for (const a of amostras) {
@@ -292,7 +296,7 @@ export function conferirVisitaVetorial(v: VisitaVetorialCampo, opts: { pontoEstr
   }
   for (const [tipo, n] of porTipo) if (n > (d[tipo]?.comFoco ?? 0)) erros.push(`Depósito ${tipo}: um tubito por depósito com foco (${n} tubito(s) para ${d[tipo]?.comFoco ?? 0} com foco)`);
   const tratamentos = v.tratamentos ?? [];
-  if (tratamentos.length > 5) erros.push('No máximo 5 produtos por visita');
+  if (tratamentos.length > L.produtos) erros.push(`No máximo ${L.produtos} produtos por visita`);
   for (const tr of tratamentos) {
     if (!(tr.quantidade > 0)) erros.push('Quantidade de larvicida maior que zero');
     // O estoque guarda três casas decimais: abaixo de 0,001 a baixa seria zero.
@@ -337,7 +341,8 @@ export function conferirImovelCampo(d: ImovelCampo): string[] {
 /**
  * Motivos da ficha de visita domiciliar e territorial do e-SUS (grupo "Controle ambiental/vetorial": 34 ação educativa,
  * 35 imóvel com foco, 36 ação mecânica, 37 tratamento focal). Recusada ou ausente vai sem motivo (regra do LEDI 8.7.0);
- * realizada sem nenhum dos quatro vai como 28 (Outros), aceito também em imóvel que não é domicílio.
+ * realizada sem nenhum dos quatro vai como 28 (Outros), aceito também em imóvel que não é domicílio. A nebulização (UBV) é
+ * adulticida espacial, não tratamento focal (larvicida no depósito): sozinha vai como 28, ou 34 com ação educativa.
  */
 export function motivosEsusVisitaVetorial(v: { situacao: SituacaoVisita; acaoEducativa?: boolean | null; depositos?: Depositos | null; tratamentos?: unknown[] | null; ubv?: LocalUbv | null }): string[] {
   if (SITUACAO_INFO[v.situacao].pendencia) return [];
@@ -346,16 +351,33 @@ export function motivosEsusVisitaVetorial(v: { situacao: SituacaoVisita; acaoEdu
   if (v.acaoEducativa) m.push('34');
   if (t.comFoco > 0) m.push('35');
   if (t.eliminados > 0) m.push('36');
-  if (t.tratados > 0 || (v.tratamentos?.length ?? 0) > 0 || v.ubv) m.push('37');
+  if (t.tratados > 0 || (v.tratamentos?.length ?? 0) > 0) m.push('37');
   return m.length ? m : ['28'];
 }
 
 // ─── Índices larvários (preliminares: o foco ainda sem a identificação do laboratório) ─────────
 
+/**
+ * Atividades do levantamento de índice (LI e LI+T): só elas entram no IIP, IB, IR e ITR. PE, tratamento, bloqueio, DF
+ * e PVE são buscas dirigidas, com a positividade à parte (Manual do LIRAa, 2013; Nota Informativa nº 11/2026, § 2.1).
+ */
+export const ATIVIDADES_INDICE: readonly AtividadeVetorial[] = ['LI', 'LI_T'];
+
 export interface VisitaParaIndice {
   imovelId: string;
+  atividade: AtividadeVetorial;
   situacao: SituacaoVisita;
   depositos?: Depositos | null;
+}
+
+/** Contagem do levantamento: cada imóvel inspecionado conta uma vez, pela última visita trabalhada de LI ou LI+T. */
+export interface ContagemIndices {
+  imoveisInspecionados: number;
+  imoveisComFoco: number;
+  depositosInspecionados: number;
+  depositosComFoco: number;
+  /** Depósitos com foco de cada tipo, para o ITR. */
+  focoPorTipo: Partial<Record<TipoDeposito, number>>;
 }
 
 export interface IndicesLarvarios {
@@ -376,35 +398,76 @@ export interface IndicesLarvarios {
 
 const umaCasa = (n: number) => Math.round(n * 10) / 10;
 
-/** Índices do período (Manual do LIRAa, 2013, p. 19-20); cada imóvel conta uma vez, pela última visita trabalhada. */
-export function indicesLarvarios(visitas: VisitaParaIndice[]): IndicesLarvarios {
-  const porImovel = new Map<string, VisitaParaIndice>();
-  for (const v of visitas) if (v.situacao === 'TRABALHADO') porImovel.set(v.imovelId, v);
-  let imoveisComFoco = 0;
-  let depositosInspecionados = 0;
-  let depositosComFoco = 0;
-  const focoPorTipo = Object.fromEntries(TIPOS_DEPOSITO.map((t) => [t, 0])) as Record<TipoDeposito, number>;
-  for (const v of porImovel.values()) {
-    const t = totaisDepositos(v.depositos);
-    depositosInspecionados += t.inspecionados;
-    depositosComFoco += t.comFoco;
-    if (t.comFoco > 0) imoveisComFoco++;
-    for (const tipo of TIPOS_DEPOSITO) focoPorTipo[tipo] += v.depositos?.[tipo]?.comFoco ?? 0;
-  }
-  const n = porImovel.size;
-  const iip = n ? umaCasa((imoveisComFoco / n) * 100) : null;
+/** Parte ÷ base × 100 com duas casas, como a Nota Informativa nº 11/2026 apresenta os índices; sem base, null. */
+const percentual = (parte: number, base: number): number | null => (base ? Math.round((parte * 10_000) / base) / 100 : null);
+
+/**
+ * Classe do IIP pela razão exata, sem arredondar (Diretrizes de 2009, p. 75; Nota Informativa nº 11/2026, §§ 3.3 a
+ * 3.5): abaixo de 1% satisfatório, de 1% a menos de 4% alerta, 4% ou mais risco. 1 imóvel com foco em 101 (0,990%) é
+ * satisfatório; 4 em 101 (3,96%) é alerta.
+ */
+export function classeIip(imoveisComFoco: number, imoveisInspecionados: number): IndicesLarvarios['classe'] {
+  if (!imoveisInspecionados) return null;
+  // Em números inteiros, sem erro de ponto flutuante: IIP < 1% equivale a com foco × 100 < inspecionados.
+  const focos = imoveisComFoco * 100;
+  return focos < imoveisInspecionados ? 'SATISFATORIO' : focos < 4 * imoveisInspecionados ? 'ALERTA' : 'RISCO';
+}
+
+/**
+ * Índices a partir da contagem do levantamento. O IIP exibido, com duas casas, não passa do limite da classe: 0,995%
+ * aparece 0,99% (satisfatório), e não 1% ao lado de "satisfatório".
+ */
+export function indicesDaContagem(c: ContagemIndices): IndicesLarvarios {
+  const n = c.imoveisInspecionados;
+  const classe = classeIip(c.imoveisComFoco, n);
+  const iip = percentual(c.imoveisComFoco, n);
+  const tetoDaClasse = classe === 'SATISFATORIO' ? 0.99 : classe === 'ALERTA' ? 3.99 : Number.POSITIVE_INFINITY;
   return {
     imoveisInspecionados: n,
-    imoveisComFoco,
-    depositosInspecionados,
-    depositosComFoco,
-    iip,
-    ib: n ? umaCasa((depositosComFoco / n) * 100) : null,
-    ir: depositosInspecionados ? umaCasa((depositosComFoco / depositosInspecionados) * 100) : null,
-    itr: Object.fromEntries(TIPOS_DEPOSITO.map((t) => [t, depositosComFoco ? umaCasa((focoPorTipo[t] / depositosComFoco) * 100) : null])) as Record<TipoDeposito, number | null>,
-    // Diretrizes de 2009 (p. 75) e Nota Informativa nº 11/2026: < 1% satisfatório, 1% a 3,9% alerta, 4% ou mais risco.
-    classe: iip === null ? null : iip < 1 ? 'SATISFATORIO' : iip < 4 ? 'ALERTA' : 'RISCO',
+    imoveisComFoco: c.imoveisComFoco,
+    depositosInspecionados: c.depositosInspecionados,
+    depositosComFoco: c.depositosComFoco,
+    iip: iip === null ? null : Math.min(iip, tetoDaClasse),
+    ib: percentual(c.depositosComFoco, n),
+    ir: percentual(c.depositosComFoco, c.depositosInspecionados),
+    itr: Object.fromEntries(TIPOS_DEPOSITO.map((t) => [t, percentual(c.focoPorTipo[t] ?? 0, c.depositosComFoco)])) as Record<TipoDeposito, number | null>,
+    classe,
   };
+}
+
+/**
+ * Índices do levantamento (Manual do LIRAa, 2013, p. 19-20) a partir das visitas em ordem cronológica: só as de LI e
+ * LI+T trabalhadas, e cada imóvel conta uma vez, pela última delas. A visita de outra atividade (bloqueio, PE) depois
+ * não apaga o foco achado no levantamento. A API faz a mesma conta no banco.
+ */
+export function indicesLarvarios(visitas: VisitaParaIndice[]): IndicesLarvarios {
+  const porImovel = new Map<string, VisitaParaIndice>();
+  for (const v of visitas) if (v.situacao === 'TRABALHADO' && ATIVIDADES_INDICE.includes(v.atividade)) porImovel.set(v.imovelId, v);
+  const c: ContagemIndices = { imoveisInspecionados: porImovel.size, imoveisComFoco: 0, depositosInspecionados: 0, depositosComFoco: 0, focoPorTipo: {} };
+  for (const v of porImovel.values()) {
+    const t = totaisDepositos(v.depositos);
+    c.depositosInspecionados += t.inspecionados;
+    c.depositosComFoco += t.comFoco;
+    if (t.comFoco > 0) c.imoveisComFoco++;
+    for (const tipo of TIPOS_DEPOSITO) c.focoPorTipo[tipo] = (c.focoPorTipo[tipo] ?? 0) + (v.depositos?.[tipo]?.comFoco ?? 0);
+  }
+  return indicesDaContagem(c);
+}
+
+/** Positividade de uma atividade fora do levantamento (T, bloqueio, PE, DF, PVE) no período. */
+export interface PositividadeAtividade {
+  atividade: AtividadeVetorial;
+  label: string;
+  /** Imóveis distintos com visita trabalhada da atividade. */
+  imoveisInspecionados: number;
+  /** Desses, os que tiveram foco em alguma dessas visitas. */
+  imoveisComFoco: number;
+  /** Imóveis com foco ÷ imóveis inspecionados × 100, com duas casas; null sem imóvel inspecionado. */
+  percentual: number | null;
+}
+
+export function positividadeAtividade(atividade: AtividadeVetorial, imoveisInspecionados: number, imoveisComFoco: number): PositividadeAtividade {
+  return { atividade, label: ATIVIDADE_INFO[atividade].label, imoveisInspecionados, imoveisComFoco, percentual: percentual(imoveisComFoco, imoveisInspecionados) };
 }
 
 // ─── Ordem de bloqueio de transmissão ─────────────────────────────────────────
