@@ -41,17 +41,32 @@ visita realizada a domicílio sem a pessoa). Referências entre operações do m
 (`familiaClientId`, `responsavelClientId`, `householdClientId`, `patientClientId`). Cada operação aplicada é
 registrada em `field_sync_ops` (idempotência e rastreio); as visitas ficam em `home_visits`.
 
-Efeitos de uma visita realizada: atualiza a posição do domicílio quando ele não tinha, marca a última visita
-dos casos de busca ativa abertos da pessoa e entra nos indicadores e programas (abaixo).
+A visita segue as regras do LEDI 8.7.0 por tipo de imóvel, no app (antes de entrar na fila) e na sincronização:
+no domicílio (01), a visita realizada pede a pessoa; em abrigo, ILPI, unidade prisional, socioeducativa, delegacia e
+outros (07 a 11 e 99), a pessoa só é pedida com motivo de busca ativa ou acompanhamento, 25, 31, peso ou altura; em
+comércio, terreno baldio, ponto estratégico, escola, creche, estabelecimento religioso e CASAI (02 a 06, 12 e 13),
+não há pessoa nem medições e só valem os motivos 1, 27, 28, 31 e 34 a 37 (o app desabilita os demais). A
+sincronização recusa o que foge disso com `PESSOA_FORA_DO_DOMICILIO`, `MEDICAO_FORA_DO_DOMICILIO`,
+`MOTIVO_FORA_DO_DOMICILIO` ou `PESSOA_OBRIGATORIA`.
+
+Efeitos de uma visita realizada: atualiza a posição do domicílio quando ele não tinha (e, se um morador tem caso
+numa ordem de bloqueio de transmissão, o caso é reavaliado na hora: `docs/ENDEMIAS.md`), marca a última visita dos
+casos de busca ativa abertos da pessoa e entra nos indicadores e programas (abaixo).
 
 ### No aparelho
 
-- A fila fica no **IndexedDB** (`apps/web/src/lib/acs-store.ts`): registros pendentes e com erro, com a
-  mensagem. A sincronização roda ao registrar (com rede), ao voltar a conexão e pelo botão **Sincronizar**.
+- A fila fica no **IndexedDB** (`apps/web/src/lib/acs-store.ts`, banco `omnisaude-campo`, separado do banco do
+  app do ACE): registros pendentes e com erro, com a mensagem. A sincronização roda ao registrar (com rede, em
+  segundo plano), ao voltar a conexão e pelo botão **Sincronizar**.
+- Se o aparelho não consegue gravar (outra aba prendendo o banco, falta de espaço), o formulário mostra "Não foi
+  possível guardar no aparelho: feche as outras abas do OmniSaúde e tente de novo" e continua aberto: nada é dado
+  como registrado. Uma falha durante o envio, depois de o registro estar guardado, aparece como aviso e não volta ao
+  formulário (salvar de novo duplicaria a visita).
 - O território, as visitas e a produtividade ficam em cache; sem rede a tela mostra a cópia e a data.
 - A sessão (`/auth/me`) também fica guardada para a tela abrir sem rede; um 401 do servidor encerra a sessão.
-- Um **service worker** (`public/sw.js`) guarda os arquivos das telas (fora do app nativo, que já é local).
-  A API nunca passa por ele.
+- Um **service worker** (`public/sw.js`), registrado em todas as telas autenticadas do build de produção, guarda
+  as telas de campo do ACS e do ACE e os arquivos delas (fora do app nativo, que já é local). A API nunca passa por
+  ele.
 - Domicílios e pessoas cadastrados sem rede aparecem no território marcados como "aguardando envio" e já
   podem receber visitas (a referência é resolvida na sincronização).
 

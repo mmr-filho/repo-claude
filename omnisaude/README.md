@@ -146,6 +146,7 @@ Todos os dados de demonstração são fictícios (CNES iniciados por 9, CPFs/CNS
 cd omnisaude
 npx vitest run --project packages   # bibliotecas
 npx vitest run --project api        # API contra Postgres real (OMNI_TEST_PG, padrão 127.0.0.1:54329)
+npx vitest run --project web        # lógica da web (app de campo sem internet, com IndexedDB simulado)
 ```
 
 Os testes da API criam bancos próprios por arquivo e exigem os papéis de `docker/postgres/01-roles.sql`.
