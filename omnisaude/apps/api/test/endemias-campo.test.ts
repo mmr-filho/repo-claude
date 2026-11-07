@@ -632,6 +632,11 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     const [r240] = await resultados(ace, [v240]);
     expect(r240!.avisos?.join(' ')).toMatch(/já estava concluída/);
     expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'CONCLUIDA', startedAt: new Date(await visitedAt(v240)) });
+    // A de antes da abertura (relógio do aparelho atrasado) entra na ordem, mas o início fica na abertura.
+    const v360 = bloqueio(360);
+    expect((await resultados(ace, [v360]))[0]!.status).toBe('OK');
+    expect((await db.vectorVisit.findUniqueOrThrow({ where: { clientId: v360.clientId } })).orderId).toBe(ordem);
+    expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'CONCLUIDA', startedAt: new Date(base - 300 * 60_000) });
   });
 
   it('a recuperação da visita seguinte é refeita pelo escopo dela: o bloqueio trabalhado no meio do ciclo é a anterior da rotina', async () => {
@@ -661,7 +666,7 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     expect(await recuperacao(rotina)).toBe(true);
   });
 
-  it('visita de bloqueio sem a ordem informada vai para a ordem ativa mais recente do quarteirão', async () => {
+  it('visita de bloqueio sem a ordem informada vai para a ordem ativa mais recente do quarteirão aberta até o dia dela', async () => {
     const antiga = await novaOrdem(bloco['23']!, 'EM_CAMPO', new Date(Date.now() - 20 * 86_400_000));
     const recente = await novaOrdem(bloco['23']!, 'ABERTA', new Date(Date.now() - 3600_000));
     const casa = await novoImovel(bloco['23']!);
@@ -670,6 +675,52 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     expect((await db.vectorVisit.findUniqueOrThrow({ where: { clientId: op.clientId } })).orderId).toBe(recente);
     expect((await db.blockingOrder.findUniqueOrThrow({ where: { id: recente } })).status).toBe('EM_CAMPO');
     expect(await db.vectorVisit.count({ where: { orderId: antiga } })).toBe(0);
+    // A visita de 5 dias atrás (aparelho sem rede) é de antes do dia da abertura da recente: vai para a antiga, que já
+    // existia, e é o início do campo dela.
+    const cinco = visita(casa, { atividade: 'BLOQUEIO', situacao: 'TRABALHADO', depositos: { B: { inspecionados: 1, comFoco: 0, eliminados: 1, tratados: 0 } } }, 5 * 24 * 60);
+    const [r5] = await resultados(ace, [cinco]);
+    expect(r5).toMatchObject({ status: 'OK' });
+    expect(r5!.avisos).toBeUndefined();
+    const v5 = await db.vectorVisit.findUniqueOrThrow({ where: { clientId: cinco.clientId } });
+    expect(v5.orderId).toBe(antiga);
+    expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: antiga } })).toMatchObject({ status: 'EM_CAMPO', startedAt: v5.visitedAt });
+    // A de 25 dias atrás é de antes das duas: fica como bloqueio sem ordem, com o aviso.
+    const vinteCinco = visita(casa, { atividade: 'BLOQUEIO', situacao: 'FECHADO' }, 25 * 24 * 60);
+    expect((await resultados(ace, [vinteCinco]))[0]).toMatchObject({
+      status: 'OK',
+      avisos: ['A ordem de bloqueio deste quarteirão foi aberta depois do dia da visita: visita gravada como bloqueio sem ordem'],
+    });
+    expect((await db.vectorVisit.findUniqueOrThrow({ where: { clientId: vinteCinco.clientId } })).orderId).toBeNull();
+    expect(await db.vectorVisit.count({ where: { orderId: recente } })).toBe(1);
+    expect(await db.vectorVisit.count({ where: { orderId: antiga } })).toBe(1);
+  });
+
+  it('o dia da visita de bloqueio sem ordem é o do fuso da prefeitura, não o do UTC', async () => {
+    // A ordem aberta ontem às 0h30 e as visitas das 23h30 da véspera e das 0h10 de ontem, na hora da prefeitura. No UTC, a
+    // abertura e a visita da véspera caem no mesmo dia.
+    const c = await pgc();
+    const [h] = await c
+      .query<{ aberta: Date; vespera: Date; mesmoDia: Date }>(
+        `SELECT (d + interval '30 minutes') AT TIME ZONE $1 AS aberta, (d - interval '30 minutes') AT TIME ZONE $1 AS vespera, (d + interval '10 minutes') AT TIME ZONE $1 AS "mesmoDia"
+         FROM (SELECT date_trunc('day', now() AT TIME ZONE $1) - interval '1 day' AS d) x`,
+        [tz],
+      )
+      .then((r) => r.rows)
+      .finally(() => c.end());
+    expect(localDateString(h!.vespera, tz)).not.toBe(localDateString(h!.aberta, tz));
+    expect(h!.vespera.toISOString().slice(0, 10)).toBe(h!.aberta.toISOString().slice(0, 10));
+    const ordem = await novaOrdem(bloco['24']!, 'ABERTA', h!.aberta);
+    const casa = await novoImovel(bloco['24']!);
+    const vespera = { ...visita(casa, { atividade: 'BLOQUEIO', situacao: 'FECHADO' }), registradoEm: h!.vespera.toISOString() };
+    expect((await resultados(ace, [vespera]))[0]).toMatchObject({ status: 'OK', avisos: ['A ordem de bloqueio deste quarteirão foi aberta depois do dia da visita: visita gravada como bloqueio sem ordem'] });
+    expect((await db.vectorVisit.findUniqueOrThrow({ where: { clientId: vespera.clientId } })).orderId).toBeNull();
+    // A das 0h10, antes da abertura e no mesmo dia, entra na ordem; o início do campo fica na abertura.
+    const mesmoDia = { ...visita(casa, { atividade: 'BLOQUEIO', situacao: 'FECHADO' }), registradoEm: h!.mesmoDia.toISOString() };
+    const [r] = await resultados(ace, [mesmoDia]);
+    expect(r).toMatchObject({ status: 'OK' });
+    expect(r!.avisos).toBeUndefined();
+    expect((await db.vectorVisit.findUniqueOrThrow({ where: { clientId: mesmoDia.clientId } })).orderId).toBe(ordem);
+    expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'EM_CAMPO', startedAt: h!.aberta });
   });
 
   it('ordem unificada a outra: a visita segue a cadeia de uniões até a ordem que ficou, se o quarteirão do imóvel está nela', async () => {
@@ -711,6 +762,17 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     const v4 = bloqueio(o5, 10);
     expect((await resultados(ace, [v4]))[0]).toMatchObject({ status: 'OK', avisos: [`A ordem ${await numeroDa(o5)} foi cancelada: visita gravada sem a ordem`] });
     expect((await daVisita(v4)).orderId).toBeNull();
+    // A sem campo (aberta há 5 h) foi para a que já tinha campo, aberta há 1 h: a visita feita nela há 3 h entra na que
+    // ficou, e o início do campo não fica antes da abertura da que ficou (o caso dela continua dentro da janela).
+    const semCampo = await novaOrdem(bloco['25']!, 'ABERTA', new Date(Date.now() - 5 * 3600_000));
+    const abertaComCampo = new Date(Date.now() - 3600_000);
+    const comCampo = await novaOrdem(bloco['25']!, 'EM_CAMPO', abertaComCampo);
+    await db.blockingOrder.update({ where: { id: comCampo }, data: { startedAt: new Date(Date.now() - 30 * 60_000) } });
+    await unir(semCampo, comCampo);
+    const v5 = bloqueio(semCampo, 180);
+    expect((await resultados(ace, [v5]))[0]).toMatchObject({ status: 'OK', avisos: [`A ordem ${await numeroDa(semCampo)} foi unificada à ordem ${await numeroDa(comCampo)}: visita gravada nela`] });
+    expect((await daVisita(v5)).orderId).toBe(comCampo);
+    expect(await ordem(comCampo)).toMatchObject({ status: 'EM_CAMPO', startedAt: abertaComCampo });
   });
 
   it('a visita que chega durante a união espera a trava da ordem e entra na ordem que ficou', async () => {
@@ -932,6 +994,8 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     expect(levada).not.toBe(ficou);
     const pacote = (await t.http().get('/api/endemias/campo/pacote').set(auth(ace)).expect(200)).body;
     expect(pacote.ordens.map((o: { id: string }) => o.id)).toContain(levada);
+    // O ACE, sem rede, trabalha o imóvel de P pela ordem do pacote: depois da abertura das duas ordens e antes da união.
+    const feitaEm = new Date().toISOString();
     // A vigilância preenche os sintomas de P (seis dias atrás): as duas ordens viram uma só, a mais nova vai para a mais antiga.
     await t
       .http()
@@ -940,13 +1004,12 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
       .send({ symptomsOnset: dia(-6) })
       .expect(200);
     expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: levada } })).toMatchObject({ status: 'CANCELADA', mergedIntoId: ficou });
-    // O ACE, sem rede, trabalhou o imóvel de P pela ordem do pacote antigo e envia agora: a visita entra na ordem que ficou.
-    // A visita é de depois da abertura das duas ordens (o aparelho levou a ordem no pacote).
-    const op = visita(p.householdId, { atividade: 'BLOQUEIO', situacao: 'TRABALHADO', ordemId: levada, depositos: { B: { inspecionados: 1, comFoco: 0, eliminados: 1, tratados: 0 } } }, 0);
+    // O ACE envia agora a visita feita antes da união: ela entra na ordem que ficou.
+    const op = visita(p.householdId, { atividade: 'BLOQUEIO', situacao: 'TRABALHADO', ordemId: levada, depositos: { B: { inspecionados: 1, comFoco: 0, eliminados: 1, tratados: 0 } } }, 0, { registradoEm: feitaEm });
     const [r] = await resultados(ace, [op]);
     expect(r).toMatchObject({ status: 'OK', avisos: [`A ordem ${await numeroDa(levada)} foi unificada à ordem ${await numeroDa(ficou)}: visita gravada nela`] });
     const gravada = await db.vectorVisit.findUniqueOrThrow({ where: { clientId: op.clientId } });
-    expect(gravada.orderId).toBe(ficou);
+    expect(gravada).toMatchObject({ orderId: ficou, visitedAt: new Date(feitaEm) });
     expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ficou } })).toMatchObject({ status: 'EM_CAMPO', startedAt: gravada.visitedAt });
     const d = (await t.http().get(`/api/endemias/bloqueios/${ficou}`).set(auth(supervisora)).expect(200)).body;
     expect(d).toMatchObject({ status: 'EM_CAMPO', progresso: { trabalhados: 1 } });

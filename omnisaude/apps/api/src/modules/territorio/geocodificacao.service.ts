@@ -138,11 +138,15 @@ export class GeocodificacaoService {
         // A posição pelo endereço nunca tira o imóvel do quarteirão que ele já tem (o escolhido pelo ACE em campo, sem a
         // posição do GPS, ou o ligado antes): só vale quando o ponto cai nesse mesmo quarteirão; fora dele, o imóvel fica
         // como está e é contado à parte, para a supervisão conferir no mapa. Imóvel sem quarteirão segue a regra de sempre.
+        // O quarteirão desativado na malha não está entre os ativos (nem no índice dos centros): nenhum ponto cai nele, nem
+        // a mediana da rua sem o número ou o centro do bairro, que não ligam quarteirão mas poriam o imóvel longe do dele.
+        // O motivo é outro, e o que resolve é ligar o imóvel ao quarteirão novo.
+        if (h.blockId && !centroBloco.has(h.blockId)) {
+          quarteiraoDesativado++;
+          continue;
+        }
         if (h.blockId && PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao) && (await this.localizador.quarteiraoDoPonto(ctx.db, r.lat, r.lng))?.id !== h.blockId) {
-          // O quarteirão desativado na malha não está entre os ativos (nem no índice dos centros): o motivo é outro, e o
-          // que resolve é ligar o imóvel ao quarteirão novo.
-          if (centroBloco.has(h.blockId)) foraDoQuarteirao++;
-          else quarteiraoDesativado++;
+          foraDoQuarteirao++;
           continue;
         }
         if (PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao)) {

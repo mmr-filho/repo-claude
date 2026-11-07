@@ -157,4 +157,18 @@ describe.runIf(enabled)('Território: a geocodificação por endereço não tira
     expect(geo).toMatchObject({ analisados: 1, atualizados: 0, foraDoQuarteirao: 0, quarteiraoDesativado: 1, avisos: [`1 imóvel(is) ficaram como estavam: ${MOTIVO_QUARTEIRAO_DESATIVADO}.`] });
     expect(await imovel(r.id!)).toMatchObject({ blockId: bloco['13'], latitude: null, geoPrecision: null });
   });
+  it('sem o número na base, o imóvel do quarteirão desativado também fica como está: a mediana da rua não o posiciona', async () => {
+    const rua = 'Rua Desativada Geo';
+    // Os números da rua que estão na base caem todos no quarteirão 18; o 902 não está lá.
+    await endereco('1', ponto(190, 295), rua);
+    await endereco('2', ponto(200, 300), rua);
+    await endereco('3', ponto(210, 305), rua);
+    // O ACE, sem rede, cadastrou o imóvel no 13, que a malha nova já tinha desativado.
+    await db.block.update({ where: { id: bloco['13'] }, data: { active: false } });
+    const r = await doAce('13', '902', {}, rua);
+    const geo = await geocodificar({ ids: [r.id] });
+    // Antes: ganhava a mediana da rua (no 18), contava como localizado e a tela não dizia nada do quarteirão desativado.
+    expect(geo).toMatchObject({ analisados: 1, atualizados: 0, foraDoQuarteirao: 0, quarteiraoDesativado: 1, avisos: [`1 imóvel(is) ficaram como estavam: ${MOTIVO_QUARTEIRAO_DESATIVADO}.`] });
+    expect(await imovel(r.id!)).toMatchObject({ blockId: bloco['13'], latitude: null, geoPrecision: null });
+  });
 });

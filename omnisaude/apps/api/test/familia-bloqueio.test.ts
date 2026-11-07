@@ -13,7 +13,7 @@ import { pgAvailable, startTestApp, type TestApp } from './harness';
 const enabled = await pgAvailable();
 
 const DIA = 86_400_000;
-const GRADES = ['inc', 'acs', 'nova', 'falha', 'unif'];
+const GRADES = ['inc', 'acs', 'nova', 'falha', 'unif', 'unif2'];
 
 describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da pessoa na ordem de bloqueio', () => {
   let t: TestApp;
@@ -225,5 +225,17 @@ describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da 
     expect(aberta.status).toBe('ABERTA');
     expect(aberta.blocks.map((b) => b.blockId)).toContain(bloco('unif', 2, 2));
     expect(await ligacao(n)).toMatchObject({ householdId: casa, blockId: bloco('unif', 2, 2), active: true });
+  });
+  it('o cadastro que fica, sem família, herda a do duplicado: o caso dele também abre a ordem na hora', async () => {
+    // Agora o caso é do que fica, sem domicílio; o duplicado é o responsável de uma família num imóvel posicionado.
+    const n = await casoSemDomicilio('uf2');
+    await novoPaciente('ud2');
+    const { casa, familia } = await novaCasa(ponto('unif2', 200, 200), pessoa.ud2!.id);
+    await t.http().post(`/api/patients/${pessoa.uf2!.id}/merge`).set(auth(recepcao)).send({ duplicateId: pessoa.ud2!.id }).expect(naoPassou);
+    expect(await db.patient.findUniqueOrThrow({ where: { id: pessoa.uf2!.id } })).toMatchObject({ familyId: familia, kinship: '00' });
+    const aberta = await ordemDoCaso(n);
+    expect(aberta.status).toBe('ABERTA');
+    expect(aberta.blocks.map((b) => b.blockId)).toContain(bloco('unif2', 2, 2));
+    expect(await ligacao(n)).toMatchObject({ householdId: casa, blockId: bloco('unif2', 2, 2), active: true });
   });
 });

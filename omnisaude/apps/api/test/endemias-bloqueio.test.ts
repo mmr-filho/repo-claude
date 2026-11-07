@@ -67,6 +67,7 @@ const GRADES = [
   'pdant',
   'pdinf',
   'pddia',
+  'tvuni',
 ];
 const espera = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const letras = (n: number) => {
@@ -1463,6 +1464,7 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     }
     expect(await ordem(o)).toMatchObject({ status: 'CANCELADA', concludedAt: null });
   });
+
   it('dados-docs#4: a visita de bloqueio sem ordem feita antes do dia da abertura não entra na ordem nem vira o início do campo', async () => {
     await caso('pa1', ponto('pdant', 200, 200), 'dengue', dia(-1));
     const o = await ordemDe('pa1');
@@ -1508,5 +1510,43 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(oo.status).toBe('EM_CAMPO');
     // O início do campo não fica antes da abertura.
     expect(oo.startedAt?.getTime()).toBe(aberta.getTime());
+  });
+
+  it('bloqueio#4: a conclusão sem nota que espera a união em curso diz que a ordem mudou, sem pedir justificativa', async () => {
+    await caso('tu1', ponto('tvuni', 200, 200), 'dengue', dia(-9));
+    // Rascunho sem a data dos sintomas (referência hoje), a 100 m: abre outra ordem.
+    await caso('tu2', ponto('tvuni', 300, 200), 'dengue');
+    const fica = await ordemDe('tu1');
+    const vai = await ordemDe('tu2');
+    expect(vai).not.toBe(fica);
+    const c = await pgc();
+    try {
+      await c.query('BEGIN');
+      await c.query('LOCK TABLE blocking_order_assignees IN ACCESS EXCLUSIVE MODE');
+      // A data dos sintomas põe as duas ordens na mesma janela: a união para nos agentes, com as duas linhas travadas.
+      const edicao = Promise.resolve(
+        t
+          .http()
+          .patch(`/api/vigilancia/notificacoes/${notificacao.tu2}`)
+          .set(auth(vig))
+          .send({ symptomsOnset: dia(-6) }),
+      );
+      expect(await esperar(async () => (await esperas('blocking_order_assignees')) > 0)).toBe(true);
+      // A conclusão da ordem que vai ser unificada lê a ordem ainda aberta, com o imóvel sem visita, e espera a linha.
+      const conclusao = Promise.resolve(t.http().post(`/api/endemias/bloqueios/${vai}/concluir`).set(auth(supervisora)).send({}));
+      expect(await esperar(async () => (await esperas('blocking_order_assignees', true)) > 0, 4000)).toBe(true);
+      await c.query('COMMIT');
+      expect((await edicao).status).toBe(200);
+      // Com a linha, vê a ordem unificada: conflito, e não o pedido de justificativa (422) para uma ordem que já acabou.
+      const r = await conclusao;
+      expect(r.status).toBe(409);
+      expect(r.body).toMatchObject({ code: 'CONFLITO', message: 'A ordem mudou enquanto você concluía; abra de novo' });
+    } finally {
+      await c.query('ROLLBACK').catch(() => undefined);
+      await c.end();
+    }
+    expect(await ordem(vai)).toMatchObject({ status: 'CANCELADA', mergedIntoId: fica, concludedAt: null });
+    expect(await ordemDe('tu2')).toBe(fica);
+    expect(ativas(await ordem(fica))).toBe(2);
   });
 });
