@@ -56,12 +56,16 @@ casos de busca ativa abertos da pessoa e entra nos indicadores e programas (abai
 ### No aparelho
 
 - A fila fica no **IndexedDB** (`apps/web/src/lib/acs-store.ts`, banco `omnisaude-campo`, separado do banco do
-  app do ACE): registros pendentes e com erro, com a mensagem. A sincronização roda ao registrar (com rede, em
-  segundo plano), ao voltar a conexão e pelo botão **Sincronizar**.
+  app do ACE): registros pendentes e com erro, com a mensagem. O formulário fecha assim que o registro está guardado,
+  e a sincronização roda em segundo plano ao registrar (com rede), ao voltar a conexão e pelo botão **Sincronizar**; o
+  registro guardado durante um envio vai na rodada seguinte.
+- O registro com mais de uma operação (domicílio novo com o responsável novo) entra inteiro na fila ou não entra, e
+  nenhum envio, desta aba ou de outra aba aberta, lê a fila no meio dele (trava do navegador entre abas).
 - Se o aparelho não consegue gravar (outra aba prendendo o banco, falta de espaço), o formulário mostra "Não foi
   possível guardar no aparelho: feche as outras abas do OmniSaúde e tente de novo" e continua aberto: nada é dado
-  como registrado. Uma falha durante o envio, depois de o registro estar guardado, aparece como aviso e não volta ao
-  formulário (salvar de novo duplicaria a visita).
+  como registrado. Uma falha do aparelho durante o envio, depois de o registro estar guardado, aparece como aviso ("O
+  envio parou... Nada se perde: o que ficou na fila vai no próximo envio, sem duplicar") e não volta ao formulário
+  (salvar de novo duplicaria a visita); a falha ao descartar ou ao tentar de novo também vira aviso.
 - O território, as visitas e a produtividade ficam em cache; sem rede a tela mostra a cópia e a data.
 - A sessão (`/auth/me`) também fica guardada para a tela abrir sem rede; um 401 do servidor encerra a sessão.
 - Um **service worker** (`public/sw.js`), registrado em todas as telas autenticadas do build de produção, guarda

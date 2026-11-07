@@ -94,7 +94,9 @@ Ao **confirmar**: gestante obrigatório para mulher de 10 a 49 anos; datas não 
 notificação; Cartão SUS válido; unidade com CNES; valores dentro dos domínios. A confirmação grava a data, a
 semana epidemiológica da notificação e dos sintomas e a comunicação à vigilância municipal pelo painel.
 
-Numeração interna `AAAA/NNNNNN` (não é o número do sistema oficial, informado na fila de digitação; ver semana 24).
+Numeração interna `AAAA/NNNNNN` (não é o número do sistema oficial, informado na fila de digitação; ver semana 24),
+sequencial por ano, sem colisão nem buraco mesmo com notificações criadas ao mesmo tempo (trava curta por instituição
+e ano na criação).
 
 Trocar o subitem não pode **afrouxar** a notificação (de imediata para semanal ou com menos esferas) sem a
 vigilância municipal, nem tirar o sigilo. Agravo notificado na confirmação (item 60) só é confirmado com a data de

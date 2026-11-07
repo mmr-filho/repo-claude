@@ -75,10 +75,11 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
   Mudanças que não mexem na ordem (ciência, comunicação, número oficial, prazo vencido, confirmação, comunicação
   policial, resultado de exame) não acionam o bloqueio.
 - **Uma ordem para casos próximos**: a notificação entra na ordem ativa que tenha um caso a até duas vezes o raio e a
-  até 7 dias (ou do mesmo imóvel ou da mesma pessoa, também dentro dos 7 dias), desde que, com ela, todas as datas da
-  ordem continuem a até 7 dias umas das outras e que ela não seja de mais de 7 dias depois do início do campo; senão,
-  abre uma ordem nova, numerada no ano (`1/2026`). Quem mora num quarteirão de ordem em campo entra nela, na janela do
-  início do campo.
+  até 7 dias (ou do mesmo imóvel ou da mesma pessoa, também dentro dos 7 dias); senão, abre uma ordem nova, numerada no
+  ano (`1/2026`). Antes do campo, com ela todas as datas da ordem precisam continuar a até 7 dias umas das outras (sem
+  cadeia). Depois que o campo começa, a âncora passa a ser o início do campo: a ordem recebe quem agrupa com ela ou mora
+  num quarteirão que ela cobre, desde que os sintomas não tenham começado mais de 7 dias depois do início do campo (a
+  visita feita antes disso não serve ao caso novo, que abre outra ordem).
 - **Trava**: uma trava no banco serializa as decisões (duas notificações simultâneas não abrem duas ordens). O
   gatilho só trava se o retrato do caso mudou, e relê a notificação dentro da trava; com a trava ocupada, tenta de
   novo por cerca de 1,5 s e desiste, e a varredura completa depois.
@@ -88,7 +89,8 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
   cancelada como "unificada a outra ordem" e aponta para o destino. Duas ordens com campo não se unem, nem quando o
   período passaria de 7 dias.
 - **Data corrigida**: se a data nova de um caso estica a própria ordem além de 7 dias, ele sai dela e é avaliado como
-  caso novo, enquanto a ordem não tem visitas; com campo, ele fica (o trabalho feito vale).
+  caso novo, enquanto a ordem não tem visitas (com sintomas há mais de 30 dias, ou com a abertura automática desligada,
+  ele só sai, sem abrir outra ordem); com campo, ele fica (o trabalho feito vale).
 - **Caso reaberto** (descarte desfeito, encerramento reaberto) volta à própria ordem, se ela continua ativa. A
   reclassificação (outra notificação da mesma pessoa ou do mesmo imóvel) entra na ordem em campo, dentro da janela.
 - **Imóvel do caso**: só quando a posição da ficha é desse imóvel (cadastro, ou ficha a até 100 m do domicílio
@@ -101,19 +103,22 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
   até a vigilância marcar o imóvel ou chegar o GPS de uma visita (ACS ou ACE). Face de quadra e centro do quarteirão
   entram com aviso "conferir o imóvel".
 - **Reavaliação na hora**: posicionar o imóvel (mapa do território, cadastro do domicílio, GPS da visita do ACS ou do
-  ACE), geocodificar e religar imóveis à malha (vincular, editar ou desativar quarteirão, importar malha) reavaliam
-  na hora os casos dos moradores, também em ordem em campo.
+  ACE), geocodificar, religar imóveis à malha (vincular, editar ou desativar quarteirão, importar malha) e incluir ou
+  tirar alguém de uma família reavaliam na hora os casos dos moradores, também em ordem em campo. O aviso roda depois do
+  commit, e uma falha dele nunca derruba a gravação (a varredura completa).
 - **Caso descartado** sai da ordem; ordem sem caso e sem visita é cancelada; com visita, fica para a supervisão
   decidir.
 - **Situação**: aguardando localização, aberta, em campo (na primeira visita sincronizada; o início é a visita mais
   antiga), concluída (com justificativa se ficou imóvel sem visita ou pendente) ou cancelada (só a coordenação).
   Concluída pode ser reaberta. O recálculo só passa de "aguardando" a "aberta" e de volta, com a linha da ordem
-  travada: visita, conclusão e cancelamento que chegam no meio dele não se perdem.
+  travada: visita, conclusão e cancelamento que chegam no meio dele não se perdem. Concluir, reabrir e cancelar também
+  travam a linha, e a visita que chega nesse instante espera e vê a situação final.
 - **Progresso**: por quarteirão, os imóveis ativos que estão nele hoje e a última visita de cada um na ordem.
 - **Lista**: as ativas vêm com as atrasadas primeiro e depois da mais antiga para a mais nova, até 500.
 - **Varredura a cada 5 minutos**: refaz o que o gatilho não conseguiu, com as mesmas regras (30 dias, sem anomalia
   congênita), das mais recentes para as mais antigas; reavalia primeiro quem aguarda a localização e os casos cujo
-  imóvel mudou de posição depois da ligação (também em campo); ordens abertas sem quarteirão, as mais novas primeiro.
+  imóvel tem uma posição que o retrato do caso não reflete (também em campo; a comparação é pela posição, não pela hora
+  do aparelho); ordens abertas sem quarteirão, as mais novas primeiro.
 - **Tempo real**: o aviso de mudança da ordem vai só para quem trabalha com endemias (ler, supervisionar ou campo),
   nunca para painel de TV nem para a recepção.
 - **Configuração** (coordenação): abertura automática, janela de agrupamento, agravos e alerta de ordem sem início.
@@ -140,13 +145,16 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
 - **Imóvel novo** no quarteirão (tipo, sequência, endereço, GPS opcional): pode ser visitado antes de sincronizar.
   Em quarteirão desativado na malha entra com aviso para a supervisão; data do aparelho com mais de um ano vira a do
   envio, com aviso. O GPS só vira a posição do imóvel quando cai no quarteirão escolhido; fora dele, o imóvel fica no
-  quarteirão escolhido, sem posição, e a supervisão recebe o aviso para posicioná-lo no mapa.
+  quarteirão escolhido, sem posição, e a supervisão recebe o aviso para posicioná-lo no mapa. Nem a religação da malha
+  nem a geocodificação pelo endereço o tiram do quarteirão escolhido; a visita seguinte com GPS dentro dele o posiciona.
 - **Armazenamento no aparelho**: banco próprio no IndexedDB (`omnisaude-campo-ace`: fila, pacote, histórico e
   contador de tubitos), separado do banco do ACS (`omnisaude-campo`). Se o aparelho não grava (outra aba prendendo o
   banco, falta de espaço), o formulário diz "Não foi possível guardar no aparelho" e continua aberto: nada é dado
   como registrado.
 - **Fila presa ao usuário e à lotação**: outro usuário no mesmo aparelho não envia o trabalho alheio; cada registro
-  guarda a unidade da lotação ativa e só vai com ela (os de outra lotação aparecem como "Outra lotação").
+  guarda a unidade da lotação ativa e só vai com ela (os de outra lotação aparecem como "Outra lotação"). Envio e
+  download do pacote ficam em fila entre as abas abertas (trava do navegador), então duas abas não mandam o mesmo
+  registro e o larvicida usado sai uma vez só do pacote guardado.
 - **Sincronização idempotente**: o diálogo fecha assim que o registro é guardado, e o envio segue em segundo plano,
   de 100 em 100. A visita (ou o imóvel), o registro do `clientId` e a baixa do estoque vão numa transação só; o
   reenvio, em sequência ou simultâneo (resposta perdida, duas abas), volta como "já estava no servidor". Cada
@@ -160,8 +168,12 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
 - **Recuperação**: a visita é recuperação quando a anterior do mesmo escopo (a mesma ordem; sem ordem, o mesmo
   ciclo), pela data da visita, foi pendência; quando uma visita anterior chega depois (outro agente sem rede), a
   seguinte é refeita.
-- **Ordem na visita**: visita de bloqueio sem ordem vai para a ordem ativa mais recente que tem o quarteirão; visita
-  feita numa ordem que foi unificada vai para a ordem de destino, com aviso.
+- **Ordem na visita**: a ordem é lida dentro da transação da visita, com a linha travada, então a visita não entra numa
+  ordem cancelada ou unificada no meio do envio. Visita de bloqueio sem ordem vai para a ordem ativa mais recente que
+  tem o quarteirão. Visita feita numa ordem que foi unificada (a que estava no pacote antes da união) vai para a ordem de
+  destino, se o quarteirão do imóvel está nela, com o aviso "A ordem X foi unificada à ordem Y: visita gravada nela"; se
+  o destino já foi concluído, a visita entra nele do mesmo jeito (o trabalho foi feito antes), como na ordem concluída
+  informada direto.
 - **GPS da visita**: nunca troca o quarteirão do imóvel. Só posiciona o imóvel ainda sem posição boa, e só quando o
   ponto cai no quarteirão do próprio imóvel (dentro dele, ou na rua a até 15 m e mais perto dele que de outro); fora
   disso, a posição fica só na visita e a supervisão recebe o aviso. A leitura que chega depois de o diálogo fechar é
@@ -196,7 +208,8 @@ Configuração. Além disso:
 - Quem não tem o mapa de casos não vê a coluna Distância nem o agravo; a lista avisa quando chega a 500 ordens.
 - Designar agentes mostra também os designados que perderam a lotação de campo ("sem lotação ativa"): podem ser
   desmarcados, não marcados de novo. O titular de zona sem lotação aparece marcado, e a zona pode ser salva sem
-  trocá-lo; quarteirão da zona desativado na malha não impede salvar.
+  trocá-lo. Só o quarteirão que entra na zona precisa estar ativo: o desativado na malha que já estava nela fica, marcado
+  como desativado, até a supervisão tirá-lo.
 - Concluir, reabrir e cancelar pedem o mínimo de texto da API (5 caracteres no motivo; 10 na justificativa da
   conclusão quando ficou imóvel sem visita ou pendente).
 - A entrada de remessa lê a quantidade no formato brasileiro (25.000 são 25 mil) e mostra "Será lançado: ..." antes
@@ -249,10 +262,12 @@ a ordem 1 na ficha, a supervisora acompanha em Endemias e o ACE a encontra em Ca
   - `endemias.test.ts`: duas notificações próximas geram uma única ordem; o ACE trabalha sem rede e nada duplica ao
     sincronizar; baixa pendente e regularizada; remessa sem duplicar a guia; conclusão justificada; produção; fichas
     do e-SUS válidas.
-  - `endemias-bloqueio.test.ts`: união da ordem inteira, janela sem cadeia, data corrigida, caso reaberto e
-    reclassificado, recálculo concorrente com visita, conclusão e cancelamento, varredura com mais de 1.000 casos,
-    designação automática, sigilo fora da vigilância, aviso só na sala das endemias, escopo de campo da supervisão,
-    GPS do ACS e do ACE reavaliando na hora.
+  - `endemias-bloqueio.test.ts`: união da ordem inteira, janela sem cadeia antes do campo e âncora no início do campo
+    depois, data corrigida (com e sem campo), caso reaberto e reclassificado, recálculo, conclusão e cancelamento
+    concorrentes com a visita, varredura com mais de 1.000 casos, designação automática, sigilo fora da vigilância,
+    aviso só na sala das endemias, GPS do ACS e do ACE, cadastro do domicílio e mudança de família reavaliando na hora.
+  - `territorio-escopo-campo.test.ts`: fila de pendências, mapa e pacote do ACE e da supervisão com mais de 32.766
+    quarteirões nas zonas.
   - `endemias-campo.test.ts`: catálogo de insumos, GPS da visita e do imóvel novo que não trocam o quarteirão,
     baixas sem deadlock, falha passageira, validação por operação, outra lotação, recuperação fora de ordem, visita
     em ordem unificada, remessas simultâneas e estorno.
@@ -260,9 +275,11 @@ a ordem 1 na ficha, a supervisora acompanha em Endemias e o ACE a encontra em Ca
     imóvel fechado, titular e quarteirões da zona.
   - `esus-ledger.test.ts`: o mesmo registro não sai em dois lotes; reprocessar regera só os registros da ficha.
 - Web, sem navegador (`apps/web/test`, com IndexedDB simulado): banco do ACE separado e migrado, falha ao guardar,
-  fila por lotação, TENTAR_DE_NOVO, Corrigir, duas abas e as regras das telas de gestão.
+  fila por lotação, TENTAR_DE_NOVO, Corrigir, duas abas do ACE e do ACS, registro do ACS inteiro ou nada e as regras
+  das telas de gestão.
 - Revisão adversarial da entrega: 59 achados (55 confirmados, 1 plausível, 3 refutados), corrigidos em seis frentes
-  e conferidos por três verificadores; uma segunda rodada fechou o que eles ainda acharam.
+  e conferidos por três verificadores; mais duas rodadas, cada frente com o seu verificador, fecharam o que eles ainda
+  acharam.
 - No navegador: ver `docs/STATUS.md` (Verificação feita).
 
 ## Pontos de atenção e fora do escopo
