@@ -59,8 +59,11 @@ casos de busca ativa abertos da pessoa e entra nos indicadores e programas (abai
   app do ACE): registros pendentes e com erro, com a mensagem. O formulário fecha assim que o registro está guardado,
   e a sincronização roda em segundo plano ao registrar (com rede), ao voltar a conexão e pelo botão **Sincronizar**; o
   registro guardado durante um envio vai na rodada seguinte.
-- O registro com mais de uma operação (domicílio novo com o responsável novo) entra inteiro na fila ou não entra, e
-  nenhum envio, desta aba ou de outra aba aberta, lê a fila no meio dele (trava do navegador entre abas).
+- O registro com mais de uma operação (domicílio novo com o responsável novo) entra na fila numa transação só do banco
+  do aparelho: todas as operações ou nenhuma, mesmo se a aba fechar no meio, e nenhum envio, desta aba ou de outra, vê
+  parte dele. Duas abas não mandam a fila ao mesmo tempo (trava do navegador entre abas; sem ela, em navegador antigo ou
+  fora de HTTPS, a ordem dos envios vale só por aba). O registro descartado durante o envio não volta para a fila com o
+  erro do servidor.
 - Se o aparelho não consegue gravar (outra aba prendendo o banco, falta de espaço), o formulário mostra "Não foi
   possível guardar no aparelho: feche as outras abas do OmniSaúde e tente de novo" e continua aberto: nada é dado
   como registrado. Uma falha do aparelho durante o envio, depois de o registro estar guardado, aparece como aviso ("O

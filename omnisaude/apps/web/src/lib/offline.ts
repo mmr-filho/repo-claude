@@ -261,7 +261,8 @@ const bancoAcs = criarBanco(BANCO_ACS);
 
 /**
  * Banco do ACS (app do agente comunitário). Leitura com falha devolve vazio e gravação no cache é melhor esforço (o
- * cache se baixa de novo), como antes; gravação e remoção na fila propagam a falha.
+ * cache se baixa de novo), como antes; gravação e remoção na fila propagam a falha, e `gravar` (várias gravações numa
+ * transação só, como o registro inteiro na fila) também.
  */
 export const local = {
   get: <T>(store: Store, key: string) =>
@@ -276,6 +277,7 @@ export const local = {
     }),
   put: (store: Store, value: unknown) => (store === 'cache' ? bancoAcs.put(store, value).catch((e) => console.warn('Cache do aparelho não gravado', e)) : bancoAcs.put(store, value)),
   delete: (store: Store, key: string) => bancoAcs.delete(store, key),
+  gravar: (gravacoes: Gravacao[]) => bancoAcs.gravar(gravacoes),
 };
 
 /** Banco do ACE (app do agente de combate às endemias): tudo propaga a falha, e a tela mostra o que houve. */

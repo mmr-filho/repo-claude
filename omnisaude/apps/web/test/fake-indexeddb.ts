@@ -1,8 +1,12 @@
 /**
  * IndexedDB simulado em memória, só com o que o armazenamento do app de campo usa: abertura com e sem versão (upgrade,
- * VersionError, versionchange nas outras conexões e blocked enquanto elas não fecham), transações com cópia de trabalho
- * confirmada só no complete (erro de requisição e cancelamento desfazem tudo) e databases(). Permite injetar as falhas
- * que o navegador produz: erro na abertura, erro numa gravação (cota) e cancelamento na confirmação.
+ * VersionError, versionchange nas outras conexões e blocked enquanto elas não fecham), transações e databases(). As
+ * transações seguem a ordem do navegador, entre todas as conexões do banco: a de gravação só começa quando terminaram as
+ * criadas antes dela com algum store em comum, e a de leitura, quando terminaram as de gravação nessas condições (leituras
+ * correm juntas). Cada uma trabalha numa cópia tirada quando começa, confirmada só no complete (erro de requisição e
+ * cancelamento desfazem tudo): nenhuma gravação se perde entre transações sobrepostas, e a leitura só vê o que foi
+ * confirmado. Permite injetar as falhas que o navegador produz (erro na abertura, erro numa gravação, cancelamento na
+ * confirmação) e acompanhar cada gravação e cada confirmação.
  */
 type Linha = Record<string, unknown>;
 type Ouvinte = (e: Evento) => void;
@@ -52,6 +56,16 @@ interface Store {
 interface Dados {
   versao: number;
   stores: Map<string, Store>;
+  /** Transações deste banco ainda não terminadas, de todas as conexões, na ordem em que foram criadas. */
+  transacoes: Transacao[];
+}
+
+/** Uma gravação, como `aoGravar` a recebe. */
+export interface GravacaoVista {
+  banco: string;
+  store: string;
+  chave: string;
+  tipo: 'put' | 'delete';
 }
 
 const copia = <T>(v: T): T => (v === undefined ? v : structuredClone(v));
@@ -64,20 +78,22 @@ class Loja {
     private readonly keyPath: string,
   ) {}
   get(chave: string) {
-    return this.tx.pedir(this.nome, false, (l) => copia(l.get(chave)));
+    return this.tx.pedir(this.nome, null, (l) => copia(l.get(chave)));
   }
   getAll() {
-    return this.tx.pedir(this.nome, false, (l) => [...l.values()].map(copia));
+    return this.tx.pedir(this.nome, null, (l) => [...l.values()].map(copia));
   }
   put(valor: Linha) {
-    return this.tx.pedir(this.nome, true, (l) => {
-      const chave = String(valor[this.keyPath]);
-      l.set(chave, copia(valor));
+    // Como no navegador, o valor é copiado na hora do put.
+    const v = copia(valor);
+    const chave = String(v[this.keyPath]);
+    return this.tx.pedir(this.nome, { chave, tipo: 'put' }, (l) => {
+      l.set(chave, v);
       return chave;
     });
   }
   delete(chave: string) {
-    return this.tx.pedir(this.nome, true, (l) => {
+    return this.tx.pedir(this.nome, { chave, tipo: 'delete' }, (l) => {
       l.delete(chave);
       return undefined;
     });
@@ -86,33 +102,58 @@ class Loja {
 
 export class Transacao extends Alvo {
   error: DOMException | null = null;
-  private pendentes = 0;
+  private comecou = false;
   private terminou = false;
-  private readonly trabalho: Map<string, Map<string, Linha>>;
+  private pendentes = 0;
+  /** Requisições feitas antes de a transação começar: rodam quando ela começa, na ordem em que vieram. */
+  private emEspera: (() => void)[] = [];
+  /** Cópia de trabalho dos stores, tirada quando a transação começa (antes disso, outra ainda podia mudar o banco). */
+  private readonly trabalho = new Map<string, Map<string, Linha>>();
   constructor(
     private readonly fake: FakeIndexedDB,
+    private readonly banco: string,
     private readonly dados: Dados,
     private readonly nomes: string[],
     private readonly modo: IDBTransactionMode,
   ) {
     super();
-    this.trabalho = new Map(nomes.map((n) => [n, new Map(dados.stores.get(n)!.linhas)]));
+    dados.transacoes.push(this);
+    Transacao.agendar(dados);
+  }
+
+  /**
+   * Começa as transações que já podem, como o navegador: a de gravação, quando terminaram todas as criadas antes dela com
+   * algum store em comum; a de leitura, quando terminaram as de gravação nessas condições.
+   */
+  private static agendar(dados: Dados) {
+    dados.transacoes.forEach((tx, i) => {
+      if (tx.comecou) return;
+      const antes = dados.transacoes.slice(0, i).filter((o) => o.nomes.some((n) => tx.nomes.includes(n)));
+      if (tx.modo === 'readwrite' ? !antes.length : antes.every((o) => o.modo !== 'readwrite')) tx.comecar();
+    });
+  }
+
+  private comecar() {
+    this.comecou = true;
+    for (const n of this.nomes) this.trabalho.set(n, new Map(this.dados.stores.get(n)!.linhas));
+    for (const rodar of this.emEspera.splice(0)) depois(rodar);
     depois(() => this.talvezConfirmar());
   }
+
   objectStore(nome: string) {
     if (!this.nomes.includes(nome)) throw new DOMException(`Store ${nome} fora da transação`, 'NotFoundError');
     return new Loja(this, nome, this.dados.stores.get(nome)!.keyPath);
   }
-  pedir(store: string, gravacao: boolean, fn: (linhas: Map<string, Linha>) => unknown): Requisicao {
+  pedir(store: string, gravacao: Pick<GravacaoVista, 'chave' | 'tipo'> | null, fn: (linhas: Map<string, Linha>) => unknown): Requisicao {
     if (this.terminou) throw new DOMException('Transação encerrada', 'TransactionInactiveError');
     if (gravacao && this.modo !== 'readwrite') throw new DOMException('Transação só de leitura', 'ReadOnlyError');
     const req = new Requisicao();
     this.pendentes += 1;
-    depois(() => {
+    const rodar = () => {
       if (this.terminou) return;
       this.pendentes -= 1;
       req.readyState = 'done';
-      const falha = gravacao ? this.fake.erroNaGravacao : null;
+      const falha = gravacao ? (this.fake.aoGravar?.({ banco: this.banco, store, ...gravacao }) ?? this.fake.erroNaGravacao) : null;
       if (falha) {
         req.error = falha;
         if (!req.despachar('error').defaultPrevented) {
@@ -126,7 +167,9 @@ export class Transacao extends Alvo {
         req.despachar('success');
       }
       depois(() => this.talvezConfirmar());
-    });
+    };
+    if (this.comecou) depois(rodar);
+    else this.emEspera.push(rodar);
     return req;
   }
   abort() {
@@ -134,19 +177,30 @@ export class Transacao extends Alvo {
   }
   private cancelar() {
     if (this.terminou) return;
-    this.terminou = true;
+    this.encerrar();
     this.despachar('abort');
+    Transacao.agendar(this.dados);
   }
   private talvezConfirmar() {
-    if (this.terminou || this.pendentes) return;
+    if (this.terminou || !this.comecou || this.pendentes) return;
     if (this.modo === 'readwrite' && this.fake.cancelarNaConfirmacao) {
       this.error = new DOMException('Cota de armazenamento excedida', 'QuotaExceededError');
       this.cancelar();
       return;
     }
-    this.terminou = true;
-    if (this.modo === 'readwrite') for (const [n, linhas] of this.trabalho) this.dados.stores.get(n)!.linhas = linhas;
+    this.encerrar();
+    if (this.modo === 'readwrite') {
+      // Nenhuma outra transação mexeu nestes stores desde que esta começou (agendar): a cópia vira o estado confirmado.
+      for (const [n, linhas] of this.trabalho) this.dados.stores.get(n)!.linhas = linhas;
+      this.fake.aoConfirmar?.(this.banco);
+    }
     this.despachar('complete');
+    Transacao.agendar(this.dados);
+  }
+  private encerrar() {
+    this.terminou = true;
+    const i = this.dados.transacoes.indexOf(this);
+    if (i >= 0) this.dados.transacoes.splice(i, 1);
   }
 }
 
@@ -175,7 +229,7 @@ export class Conexao extends Alvo {
     if (this.fechada) throw new DOMException('The database connection is closing.', 'InvalidStateError');
     const nomes = Array.isArray(stores) ? stores : [stores];
     for (const n of nomes) if (!this.dados.stores.has(n)) throw new DOMException(`Store ${n} não existe`, 'NotFoundError');
-    return new Transacao(this.fake, this.dados, nomes, modo);
+    return new Transacao(this.fake, this.name, this.dados, nomes, modo);
   }
   close() {
     this.fechada = true;
@@ -191,12 +245,20 @@ export class FakeIndexedDB {
   erroNaGravacao: DOMException | null = null;
   /** As gravações passam, mas a transação é cancelada na confirmação (cota estourada no commit). */
   cancelarNaConfirmacao = false;
+  /**
+   * Chamada a cada gravação, dentro da transação e antes de aplicá-la (o teste age no meio dela). O erro que ela devolver
+   * faz essa gravação falhar, e a transação é cancelada.
+   */
+  aoGravar: ((g: GravacaoVista) => DOMException | undefined) | null = null;
+  /** Chamada a cada transação de gravação confirmada, com o nome do banco (o teste vê cada estado que o banco guardou). */
+  aoConfirmar: ((banco: string) => void) | null = null;
 
   /** Cria um banco já existente (ex.: o do ACS que o código desta semana subiu para a versão 2). */
   criar(nome: string, versao: number, stores: Record<string, { keyPath: string; linhas?: Linha[] }>) {
     this.bancos.set(nome, {
       versao,
       stores: new Map(Object.entries(stores).map(([n, s]) => [n, { keyPath: s.keyPath, linhas: new Map((s.linhas ?? []).map((l) => [String(l[s.keyPath]), copia(l)])) }])),
+      transacoes: [],
     });
   }
   linhas(nome: string, store: string): Linha[] {
@@ -246,7 +308,7 @@ export class FakeIndexedDB {
     const outras = this.conexoes.filter((c) => c.name === nome && !c.fechada);
     for (const c of outras) c.despachar('versionchange');
     const seguir = () => {
-      const dados = existente ?? { versao: 0, stores: new Map() };
+      const dados: Dados = existente ?? { versao: 0, stores: new Map(), transacoes: [] };
       this.bancos.set(nome, dados);
       const db = this.conectar(nome, dados);
       req.result = db;

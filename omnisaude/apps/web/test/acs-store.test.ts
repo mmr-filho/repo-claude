@@ -1,6 +1,6 @@
 import type { OperacaoCampo, ResultadoSync } from '@omnisaude/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FakeIndexedDB } from './fake-indexeddb';
+import { abrirOutraAba as conectar, FakeIndexedDB, type Transacao } from './fake-indexeddb';
 
 // Fila do app do ACS sobre o IndexedDB simulado (o de verdade é testado em offline.test.ts) e a API simulada. Cada teste
 // carrega os módulos de novo: a conexão com o banco fica guardada no módulo.
@@ -9,6 +9,7 @@ vi.mock('../src/lib/api', async (original) => ({ ...(await original<typeof impor
 
 type Store = typeof import('../src/lib/acs-store');
 type Offline = typeof import('../src/lib/offline');
+type ResumoEnvioAcs = import('../src/lib/acs-store').ResumoEnvioAcs;
 let fake: FakeIndexedDB;
 let loja: Store;
 let offline: Offline;
@@ -16,11 +17,72 @@ let offline: Offline;
 const UUID = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const visita = (clientId: string): OperacaoCampo =>
   ({ tipo: 'VISITA', clientId, registradoEm: '2026-11-07T12:00:00Z', householdId: '11111111-1111-4111-8111-111111111111', turno: 1, motivos: ['01'], desfecho: '1' }) as unknown as OperacaoCampo;
+const pessoa = (clientId: string): OperacaoCampo => ({ tipo: 'PESSOA', clientId, registradoEm: '2026-11-07T12:00:00Z', dados: { name: 'Maria das Dores', birthDate: '1980-05-10', sex: 'F' } });
+const domicilio = (clientId: string, responsavelClientId: string): OperacaoCampo => ({
+  tipo: 'DOMICILIO',
+  clientId,
+  registradoEm: '2026-11-07T12:00:00Z',
+  dados: { street: 'Rua das Flores', number: '10' },
+  familia: { responsavelClientId, incomeBracket: null },
+});
+/** Domicílio novo com o responsável novo, como o formulário monta (household-form.tsx): a PESSOA e o DOMICILIO que a cita. */
+const RESPONSAVEL = UUID(1);
+const DOMICILIO = UUID(2);
+const registroNovo = () => [pessoa(RESPONSAVEL), domicilio(DOMICILIO, RESPONSAVEL)];
 const resposta = (status: ResultadoSync['status']) => async (_path: string, body: { operacoes: OperacaoCampo[] }) => ({
   resultados: body.operacoes.map((op) => ({ clientId: op.clientId, tipo: op.tipo, status, id: status === 'ERRO' ? null : `id-${op.clientId}`, erro: status === 'ERRO' ? 'Recusado' : null })),
 });
 const naFila = () => fake.linhas('omnisaude-campo', 'fila') as { clientId: string; status: string }[];
-const resumo = (r: Partial<import('../src/lib/acs-store').ResumoEnvioAcs> = {}) => ({ enviados: 0, duplicados: 0, erros: 0, offline: false, falha: null, ...r });
+const idsNaFila = () => naFila().map((i) => i.clientId);
+const enviadosNoPost = (chamada: number) => (sim.post.mock.calls[chamada]![1] as { operacoes: OperacaoCampo[] }).operacoes.map((o) => o.clientId);
+const resumo = (r: Partial<ResumoEnvioAcs> = {}) => ({ enviados: 0, duplicados: 0, erros: 0, offline: false, falha: null, ...r });
+const falhou = () => new DOMException('falhou', 'UnknownError');
+const FALHA_GRAVAR = 'Não foi possível guardar no aparelho: feche as outras abas do OmniSaúde e tente de novo';
+
+/** A outra aba: cópia nova dos módulos (a ordem por aba é do módulo), com a sua conexão ao mesmo IndexedDB simulado. */
+const abrirOutraAba = async () => {
+  vi.resetModules();
+  return { loja: await import('../src/lib/acs-store'), offline: await import('../src/lib/offline') };
+};
+/** Web Locks do navegador: um pedido por vez para o mesmo nome, em ordem de chegada, valendo para todas as abas. */
+const travasDoNavegador = () => {
+  const filas = new Map<string, Promise<unknown>>();
+  return {
+    pedidos: [] as string[],
+    async request<T>(nome: string, fn: () => Promise<T>): Promise<T> {
+      this.pedidos.push(nome);
+      const antes = filas.get(nome) ?? Promise.resolve();
+      let soltar!: () => void;
+      filas.set(
+        nome,
+        antes.then(() => new Promise<void>((r) => (soltar = r))),
+      );
+      await antes;
+      try {
+        return await fn();
+      } finally {
+        soltar();
+      }
+    },
+  };
+};
+const conexoesDoAcs = () => fake.conexoes.filter((c) => c.name === 'omnisaude-campo');
+
+/**
+ * Começa um envio no meio da transação do registro novo, na gravação do responsável (antes da do domicílio), e faz a
+ * gravação do domicílio falhar quando `segundaGrava` é falso. Conta as tentativas de gravar o domicílio.
+ */
+const envioNoMeioDoRegistro = (enviar: () => Promise<ResumoEnvioAcs>, segundaGrava: boolean) => {
+  const meio = { envio: null as Promise<ResumoEnvioAcs> | null, tentativas: 0 };
+  fake.aoGravar = ({ banco, store, chave, tipo }) => {
+    if (banco !== 'omnisaude-campo' || store !== 'fila' || tipo !== 'put') return undefined;
+    if (chave === RESPONSAVEL && !meio.envio) meio.envio = enviar();
+    if (chave !== DOMICILIO) return undefined;
+    meio.tentativas++;
+    return segundaGrava ? undefined : falhou();
+  };
+  return meio;
+};
 
 beforeEach(async () => {
   fake = new FakeIndexedDB();
@@ -61,91 +123,129 @@ describe('registro do ACS: o envio vai em segundo plano (a falha dele não volta
 
   it('a falha ao guardar volta ao formulário, sem metade do registro na fila e sem envio', async () => {
     const enviar = vi.fn(async () => undefined);
-    const real = loja.filaCampo.adicionar.bind(loja.filaCampo);
-    // Domicílio novo com o responsável: o segundo registro não grava (banco do aparelho), o primeiro sai da fila.
-    vi.spyOn(loja.filaCampo, 'adicionar').mockImplementation(async (op, rotulo) => {
-      if (op.clientId === UUID(2)) throw new offline.ErroAparelho();
-      return real(op, rotulo);
-    });
-    await expect(loja.registrarNaFila([visita(UUID(1)), visita(UUID(2))], 'Novo domicílio', enviar)).rejects.toBeInstanceOf(offline.ErroAparelho);
+    // Domicílio novo com o responsável: a gravação do domicílio falha (banco do aparelho) e a transação inteira é desfeita.
+    fake.aoGravar = ({ chave, tipo }) => (chave === DOMICILIO && tipo === 'put' ? falhou() : undefined);
+    const registro = loja.registrarNaFila(registroNovo(), 'Novo domicílio', enviar);
+    await expect(registro).rejects.toBeInstanceOf(offline.ErroAparelho);
+    await expect(registro).rejects.toThrow(FALHA_GRAVAR);
     expect(naFila()).toEqual([]);
     expect(enviar).not.toHaveBeenCalled();
+    fake.aoGravar = null;
+    // As duas gravações passam, mas a confirmação falha (cota estourada no commit): nada fica.
+    fake.cancelarNaConfirmacao = true;
+    await expect(loja.registrarNaFila(registroNovo(), 'Novo domicílio', enviar)).rejects.toThrow(/espaço de armazenamento acabou/);
+    fake.cancelarNaConfirmacao = false;
+    expect(naFila()).toEqual([]);
     // Banco sem gravar nada: o mesmo erro, nada na fila.
     fake.erroNaGravacao = new DOMException('cota', 'QuotaExceededError');
-    vi.mocked(loja.filaCampo.adicionar).mockImplementation(real);
     await expect(loja.registrarNaFila([visita(UUID(3))], 'Visita', enviar)).rejects.toThrow(/espaço de armazenamento acabou/);
     fake.erroNaGravacao = null;
     expect(naFila()).toEqual([]);
     expect(enviar).not.toHaveBeenCalled();
   });
+});
 
-  // Um envio que começa entre as gravações (a volta da rede ou o botão Sincronizar) lia a fila com só a primeira operação:
-  // o responsável ia sozinho ao servidor, a segunda falhava, o formulário mostrava o erro e salvar de novo o repetia.
-  const envioNoMeioDaGravacao = (segundaGrava: boolean) => {
-    const real = loja.filaCampo.adicionar.bind(loja.filaCampo);
-    const envio: { promessa: Promise<unknown> | null } = { promessa: null };
-    vi.spyOn(loja.filaCampo, 'adicionar').mockImplementation(async (op, rotulo) => {
-      if (op.clientId !== UUID(2)) return real(op, rotulo);
-      envio.promessa = loja.filaCampo.sincronizar();
-      await new Promise((r) => setTimeout(r, 30));
-      if (!segundaGrava) throw new offline.ErroAparelho();
-      return real(op, rotulo);
-    });
-    return envio;
-  };
-
-  it('envio que começa durante a gravação de um registro de duas operações espera por ela: com a falha, nada vai ao servidor', async () => {
-    sim.post.mockImplementation(resposta('OK'));
-    const envio = envioNoMeioDaGravacao(false);
-    const enviar = vi.fn(async () => undefined);
-    await expect(loja.registrarNaFila([visita(UUID(1)), visita(UUID(2))], 'Novo domicílio', enviar)).rejects.toBeInstanceOf(offline.ErroAparelho);
-    expect(enviar).not.toHaveBeenCalled();
-    expect(await envio.promessa).toEqual(resumo());
-    expect(sim.post).not.toHaveBeenCalled();
-    expect(naFila()).toEqual([]);
+describe('registro de domicílio novo com o responsável novo: no banco do aparelho, inteiro ou nada', () => {
+  // A aba pode morrer a qualquer momento (o Android fecha a aba em segundo plano, o agente fecha a aba), e o que fica é o
+  // último estado confirmado do banco. Com o registro em duas gravações, o estado depois da primeira tinha só o
+  // responsável: o formulário não confirmava, o agente cadastrava de novo, e o responsável órfão ia no próximo envio.
+  it.each([
+    ['gravado', true],
+    ['com falha na gravação do domicílio', false],
+  ])('%s: nenhum estado guardado no banco tem o responsável sem o domicílio', async (_caso, segundaGrava) => {
+    const retratos: string[][] = [];
+    fake.aoConfirmar = (banco) => {
+      if (banco === 'omnisaude-campo') retratos.push(idsNaFila().sort());
+    };
+    if (!segundaGrava) fake.aoGravar = ({ chave, tipo }) => (chave === DOMICILIO && tipo === 'put' ? falhou() : undefined);
+    const registro = loja.registrarNaFila(registroNovo(), 'Novo domicílio', async () => undefined);
+    if (segundaGrava) await registro;
+    else await expect(registro).rejects.toBeInstanceOf(offline.ErroAparelho);
+    expect(retratos.filter((r) => r.includes(RESPONSAVEL) !== r.includes(DOMICILIO))).toEqual([]);
+    // Uma transação só: o banco passa de nada ao registro inteiro, ou não muda.
+    expect(retratos).toEqual(segundaGrava ? [[RESPONSAVEL, DOMICILIO]] : []);
+    expect(idsNaFila().sort()).toEqual(segundaGrava ? [RESPONSAVEL, DOMICILIO] : []);
   });
 
-  it('envio que começa durante a gravação de um registro de duas operações espera por ela: com sucesso, leva o registro inteiro', async () => {
+  it('a lista da fila é avisada quando o registro entra, e já o lê inteiro', async () => {
+    const lidos: string[][] = [];
+    const parar = loja.ouvirFila(() => lidos.push(idsNaFila().sort()));
+    await loja.registrarNaFila(registroNovo(), 'Novo domicílio', async () => undefined);
+    parar();
+    await loja.registrarNaFila([visita(UUID(3))], 'Visita', async () => undefined);
+    expect(lidos).toEqual([[RESPONSAVEL, DOMICILIO]]);
+  });
+
+  it('a lista mostra o registro na ordem das operações e depois do anterior, mesmo com o relógio parado', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-07T12:00:00.000Z'));
+    try {
+      // Os clientIds fora da ordem das operações: o banco devolve a fila pela chave.
+      await loja.registrarNaFila([pessoa(UUID(9)), domicilio(UUID(5), UUID(9))], 'Novo domicílio', async () => undefined);
+      await loja.registrarNaFila([visita(UUID(1))], 'Visita', async () => undefined);
+      const itens = await loja.filaCampo.listar();
+      expect(itens.map((i) => i.clientId)).toEqual([UUID(9), UUID(5), UUID(1)]);
+      expect(new Set(itens.map((i) => i.criadoEm)).size).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('envio que começa no meio do registro de domicílio novo com o responsável novo', () => {
+  // O envio começa (a volta da rede ou o botão Sincronizar, nesta aba ou noutra) com a transação do registro em curso,
+  // depois da gravação do responsável e antes da do domicílio. A leitura do envio vê o registro inteiro ou nada dele, com
+  // ou sem a trava do navegador: o responsável nunca vai sozinho ao servidor (salvar de novo criaria outro).
+  const casos = [
+    ['nesta aba, sem a trava do navegador', false, false],
+    ['nesta aba, com a trava do navegador', false, true],
+    ['noutra aba, sem a trava do navegador', true, false],
+    ['noutra aba, com a trava do navegador', true, true],
+  ] as const;
+  /** Quem envia, com a conexão ao banco já aberta: a leitura do envio é pedida com a transação do registro em curso. */
+  const preparar = async (outraAba: boolean, comTravas: boolean) => {
+    const travas = travasDoNavegador();
+    vi.stubGlobal('navigator', comTravas ? { onLine: true, locks: travas } : { onLine: true });
+    const quem = outraAba ? (await abrirOutraAba()).loja : loja;
+    await quem.filaCampo.listar();
     sim.post.mockImplementation(resposta('OK'));
-    const envio = envioNoMeioDaGravacao(true);
-    await loja.registrarNaFila([visita(UUID(1)), visita(UUID(2))], 'Novo domicílio', async () => undefined);
-    expect(await envio.promessa).toEqual(resumo({ enviados: 2 }));
-    expect(sim.post).toHaveBeenCalledTimes(1);
-    expect((sim.post.mock.calls[0]![1] as { operacoes: OperacaoCampo[] }).operacoes.map((o) => o.clientId).sort()).toEqual([UUID(1), UUID(2)]);
+    return { travas, quem };
+  };
+
+  it.each(casos)('%s: com a falha na gravação do domicílio, nada vai ao servidor', async (_caso, outraAba, comTravas) => {
+    const { travas, quem } = await preparar(outraAba, comTravas);
+    const meio = envioNoMeioDoRegistro(() => quem.filaCampo.sincronizar(), false);
+    const enviar = vi.fn(async () => undefined);
+    const registro = loja.registrarNaFila(registroNovo(), 'Novo domicílio', enviar);
+    await expect(registro).rejects.toBeInstanceOf(offline.ErroAparelho);
+    await expect(registro).rejects.toThrow(FALHA_GRAVAR);
+    expect(enviar).not.toHaveBeenCalled();
+    expect(meio.envio).not.toBeNull();
+    expect(await meio.envio).toEqual(resumo());
+    expect(sim.post).not.toHaveBeenCalled();
     expect(naFila()).toEqual([]);
+    expect(await quem.historicoEnvios.listar()).toEqual([]);
+    // A falha sobe uma vez, sem gravar o registro de novo; só o envio pede a trava (o registro não espera trava nenhuma).
+    expect(meio.tentativas).toBe(1);
+    expect(travas.pedidos).toEqual(comTravas ? ['omnisaude-campo-acs:envio'] : []);
+    expect(conexoesDoAcs()).toHaveLength(outraAba ? 2 : 1);
+  });
+
+  it.each(casos)('%s: com sucesso, o envio leva o registro inteiro', async (_caso, outraAba, comTravas) => {
+    const { quem } = await preparar(outraAba, comTravas);
+    const meio = envioNoMeioDoRegistro(() => quem.filaCampo.sincronizar(), true);
+    await loja.registrarNaFila(registroNovo(), 'Novo domicílio', async () => undefined);
+    expect(meio.envio).not.toBeNull();
+    expect(await meio.envio).toEqual(resumo({ enviados: 2 }));
+    expect(sim.post).toHaveBeenCalledTimes(1);
+    expect(enviadosNoPost(0).sort()).toEqual([RESPONSAVEL, DOMICILIO]);
+    expect(naFila()).toEqual([]);
+    expect((await quem.historicoEnvios.listar()).map((e) => e.clientId).sort()).toEqual([RESPONSAVEL, DOMICILIO]);
+    expect(conexoesDoAcs()).toHaveLength(outraAba ? 2 : 1);
   });
 });
 
 describe('duas abas do app do ACS com o mesmo banco do aparelho', () => {
-  /** A outra aba: cópia nova dos módulos (a ordem por aba é do módulo), com a sua conexão ao mesmo IndexedDB simulado. */
-  const abrirOutraAba = async () => {
-    vi.resetModules();
-    return { loja: await import('../src/lib/acs-store'), offline: await import('../src/lib/offline') };
-  };
-  /** Web Locks do navegador: um pedido por vez para o mesmo nome, em ordem de chegada, valendo para todas as abas. */
-  const travasDoNavegador = () => {
-    const filas = new Map<string, Promise<unknown>>();
-    return {
-      pedidos: [] as string[],
-      async request<T>(nome: string, fn: () => Promise<T>): Promise<T> {
-        this.pedidos.push(nome);
-        const antes = filas.get(nome) ?? Promise.resolve();
-        let soltar!: () => void;
-        filas.set(
-          nome,
-          antes.then(() => new Promise<void>((r) => (soltar = r))),
-        );
-        await antes;
-        try {
-          return await fn();
-        } finally {
-          soltar();
-        }
-      },
-    };
-  };
-  const conexoesDoAcs = () => fake.conexoes.filter((c) => c.name === 'omnisaude-campo');
-  const idsNaFila = () => naFila().map((i) => i.clientId);
   const segurarServidor = () => {
     let soltar!: () => void;
     const segura = new Promise<void>((r) => (soltar = r));
@@ -156,68 +256,25 @@ describe('duas abas do app do ACS com o mesmo banco do aparelho', () => {
     return soltar;
   };
 
-  // A outra aba começa um envio (a volta da rede chega a todas as abas) entre as duas gravações do registro desta.
-  const envioDaOutraAbaNoMeio = (outra: Awaited<ReturnType<typeof abrirOutraAba>>, segundaGrava: boolean) => {
-    const real = loja.filaCampo.adicionar.bind(loja.filaCampo);
-    const envio: { promessa: Promise<import('../src/lib/acs-store').ResumoEnvioAcs> | null } = { promessa: null };
-    vi.spyOn(loja.filaCampo, 'adicionar').mockImplementation(async (op, rotulo) => {
-      if (op.clientId !== UUID(2)) return real(op, rotulo);
-      envio.promessa = outra.loja.filaCampo.sincronizar();
-      await new Promise((r) => setTimeout(r, 30));
-      if (!segundaGrava) throw new offline.ErroAparelho();
-      return real(op, rotulo);
-    });
-    return envio;
-  };
-
-  it('com a trava entre abas, o envio da outra aba no meio de um registro de duas operações espera por ele: com a falha, nada vai ao servidor', async () => {
+  it('o registro não espera o envio da outra aba pendurado no servidor (o registro não pede trava nenhuma)', async () => {
     const travas = travasDoNavegador();
     vi.stubGlobal('navigator', { onLine: true, locks: travas });
-    const outra = await abrirOutraAba();
-    sim.post.mockImplementation(resposta('OK'));
-    const envio = envioDaOutraAbaNoMeio(outra, false);
-    await expect(loja.registrarNaFila([visita(UUID(1)), visita(UUID(2))], 'Novo domicílio', async () => undefined)).rejects.toBeInstanceOf(offline.ErroAparelho);
-    expect(await envio.promessa).toEqual(resumo());
-    // O responsável não foi sozinho ao servidor: salvar de novo não cria outro.
-    expect(sim.post).not.toHaveBeenCalled();
-    expect(naFila()).toEqual([]);
-    expect(await outra.loja.historicoEnvios.listar()).toEqual([]);
-    // A falha dentro da trava sobe uma vez, sem gravar de novo fora dela.
-    expect(loja.filaCampo.adicionar).toHaveBeenCalledTimes(2);
-    expect(travas.pedidos).toEqual(['omnisaude-campo-acs:fila', 'omnisaude-campo-acs:envio', 'omnisaude-campo-acs:fila']);
-    expect(conexoesDoAcs()).toHaveLength(2);
-  });
-
-  it('com a trava entre abas, o envio da outra aba no meio de um registro de duas operações espera por ele: com sucesso, leva o registro inteiro', async () => {
-    vi.stubGlobal('navigator', { onLine: true, locks: travasDoNavegador() });
-    const outra = await abrirOutraAba();
-    sim.post.mockImplementation(resposta('OK'));
-    const envio = envioDaOutraAbaNoMeio(outra, true);
-    await loja.registrarNaFila([visita(UUID(1)), visita(UUID(2))], 'Novo domicílio', async () => undefined);
-    expect(await envio.promessa).toEqual(resumo({ enviados: 2 }));
-    expect(sim.post).toHaveBeenCalledTimes(1);
-    expect((sim.post.mock.calls[0]![1] as { operacoes: OperacaoCampo[] }).operacoes.map((o) => o.clientId).sort()).toEqual([UUID(1), UUID(2)]);
-    expect(naFila()).toEqual([]);
-    expect(conexoesDoAcs()).toHaveLength(2);
-  });
-
-  it('o registro não espera o envio da outra aba pendurado no servidor: a trava dele cobre só a leitura da fila', async () => {
-    vi.stubGlobal('navigator', { onLine: true, locks: travasDoNavegador() });
     const outra = await abrirOutraAba();
     await outra.loja.filaCampo.adicionar(visita(UUID(9)), 'Visita');
     const soltar = segurarServidor();
     const envioDaOutra = outra.loja.filaCampo.sincronizar();
     await new Promise((r) => setTimeout(r, 20));
     expect(sim.post).toHaveBeenCalledTimes(1);
-    const registro = loja.registrarNaFila([visita(UUID(1)), visita(UUID(2))], 'Novo domicílio', async () => undefined).then(() => 'guardado');
+    const registro = loja.registrarNaFila(registroNovo(), 'Novo domicílio', async () => undefined).then(() => 'guardado');
     const espera = new Promise((r) => setTimeout(() => r('esperando o envio da outra aba'), 1000));
     expect(await Promise.race([registro, espera])).toBe('guardado');
-    expect(idsNaFila().sort()).toEqual([UUID(1), UUID(2), UUID(9)]);
+    expect(idsNaFila().sort()).toEqual([RESPONSAVEL, DOMICILIO, UUID(9)]);
+    expect(travas.pedidos).toEqual(['omnisaude-campo-acs:envio']);
     soltar();
     // A outra aba leu a fila antes do registro: leva só o que tinha, e o registro vai no envio seguinte.
     expect(await envioDaOutra).toEqual(resumo({ enviados: 1 }));
-    expect((sim.post.mock.calls[0]![1] as { operacoes: OperacaoCampo[] }).operacoes.map((o) => o.clientId)).toEqual([UUID(9)]);
-    expect(idsNaFila().sort()).toEqual([UUID(1), UUID(2)]);
+    expect(enviadosNoPost(0)).toEqual([UUID(9)]);
+    expect(idsNaFila().sort()).toEqual([RESPONSAVEL, DOMICILIO]);
   });
 
   it('duas abas enviando ao mesmo tempo: a segunda espera a primeira e não manda de novo o que ela levou', async () => {
@@ -236,8 +293,8 @@ describe('duas abas do app do ACS com o mesmo banco do aparelho', () => {
     expect(sim.post).toHaveBeenCalledTimes(1);
     expect(naFila()).toEqual([]);
     expect((await outra.loja.historicoEnvios.listar()).map((e) => e.clientId)).toEqual([UUID(1)]);
-    // Travas com nomes do ACS (a do envio do ACE, que segura a rede, é outra).
-    expect(new Set(travas.pedidos)).toEqual(new Set(['omnisaude-campo-acs:envio', 'omnisaude-campo-acs:fila']));
+    // Uma trava por envio, com o nome do ACS (a do envio do ACE, que segura a rede, é outra).
+    expect(travas.pedidos).toEqual(['omnisaude-campo-acs:envio', 'omnisaude-campo-acs:envio']);
     expect(conexoesDoAcs()).toHaveLength(2);
   });
 
@@ -247,9 +304,10 @@ describe('duas abas do app do ACS com o mesmo banco do aparelho', () => {
     });
     vi.stubGlobal('navigator', { onLine: true, locks: { request } });
     sim.post.mockImplementation(resposta('OK'));
-    await loja.registrarNaFila([visita(UUID(1)), visita(UUID(2))], 'Novo domicílio', async () => undefined);
+    await loja.registrarNaFila(registroNovo(), 'Novo domicílio', async () => undefined);
     expect(await loja.filaCampo.sincronizar()).toEqual(resumo({ enviados: 2 }));
-    expect(request).toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith('omnisaude-campo-acs:envio', expect.any(Function));
     expect(console.warn).toHaveBeenCalledWith('Trava entre abas indisponível', expect.any(DOMException));
     expect(naFila()).toEqual([]);
   });
@@ -263,7 +321,7 @@ describe('envio da fila do ACS com o banco do aparelho falhando', () => {
       return resposta('OK')(path, body);
     });
     const r = await loja.filaCampo.sincronizar();
-    expect(r).toEqual(resumo({ falha: 'Não foi possível guardar no aparelho: feche as outras abas do OmniSaúde e tente de novo' }));
+    expect(r).toEqual(resumo({ falha: FALHA_GRAVAR }));
     expect(naFila()).toMatchObject([{ clientId: UUID(1), status: 'PENDENTE' }]);
     // Banco de volta: o reenvio é reconhecido pelo servidor (DUPLICADA) e sai da fila.
     fake.erroNaGravacao = null;
@@ -323,7 +381,7 @@ describe('registro descartado durante o envio (nesta aba ou noutra)', () => {
 
 describe('aviso do envio (toast)', () => {
   it('falha do aparelho: diz o que houve e que nada se perde', () => {
-    expect(loja.avisoDoEnvio(resumo({ falha: 'Não foi possível guardar no aparelho: feche as outras abas do OmniSaúde e tente de novo' }), { silencioso: true, registrado: true })).toEqual({
+    expect(loja.avisoDoEnvio(resumo({ falha: FALHA_GRAVAR }), { silencioso: true, registrado: true })).toEqual({
       tipo: 'error',
       texto: 'O envio parou. Não foi possível guardar no aparelho: feche as outras abas do OmniSaúde e tente de novo. Nada se perde: o que ficou na fila vai no próximo envio, sem duplicar.',
     });
@@ -355,5 +413,90 @@ describe('descartar e tentar de novo propagam a falha do aparelho (a tela mostra
     await expect(loja.filaCampo.remover(UUID(1))).rejects.toBeInstanceOf(offline.ErroAparelho);
     fake.erroNaGravacao = null;
     expect(naFila()).toHaveLength(1);
+  });
+});
+
+describe('IndexedDB simulado (test/fake-indexeddb.ts): transações sobrepostas como no navegador', () => {
+  // Os testes acima dependem disto. O navegador põe em fila as transações de gravação com algum store em comum (a segunda
+  // só começa quando a primeira termina), e a leitura criada depois de uma gravação espera por ela. Antes, cada transação
+  // trabalhava numa cópia tirada ao ser criada, e a que confirmava por último desfazia o que a outra tinha confirmado.
+  const BANCO = 'teste-do-simulador';
+  const fim = (t: Transacao) =>
+    new Promise<'complete' | 'abort'>((resolve) => {
+      t.oncomplete = () => resolve('complete');
+      t.onabort = () => resolve('abort');
+    });
+  const ids = (linhas: unknown) => (linhas as { clientId: string }[]).map((l) => l.clientId).sort();
+  const abas = async () => {
+    fake.criar(BANCO, 1, { fila: { keyPath: 'clientId', linhas: [{ clientId: 'x' }] }, cache: { keyPath: 'key' } });
+    return [await conectar(fake, BANCO), await conectar(fake, BANCO)] as const;
+  };
+
+  it.each([
+    ['o envio criado antes', true],
+    ['o registro criado antes', false],
+  ])('duas gravações sobrepostas, %s (o envio de uma aba tira X da fila e a outra grava um registro): as duas ficam', async (_caso, envioAntes) => {
+    const [abaA, abaB] = await abas();
+    const enviar = () => {
+      const t = abaA.transaction(['fila', 'cache'], 'readwrite');
+      t.objectStore('fila').delete('x');
+      t.objectStore('cache').put({ key: 'historico', data: ['x'] });
+      return t;
+    };
+    const registrar = () => {
+      const t = abaB.transaction(['fila'], 'readwrite');
+      t.objectStore('fila').put({ clientId: 'responsavel' });
+      t.objectStore('fila').put({ clientId: 'domicilio' });
+      return t;
+    };
+    const transacoes = envioAntes ? [enviar(), registrar()] : [registrar(), enviar()];
+    expect(await Promise.all(transacoes.map(fim))).toEqual(['complete', 'complete']);
+    expect(ids(fake.linhas(BANCO, 'fila'))).toEqual(['domicilio', 'responsavel']);
+    expect(fake.linhas(BANCO, 'cache')).toEqual([{ key: 'historico', data: ['x'] }]);
+  });
+
+  it('a gravação criada depois começa quando a anterior termina e vê o que ela gravou', async () => {
+    const [abaA, abaB] = await abas();
+    const primeira = abaA.transaction(['fila'], 'readwrite');
+    primeira.objectStore('fila').put({ clientId: 'a', n: 1 });
+    const segunda = abaB.transaction(['fila'], 'readwrite');
+    const lido = segunda.objectStore('fila').get('a');
+    const ordem: string[] = [];
+    primeira.addEventListener('complete', () => ordem.push('primeira confirmada'));
+    lido.addEventListener('success', () => ordem.push('segunda leu'));
+    await Promise.all([fim(primeira), fim(segunda)]);
+    expect(ordem).toEqual(['primeira confirmada', 'segunda leu']);
+    expect(lido.result).toEqual({ clientId: 'a', n: 1 });
+  });
+
+  it('a leitura vê só estado confirmado: a criada antes de uma gravação não vê o que ela grava, a criada depois espera por ela', async () => {
+    const [abaA, abaB] = await abas();
+    const antes = abaB.transaction(['fila'], 'readonly');
+    const lidoAntes = antes.objectStore('fila').getAll();
+    const registro = abaA.transaction(['fila'], 'readwrite');
+    registro.objectStore('fila').put({ clientId: 'responsavel' });
+    registro.objectStore('fila').put({ clientId: 'domicilio' });
+    const depois = abaB.transaction(['fila'], 'readonly');
+    const lidoDepois = depois.objectStore('fila').getAll();
+    expect(await Promise.all([fim(antes), fim(registro), fim(depois)])).toEqual(['complete', 'complete', 'complete']);
+    expect(ids(lidoAntes.result)).toEqual(['x']);
+    expect(ids(lidoDepois.result)).toEqual(['domicilio', 'responsavel', 'x']);
+  });
+
+  it('a leitura criada no meio de uma gravação que é cancelada não vê nada dela', async () => {
+    const [abaA, abaB] = await abas();
+    const registro = abaA.transaction(['fila'], 'readwrite');
+    const meio: { leitura?: Transacao; lido?: { result: unknown } } = {};
+    registro.objectStore('fila').put({ clientId: 'responsavel' }).onsuccess = () => {
+      meio.leitura = abaB.transaction(['fila'], 'readonly');
+      meio.lido = meio.leitura.objectStore('fila').getAll();
+    };
+    registro.objectStore('fila').put({ clientId: 'domicilio' });
+    fake.aoGravar = ({ chave }) => (chave === 'domicilio' ? falhou() : undefined);
+    expect(await fim(registro)).toBe('abort');
+    expect(meio.leitura).toBeDefined();
+    expect(await fim(meio.leitura!)).toBe('complete');
+    expect(ids(meio.lido!.result)).toEqual(['x']);
+    expect(ids(fake.linhas(BANCO, 'fila'))).toEqual(['x']);
   });
 });
