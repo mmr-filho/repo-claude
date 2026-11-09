@@ -725,8 +725,10 @@ export function AbaPendencias({
   async function vincular() {
     setBusy('vinc');
     try {
-      const r = await api.post<{ comQuarteirao: number; semQuarteirao: number; alterados: number }>('/territorio/imoveis/vincular', {});
+      const r = await api.post<{ comQuarteirao: number; semQuarteirao: number; alterados: number; foraDoQuarteirao?: number }>('/territorio/imoveis/vincular', {});
       toast.success(`${r.comQuarteirao} imóvel(is) com quarteirão; ${r.alterados} mudaram.`);
+      // O imóvel criado pelo ACE fica no quarteirão escolhido em campo, mesmo com a posição em outro: a religação não o move.
+      if (r.foraDoQuarteirao) toast.info(`${r.foraDoQuarteirao} imóvel(is) criados pelo ACE ficaram no quarteirão escolhido em campo, com a posição em outro quarteirão. Confira e marque no mapa.`);
       if (onAlterado) onAlterado();
       else await lista.reload();
     } catch (err) {

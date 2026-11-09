@@ -53,6 +53,8 @@ elas vão para os geo campos 1 e 2 da ficha de notificação.
   domicílio e na visita do ACS; o app só manda coordenada quando há leitura nova no aparelho.
 - Endereço corrigido sem leitura nova apaga a posição que tinha vindo do endereço antigo (base do IBGE, centro de
   rua ou de bairro); GPS e marcação no mapa ficam.
+- Tirar a posição pelo cadastro (só pela API) tira também o quarteirão, menos no imóvel criado pelo ACE ainda sem
+  posição explícita: ele perde só a posição e fica no quarteirão escolhido em campo.
 - A visita do ACS com GPS num imóvel sem posição, ou com posição aproximada (centro do quarteirão, rua ou bairro),
   grava a posição como GPS em campo. O imóvel sem quarteirão é ligado ao quarteirão do ponto; o que já tem quarteirão
   (o escolhido pelo ACE em campo) só recebe a posição quando a malha liga o ponto a esse mesmo quarteirão, e fora dele
@@ -101,11 +103,17 @@ entorno.
 centro do quarteirão do imóvel (o que já tem quarteirão, como o cadastrado pelo ACE em campo) → rua sem número
 (mediana da rua, se os pontos estão concentrados) → centro do bairro ou da localidade (pelo nome ou apelido).
 Candidatos são filtrados pelo município, CEP e bairro; imóvel de outro município não recebe posição daqui, e nome de
-bairro que existe em duas localidades não posiciona ninguém. Nunca troca uma posição melhor por uma pior, e a posição
-pelo endereço nunca tira o imóvel do quarteirão que ele já tem: o ponto que cai em outro quarteirão deixa o imóvel
-como está, e a tela diz quantos ficaram assim e por quê (endereço fora do quarteirão, ou quarteirão desativado na
-malha), para a supervisão marcar no mapa. A correção do endereço tira só a posição que veio do endereço antigo; o
-quarteirão sai junto só quando foi essa posição que o ligou. Os pendentes são percorridos por ordem, em lotes de até
+bairro que existe em duas localidades não posiciona ninguém. Nunca troca uma posição melhor por uma pior. O
+quarteirão que veio da posição do próprio imóvel pelo endereço (endereço exato ou face de quadra) segue o endereço
+melhor; o que veio de outra fonte fica, e o imóvel criado pelo ACE em campo (reconhecido pelo registro da
+sincronização) fica sempre no quarteirão escolhido lá, qualquer que seja a precisão da posição. O ponto que cai em
+outro quarteirão deixa esses imóveis como estão, e a tela diz quantos ficaram assim e por quê (endereço fora do
+quarteirão escolhido em campo, ou quarteirão desativado na malha), para a supervisão marcar no mapa. A correção do
+endereço tira só a posição que veio do endereço antigo; o quarteirão sai junto só quando foi essa posição que o
+ligou, e nunca no imóvel do ACE. A religação da malha (religar todos, importar, editar o contorno) também não move o
+imóvel do ACE, e "Religar todos" diz quantos ficaram no quarteirão escolhido com a posição noutro. Só uma ação
+explícita muda o quarteirão dele: marcar no mapa, ler o GPS na tela do território ou cadastrar o domicílio com
+posição; daí em diante, a posição explícita manda. Os pendentes são percorridos por ordem, em lotes de até
 20 mil que a tela encadeia, sem repetir sempre os mesmos. Tudo roda no servidor do OmniSaúde; cada execução é
 auditada.
 

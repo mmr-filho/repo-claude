@@ -67,8 +67,9 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
   movimentos `TRATAMENTO_FOCAL`, `ENTRADA_REMESSA` e `ESTORNO_REMESSA`; produto marcado como larvicida ou adulticida
   (não sai na dispensação da farmácia).
 - `0029` só corrige dados gravados antes de duas regras da semana: a ordem com o início do campo antes da abertura
-  passa a começar na abertura, e cada cadastro de uma cadeia de unificações passa a apontar para o fim dela (um ciclo
-  fica como está). Rodar de novo não muda nada.
+  passa a começar na abertura, e cada cadastro de uma cadeia de unificações passa a apontar para o fim dela, numa
+  rodada só, qualquer que seja o tamanho da cadeia (o ciclo é reconhecido pelo caminho percorrido e fica como está,
+  com a cadeia que entra nele). Rodar de novo não muda nada.
 
 ### Ordem de bloqueio
 
@@ -84,7 +85,7 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
   num quarteirão que ela cobre, desde que os sintomas não tenham começado mais de 7 dias depois do início do campo (a
   visita feita antes disso não serve ao caso novo, que abre outra ordem). A data corrigida para trás de um caso que
   fica na ordem não fecha a ordem ao vizinho novo. O início do campo é a visita mais antiga da ordem, nunca antes da
-  abertura (relógio do aparelho atrasado).
+  abertura (visita do dia da abertura feita antes da hora dela, ou relógio do aparelho atrasado).
 - **Trava**: uma trava no banco serializa as decisões (duas notificações simultâneas não abrem duas ordens). O
   gatilho só trava se o retrato do caso mudou, e relê a notificação dentro da trava; com a trava ocupada, tenta de
   novo por cerca de 1,5 s e desiste, e a varredura completa depois.
@@ -111,7 +112,10 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
 - **Reavaliação na hora**: posicionar o imóvel (mapa do território, cadastro do domicílio, GPS da visita do ACS ou do
   ACE), geocodificar, religar imóveis à malha (vincular, editar ou desativar quarteirão, importar malha), incluir ou
   tirar alguém de uma família e unificar cadastros reavaliam na hora os casos dos moradores, também em ordem em campo. O aviso roda depois do
-  commit, e uma falha dele nunca derruba a gravação (a varredura completa).
+  commit, e uma falha dele nunca derruba a gravação (a varredura completa). A unificação trava, num comando só e na
+  ordem dos ids, os dois cadastros e os já unificados no duplicado, e relê os dois depois da trava (duas unificações no
+  mesmo cadastro não se sobrescrevem); a que o banco desfaz por impasse é repetida até 3 vezes e responde como as
+  outras (feita, cadastro não encontrado ou conflito).
 - **Caso descartado** sai da ordem; ordem sem caso e sem visita é cancelada; com visita, fica para a supervisão
   decidir.
 - **Situação**: aguardando localização, aberta, em campo (na primeira visita sincronizada; o início é a visita mais
@@ -153,16 +157,30 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
 - **Imóvel novo** no quarteirão (tipo, sequência, endereço, GPS opcional): pode ser visitado antes de sincronizar.
   Em quarteirão desativado na malha entra com aviso para a supervisão; data do aparelho com mais de um ano vira a do
   envio, com aviso. O GPS só vira a posição do imóvel quando cai no quarteirão escolhido; fora dele, o imóvel fica no
-  quarteirão escolhido, sem posição, e a supervisão recebe o aviso para posicioná-lo no mapa. Nem a religação da malha
-  nem a geocodificação pelo endereço o tiram do quarteirão escolhido; a visita seguinte com GPS dentro dele o posiciona.
-  Sem o número na base do IBGE, a geocodificação dá a ele o centro do quarteirão escolhido (o caso de um morador entra
-  no bloqueio com "conferir o imóvel"), e a correção do endereço pela recepção não o tira do quarteirão. Em quarteirão
-  desativado na malha, a geocodificação o deixa como está e diz o motivo: marcar no mapa o liga ao quarteirão novo.
+  quarteirão escolhido, sem posição, e a supervisão recebe o aviso para posicioná-lo no mapa. O sistema reconhece o
+  imóvel criado pelo ACE pelo registro da sincronização, e o quarteirão escolhido em campo fica, qualquer que seja a
+  precisão da posição: a geocodificação não o tira de lá (conta em "fora do quarteirão" ou "quarteirão desativado",
+  também quando a face de quadra o confirmou e a base nova traz o endereço exato noutro quarteirão); a correção do
+  endereço pela recepção tira só a posição que veio do endereço; tirar a posição pelo cadastro também não tira o
+  quarteirão; e a religação da malha (religar todos, importar, editar o contorno) não o move ("Religar todos" diz
+  quantos ficaram no quarteirão escolhido com a posição noutro). A visita seguinte com GPS dentro dele o posiciona. Só
+  uma ação explícita muda o quarteirão: marcar no mapa, ler o GPS na tela do território ou cadastrar o domicílio com
+  posição; daí em diante, a posição explícita manda. Sem o número na base do IBGE, a geocodificação dá a ele o centro
+  do quarteirão escolhido (o caso de um morador entra no bloqueio com "conferir o imóvel"). Em quarteirão desativado na
+  malha, a geocodificação o deixa como está e diz o motivo: marcar no mapa o liga ao quarteirão novo.
 - **Armazenamento no aparelho**: banco próprio no IndexedDB (`omnisaude-campo-ace`: fila, pacote, histórico e
   contador de tubitos), separado do banco do ACS (`omnisaude-campo`). Se o aparelho não grava (outra aba prendendo o
   banco, falta de espaço), o formulário diz "Não foi possível guardar no aparelho" e continua aberto: nada é dado
   como registrado. Cada gravação é toda ou nada, também quando uma parte não pode ser guardada na hora, e a falta de
-  espaço tem mensagem própria.
+  espaço tem mensagem própria. Tentar de novo, corrigir, aplicar no pacote o que o servidor aceitou e gravar o
+  resultado do envio (erro, falha passageira, lote recusado inteiro) leem e regravam a fila, o histórico e o pacote
+  numa transação só: o descarte feito noutra aba nesse meio-tempo vale e o registro não volta (nem conta como erro no
+  aviso), e o pacote baixado noutra aba não é sobrescrito pelo antigo. Corrigir grava o registro e o contador de
+  tubitos juntos; se o registro saiu da fila antes, nada é gravado e a tela avisa. A correção salva enquanto a versão
+  anterior do mesmo registro estava sendo enviada não se perde em silêncio: se o servidor gravou a versão anterior, o
+  registro corrigido fica na fila com o aviso "O servidor gravou a versão anterior deste registro enquanto você
+  corrigia: a correção não foi enviada. Confira e descarte o registro."; se a versão anterior voltou com erro, a
+  correção continua pendente e vai no próximo envio.
 - **Fila presa ao usuário e à lotação**: outro usuário no mesmo aparelho não envia o trabalho alheio; cada registro
   guarda a unidade da lotação ativa e só vai com ela (os de outra lotação aparecem como "Outra lotação"). Envio e
   download do pacote ficam em fila entre as abas abertas (trava do navegador), então duas abas não mandam o mesmo
@@ -177,8 +195,9 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
   operação de outra lotação é recusada. Servidor fora, sessão vencida e falta de permissão interrompem o envio com a
   mensagem.
 - **Corrigir**: o registro com erro reabre o formulário com os dados e regrava com o mesmo identificador (no imóvel
-  novo dá para trocar o quarteirão; na visita, a data). Aceito o imóvel novo, as visitas dele que tinham dado erro
-  voltam a pendente e vão juntas. Descartar o imóvel novo descarta as visitas dele, com confirmação.
+  novo dá para trocar o quarteirão; na visita, a data). A visita da fila sem ordem reabre com a ordem do quarteirão,
+  como no roteiro: a ordem volta se a correção mudar a data ou a atividade. Aceito o imóvel novo, as visitas dele que
+  tinham dado erro voltam a pendente e vão juntas. Descartar o imóvel novo descarta as visitas dele, com confirmação.
 - **Recuperação**: a visita é recuperação quando a anterior do mesmo escopo (a mesma ordem; sem ordem, o mesmo
   ciclo), pela data da visita, foi pendência; quando uma visita anterior chega depois (outro agente sem rede), a
   seguinte é refeita.
@@ -188,7 +207,17 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
   como trabalhada para um caso que ainda não era conhecido), e a visita fica como bloqueio sem ordem, com o aviso. Visita feita numa ordem que foi unificada (a que estava no pacote antes da união) vai para a ordem de
   destino, se o quarteirão do imóvel está nela, com o aviso "A ordem X foi unificada à ordem Y: visita gravada nela"; se
   o destino já foi concluído, a visita entra nele do mesmo jeito (o trabalho foi feito antes), como na ordem concluída
-  informada direto.
+  informada direto. Só a visita de bloqueio entra na ordem: a de outra atividade com a ordem informada fica sem ela
+  ("Só a visita de bloqueio entra na ordem N/AAAA: visita gravada sem a ordem"). A visita de dia anterior ao da
+  abertura da ordem informada (no fuso da prefeitura, também se essa ordem foi unificada ou cancelada depois) é
+  tratada como sem ordem informada, com um aviso só: "A data da visita é anterior à abertura da ordem N/AAAA: visita
+  gravada na ordem M/AAAA, já aberta no dia dela" ou "...: visita gravada como bloqueio sem ordem", seguido de "(confira
+  a data da visita e o relógio do aparelho)". A do mesmo dia, antes da hora da abertura, entra, com o aviso "A hora da
+  visita é anterior à abertura da ordem N/AAAA: confira a hora da visita e o relógio do aparelho".
+- **Ordem no formulário**: a ordem só vai com a atividade Bloqueio, e só então aparece "Faz parte da ordem de bloqueio
+  N". Com a data num dia anterior ao da abertura da ordem (no fuso do aparelho), a visita vai sem a ordem e a tela
+  avisa "A data é anterior à abertura da ordem N/AAAA: a visita não vai entrar nela"; o servidor ainda pode pô-la
+  numa ordem mais antiga do quarteirão, já aberta no dia dela, e o aparelho marca a casa pela ordem devolvida.
 - **GPS da visita**: nunca troca o quarteirão do imóvel. Só posiciona o imóvel ainda sem posição boa, e só quando o
   ponto cai no quarteirão do próprio imóvel (dentro dele, ou na rua a até 15 m e mais perto dele que de outro); fora
   disso, a posição fica só na visita e a supervisão recebe o aviso. A leitura que chega depois de o diálogo fechar é
@@ -314,10 +343,15 @@ a ordem 1 na ficha, a supervisora acompanha em Endemias e o ACE a encontra em Ca
   de ocorrência revela só esse quarteirão, ao custo de cerca de 25% mais quarteirões por ordem: é decisão da
   instituição (`docs/PENDENCIAS.md`).
 - A comunicação prévia das visitas, que a Lei 13.301/2016 exige para a "ausência", não é registrada no sistema.
-- O cadastro não guarda que o quarteirão do imóvel foi escolhido em campo. Se o endereço do imóvel do ACE caiu dentro
-  do quarteirão escolhido (posição pelo endereço), a correção do endereço pela recepção tira posição e quarteirão, como
-  em qualquer imóvel posicionado pelo endereço, e ele sai do pacote do ACE até ser localizado de novo (pelo endereço
-  novo ou no mapa). Guardar a origem do quarteirão pede um campo novo no cadastro.
+- Desativar um quarteirão (ou importar a malha desativando os ausentes) tira dele todos os imóveis, também os criados
+  pelo ACE, que saem do pacote até a religação os ligar pela posição; o quarteirão ligado assim passa a valer como o
+  escolhido em campo. O imóvel cadastrado pela recepção ou pelo ACS não tem quarteirão escolhido em campo: o que veio da
+  posição pelo endereço segue o endereço melhor.
+- Visitas de outra atividade que tenham entrado numa ordem antes da regra "só a visita de bloqueio entra na ordem"
+  (só nos testes desta semana) continuam nela; não há migração para tirá-las.
+- Sem a trava entre abas (navegador antigo ou fora de HTTPS), o pacote baixado noutra aba durante um envio pode
+  receber de novo o larvicida aceito, e o saldo estimado no aparelho fica menor até o próximo download. Evitar isso
+  pede que o servidor diga ao aparelho quais registros o pacote já conta.
 - O adulticida da nebulização não tem baixa por imóvel (o consumo é por carga da bomba): fica registrado onde houve
   nebulização; o controle do adulticida e os ciclos de UBV com intervalo entram com o laboratório (semana 28) ou
   depois.
