@@ -122,6 +122,11 @@ export function paraDataHoraLocal(iso?: string | null): string {
 export interface AceitoAce {
   op: OperacaoAce;
   id: string | null;
+  /**
+   * Visita: a ordem de bloqueio em que o servidor a gravou (null: sem ordem). Ausente quando o servidor não diz (versão
+   * anterior): aí vale só a ordem informada na visita.
+   */
+  ordemId?: string | null;
 }
 
 /** Imóvel novo como aparece na lista: com o id do servidor depois de aceito, ou com o clientId enquanto está na fila. */
@@ -150,7 +155,7 @@ export function imovelDaOperacao(op: ImovelOp, id: string, pendente: boolean): I
   };
 }
 
-/** Ordem ativa mais recente do pacote que contém o quarteirão (a visita de bloqueio sem ordem vai para ela). */
+/** Ordem ativa mais recente do pacote que contém o quarteirão: a do roteiro, que abre a visita nova já com ela. */
 export function ordemMaisRecente(ordens: PacoteCampo['ordens'], quarteiraoId: string): { id: string; numero: string } | null {
   const o = ordens.filter((x) => x.quarteiroes.some((q) => q.id === quarteiraoId)).sort((a, b) => Date.parse(b.abertaEm) - Date.parse(a.abertaEm))[0];
   return o ? { id: o.id, numero: o.numero } : null;
@@ -161,8 +166,9 @@ const maisNova = (atual: { em: string } | null | undefined, em: string) => !atua
 /**
  * Aplica no pacote o que o servidor aceitou, para a tela não voltar ao estado do pacote baixado antes do envio (o imóvel
  * visitado como "sem visita", o imóvel novo sumindo da lista): o imóvel novo entra com o id do servidor; a visita marca a
- * situação do imóvel no ciclo (quando a data cai no ciclo do pacote) e na ordem de bloqueio; o larvicida com lote sai do
- * saldo do lote. O pacote baixado depois do envio substitui tudo (o servidor já tem o efeito).
+ * situação do imóvel no ciclo (quando a data cai no ciclo do pacote) e na ordem de bloqueio em que o servidor a gravou
+ * (sem a resposta dele, só na informada: a de bloqueio sem ordem pode ter ficado fora da ordem aberta depois do dia dela);
+ * o larvicida com lote sai do saldo do lote. O pacote baixado depois do envio substitui tudo (o servidor já tem o efeito).
  */
 export function aplicarAceitosNoPacote(pacote: PacoteCampo, aceitos: readonly AceitoAce[]): PacoteCampo {
   if (!aceitos.length) return pacote;
@@ -171,7 +177,7 @@ export function aplicarAceitosNoPacote(pacote: PacoteCampo, aceitos: readonly Ac
   let estoque = pacote.estoque;
   const idDoImovelNovo = new Map<string, string>();
   for (const a of aceitos) if (a.op.tipo === 'IMOVEL' && a.id) idDoImovelNovo.set(a.op.clientId, a.id);
-  for (const { op, id } of aceitos) {
+  for (const { op, id, ordemId: gravadaEm } of aceitos) {
     if (op.tipo === 'IMOVEL') {
       if (id && !imoveis.some((i) => i.id === id)) imoveis = [...imoveis, imovelDaOperacao(op, id, false)];
       continue;
@@ -182,8 +188,7 @@ export function aplicarAceitosNoPacote(pacote: PacoteCampo, aceitos: readonly Ac
       const marca = { situacao: v.situacao, em: op.registradoEm };
       const dia = dataLocal(op.registradoEm);
       if (dia >= pacote.ciclo.inicio && dia <= pacote.ciclo.fim) imoveis = imoveis.map((i) => (i.id === householdId && maisNova(i.noCiclo, marca.em) ? { ...i, noCiclo: marca } : i));
-      const quarteirao = imoveis.find((i) => i.id === householdId)?.quarteiraoId ?? null;
-      const ordemId = v.ordemId ?? (v.atividade === 'BLOQUEIO' && quarteirao ? (ordemMaisRecente(ordens, quarteirao)?.id ?? null) : null);
+      const ordemId = gravadaEm !== undefined ? gravadaEm : (v.ordemId ?? null);
       if (ordemId) ordens = ordens.map((o) => (o.id === ordemId && maisNova(o.visitados[householdId], marca.em) ? { ...o, visitados: { ...o.visitados, [householdId]: marca } } : o));
     }
     for (const t of v.tratamentos ?? []) {

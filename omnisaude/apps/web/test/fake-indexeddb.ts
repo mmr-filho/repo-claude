@@ -6,7 +6,12 @@
  * correm juntas). Cada uma trabalha numa cópia tirada quando começa, confirmada só no complete (erro de requisição e
  * cancelamento desfazem tudo): nenhuma gravação se perde entre transações sobrepostas, e a leitura só vê o que foi
  * confirmado. Permite injetar as falhas que o navegador produz (erro na abertura, erro numa gravação, cancelamento na
- * confirmação) e acompanhar cada gravação e cada confirmação.
+ * confirmação) e acompanhar cada leitura, cada gravação e cada confirmação.
+ *
+ * Erros e cancelamento seguem a ordem do navegador: o put copia o valor e tira a chave na hora (lança DataCloneError ou
+ * DataError); o erro de um pedido sobe do pedido para a transação antes de ela ter erro (transaction.error só é
+ * preenchido ao cancelar); no cancelamento, cada pedido ainda não atendido recebe error com AbortError e só depois a
+ * transação recebe abort, em tarefas seguintes; abort() de transação já terminada lança InvalidStateError.
  */
 type Linha = Record<string, unknown>;
 type Ouvinte = (e: Evento) => void;
@@ -68,8 +73,24 @@ export interface GravacaoVista {
   tipo: 'put' | 'delete';
 }
 
+/** Uma leitura, como `aoLer` a recebe (chave null: getAll). */
+export interface LeituraVista {
+  banco: string;
+  store: string;
+  chave: string | null;
+}
+
+/** O que um pedido faz no store. */
+type Pedido = { tipo: 'get'; chave: string } | { tipo: 'getAll'; chave: null } | { tipo: 'put' | 'delete'; chave: string };
+
 const copia = <T>(v: T): T => (v === undefined ? v : structuredClone(v));
 const depois = (fn: () => void) => setTimeout(fn, 0);
+
+/** Chave do pedido; como no navegador, a inválida lança DataError (o app só usa texto e número). */
+function chaveValida(v: unknown): string {
+  if (typeof v === 'string' || (typeof v === 'number' && !Number.isNaN(v))) return String(v);
+  throw new DOMException('A chave informada não é válida', 'DataError');
+}
 
 class Loja {
   constructor(
@@ -78,23 +99,29 @@ class Loja {
     private readonly keyPath: string,
   ) {}
   get(chave: string) {
-    return this.tx.pedir(this.nome, null, (l) => copia(l.get(chave)));
+    this.tx.conferir(false);
+    const k = chaveValida(chave);
+    return this.tx.pedir(this.nome, { tipo: 'get', chave: k }, (l) => copia(l.get(k)));
   }
   getAll() {
-    return this.tx.pedir(this.nome, null, (l) => [...l.values()].map(copia));
+    this.tx.conferir(false);
+    return this.tx.pedir(this.nome, { tipo: 'getAll', chave: null }, (l) => [...l.values()].map(copia));
   }
   put(valor: Linha) {
-    // Como no navegador, o valor é copiado na hora do put.
+    this.tx.conferir(true);
+    // Como no navegador, o valor é copiado na hora do put (DataCloneError) e a chave sai da cópia (DataError).
     const v = copia(valor);
-    const chave = String(v[this.keyPath]);
-    return this.tx.pedir(this.nome, { chave, tipo: 'put' }, (l) => {
+    const chave = chaveValida((v as Linha | null | undefined)?.[this.keyPath]);
+    return this.tx.pedir(this.nome, { tipo: 'put', chave }, (l) => {
       l.set(chave, v);
       return chave;
     });
   }
   delete(chave: string) {
-    return this.tx.pedir(this.nome, { chave, tipo: 'delete' }, (l) => {
-      l.delete(chave);
+    this.tx.conferir(true);
+    const k = chaveValida(chave);
+    return this.tx.pedir(this.nome, { tipo: 'delete', chave: k }, (l) => {
+      l.delete(k);
       return undefined;
     });
   }
@@ -104,7 +131,8 @@ export class Transacao extends Alvo {
   error: DOMException | null = null;
   private comecou = false;
   private terminou = false;
-  private pendentes = 0;
+  /** Requisições ainda não atendidas, na ordem em que vieram: no cancelamento, cada uma recebe error com AbortError. */
+  private readonly abertas = new Set<Requisicao>();
   /** Requisições feitas antes de a transação começar: rodam quando ela começa, na ordem em que vieram. */
   private emEspera: (() => void)[] = [];
   /** Cópia de trabalho dos stores, tirada quando a transação começa (antes disso, outra ainda podia mudar o banco). */
@@ -141,25 +169,33 @@ export class Transacao extends Alvo {
   }
 
   objectStore(nome: string) {
+    if (this.terminou) throw new DOMException('Transação encerrada', 'InvalidStateError');
     if (!this.nomes.includes(nome)) throw new DOMException(`Store ${nome} fora da transação`, 'NotFoundError');
     return new Loja(this, nome, this.dados.stores.get(nome)!.keyPath);
   }
-  pedir(store: string, gravacao: Pick<GravacaoVista, 'chave' | 'tipo'> | null, fn: (linhas: Map<string, Linha>) => unknown): Requisicao {
+  /** Recusa o pedido como o navegador: transação encerrada, ou gravação em transação só de leitura. */
+  conferir(gravacao: boolean) {
     if (this.terminou) throw new DOMException('Transação encerrada', 'TransactionInactiveError');
     if (gravacao && this.modo !== 'readwrite') throw new DOMException('Transação só de leitura', 'ReadOnlyError');
+  }
+  pedir(store: string, pedido: Pedido, fn: (linhas: Map<string, Linha>) => unknown): Requisicao {
+    this.conferir(pedido.tipo === 'put' || pedido.tipo === 'delete');
     const req = new Requisicao();
-    this.pendentes += 1;
+    this.abertas.add(req);
     const rodar = () => {
       if (this.terminou) return;
-      this.pendentes -= 1;
+      this.abertas.delete(req);
       req.readyState = 'done';
-      const falha = gravacao ? (this.fake.aoGravar?.({ banco: this.banco, store, ...gravacao }) ?? this.fake.erroNaGravacao) : null;
+      let falha: DOMException | null = null;
+      if (pedido.tipo === 'put' || pedido.tipo === 'delete') falha = this.fake.aoGravar?.({ banco: this.banco, store, chave: pedido.chave, tipo: pedido.tipo }) ?? this.fake.erroNaGravacao;
+      else this.fake.aoLer?.({ banco: this.banco, store, chave: pedido.chave });
       if (falha) {
         req.error = falha;
-        if (!req.despachar('error').defaultPrevented) {
-          this.error = falha;
-          this.despachar('error');
-          this.cancelar();
+        // O mesmo evento sobe do pedido para a transação, que ainda não tem erro: o dela é preenchido ao cancelar.
+        const e = req.despachar('error');
+        this.despachar('error', e);
+        if (!e.defaultPrevented) {
+          this.cancelar(falha);
           return;
         }
       } else {
@@ -173,19 +209,34 @@ export class Transacao extends Alvo {
     return req;
   }
   abort() {
-    this.cancelar();
+    if (this.terminou) throw new DOMException('A transação já terminou', 'InvalidStateError');
+    this.cancelar(null);
   }
-  private cancelar() {
+  /**
+   * Cancela como o navegador: desfaz na hora (a cópia de trabalho é descartada) e libera as transações seguintes, e avisa
+   * em tarefas seguintes: primeiro cada pedido ainda não atendido recebe error com AbortError (que sobe para a
+   * transação), depois a transação recebe abort.
+   */
+  private cancelar(erro: DOMException | null) {
     if (this.terminou) return;
     this.encerrar();
-    this.despachar('abort');
+    this.error = erro;
+    this.emEspera = [];
+    for (const req of this.abertas)
+      depois(() => {
+        req.readyState = 'done';
+        req.result = undefined;
+        req.error = new DOMException('A transação foi cancelada', 'AbortError');
+        this.despachar('error', req.despachar('error'));
+      });
+    this.abertas.clear();
+    depois(() => this.despachar('abort'));
     Transacao.agendar(this.dados);
   }
   private talvezConfirmar() {
-    if (this.terminou || !this.comecou || this.pendentes) return;
+    if (this.terminou || !this.comecou || this.abertas.size) return;
     if (this.modo === 'readwrite' && this.fake.cancelarNaConfirmacao) {
-      this.error = new DOMException('Cota de armazenamento excedida', 'QuotaExceededError');
-      this.cancelar();
+      this.cancelar(new DOMException('Cota de armazenamento excedida', 'QuotaExceededError'));
       return;
     }
     this.encerrar();
@@ -250,6 +301,8 @@ export class FakeIndexedDB {
    * faz essa gravação falhar, e a transação é cancelada.
    */
   aoGravar: ((g: GravacaoVista) => DOMException | undefined) | null = null;
+  /** Chamada a cada leitura, dentro da transação e antes de fazê-la (o teste age entre a leitura e o que vem depois). */
+  aoLer: ((l: LeituraVista) => void) | null = null;
   /** Chamada a cada transação de gravação confirmada, com o nome do banco (o teste vê cada estado que o banco guardou). */
   aoConfirmar: ((banco: string) => void) | null = null;
 

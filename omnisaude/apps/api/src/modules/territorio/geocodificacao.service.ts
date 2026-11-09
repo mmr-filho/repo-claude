@@ -46,16 +46,20 @@ function concentrados(pts: Ponto[], raio: number): boolean {
 }
 
 /** Motivo, para a tela, dos imóveis que a geocodificação deixou como estavam por causa do quarteirão. */
-export const MOTIVO_FORA_DO_QUARTEIRAO =
-  'o endereço na base do IBGE cai fora do quarteirão que o imóvel já tem (escolhido em campo ou ligado antes), e a posição pelo endereço não troca o quarteirão. Confira e marque no mapa';
-/** O quarteirão do imóvel saiu da malha (a zona do ACE o mantém até a supervisão tirá-lo): o endereço não o substitui. */
-export const MOTIVO_QUARTEIRAO_DESATIVADO = 'o quarteirão que o imóvel tem foi desativado na malha, e a posição pelo endereço não troca o quarteirão. Marque o imóvel no mapa para ligá-lo ao quarteirão novo';
+export const MOTIVO_FORA_DO_QUARTEIRAO = 'o endereço na base do IBGE cai fora do quarteirão escolhido em campo para o imóvel, e a posição pelo endereço não troca esse quarteirão. Confira e marque no mapa';
+/** O quarteirão escolhido em campo saiu da malha (a zona do ACE o mantém até a supervisão tirá-lo): o endereço não o substitui. */
+export const MOTIVO_QUARTEIRAO_DESATIVADO =
+  'o quarteirão escolhido em campo para o imóvel foi desativado na malha, e a posição pelo endereço não troca esse quarteirão. Marque o imóvel no mapa para ligá-lo ao quarteirão novo';
+
+/** Precisões da posição pelo endereço que ligam o imóvel ao quarteirão: o quarteirão veio dessa posição. */
+const ENDERECO_LIGA_QUARTEIRAO: PrecisaoGeo[] = ['ENDERECO', 'FACE'];
 
 /**
  * Geocodificação só local (LGPD: o endereço não sai para serviços externos). Ordem: endereço com número na base do
  * IBGE (CNEFE), quadra e lote do complemento, centro do quarteirão do imóvel (o que já tem quarteirão), logradouro sem
  * número, centro do bairro ou da localidade pelo nome. Nunca troca uma posição melhor (GPS em campo, mapa) por uma
- * pior, e a posição pelo endereço nunca tira o imóvel do quarteirão que ele já tem (o escolhido pelo ACE em campo manda).
+ * pior, e a posição pelo endereço nunca tira o imóvel do quarteirão escolhido em campo (o do ACE manda). O quarteirão
+ * que veio da própria posição pelo endereço (endereço ou face de quadra) segue a posição melhor.
  */
 @Injectable()
 export class GeocodificacaoService {
@@ -135,19 +139,25 @@ export class GeocodificacaoService {
         if (!posicaoMelhorOuIgual(r.precisao, h.geoPrecision as PrecisaoGeo | null)) continue;
         // Mesma precisão: só troca quando pedida para este imóvel (endereço corrigido) e o ponto mudou.
         if (h.geoPrecision === r.precisao && h.latitude != null && (!explicito || (h.latitude === r.lat && h.longitude === r.lng))) continue;
-        // A posição pelo endereço nunca tira o imóvel do quarteirão que ele já tem (o escolhido pelo ACE em campo, sem a
-        // posição do GPS, ou o ligado antes): só vale quando o ponto cai nesse mesmo quarteirão; fora dele, o imóvel fica
-        // como está e é contado à parte, para a supervisão conferir no mapa. Imóvel sem quarteirão segue a regra de sempre.
-        // O quarteirão desativado na malha não está entre os ativos (nem no índice dos centros): nenhum ponto cai nele, nem
-        // a mediana da rua sem o número ou o centro do bairro, que não ligam quarteirão mas poriam o imóvel longe do dele.
-        // O motivo é outro, e o que resolve é ligar o imóvel ao quarteirão novo.
-        if (h.blockId && !centroBloco.has(h.blockId)) {
-          quarteiraoDesativado++;
-          continue;
-        }
-        if (h.blockId && PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao) && (await this.localizador.quarteiraoDoPonto(ctx.db, r.lat, r.lng))?.id !== h.blockId) {
-          foraDoQuarteirao++;
-          continue;
+        // O quarteirão que veio da posição pelo endereço do próprio imóvel (endereço ou face de quadra na base do IBGE)
+        // segue a posição melhor, como sempre: o endereço exato corrige o quarteirão ligado pela face de quadra, e liga ao
+        // ativo o imóvel cujo quarteirão saiu da malha. Imóvel sem quarteirão também segue a regra de sempre.
+        const doEndereco = h.latitude != null && ENDERECO_LIGA_QUARTEIRAO.includes(h.geoPrecision as PrecisaoGeo);
+        if (h.blockId && !doEndereco) {
+          // O quarteirão que veio de outro lugar (imóvel sem posição, ou com posição que não liga quarteirão: centro do
+          // quarteirão, rua, bairro) é o escolhido em campo e fica. O desativado na malha não está entre os ativos (nem no
+          // índice dos centros): nenhum ponto cai nele, nem a mediana da rua sem o número ou o centro do bairro, que não
+          // ligam quarteirão mas poriam o imóvel longe do dele. O motivo é outro: ligar o imóvel ao quarteirão novo.
+          if (!centroBloco.has(h.blockId)) {
+            quarteiraoDesativado++;
+            continue;
+          }
+          // A posição pelo endereço só vale quando o ponto cai nesse mesmo quarteirão; fora dele, o imóvel fica como está
+          // e é contado à parte, para a supervisão conferir no mapa.
+          if (PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao) && (await this.localizador.quarteiraoDoPonto(ctx.db, r.lat, r.lng))?.id !== h.blockId) {
+            foraDoQuarteirao++;
+            continue;
+          }
         }
         if (PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao)) {
           // Posição do imóvel: muda o cadastro (vai na ficha domiciliar do e-SUS).
@@ -171,8 +181,8 @@ export class GeocodificacaoService {
       analisados,
       atualizados,
       semResultado,
-      // Imóveis com quarteirão cujo endereço cai em outro quarteirão (ou fora da malha), e imóveis num quarteirão
-      // desativado na malha: ficaram como estavam.
+      // Imóveis no quarteirão escolhido em campo cujo endereço cai em outro quarteirão (ou fora da malha), e imóveis num
+      // quarteirão escolhido em campo que foi desativado na malha: ficaram como estavam.
       foraDoQuarteirao,
       quarteiraoDesativado,
       avisos: [

@@ -101,21 +101,36 @@ async function abrir(nome: string): Promise<IDBDatabase> {
   return abrirNaVersao(nome, versao);
 }
 
-/** Roda `fn` numa transação; resolve com o valor devolvido só quando a transação é confirmada. */
-function transacao<T>(db: IDBDatabase, stores: string[], modo: IDBTransactionMode, fn: (t: IDBTransaction) => () => T): Promise<T> {
+/**
+ * Roda `fn` numa transação; resolve com o valor devolvido só quando a transação é confirmada. Se `fn` lança na hora (um
+ * put com valor que não se copia, DataCloneError, ou sem chave válida, DataError), a transação é cancelada antes de
+ * rejeitar: o que já foi pedido nela não fica (o responsável sem o domicílio). `falhar` faz o mesmo de dentro do
+ * onsuccess de um pedido.
+ */
+function transacao<T>(db: IDBDatabase, stores: string[], modo: IDBTransactionMode, fn: (t: IDBTransaction, falhar: (e: unknown) => void) => () => T): Promise<T> {
   return new Promise((resolve, reject) => {
-    let t: IDBTransaction;
+    let t: IDBTransaction | undefined;
     let resultado: () => T;
+    const falhar = (e: unknown) => {
+      try {
+        t?.abort();
+      } catch {
+        // A transação já terminou: não há o que desfazer.
+      }
+      reject(erroAparelho(e));
+    };
     try {
       t = db.transaction(stores, modo);
-      resultado = fn(t);
+      resultado = fn(t, falhar);
     } catch (e) {
-      reject(erroAparelho(e));
+      falhar(e);
       return;
     }
-    t.oncomplete = () => resolve(resultado());
-    t.onerror = () => reject(erroAparelho(t.error));
-    t.onabort = () => reject(erroAparelho(t.error));
+    const tx = t;
+    tx.oncomplete = () => resolve(resultado());
+    // O erro de um pedido chega à transação antes de ela ter erro (o navegador só o preenche ao cancelar): vale o do pedido.
+    tx.onerror = (evento) => reject(erroAparelho(tx.error ?? (evento.target as IDBRequest | null)?.error ?? null));
+    tx.onabort = () => reject(erroAparelho(tx.error));
   });
 }
 
@@ -133,6 +148,11 @@ export interface BancoLocal {
   delete(store: Store, key: string): Promise<void>;
   /** Várias gravações numa transação só: todas ou nenhuma. */
   gravar(gravacoes: Gravacao[]): Promise<void>;
+  /**
+   * Lê e regrava um registro numa transação só (nada de outra aba entra entre a leitura e a gravação): `fn` recebe o que
+   * está guardado (undefined se não está) e devolve o que gravar, ou undefined para não gravar. Resolve com o que gravou.
+   */
+  atualizar<T>(store: Store, key: string, fn: (atual: T | undefined) => T | undefined): Promise<T | undefined>;
 }
 
 /**
@@ -210,6 +230,24 @@ function criarBanco(nome: string, preparar?: (db: IDBDatabase) => Promise<void>)
             }),
           )
         : Promise.resolve(),
+    atualizar: <T>(store: Store, key: string, fn: (atual: T | undefined) => T | undefined) =>
+      usar((d) =>
+        transacao(d, [store], 'readwrite', (t, falhar) => {
+          const s = t.objectStore(store);
+          const lido = s.get(key);
+          let novo: T | undefined;
+          lido.onsuccess = () => {
+            try {
+              novo = fn(lido.result as T | undefined);
+              if (novo !== undefined) s.put(novo);
+            } catch (e) {
+              // fn lançou, ou o valor novo não se copia: nada é gravado e a causa sobe.
+              falhar(e);
+            }
+          };
+          return () => novo;
+        }),
+      ),
   };
 }
 
@@ -262,7 +300,7 @@ const bancoAcs = criarBanco(BANCO_ACS);
 /**
  * Banco do ACS (app do agente comunitário). Leitura com falha devolve vazio e gravação no cache é melhor esforço (o
  * cache se baixa de novo), como antes; gravação e remoção na fila propagam a falha, e `gravar` (várias gravações numa
- * transação só, como o registro inteiro na fila) também.
+ * transação só, como o registro inteiro na fila) e `atualizar` (ler e regravar numa transação só) também.
  */
 export const local = {
   get: <T>(store: Store, key: string) =>
@@ -278,6 +316,7 @@ export const local = {
   put: (store: Store, value: unknown) => (store === 'cache' ? bancoAcs.put(store, value).catch((e) => console.warn('Cache do aparelho não gravado', e)) : bancoAcs.put(store, value)),
   delete: (store: Store, key: string) => bancoAcs.delete(store, key),
   gravar: (gravacoes: Gravacao[]) => bancoAcs.gravar(gravacoes),
+  atualizar: <T>(store: Store, key: string, fn: (atual: T | undefined) => T | undefined) => bancoAcs.atualizar<T>(store, key, fn),
 };
 
 /** Banco do ACE (app do agente de combate às endemias): tudo propaga a falha, e a tela mostra o que houve. */

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { areaM2, caixaDe, centroDe, cnsFromBase, completeCpf, localDateString, metrosPorGrau, normalizarArea, type Posicao } from '@omnisaude/shared';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { AuditService } from '../src/core/audit.service';
 import { TenantsService } from '../src/core/database';
 import { TerritorioService } from '../src/modules/territorio/territorio.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
@@ -13,7 +14,7 @@ import { pgAvailable, startTestApp, type TestApp } from './harness';
 const enabled = await pgAvailable();
 
 const DIA = 86_400_000;
-const GRADES = ['inc', 'acs', 'nova', 'falha', 'unif', 'unif2'];
+const GRADES = ['inc', 'acs', 'nova', 'falha', 'unif', 'unif2', 'cadeia'];
 
 describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da pessoa na ordem de bloqueio', () => {
   let t: TestApp;
@@ -237,5 +238,73 @@ describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da 
     expect(aberta.status).toBe('ABERTA');
     expect(aberta.blocks.map((b) => b.blockId)).toContain(bloco('unif2', 2, 2));
     expect(await ligacao(n)).toMatchObject({ householdId: casa, blockId: bloco('unif2', 2, 2), active: true });
+  });
+  it('cadeia de unificações (x em d, depois d em s): x passa a apontar para s, e o caso de x abre a ordem na hora no domicílio de s', async () => {
+    // x, sem domicílio, tem o caso de dengue; d, também sem domicílio, fica com x.
+    const n = await casoSemDomicilio('cx');
+    await novoPaciente('cd');
+    await t.http().post(`/api/patients/${pessoa.cd!.id}/merge`).set(auth(recepcao)).send({ duplicateId: pessoa.cx!.id }).expect(naoPassou);
+    expect((await ordemDoCaso(n)).status).toBe('AGUARDANDO_LOCALIZACAO');
+    // s mora num imóvel posicionado e fica com d.
+    await novoPaciente('cs');
+    const { casa } = await novaCasa(ponto('cadeia', 200, 200), pessoa.cs!.id);
+    const r = await t.http().post(`/api/patients/${pessoa.cs!.id}/merge`).set(auth(recepcao)).send({ duplicateId: pessoa.cd!.id });
+    naoPassou(r);
+    // Na hora, sem varredura: antes, x continuava unificado em d (sem família) e os joins do bloqueio, de um salto só, não
+    // chegavam ao domicílio de s; a ordem ficava aguardando a localização.
+    const aberta = await ordemDoCaso(n);
+    expect(aberta.status).toBe('ABERTA');
+    expect(aberta.blocks.map((b) => b.blockId)).toContain(bloco('cadeia', 2, 2));
+    expect(await ligacao(n)).toMatchObject({ householdId: casa, blockId: bloco('cadeia', 2, 2), active: true });
+    // Um salto só: x aponta direto para s, e o cadastro de x redireciona para s (antes, para d, já unificado).
+    expect(await db.patient.findUniqueOrThrow({ where: { id: pessoa.cx!.id } })).toMatchObject({ mergedIntoId: pessoa.cs!.id });
+    expect((await t.http().get(`/api/patients/${pessoa.cx!.id}`).set(auth(recepcao)).expect(200)).body).toMatchObject({ id: pessoa.cs!.id, redirectedFromId: pessoa.cx!.id });
+    expect(r.body.moved).toMatchObject({ mergedPatients: 1 });
+  });
+  it('duas unificações simultâneas em sentido contrário não deixam ciclo: uma passa, a outra recebe 409', async () => {
+    const a = await novoPaciente('sa');
+    const b = await novoPaciente('sb');
+    // A primeira unificação (b em a) para na auditoria, dentro da transação, com os dois cadastros já gravados; a segunda
+    // (a em b) leu os dois cadastros ainda sem unificação e espera a primeira terminar.
+    const audit = t.app.get(AuditService);
+    const record = audit.record.bind(audit);
+    let chegou!: () => void;
+    const naAuditoria = new Promise<void>((ok) => (chegou = ok));
+    let liberar!: () => void;
+    const segura = new Promise<void>((ok) => (liberar = ok));
+    let primeira = true;
+    vi.spyOn(audit, 'record').mockImplementation(async (ctx, tx, entrada) => {
+      if (entrada.action === 'paciente.unificar' && primeira) {
+        primeira = false;
+        chegou();
+        await segura;
+      }
+      return record(ctx, tx, entrada);
+    });
+    const unificar = (fica: string, sai: string) =>
+      t
+        .http()
+        .post(`/api/patients/${fica}/merge`)
+        .set(auth(recepcao))
+        .send({ duplicateId: sai })
+        .then((r) => r);
+    const ra = unificar(a, b);
+    await Promise.race([naAuditoria, ra]);
+    const rb = unificar(b, a);
+    // A segunda espera a trava da primeira no banco.
+    let esperando = false;
+    for (let i = 0; i < 60 && !esperando; i++) {
+      const [x] = await db.$queryRaw<{ n: number }[]>`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+      esperando = x!.n > 0;
+      if (!esperando) await new Promise((ok) => setTimeout(ok, 50));
+    }
+    liberar();
+    const [primeiraR, segundaR] = await Promise.all([ra, rb]);
+    expect(esperando).toBe(true);
+    // Antes: as duas passavam (cada uma com a leitura de antes da outra) e ficava o ciclo a → b → a.
+    expect([primeiraR.status, segundaR.status]).toEqual([201, 409]);
+    expect(segundaR.body).toMatchObject({ code: 'PACIENTE_UNIFICADO' });
+    expect(await db.patient.findUniqueOrThrow({ where: { id: a } })).toMatchObject({ mergedIntoId: null });
+    expect(await db.patient.findUniqueOrThrow({ where: { id: b } })).toMatchObject({ mergedIntoId: a });
   });
 });

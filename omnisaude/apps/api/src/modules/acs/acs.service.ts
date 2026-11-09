@@ -507,10 +507,13 @@ export class AcsService {
     const turno = v.turno ?? turnoDaHora(zonedParts(visitedAt, ctx.tenant.timeZone).hour);
     const microArea = v.microArea ?? household?.microArea ?? ref.lot?.microArea ?? null;
     const dec = (x: number | null | undefined) => (x === null || x === undefined ? null : x);
-    // Domicílio sem posição, ou com posição aproximada (centro de rua ou de bairro, que pede confirmação em campo),
-    // recebe a do GPS da visita e é ligado ao quarteirão (PLT-3). Leitura acima de 50 m fica só na visita.
+    // Domicílio sem posição, ou com posição aproximada (centro do quarteirão, de rua ou de bairro, que pede confirmação
+    // em campo), recebe a do GPS da visita (PLT-3). Leitura acima de 50 m fica só na visita.
     const posicaoBoa = !!household?.geoPrecision && household.latitude !== null && PRECISAO_LIGA_QUARTEIRAO.includes(household.geoPrecision as PrecisaoGeo);
-    // Fora da equipe e microárea do ACS a visita é gravada, mas a posição do imóvel não muda (mesma regra do mapa).
+    // Fora da equipe e microárea do ACS a visita é gravada, mas a posição do imóvel não muda (mesma regra do mapa). O
+    // quarteirão que o imóvel já tem (o escolhido pelo ACE em campo) manda, como no GPS da visita do ACE: o ponto só vira
+    // a posição do imóvel quando a malha o liga a esse mesmo quarteirão; fora dele, fica só na visita. Imóvel sem
+    // quarteirão recebe a posição e é ligado ao quarteirão do ponto.
     const posiciona =
       !!household &&
       !posicaoBoa &&
@@ -519,7 +522,8 @@ export class AcsService {
       v.longitude !== null &&
       v.longitude !== undefined &&
       (v.precisaoGps == null || avaliarGps(v.precisaoGps) !== 'NOVA_LEITURA') &&
-      (await this.households.noEscopoDeCampo(ctx, household.id));
+      (await this.households.noEscopoDeCampo(ctx, household.id)) &&
+      (!household.blockId || (await this.households.quarteiraoDoPonto(ctx.db, v.latitude, v.longitude))?.id === household.blockId);
     const { visitId, posicionou } = await ctx.db.$transaction(async (tx) => {
       const visit = await tx.homeVisit.create({
         data: {
@@ -553,13 +557,14 @@ export class AcsService {
       });
       let posicionou = false;
       if (posiciona) {
-        // Condicional: se alguém marcou a posição no mapa nesse meio-tempo, ela fica.
+        // Condicional: se alguém marcou a posição no mapa nesse meio-tempo, ela fica; se o quarteirão mudou, também.
         const { count } = await tx.household.updateMany({
-          where: { id: household!.id, OR: [{ latitude: null }, { geoPrecision: null }, { geoPrecision: { notIn: PRECISAO_LIGA_QUARTEIRAO } }] },
+          where: { id: household!.id, blockId: household!.blockId, OR: [{ latitude: null }, { geoPrecision: null }, { geoPrecision: { notIn: PRECISAO_LIGA_QUARTEIRAO } }] },
           data: { latitude: v.latitude, longitude: v.longitude, geoPrecision: 'GPS_CAMPO', geoSource: 'visita', geoAccuracyM: v.precisaoGps ?? null, geoAt: visitedAt },
         });
-        // Na mesma transação: o reenvio da sincronização não pode achar a visita gravada sem o resto.
-        if (count) await this.households.ligarAoQuarteirao(tx, household!.id);
+        // Na mesma transação: o reenvio da sincronização não pode achar a visita gravada sem o resto. Só o imóvel sem
+        // quarteirão é ligado pelo ponto; o que já tem quarteirão continua nele.
+        if (count && !household!.blockId) await this.households.ligarAoQuarteirao(tx, household!.id);
         posicionou = count > 0;
       }
       if (patientId && v.desfecho === '1') await tx.activeSearchCase.updateMany({ where: { patientId, status: { not: 'ENCERRADO' } }, data: { lastVisitAt: visitedAt } });

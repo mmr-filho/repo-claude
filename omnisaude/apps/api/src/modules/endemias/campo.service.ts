@@ -218,9 +218,10 @@ export class CampoAceService {
         continue;
       }
       try {
-        const r = await this.comNovasTentativas(() => (op.tipo === 'IMOVEL' ? this.aplicarImovel(ctx, op) : this.aplicarVisita(ctx, op, ids, noLote)));
+        // A visita volta com a ordem em que ficou (null: sem ordem); o imóvel, sem o campo.
+        const r = await this.comNovasTentativas<{ id: string; avisos: string[]; ordemId?: string | null }>(() => (op.tipo === 'IMOVEL' ? this.aplicarImovel(ctx, op) : this.aplicarVisita(ctx, op, ids, noLote)));
         ids.set(op.clientId, r.id);
-        resultados.push({ clientId: op.clientId, tipo: op.tipo, status: 'OK', id: r.id, erro: null, ...(r.avisos.length ? { avisos: r.avisos } : {}) });
+        resultados.push({ clientId: op.clientId, tipo: op.tipo, status: 'OK', id: r.id, erro: null, ...(r.ordemId !== undefined ? { ordemId: r.ordemId } : {}), ...(r.avisos.length ? { avisos: r.avisos } : {}) });
       } catch (err) {
         // Reenvio simultâneo (outra aba, nova tentativa com a primeira ainda em curso): a outra transação gravou primeiro.
         if (violouUnico(err)) {
@@ -246,6 +247,14 @@ export class CampoAceService {
         adiadas.add(op.clientId);
         resultados.push({ clientId: op.clientId, tipo: op.tipo, status: 'TENTAR_DE_NOVO', id: null, erro: FALHA_PASSAGEIRA });
       }
+    }
+    // A visita que já estava no servidor diz em que ordem ficou, como a gravada agora: o aparelho marca essa no pacote.
+    const jaGravadas = resultados.filter((r) => r.status === 'DUPLICADA' && r.tipo === 'VISITA_VETORIAL');
+    if (jaGravadas.length) {
+      const visitas = jaGravadas.flatMap((r) => (r.id ? [r.id] : []));
+      const gravadas = visitas.length ? await ctx.db.vectorVisit.findMany({ where: { id: { in: visitas } }, select: { id: true, orderId: true } }) : [];
+      const ordemDe = new Map(gravadas.map((v) => [v.id, v.orderId]));
+      for (const r of jaGravadas) r.ordemId = (r.id ? ordemDe.get(r.id) : undefined) ?? null;
     }
     await this.audit.recordStandalone(ctx, {
       action: 'endemias.sincronizar',
@@ -380,7 +389,7 @@ export class CampoAceService {
     const r = await ctx.db.$transaction(async (tx) => {
       // Uma visita do imóvel por vez: a recuperação depende da ordem em que as visitas dele aconteceram.
       await tx.$executeRaw`SELECT 1 FROM households WHERE id = ${h.id}::uuid FOR NO KEY UPDATE`;
-      const ordem = await this.ordemDaVisita(tx, h.blockId, v, avisos, { dataLocal, timeZone: ctx.tenant.timeZone });
+      const ordem = await this.ordemDaVisita(tx, h.blockId, v, avisos, { visitedAt, dataLocal, timeZone: ctx.tenant.timeZone });
       const escopo = { householdId, visitedAt, orderId: ordem?.id ?? null, cycle: ciclo.chave };
       const recuperacao = await this.anteriorPendente(tx, escopo);
       const visita = await tx.vectorVisit.create({
@@ -447,23 +456,24 @@ export class CampoAceService {
         entityId: visita.id,
         payload: { imovel: householdId, atividade: v.atividade, situacao: v.situacao, ordem: ordem?.id ?? null, focos: t.comFoco, tratados: t.tratados, clientId: op.clientId },
       });
-      return { id: visita.id, posicionou };
+      return { id: visita.id, posicionou, ordemId: ordem?.id ?? null };
     });
     // Depois do commit: o GPS confirmado em campo refaz o retrato dos casos dos moradores (ordem de bloqueio).
     if (r.posicionou) await this.territorio.imoveisPosicionados(ctx, [h.id]);
-    return { id: r.id, avisos };
+    return { id: r.id, avisos, ordemId: r.ordemId };
   }
 
   /**
    * Ordem de bloqueio da visita: a informada pelo aparelho, se o imóvel está nela. A unificada a outra depois que o
    * aparelho a levou (CANCELADA com mergedIntoId) leva a visita à ordem que ficou, seguindo a cadeia de uniões, se o
-   * quarteirão do imóvel está nela; senão a visita fica sem ordem, como na cancelada. Sem ordem informada, a visita de
+   * quarteirão do imóvel está nela; senão a visita fica sem ordem, como na cancelada. A visita de antes da abertura da
+   * informada fica com a hora do aparelho e ganha o aviso de relógio atrasado. Sem ordem informada, a visita de
    * bloqueio vai para a ordem ativa mais recente do quarteirão aberta até o dia dela (a mais antiga pode ser de outra
    * transmissão, com o quarteirão já trabalhado; a aberta depois do dia da visita não existia quando ela foi feita, e a
    * casa contaria como trabalhada para um caso que ainda não era conhecido). Cada ordem é lida com a linha travada (ver
    * `ordemTravada`).
    */
-  private async ordemDaVisita(tx: Tx, blockId: string | null, v: VisitaVetorialCampo, avisos: string[], dia: { dataLocal: string; timeZone: string }): Promise<OrdemDaVisita | null> {
+  private async ordemDaVisita(tx: Tx, blockId: string | null, v: VisitaVetorialCampo, avisos: string[], quando: { visitedAt: Date; dataLocal: string; timeZone: string }): Promise<OrdemDaVisita | null> {
     const temQuarteirao = async (o: OrdemDaVisita) => !!blockId && !!(await tx.blockingOrderBlock.findUnique({ where: { orderId_blockId: { orderId: o.id, blockId } }, select: { orderId: true } }));
     if (v.ordemId) {
       const informada = await this.ordemTravada(tx, v.ordemId);
@@ -471,6 +481,9 @@ export class CampoAceService {
         avisos.push('A ordem de bloqueio não existe mais: visita gravada sem a ordem');
         return null;
       }
+      // O aparelho só conhece a ordem depois da abertura: a visita de antes dela (da informada, não da que ficou na união)
+      // é relógio do aparelho atrasado. Ela fica com a hora do aparelho, e a supervisão confere.
+      if (quando.visitedAt.getTime() < informada.openedAt.getTime()) avisos.push(`A hora do aparelho é anterior à abertura da ordem ${numeroOrdem(informada)}: confira a data e a hora do aparelho`);
       let o = informada;
       for (let passo = 0; o.status === 'CANCELADA' && o.mergedIntoId && passo < MAX_UNIOES; passo++) {
         const destino = await this.ordemTravada(tx, o.mergedIntoId);
@@ -501,7 +514,7 @@ export class CampoAceService {
         orderBy: [{ openedAt: 'desc' }, { id: 'desc' }],
         select: { id: true, openedAt: true },
       });
-      const achada = ativas.find((a) => localDateString(a.openedAt, dia.timeZone) <= dia.dataLocal);
+      const achada = ativas.find((a) => localDateString(a.openedAt, quando.timeZone) <= quando.dataLocal);
       depoisDaVisita = !achada && ativas.length > 0;
       if (!achada) break;
       const o = await this.ordemTravada(tx, achada.id);

@@ -176,6 +176,11 @@ export class HouseholdsService {
     return this.localizador.vincularImovel(db, id);
   }
 
+  /** Quarteirão ativo a que a malha liga o ponto: o que o contém ou, na rua, o mais próximo até a tolerância. */
+  quarteiraoDoPonto(db: Parameters<LocalizadorService['quarteiraoDoPonto']>[0], lat: number, lng: number) {
+    return this.localizador.quarteiraoDoPonto(db, lat, lng);
+  }
+
   /**
    * Precisão da posição quando ela muda: a enviada (o app do ACS manda o raio do GPS) ou GPS em campo. Sem posição,
    * a precisão e o quarteirão saem junto (na correção do endereço, só o quarteirão que veio da posição do endereço).

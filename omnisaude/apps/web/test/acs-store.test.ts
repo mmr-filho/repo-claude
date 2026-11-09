@@ -1,6 +1,6 @@
 import type { OperacaoCampo, ResultadoSync } from '@omnisaude/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { abrirOutraAba as conectar, FakeIndexedDB, type Transacao } from './fake-indexeddb';
+import { abrirOutraAba as conectar, type Evento, FakeIndexedDB, type Transacao } from './fake-indexeddb';
 
 // Fila do app do ACS sobre o IndexedDB simulado (o de verdade é testado em offline.test.ts) e a API simulada. Cada teste
 // carrega os módulos de novo: a conexão com o banco fica guardada no módulo.
@@ -167,6 +167,20 @@ describe('registro de domicílio novo com o responsável novo: no banco do apare
     expect(idsNaFila().sort()).toEqual(segundaGrava ? [RESPONSAVEL, DOMICILIO] : []);
   });
 
+  it.each([
+    ['com valor que o aparelho não copia (DataCloneError)', (op: OperacaoCampo) => ({ ...op, anexo: () => undefined }) as unknown as OperacaoCampo],
+    ['sem chave válida (DataError)', (op: OperacaoCampo) => ({ ...op, clientId: undefined }) as unknown as OperacaoCampo],
+  ])('o put do domicílio que lança na hora (%s) cancela a transação: o responsável não fica sozinho na fila', async (_caso, estragar) => {
+    const enviar = vi.fn(async () => undefined);
+    const [responsavel, novoDomicilio] = registroNovo();
+    const registro = loja.registrarNaFila([responsavel!, estragar(novoDomicilio!)], 'Novo domicílio', enviar);
+    await expect(registro).rejects.toBeInstanceOf(offline.ErroAparelho);
+    // A leitura seguinte espera a transação do registro terminar (confirmada ou cancelada).
+    expect(await loja.filaCampo.listar()).toEqual([]);
+    expect(naFila()).toEqual([]);
+    expect(enviar).not.toHaveBeenCalled();
+  });
+
   it('a lista da fila é avisada quando o registro entra, e já o lê inteiro', async () => {
     const lidos: string[][] = [];
     const parar = loja.ouvirFila(() => lidos.push(idsNaFila().sort()));
@@ -186,6 +200,30 @@ describe('registro de domicílio novo com o responsável novo: no banco do apare
       const itens = await loja.filaCampo.listar();
       expect(itens.map((i) => i.clientId)).toEqual([UUID(9), UUID(5), UUID(1)]);
       expect(new Set(itens.map((i) => i.criadoEm)).size).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('relógio do aparelho que volta mais de 1 s (hora da rede depois de um tempo sem sinal): o item novo fica com a hora do relógio', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-07T12:00:00.000Z'));
+    try {
+      await loja.registrarNaFila([visita(UUID(1))], 'Visita', async () => undefined);
+      // Até 1 s para trás: continua depois do último item.
+      vi.setSystemTime(new Date('2026-11-07T11:59:59.500Z'));
+      await loja.registrarNaFila([visita(UUID(2))], 'Visita', async () => undefined);
+      // Uma hora para trás: a hora do relógio, e não a do último item mais 1 ms (a lista mostraria hora adiantada).
+      vi.setSystemTime(new Date('2026-11-07T11:00:00.000Z'));
+      await loja.registrarNaFila([visita(UUID(3))], 'Visita', async () => undefined);
+      await loja.registrarNaFila([visita(UUID(4))], 'Visita', async () => undefined);
+      const criadoEm = Object.fromEntries((await loja.filaCampo.listar()).map((i) => [i.clientId, i.criadoEm]));
+      expect(criadoEm).toEqual({
+        [UUID(1)]: '2026-11-07T12:00:00.000Z',
+        [UUID(2)]: '2026-11-07T12:00:00.001Z',
+        [UUID(3)]: '2026-11-07T11:00:00.000Z',
+        [UUID(4)]: '2026-11-07T11:00:00.001Z',
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -377,6 +415,58 @@ describe('registro descartado durante o envio (nesta aba ou noutra)', () => {
     expect(naFila()).toMatchObject([{ clientId: UUID(2), status: 'ERRO' }]);
     expect(naFila()).toHaveLength(1);
   });
+
+  /**
+   * A outra aba, com a conexão já aberta, descarta o item assim que esta lê o item para regravá-lo: o descarte chega
+   * entre a leitura e a gravação. Antes, as duas eram transações separadas, e a gravação desfazia o descarte.
+   */
+  const descarteNoMeio = async (clientId: string) => {
+    const outra = await abrirOutraAba();
+    await outra.loja.filaCampo.listar();
+    const meio = { descarte: null as Promise<void> | null };
+    const armar = () => {
+      fake.aoLer = ({ banco, store, chave }) => {
+        if (banco === 'omnisaude-campo' && store === 'fila' && chave === clientId) meio.descarte ??= outra.loja.filaCampo.remover(clientId);
+      };
+    };
+    return { meio, armar };
+  };
+
+  it.each([
+    ['o resultado ERRO do servidor', async (_path: string, body: { operacoes: OperacaoCampo[] }) => resposta('ERRO')(_path, body)],
+    [
+      'o lote recusado inteiro',
+      async () => {
+        throw new Error('Dados inválidos');
+      },
+    ],
+  ])('descarte noutra aba entre a leitura e a gravação do erro (%s): não é desfeito', async (_caso, responder) => {
+    await loja.filaCampo.adicionar(visita(UUID(1)), 'Visita 1');
+    await loja.filaCampo.adicionar(visita(UUID(2)), 'Visita 2');
+    const { meio, armar } = await descarteNoMeio(UUID(1));
+    sim.post.mockImplementation(async (path: string, body: { operacoes: OperacaoCampo[] }) => {
+      // A resposta chegou: a leitura do item para marcar o erro dispara o descarte da outra aba.
+      armar();
+      return responder(path, body);
+    });
+    expect(await loja.filaCampo.sincronizar()).toMatchObject({ falha: null, offline: false });
+    expect(meio.descarte).not.toBeNull();
+    await meio.descarte;
+    expect(naFila()).toMatchObject([{ clientId: UUID(2), status: 'ERRO', erro: expect.any(String) }]);
+    expect(naFila()).toHaveLength(1);
+  });
+
+  it('tentar de novo com o descarte noutra aba entre a leitura e a gravação: o descartado não volta como pendente', async () => {
+    await loja.filaCampo.adicionar(visita(UUID(1)), 'Visita 1');
+    sim.post.mockImplementation(resposta('ERRO'));
+    expect(await loja.filaCampo.sincronizar()).toEqual(resumo({ erros: 1 }));
+    const { meio, armar } = await descarteNoMeio(UUID(1));
+    armar();
+    await loja.filaCampo.tentarDeNovo(UUID(1));
+    expect(meio.descarte).not.toBeNull();
+    await meio.descarte;
+    expect(naFila()).toEqual([]);
+  });
 });
 
 describe('aviso do envio (toast)', () => {
@@ -498,5 +588,80 @@ describe('IndexedDB simulado (test/fake-indexeddb.ts): transações sobrepostas 
     expect(await fim(meio.leitura!)).toBe('complete');
     expect(ids(meio.lido!.result)).toEqual(['x']);
     expect(ids(fake.linhas(BANCO, 'fila'))).toEqual(['x']);
+  });
+
+  // Antes, o simulador preenchia o erro da transação antes de o evento do pedido chegar a ela, e escondia que a tela
+  // mostrava a mensagem geral para a cota estourada num put; e abort() avisava na hora, sem AbortError nos pedidos.
+  it('erro de pedido: o mesmo evento sobe do pedido para a transação antes de ela ter erro, preenchido só ao cancelar', async () => {
+    const [aba] = await abas();
+    const t = aba.transaction(['fila'], 'readwrite');
+    const fimT = fim(t);
+    const vistos: unknown[] = [];
+    const pedido = t.objectStore('fila').put({ clientId: 'falha' });
+    pedido.onerror = () => vistos.push(['pedido', t.error]);
+    t.onerror = (e: Evento) => vistos.push(['transação', t.error, e.target === pedido]);
+    t.addEventListener('abort', () => vistos.push(['abort', t.error?.name]));
+    fake.aoGravar = ({ chave }) => (chave === 'falha' ? new DOMException('cota', 'QuotaExceededError') : undefined);
+    expect(await fimT).toBe('abort');
+    expect(vistos).toEqual([
+      ['pedido', null],
+      ['transação', null, true],
+      ['abort', 'QuotaExceededError'],
+    ]);
+    expect(ids(fake.linhas(BANCO, 'fila'))).toEqual(['x']);
+  });
+
+  it('abort(): o aviso chega numa tarefa seguinte, e antes dele cada pedido pendente recebe error com AbortError', async () => {
+    const [abaA, abaB] = await abas();
+    const emCurso = abaA.transaction(['fila'], 'readwrite');
+    const fimEmCurso = fim(emCurso);
+    // A de B fica atrás da de A (mesmo store): os pedidos dela ainda nem começaram quando ela é cancelada.
+    const esperando = abaB.transaction(['fila'], 'readwrite');
+    const fimEsperando = fim(esperando);
+    const ordem: string[] = [];
+    const acompanhar = (nome: string, t: Transacao, pedidos: ReturnType<Transacao['pedir']>[]) => {
+      pedidos.forEach((p, i) => {
+        p.onsuccess = () => ordem.push(`${nome} pedido ${i + 1} gravou`);
+        p.onerror = () => ordem.push(`${nome} pedido ${i + 1}: ${p.error?.name}`);
+      });
+      t.onerror = (e: Evento) => ordem.push(`${nome} transação: erro do pedido ${pedidos.indexOf(e.target as ReturnType<Transacao['pedir']>) + 1}`);
+      t.addEventListener('abort', () => ordem.push(`${nome} abort (erro ${t.error})`));
+    };
+    acompanhar('B', esperando, [esperando.objectStore('fila').put({ clientId: 'b' })]);
+    acompanhar('A', emCurso, [emCurso.objectStore('fila').put({ clientId: 'a' }), emCurso.objectStore('fila').delete('x')]);
+    esperando.abort();
+    emCurso.abort();
+    ordem.push('depois de abort()');
+    expect(await Promise.all([fimEsperando, fimEmCurso])).toEqual(['abort', 'abort']);
+    expect(ordem).toEqual([
+      'depois de abort()',
+      'B pedido 1: AbortError',
+      'B transação: erro do pedido 1',
+      'B abort (erro null)',
+      'A pedido 1: AbortError',
+      'A transação: erro do pedido 1',
+      'A pedido 2: AbortError',
+      'A transação: erro do pedido 2',
+      'A abort (erro null)',
+    ]);
+    expect(() => emCurso.abort()).toThrow(expect.objectContaining({ name: 'InvalidStateError' }));
+    expect(ids(fake.linhas(BANCO, 'fila'))).toEqual(['x']);
+    // As transações seguintes andam: a gravação criada depois confirma.
+    const seguinte = abaB.transaction(['fila'], 'readwrite');
+    seguinte.objectStore('fila').put({ clientId: 'c' });
+    expect(await fim(seguinte)).toBe('complete');
+    expect(ids(fake.linhas(BANCO, 'fila'))).toEqual(['c', 'x']);
+  });
+
+  it('put que não copia o valor (DataCloneError) ou sem chave válida (DataError) lança na hora e, sem abort(), a transação confirma o resto', async () => {
+    const [aba] = await abas();
+    const t = aba.transaction(['fila'], 'readwrite');
+    const fimT = fim(t);
+    t.objectStore('fila').put({ clientId: 'responsavel' });
+    expect(() => t.objectStore('fila').put({ clientId: 'domicilio', anexo: () => undefined })).toThrow(expect.objectContaining({ name: 'DataCloneError' }));
+    expect(() => t.objectStore('fila').put({ semChave: true })).toThrow(expect.objectContaining({ name: 'DataError' }));
+    // Como no navegador: a exceção não cancela a transação (por isso o banco do aparelho cancela quando ela acontece).
+    expect(await fimT).toBe('complete');
+    expect(ids(fake.linhas(BANCO, 'fila'))).toEqual(['responsavel', 'x']);
   });
 });

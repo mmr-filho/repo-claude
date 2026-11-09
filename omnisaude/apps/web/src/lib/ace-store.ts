@@ -186,10 +186,12 @@ async function gravarResultados(ctx: ContextoAce, resultados: ResultadoSyncAce[]
     } else if (r.status === 'OK' || r.status === 'DUPLICADA') {
       saida.set(enviado.clientId, null);
       novos.push({ clientId: r.clientId, tipo: r.tipo, rotulo: enviado.rotulo, id: r.id, em: agora, ...(r.avisos?.length ? { avisos: r.avisos } : {}) });
-      aceitos.push({ op: enviado.op, id: r.id });
+      // A visita vai para o pacote na ordem em que o servidor a gravou; sem o campo (servidor de antes), na informada.
+      const aceito: AceitoAce = { op: enviado.op, id: r.id, ...(r.ordemId !== undefined ? { ordemId: r.ordemId } : {}) };
+      aceitos.push(aceito);
       // O pacote guardado não recebe de novo o que outra aba já tirou da fila e pôs no histórico (OK lá, DUPLICADA aqui):
       // ela aplicou o efeito. O descartado durante o envio não está no histórico e recebe (o servidor gravou).
-      if (item || !jaNoHistorico.has(r.clientId)) noPacote.push({ op: enviado.op, id: r.id });
+      if (item || !jaNoHistorico.has(r.clientId)) noPacote.push(aceito);
       if (r.status === 'OK') resumo.enviados++;
       else resumo.duplicados++;
       resumo.avisos += r.avisos?.length ?? 0;

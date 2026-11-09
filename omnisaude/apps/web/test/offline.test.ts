@@ -46,6 +46,39 @@ describe('gravação no aparelho (web-offline#1)', () => {
     expect(await localAce.get('cache', 'tubito:u1')).toEqual({ key: 'tubito:u1', data: 3 });
   });
 
+  it('gravação que lança na hora no meio de gravar (valor que não se copia, chave inválida): a transação é cancelada e nada fica', async () => {
+    const { localAce, ErroAparelho } = await carregar();
+    await localAce.put('cache', { key: 'tubito:u1', data: 3 });
+    for (const ruim of [item('b', { anexo: () => undefined }), item('b', { clientId: undefined })]) {
+      await expect(
+        localAce.gravar([
+          { store: 'fila', put: item('a') },
+          { store: 'cache', put: { key: 'tubito:u1', data: 4 } },
+          { store: 'fila', put: ruim },
+        ]),
+      ).rejects.toBeInstanceOf(ErroAparelho);
+      // A leitura espera a transação da gravação terminar (confirmada ou cancelada).
+      expect(await localAce.all('fila')).toEqual([]);
+      expect(await localAce.get('cache', 'tubito:u1')).toEqual({ key: 'tubito:u1', data: 3 });
+    }
+  });
+
+  it('cota estourada num pedido (e não na confirmação) volta com a mensagem de espaço, e nada fica', async () => {
+    // No navegador, o erro do pedido chega à transação antes de ela ter erro: a mensagem vem do erro do pedido.
+    const { localAce } = await carregar();
+    fake.erroNaGravacao = new DOMException('cota', 'QuotaExceededError');
+    await expect(localAce.put('fila', item('a'))).rejects.toThrow(/espaço de armazenamento acabou/);
+    await expect(
+      localAce.gravar([
+        { store: 'cache', put: { key: 'tubito:u1', data: 4 } },
+        { store: 'fila', put: item('a') },
+      ]),
+    ).rejects.toThrow(/espaço de armazenamento acabou/);
+    fake.erroNaGravacao = null;
+    expect(await localAce.all('fila')).toEqual([]);
+    expect(await localAce.all('cache')).toEqual([]);
+  });
+
   it('falha ao abrir o banco rejeita a gravação (não vira "registrado" sem gravar)', async () => {
     const { localAce, ErroAparelho } = await carregar();
     fake.falharAbertura = new DOMException('sem IndexedDB', 'UnknownError');
@@ -155,5 +188,62 @@ describe('banco do ACS', () => {
     await expect(local.get('cache', 'historico')).resolves.toBeUndefined();
     await expect(local.put('cache', { key: 'territorio' })).resolves.toBeUndefined();
     await expect(local.put('fila', { clientId: 'c' })).rejects.toBeInstanceOf(ErroAparelho);
+    await expect(local.atualizar('fila', 'c', () => ({ clientId: 'c' }))).rejects.toBeInstanceOf(ErroAparelho);
+  });
+});
+
+describe('atualizar: ler e regravar um registro numa transação só', () => {
+  interface Item {
+    clientId: string;
+    status: string;
+    erro: string | null;
+    [campo: string]: unknown;
+  }
+
+  it('grava o que fn devolve e resolve com isso; com undefined não grava', async () => {
+    const { localAce } = await carregar();
+    await localAce.put('fila', item('a'));
+    await expect(localAce.atualizar<Item>('fila', 'a', (i) => i && { ...i, status: 'ERRO', erro: 'Recusado' })).resolves.toMatchObject({ clientId: 'a', status: 'ERRO' });
+    const vistos: unknown[] = [];
+    await expect(
+      localAce.atualizar<Item>('fila', 'b', (i) => {
+        vistos.push(i);
+        return undefined;
+      }),
+    ).resolves.toBeUndefined();
+    expect(vistos).toEqual([undefined]);
+    expect(fake.linhas('omnisaude-campo-ace', 'fila')).toEqual([item('a', { status: 'ERRO', erro: 'Recusado' })]);
+  });
+
+  it('a gravação de outra aba pedida entre a leitura e a gravação fica depois dela (não é desfeita)', async () => {
+    const { localAce, BANCO_ACE } = await carregar();
+    await localAce.put('fila', item('a'));
+    const outra = await abrirOutraAba(fake, BANCO_ACE);
+    let descarte: Promise<'complete' | 'abort'> | null = null;
+    fake.aoLer = ({ chave }) => {
+      if (chave !== 'a' || descarte) return;
+      const t = outra.transaction(['fila'], 'readwrite');
+      t.objectStore('fila').delete('a');
+      descarte = new Promise((resolve) => {
+        t.oncomplete = () => resolve('complete');
+        t.onabort = () => resolve('abort');
+      });
+    };
+    await localAce.atualizar<Item>('fila', 'a', (i) => i && { ...i, status: 'ERRO' });
+    expect(await descarte).toBe('complete');
+    expect(fake.linhas(BANCO_ACE, 'fila')).toEqual([]);
+  });
+
+  it('fn que lança ou valor novo que não se copia: a transação é cancelada, rejeita com a causa e nada muda', async () => {
+    const { localAce, ErroAparelho } = await carregar();
+    await localAce.put('fila', item('a'));
+    const falha = new Error('fn falhou');
+    await expect(
+      localAce.atualizar<Item>('fila', 'a', () => {
+        throw falha;
+      }),
+    ).rejects.toMatchObject({ name: 'ErroAparelho', causa: falha });
+    await expect(localAce.atualizar<Item>('fila', 'a', (i) => i && { ...i, status: 'ERRO', anexo: () => undefined })).rejects.toBeInstanceOf(ErroAparelho);
+    expect(await localAce.get('fila', 'a')).toEqual(item('a'));
   });
 });

@@ -209,7 +209,9 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
   const varredura = async () => (await t.http().post('/api/endemias/bloqueios/varredura').set(auth(coordenador)).expect(200)).body as { avaliadas: number; erros: number };
   const config = (body: Record<string, unknown>) => t.http().put('/api/endemias/configuracao').set(auth(coordenador)).send(body).expect(200);
   const posicionar = (householdId: string, onde: Posicao) => t.http().post(`/api/territorio/imoveis/${householdId}/posicao`).set(auth(vig)).send({ lat: onde[1], lng: onde[0], origem: 'MAPA' }).expect(200);
-  const visitar = async (householdId: string, ordemId: string | null, extra: Record<string, unknown> = {}, registradoEm = new Date(Date.now() - 60_000).toISOString()) => {
+  // A hora do aparelho é a do envio: as ordens dos testes acabam de ser abertas, e a visita de antes da abertura ganha o
+  // aviso do relógio atrasado.
+  const visitar = async (householdId: string, ordemId: string | null, extra: Record<string, unknown> = {}, registradoEm = new Date().toISOString()) => {
     const op = {
       clientId: randomUUID(),
       tipo: 'VISITA_VETORIAL',

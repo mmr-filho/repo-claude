@@ -519,9 +519,17 @@ export class PatientsService {
     for (const f of fillable) if (s[f] == null && d[f] != null) fill[f] = d[f];
     if (s.racaCor === '99' && d.racaCor !== '99') fill.racaCor = d.racaCor;
     const r = await ctx.db.$transaction(async (tx) => {
+      // Os dois cadastros travados (na ordem dos ids: a unificação no sentido contrário espera, sem impasse) e conferidos
+      // de novo: outra unificação pode ter entrado depois da leitura e deixaria uma cadeia (ou um ciclo) de unificações.
+      const travados = await tx.$queryRaw<{ merged_into_id: string | null }[]>`
+        SELECT merged_into_id FROM patients WHERE id IN (${s.id}::uuid, ${d.id}::uuid) ORDER BY id FOR UPDATE`;
+      if (travados.length !== 2 || travados.some((p) => p.merged_into_id)) throw new DomainError('PACIENTE_UNIFICADO', 'Um dos cadastros acabou de ser unificado em outro: confira e tente de novo', HttpStatus.CONFLICT);
       // CPF e CNS são únicos: saem do duplicado antes de irem para o que fica.
       await tx.patient.update({ where: { id: d.id }, data: { cpf: null, cns: null, familyId: null, kinship: null, mergedIntoId: s.id, mergedAt: new Date() } });
       const moved: Record<string, number> = {};
+      // Os cadastros já unificados no duplicado passam a apontar para o que fica: a unificação é sempre de um salto só,
+      // como a seguem os joins do bloqueio, a varredura e o redirecionamento do cadastro.
+      moved.mergedPatients = (await tx.patient.updateMany({ where: { mergedIntoId: d.id }, data: { mergedIntoId: s.id } })).count;
       const where = { where: { patientId: d.id }, data: { patientId: s.id } };
       moved.allergies = (await tx.patientAllergy.updateMany(where)).count;
       moved.conditions = (await tx.patientCondition.updateMany(where)).count;

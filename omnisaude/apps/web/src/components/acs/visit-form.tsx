@@ -302,7 +302,7 @@ export function VisitForm({
                 ? 'Domicílio já tem posição no mapa'
                 : domicilio?.latitude
                   ? 'Posição aproximada (rua ou bairro): marque a posição para confirmar em campo'
-                  : 'Sem posição: o domicílio entra no mapa quando marcada'}
+                  : 'Sem posição: o domicílio entra no mapa quando marcada (o que já tem quarteirão, só se a posição cair nele)'}
           </span>
         </div>
         <Field label="Observações" htmlFor="visita-obs">

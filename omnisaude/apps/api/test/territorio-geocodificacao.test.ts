@@ -22,7 +22,7 @@ const RUA = 'Rua Sonda Geo';
 type Resultado = { clientId: string; status: string; id: string | null; avisos?: string[] };
 type Geocodificacao = { analisados: number; atualizados: number; foraDoQuarteirao: number; quarteiraoDesativado: number; avisos: string[]; porPrecisao: Record<string, number> };
 
-describe.runIf(enabled)('Território: a geocodificação por endereço não tira o imóvel do quarteirão que ele já tem', () => {
+describe.runIf(enabled)('Território: a geocodificação por endereço não tira o imóvel do quarteirão escolhido em campo; o que veio do endereço segue o endereço melhor', () => {
   let t: TestApp;
   let db: Awaited<ReturnType<TenantsService['client']>>;
   let gestora = '';
@@ -51,9 +51,11 @@ describe.runIf(enabled)('Território: a geocodificação por endereço não tira
     expect(r!.status, JSON.stringify(r)).toBe('OK');
     return r!;
   }
-  /** Endereço da base do IBGE (CNEFE, nível 1: coordenada coletada no endereço). */
-  const endereco = (numero: string, p: Posicao, rua = RUA) =>
-    db.addressPoint.create({ data: { externalId: randomUUID(), ibgeCode: ibge, street: rua, streetKey: normalizarLogradouro(rua), number: normalizarNumero(numero), latitude: p[1], longitude: p[0], level: 1 } });
+  /** Endereço da base do IBGE (CNEFE; nível 1: coordenada coletada no endereço; nível 4: face de quadra). */
+  const endereco = (numero: string, p: Posicao, rua = RUA, nivel = 1) =>
+    db.addressPoint.create({ data: { externalId: randomUUID(), ibgeCode: ibge, street: rua, streetKey: normalizarLogradouro(rua), number: normalizarNumero(numero), latitude: p[1], longitude: p[0], level: nivel } });
+  /** Imóvel da recepção, sem posição nem quarteirão. */
+  const daRecepcao = async (rua: string, numero: string) => (await t.http().post('/api/households').set(auth(recepcao)).send({ street: rua, number: numero, ibgeCode: ibge }).expect(201)).body.id as string;
   const geocodificar = async (body: Record<string, unknown>) => (await t.http().post('/api/territorio/imoveis/geocodificar').set(auth(gestora)).send(body).expect(200)).body as Geocodificacao;
 
   beforeAll(async () => {
@@ -170,5 +172,55 @@ describe.runIf(enabled)('Território: a geocodificação por endereço não tira
     // Antes: ganhava a mediana da rua (no 18), contava como localizado e a tela não dizia nada do quarteirão desativado.
     expect(geo).toMatchObject({ analisados: 1, atualizados: 0, foraDoQuarteirao: 0, quarteiraoDesativado: 1, avisos: [`1 imóvel(is) ficaram como estavam: ${MOTIVO_QUARTEIRAO_DESATIVADO}.`] });
     expect(await imovel(r.id!)).toMatchObject({ blockId: bloco['13'], latitude: null, geoPrecision: null });
+  });
+
+  it('o quarteirão que veio da face de quadra segue o endereço exato da base nova, também na geocodificação de todos os pendentes', async () => {
+    const rua = 'Rua X Geo';
+    const id = await daRecepcao(rua, '20');
+    // Face de quadra (CNEFE nível 4) na rua, a 8 m do quarteirão 9 e a 12 m do 4: o imóvel fica no 9.
+    const face = await endereco('20', ponto(300, 52), rua, 4);
+    expect(await geocodificar({ ids: [id] })).toMatchObject({ atualizados: 1, foraDoQuarteirao: 0, porPrecisao: { FACE: 1 } });
+    expect(await imovel(id)).toMatchObject({ blockId: bloco['9'], geoPrecision: 'FACE', geoSource: 'cnefe:endereco' });
+    // Com a mesma face de quadra, a rodada de todos os pendentes não muda o imóvel nem o conta à parte.
+    const antes = await geocodificar({});
+    expect(await imovel(id)).toMatchObject({ blockId: bloco['9'], geoPrecision: 'FACE' });
+
+    // A base nova traz o ponto exato do endereço (nível 1), dentro do quarteirão 4.
+    await db.addressPoint.delete({ where: { id: face.id } });
+    const exato = ponto(300, 20);
+    await endereco('20', exato, rua);
+    const geo = await geocodificar({});
+    // Antes: contava mais um "fora do quarteirão" (o 9, que veio da própria face de quadra), o imóvel continuava FACE no 9
+    // e o aviso voltava em toda rodada.
+    expect({ foraDoQuarteirao: geo.foraDoQuarteirao, quarteiraoDesativado: geo.quarteiraoDesativado }).toEqual({ foraDoQuarteirao: antes.foraDoQuarteirao, quarteiraoDesativado: antes.quarteiraoDesativado });
+    const h = await imovel(id);
+    expect(h).toMatchObject({ blockId: bloco['4'], geoPrecision: 'ENDERECO', geoSource: 'cnefe:endereco' });
+    expect(distanciaM([h.longitude!, h.latitude!], exato)).toBeLessThan(0.5);
+    // Na rodada seguinte o imóvel já não está entre os pendentes.
+    expect((await geocodificar({})).foraDoQuarteirao).toBe(antes.foraDoQuarteirao);
+    expect(await imovel(id)).toMatchObject({ blockId: bloco['4'], geoPrecision: 'ENDERECO' });
+  });
+
+  it('o quarteirão desativado que veio da face de quadra: o endereço exato da base nova liga o imóvel ao quarteirão ativo', async () => {
+    const rua = 'Rua Y Geo';
+    const id = await daRecepcao(rua, '40');
+    // Face de quadra na rua, a 4 m do quarteirão 10 (e a 16 m do 15): o imóvel fica no 10.
+    const face = await endereco('40', ponto(400, 144), rua, 4);
+    await geocodificar({ ids: [id] });
+    expect(await imovel(id)).toMatchObject({ blockId: bloco['10'], geoPrecision: 'FACE' });
+    // A malha nova tirou o quarteirão 10.
+    await db.block.update({ where: { id: bloco['10'] }, data: { active: false } });
+    const antes = await geocodificar({});
+
+    // A base nova traz o ponto exato do endereço, dentro do quarteirão 15 (ativo).
+    await db.addressPoint.delete({ where: { id: face.id } });
+    const exato = ponto(400, 175);
+    await endereco('40', exato, rua);
+    const geo = await geocodificar({});
+    // Antes: contava mais um "quarteirão desativado" e o imóvel continuava FACE no 10, fora da malha.
+    expect({ foraDoQuarteirao: geo.foraDoQuarteirao, quarteiraoDesativado: geo.quarteiraoDesativado }).toEqual({ foraDoQuarteirao: antes.foraDoQuarteirao, quarteiraoDesativado: antes.quarteiraoDesativado });
+    const h = await imovel(id);
+    expect(h).toMatchObject({ blockId: bloco['15'], geoPrecision: 'ENDERECO', geoSource: 'cnefe:endereco' });
+    expect(distanciaM([h.longitude!, h.latitude!], exato)).toBeLessThan(0.5);
   });
 });

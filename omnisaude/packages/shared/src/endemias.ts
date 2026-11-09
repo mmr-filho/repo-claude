@@ -196,6 +196,12 @@ export interface ResultadoSyncAce {
   erro: string | null;
   /** Gravado, mas com algo a conferir pela supervisão (ex.: larvicida sem saldo no lote, que fica pendente). */
   avisos?: string[];
+  /**
+   * Visita aceita (OK ou DUPLICADA): a ordem de bloqueio em que ela ficou (null: sem ordem), a que o aparelho marca no
+   * pacote. Pode não ser a informada (unificada a outra, cancelada) e, sem ordem informada, é a que o servidor achou pelo
+   * dia da visita. No DUPLICADA, a da visita já gravada. Não vem no imóvel nem do servidor de antes da regra.
+   */
+  ordemId?: string | null;
 }
 
 /** Instante do registro; data ilegível vai para o fim. */

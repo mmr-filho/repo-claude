@@ -38,7 +38,7 @@ const ponto = (x: number, y: number) => desloca(O, x, y);
 const em = (minAtras: number, base = Date.now()) => new Date(base - minAtras * 60_000).toISOString();
 const A1_TRATADO = { A1: { inspecionados: 1, comFoco: 0, eliminados: 0, tratados: 1 } };
 
-type Resultado = { clientId: string; tipo: string; status: string; id: string | null; erro: string | null; avisos?: string[] };
+type Resultado = { clientId: string; tipo: string; status: string; id: string | null; erro: string | null; avisos?: string[]; ordemId?: string | null };
 
 describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correções da revisão da semana 26)', () => {
   let t: TestApp;
@@ -632,10 +632,14 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     const [r240] = await resultados(ace, [v240]);
     expect(r240!.avisos?.join(' ')).toMatch(/já estava concluída/);
     expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'CONCLUIDA', startedAt: new Date(await visitedAt(v240)) });
-    // A de antes da abertura (relógio do aparelho atrasado) entra na ordem, mas o início fica na abertura.
+    // A de antes da abertura (relógio do aparelho atrasado) entra na ordem, com a hora do aparelho e o aviso para conferir
+    // o relógio, mas o início fica na abertura.
     const v360 = bloqueio(360);
-    expect((await resultados(ace, [v360]))[0]!.status).toBe('OK');
-    expect((await db.vectorVisit.findUniqueOrThrow({ where: { clientId: v360.clientId } })).orderId).toBe(ordem);
+    expect((await resultados(ace, [v360]))[0]).toMatchObject({
+      status: 'OK',
+      avisos: [`A hora do aparelho é anterior à abertura da ordem ${await numeroDa(ordem)}: confira a data e a hora do aparelho`, `A ordem ${await numeroDa(ordem)} já estava concluída: a visita entrou nela`],
+    });
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { clientId: v360.clientId } })).toMatchObject({ orderId: ordem, visitedAt: new Date(v360.registradoEm) });
     expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'CONCLUIDA', startedAt: new Date(base - 300 * 60_000) });
   });
 
@@ -748,16 +752,17 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     expect((await resultados(ace, [v2]))[0]).toMatchObject({ status: 'OK', avisos: [`A ordem ${await numeroDa(o2)} foi unificada à ordem ${await numeroDa(o1)}, que já estava concluída: visita gravada nela`] });
     expect((await daVisita(v2)).orderId).toBe(o1);
     expect(await ordem(o1)).toMatchObject({ status: 'CONCLUIDA', startedAt: (await daVisita(v2)).visitedAt });
-    // A que ficou não tem o quarteirão do imóvel: como antes, a visita fica sem ordem.
-    const outra = await novaOrdem(bloco['5']!, 'ABERTA');
-    const o4 = await novaOrdem(bloco['25']!, 'ABERTA');
+    // A que ficou não tem o quarteirão do imóvel: como antes, a visita fica sem ordem. As ordens também foram abertas
+    // antes das visitas (a visita de antes da abertura da informada ganha o aviso do relógio do aparelho).
+    const outra = await novaOrdem(bloco['5']!, 'ABERTA', abertas);
+    const o4 = await novaOrdem(bloco['25']!, 'ABERTA', abertas);
     await unir(o4, outra);
     const v3 = bloqueio(o4, 20);
     expect((await resultados(ace, [v3]))[0]).toMatchObject({ status: 'OK', avisos: [`A ordem ${await numeroDa(o4)} foi cancelada: visita gravada sem a ordem`] });
     expect((await daVisita(v3)).orderId).toBeNull();
     expect((await ordem(outra)).status).toBe('ABERTA');
     // Cadeia que não termina (dado inconsistente): a visita para no limite de passos e fica sem ordem.
-    const o5 = await novaOrdem(bloco['25']!, 'ABERTA');
+    const o5 = await novaOrdem(bloco['25']!, 'ABERTA', abertas);
     await unir(o5, o5);
     const v4 = bloqueio(o5, 10);
     expect((await resultados(ace, [v4]))[0]).toMatchObject({ status: 'OK', avisos: [`A ordem ${await numeroDa(o5)} foi cancelada: visita gravada sem a ordem`] });
@@ -777,8 +782,10 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
 
   it('a visita que chega durante a união espera a trava da ordem e entra na ordem que ficou', async () => {
     const casa = await novoImovel(bloco['25']!);
-    const ficou = await novaOrdem(bloco['25']!, 'ABERTA');
-    const levada = await novaOrdem(bloco['25']!, 'ABERTA');
+    // Abertas antes da visita, que é de 5 min atrás (a de antes da abertura ganharia o aviso do relógio do aparelho).
+    const abertas = new Date(Date.now() - 3600_000);
+    const ficou = await novaOrdem(bloco['25']!, 'ABERTA', abertas);
+    const levada = await novaOrdem(bloco['25']!, 'ABERTA', abertas);
     const c = await pgc();
     try {
       await c.query('BEGIN');
@@ -805,6 +812,101 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
       await c.query('ROLLBACK').catch(() => undefined);
       await c.end();
     }
+  });
+
+  it('a visita aceita diz em que ordem ficou, no OK e no DUPLICADA: o aparelho marca essa no pacote, não a mais recente', async () => {
+    const de = (rs: Resultado[], op: { clientId: string }) => rs.find((r) => r.clientId === op.clientId);
+    // Quarteirão 20, com duas ordens ativas: a antiga, aberta há 10 dias, e a recente, há 2 dias. O ACE ficou sem rede e
+    // fez visitas de bloqueio sem ordem; o pacote baixado agora já traz a recente.
+    const antiga = await novaOrdem(bloco['20']!, 'EM_CAMPO', new Date(Date.now() - 10 * 86_400_000));
+    const recente = await novaOrdem(bloco['20']!, 'ABERTA', new Date(Date.now() - 2 * 86_400_000));
+    const casa = await novoImovel(bloco['20']!);
+    const semOrdem = (minAtras: number) => visita(casa, { atividade: 'BLOQUEIO', situacao: 'FECHADO' }, minAtras);
+    const cinco = semOrdem(5 * 24 * 60);
+    const vinte = semOrdem(20 * 24 * 60);
+    const hoje = semOrdem(10);
+    const rotina = visita(casa, { atividade: 'LI', situacao: 'FECHADO' }, 5);
+    const ok = await resultados(ace, [cinco, vinte, hoje, rotina]);
+    // A de 5 dias é da antiga (a recente não existia); a de 20 dias, de nenhuma; a de hoje, da recente; a rotina, de nenhuma.
+    expect(de(ok, cinco)).toMatchObject({ status: 'OK', ordemId: antiga });
+    expect(de(ok, vinte)).toMatchObject({ status: 'OK', ordemId: null, avisos: ['A ordem de bloqueio deste quarteirão foi aberta depois do dia da visita: visita gravada como bloqueio sem ordem'] });
+    expect(de(ok, hoje)).toMatchObject({ status: 'OK', ordemId: recente });
+    expect(de(ok, rotina)).toMatchObject({ status: 'OK', ordemId: null });
+    // O reenvio (resposta perdida) diz a ordem da visita já gravada.
+    const dup = await resultados(ace, [cinco, vinte, hoje, rotina]);
+    for (const [op, ordemId] of [
+      [cinco, antiga],
+      [vinte, null],
+      [hoje, recente],
+      [rotina, null],
+    ] as const)
+      expect(de(dup, op)).toMatchObject({ status: 'DUPLICADA', ordemId });
+
+    // Quarteirão 15: a ordem informada foi unificada à que ficou, ou cancelada, depois que o aparelho a levou.
+    const abertas = new Date(Date.now() - 3 * 3600_000);
+    const ficou = await novaOrdem(bloco['15']!, 'ABERTA', abertas);
+    const levada = await novaOrdem(bloco['15']!, 'ABERTA', abertas);
+    const cancelada = await novaOrdem(bloco['15']!, 'ABERTA', abertas);
+    await unir(levada, ficou);
+    await db.blockingOrder.update({ where: { id: cancelada }, data: { status: 'CANCELADA', cancelledAt: new Date(), cancelReason: 'Epidemia: a ação passa a ser por área' } });
+    const casa15 = await novoImovel(bloco['15']!);
+    const naOrdem = (ordemId: string, minAtras: number) => visita(casa15, { atividade: 'BLOQUEIO', situacao: 'FECHADO', ordemId }, minAtras);
+    const naLevada = naOrdem(levada, 30);
+    const naCancelada = naOrdem(cancelada, 20);
+    const naQueFicou = naOrdem(ficou, 10);
+    const informadas = await resultados(ace, [naLevada, naCancelada, naQueFicou]);
+    expect(de(informadas, naLevada)).toMatchObject({ status: 'OK', ordemId: ficou });
+    expect(de(informadas, naCancelada)).toMatchObject({ status: 'OK', ordemId: null, avisos: [`A ordem ${await numeroDa(cancelada)} foi cancelada: visita gravada sem a ordem`] });
+    expect(de(informadas, naQueFicou)).toMatchObject({ status: 'OK', ordemId: ficou });
+    const reenvio = await resultados(ace, [naLevada, naCancelada, naQueFicou]);
+    for (const [op, ordemId] of [
+      [naLevada, ficou],
+      [naCancelada, null],
+      [naQueFicou, ficou],
+    ] as const)
+      expect(de(reenvio, op)).toMatchObject({ status: 'DUPLICADA', ordemId });
+    // Reenvio ao mesmo tempo (outra aba) e reenvio que não passa mais na conferência: também dizem a ordem da gravada.
+    const outraAba = naOrdem(levada, 8);
+    const juntos = await Promise.all([resultados(ace, [outraAba]), resultados(ace, [outraAba])]);
+    expect(juntos.map(([r]) => r!.status).sort()).toEqual(['DUPLICADA', 'OK']);
+    expect(juntos.map(([r]) => r!.ordemId)).toEqual([ficou, ficou]);
+    const invalida = { ...naLevada, visita: { ...naLevada.visita, observacoes: 'x'.repeat(1001) } };
+    expect((await resultados(ace, [invalida]))[0]).toMatchObject({ status: 'DUPLICADA', ordemId: ficou });
+    // O imóvel novo não tem ordem: o campo não vem.
+    const [doImovel] = await resultados(ace, [imovelOp(bloco['15']!)]);
+    expect(doImovel!.status).toBe('OK');
+    expect(doImovel).not.toHaveProperty('ordemId');
+  });
+
+  it('visita informada com a hora do aparelho antes da abertura da informada: fica com a hora do aparelho e ganha o aviso do relógio', async () => {
+    // A que ficou foi aberta há 6 h; a informada, há 3 h, foi unificada a ela. O aviso é pela abertura da informada, que o
+    // aparelho levou no pacote, e leva o número dela.
+    const ficou = await novaOrdem(bloco['11']!, 'ABERTA', new Date(Date.now() - 6 * 3600_000));
+    const levada = await novaOrdem(bloco['11']!, 'ABERTA', new Date(Date.now() - 3 * 3600_000));
+    const cancelada = await novaOrdem(bloco['11']!, 'ABERTA', new Date(Date.now() - 3 * 3600_000));
+    await unir(levada, ficou);
+    await db.blockingOrder.update({ where: { id: cancelada }, data: { status: 'CANCELADA', cancelledAt: new Date(), cancelReason: 'Epidemia: a ação passa a ser por área' } });
+    const casa = await novoImovel(bloco['11']!);
+    const relogio = (n: string) => `A hora do aparelho é anterior à abertura da ordem ${n}: confira a data e a hora do aparelho`;
+    // 4 h atrás: antes da abertura da informada (3 h), depois da abertura da que ficou (6 h).
+    const atrasada = visita(casa, { atividade: 'BLOQUEIO', situacao: 'FECHADO', ordemId: levada }, 4 * 60);
+    expect((await resultados(ace, [atrasada]))[0]).toMatchObject({
+      status: 'OK',
+      ordemId: ficou,
+      avisos: [relogio(await numeroDa(levada)), `A ordem ${await numeroDa(levada)} foi unificada à ordem ${await numeroDa(ficou)}: visita gravada nela`],
+    });
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { clientId: atrasada.clientId } })).toMatchObject({ orderId: ficou, visitedAt: new Date(atrasada.registradoEm) });
+    // Na cancelada, a visita fica sem ordem e o aviso do relógio vem do mesmo jeito.
+    const naCancelada = visita(casa, { atividade: 'BLOQUEIO', situacao: 'FECHADO', ordemId: cancelada }, 5 * 60);
+    expect((await resultados(ace, [naCancelada]))[0]).toMatchObject({
+      status: 'OK',
+      ordemId: null,
+      avisos: [relogio(await numeroDa(cancelada)), `A ordem ${await numeroDa(cancelada)} foi cancelada: visita gravada sem a ordem`],
+    });
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { clientId: naCancelada.clientId } })).toMatchObject({ orderId: null, visitedAt: new Date(naCancelada.registradoEm) });
+    // Depois da abertura da informada: sem o aviso.
+    const emDia = visita(casa, { atividade: 'BLOQUEIO', situacao: 'FECHADO', ordemId: levada }, 60);
+    expect((await resultados(ace, [emDia]))[0]).toMatchObject({ status: 'OK', ordemId: ficou, avisos: [`A ordem ${await numeroDa(levada)} foi unificada à ordem ${await numeroDa(ficou)}: visita gravada nela`] });
   });
 
   it('remessas ao mesmo tempo: lote novo em duas guias entra pelas duas; a mesma guia duas vezes, uma só', async () => {

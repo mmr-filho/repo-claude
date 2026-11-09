@@ -710,8 +710,9 @@ export function AbaPendencias({
       );
       // A posição pelo endereço não troca o quarteirão que o imóvel já tem (o escolhido pelo ACE em campo): os que ficaram
       // como estavam continuam na lista, e o motivo diz o que fazer.
-      if (r.foraDoQuarteirao) toast.info(`${r.foraDoQuarteirao} imóvel(is) ficaram como estavam: o endereço na base do IBGE cai fora do quarteirão que o imóvel já tem. Confira e marque no mapa.`);
-      if (r.quarteiraoDesativado) toast.info(`${r.quarteiraoDesativado} imóvel(is) ficaram como estavam: o quarteirão deles foi desativado na malha. Marque o imóvel no mapa para ligá-lo ao quarteirão novo.`);
+      if (r.foraDoQuarteirao) toast.info(`${r.foraDoQuarteirao} imóvel(is) ficaram como estavam: o endereço na base do IBGE cai fora do quarteirão escolhido em campo para o imóvel. Confira e marque no mapa.`);
+      if (r.quarteiraoDesativado)
+        toast.info(`${r.quarteiraoDesativado} imóvel(is) ficaram como estavam: o quarteirão escolhido em campo para eles foi desativado na malha. Marque o imóvel no mapa para ligá-lo ao quarteirão novo.`);
       if (onAlterado) onAlterado();
       else await lista.reload();
     } catch (err) {

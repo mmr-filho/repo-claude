@@ -108,8 +108,8 @@ export const filaCampo = {
     avisar();
   },
   async tentarDeNovo(clientId: string) {
-    const item = await local.get<ItemFila>('fila', clientId);
-    if (item) await local.put('fila', { ...item, status: 'PENDENTE', erro: null });
+    // Lê e grava numa transação só: o descartado noutra aba nesse meio-tempo não volta como pendente.
+    await local.atualizar<ItemFila>('fila', clientId, (item) => (item ? { ...item, status: 'PENDENTE', erro: null } : undefined));
     avisar();
   },
   /**
@@ -183,13 +183,12 @@ export async function registrarNaFila(ops: OperacaoCampo[], rotulo: string, envi
 
 /**
  * Marca o erro do servidor no registro que ainda está na fila, e diz se marcou: o descartado durante o envio (nesta aba ou
- * noutra) não volta para a fila com o erro, como no app do ACE.
+ * noutra) não volta para a fila com o erro, como no app do ACE. Lê e grava numa transação só: o descarte de outra aba não
+ * entra entre a leitura e a gravação (antes, a gravação desfazia o descarte).
  */
 async function marcarErro(clientId: string, erro: string | null): Promise<boolean> {
-  const atual = await local.get<ItemFila>('fila', clientId);
-  if (!atual) return false;
-  await local.put('fila', { ...atual, status: 'ERRO', erro } satisfies ItemFila);
-  return true;
+  const marcado = await local.atualizar<ItemFila>('fila', clientId, (atual) => (atual ? { ...atual, status: 'ERRO', erro } : undefined));
+  return marcado !== undefined;
 }
 
 /**
@@ -207,12 +206,16 @@ async function gravarNaFila(ops: OperacaoCampo[], rotulo: string): Promise<ItemF
 
 /** Último instante dado a um item da fila nesta aba. */
 let ultimoInstante = 0;
+/** Quanto o relógio pode estar atrás do último instante e os itens novos ainda irem depois dele. */
+const FOLGA_DO_RELOGIO_MS = 1000;
 /**
- * Instantes para os itens novos, sempre depois do último dado nesta aba: a lista da fila (pelo criadoEm) mostra o registro
- * na ordem das operações e depois dos anteriores, mesmo no mesmo milissegundo.
+ * Instantes para os itens novos, depois do último dado nesta aba: a lista da fila (pelo criadoEm) mostra o registro na
+ * ordem das operações e depois dos anteriores, mesmo no mesmo milissegundo. Se o relógio voltou mais que a folga (a hora
+ * da rede depois de um tempo sem sinal), vale a hora do relógio: os itens novos não ficam com a hora adiantada.
  */
 function instantes(n: number): string[] {
-  const inicio = Math.max(Date.now(), ultimoInstante + 1);
+  const agora = Date.now();
+  const inicio = ultimoInstante - agora <= FOLGA_DO_RELOGIO_MS ? Math.max(agora, ultimoInstante + 1) : agora;
   ultimoInstante = inicio + n - 1;
   return Array.from({ length: n }, (_, i) => new Date(inicio + i).toISOString());
 }

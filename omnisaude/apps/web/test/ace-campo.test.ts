@@ -63,7 +63,7 @@ const pacoteBase = (): PacoteCampo => ({
   servidorEm: '2026-11-07T08:00:00Z',
 });
 
-const visita = (clientId: string, extra: Partial<VisitaOp> & { visita?: Partial<VisitaOp['visita']> } = {}): VisitaOp => {
+const visita = (clientId: string, extra: Omit<Partial<VisitaOp>, 'visita'> & { visita?: Partial<VisitaOp['visita']> } = {}): VisitaOp => {
   const { visita: v, ...resto } = extra;
   return {
     tipo: 'VISITA_VETORIAL',
@@ -172,11 +172,42 @@ describe('efeito no pacote do que o servidor aceitou', () => {
     expect(p.estoque[0]!.saldo).toBe(97.5);
   });
 
-  it('a visita de bloqueio sem ordem vai para a ordem mais recente do quarteirão; fora do ciclo não marca o ciclo', () => {
-    const p = aplicarAceitosNoPacote(pacoteBase(), [{ op: visita('v1', { registradoEm: '2026-10-30T12:00:00Z', visita: { atividade: 'BLOQUEIO' } }), id: 'vv1' }]);
-    expect(p.ordens.find((o) => o.id === 'o-nova')!.visitados.h1).toBeDefined();
-    expect(p.ordens.find((o) => o.id === 'o-antiga')!.visitados.h1).toBeUndefined();
+  // Antes, a visita de bloqueio sem ordem ia para a ordem mais recente do pacote, mesmo aberta depois do dia dela (o
+  // servidor a grava na ordem aberta até o dia da visita, ou sem ordem): a casa aparecia visitada na ordem nova.
+  it('a visita de bloqueio sem ordem marca a ordem em que o servidor a gravou, não a mais recente do pacote; fora do ciclo não marca o ciclo', () => {
+    // Sem rede, o ACE visitou em 3/11, antes da abertura da o-nova (5/11): o servidor gravou na o-antiga.
+    const dia3 = visita('v1', { registradoEm: '2026-11-03T12:00:00Z', visita: { atividade: 'BLOQUEIO' } });
+    let p = aplicarAceitosNoPacote(pacoteBase(), [{ op: dia3, id: 'vv1', ordemId: 'o-antiga' }]);
+    expect(p.ordens.find((o) => o.id === 'o-antiga')!.visitados.h1).toEqual({ situacao: 'TRABALHADO', em: '2026-11-03T12:00:00Z' });
+    expect(p.ordens.find((o) => o.id === 'o-nova')!.visitados.h1).toBeUndefined();
+    // De antes das duas (30/10, fora do ciclo): gravada como bloqueio sem ordem; nem as ordens nem o ciclo marcam a casa.
+    const dia30 = visita('v2', { registradoEm: '2026-10-30T12:00:00Z', visita: { atividade: 'BLOQUEIO' } });
+    p = aplicarAceitosNoPacote(pacoteBase(), [{ op: dia30, id: 'vv2', ordemId: null }]);
+    expect(p.ordens.map((o) => o.visitados.h1)).toEqual([undefined, undefined]);
     expect(p.imoveis[0]!.noCiclo).toBeNull();
+  });
+
+  it('a informada unificada a outra marca a ordem que ficou; a cancelada, gravada sem ordem, não marca nenhuma', () => {
+    const naNova = visita('v1', { visita: { atividade: 'BLOQUEIO', ordemId: 'o-nova' } });
+    // A o-nova foi unificada à o-antiga depois do download do pacote: a visita ficou na o-antiga.
+    let p = aplicarAceitosNoPacote(pacoteBase(), [{ op: naNova, id: 'vv1', ordemId: 'o-antiga' }]);
+    expect(p.ordens.find((o) => o.id === 'o-antiga')!.visitados.h1).toEqual({ situacao: 'TRABALHADO', em: '2026-11-07T12:00:00Z' });
+    expect(p.ordens.find((o) => o.id === 'o-nova')!.visitados.h1).toBeUndefined();
+    // A o-nova foi cancelada: a visita ficou sem ordem; só o ciclo marca a casa.
+    p = aplicarAceitosNoPacote(pacoteBase(), [{ op: naNova, id: 'vv1', ordemId: null }]);
+    expect(p.ordens.map((o) => o.visitados.h1)).toEqual([undefined, undefined]);
+    expect(p.imoveis[0]!.noCiclo).toEqual({ situacao: 'TRABALHADO', em: '2026-11-07T12:00:00Z' });
+  });
+
+  it('sem a ordem na resposta (servidor de antes), vale só a informada: a de bloqueio sem ordem não marca ordem nenhuma', () => {
+    const semOrdem = visita('v1', { registradoEm: '2026-11-03T12:00:00Z', visita: { atividade: 'BLOQUEIO' } });
+    let p = aplicarAceitosNoPacote(pacoteBase(), [{ op: semOrdem, id: 'vv1' }]);
+    expect(p.ordens.map((o) => o.visitados.h1)).toEqual([undefined, undefined]);
+    expect(p.imoveis[0]!.noCiclo).toEqual({ situacao: 'TRABALHADO', em: '2026-11-03T12:00:00Z' });
+    const informada = visita('v2', { visita: { atividade: 'BLOQUEIO', ordemId: 'o-antiga' } });
+    p = aplicarAceitosNoPacote(pacoteBase(), [{ op: informada, id: 'vv2' }]);
+    expect(p.ordens.find((o) => o.id === 'o-antiga')!.visitados.h1).toEqual({ situacao: 'TRABALHADO', em: '2026-11-07T12:00:00Z' });
+    expect(p.ordens.find((o) => o.id === 'o-nova')!.visitados.h1).toBeUndefined();
   });
 
   it('não regride: visita mais antiga não apaga a mais nova, e reaplicar o imóvel novo não duplica', () => {

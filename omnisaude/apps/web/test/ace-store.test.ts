@@ -312,6 +312,41 @@ describe('pacote do aparelho depois do envio (web-offline#2, web-offline#10)', (
     expect(guardado!.data.estoque[0]!.saldo).toBe(48);
   });
 
+  it('a visita entra no pacote guardado na ordem em que o servidor a gravou (OK e DUPLICADA), não na mais recente do quarteirão', async () => {
+    const ordem = (id: string, numero: string, abertaEm: string): PacoteCampo['ordens'][number] => ({
+      id,
+      numero,
+      status: 'EM_CAMPO',
+      abertaEm,
+      raioM: 150,
+      conferirImovel: false,
+      quarteiroes: [{ id: 'q1', ocorrencia: true }],
+      visitados: {},
+    });
+    const base = pacote();
+    const comOrdens: PacoteCampo = {
+      ...base,
+      ordens: [ordem('o-antiga', '1/2026', '2026-11-01T10:00:00Z'), ordem('o-nova', '2/2026', '2026-11-05T10:00:00Z')],
+      imoveis: [...base.imoveis, { ...base.imoveis[0]!, id: 'h2', sequencia: '2', endereco: 'Rua Exemplo, 102' }],
+    };
+    sim.stores.cache.set('pacote:ace:un-a:u1', { key: 'pacote:ace:un-a:u1', data: comOrdens, savedAt: '2026-11-07T08:00:00Z' });
+    // Sem rede, o ACE fez em 3/11 visitas de bloqueio sem ordem; o pacote, baixado depois, já traz a o-nova (aberta em 5/11).
+    const bloqueio = (n: number, householdId: string) => visita(UUID(n), { householdId, registradoEm: '2026-11-03T12:00:00Z', visita: { atividade: 'BLOQUEIO', situacao: 'TRABALHADO' } });
+    await filaAce.adicionar(bloqueio(1, 'h1'), ctxA, 'Visita 1');
+    await filaAce.adicionar(bloqueio(2, 'h2'), ctxA, 'Visita 2');
+    // O servidor gravou a primeira na o-antiga; a segunda já estava gravada (resposta perdida), sem ordem.
+    sim.post.mockImplementation(resposta((op) => (op.clientId === UUID(1) ? { ordemId: 'o-antiga' } : { status: 'DUPLICADA', ordemId: null })));
+    const r = await filaAce.sincronizar(ctxA);
+    expect(r).toMatchObject({ enviados: 1, duplicados: 1 });
+    expect(r.aceitos.map((a) => [a.op.clientId, a.ordemId])).toEqual([
+      [UUID(1), 'o-antiga'],
+      [UUID(2), null],
+    ]);
+    const ordens = (await pacoteAce.guardado(ctxA))!.data.ordens;
+    expect(ordens.find((o) => o.id === 'o-antiga')!.visitados).toEqual({ h1: { situacao: 'TRABALHADO', em: '2026-11-03T12:00:00Z' } });
+    expect(ordens.find((o) => o.id === 'o-nova')!.visitados).toEqual({});
+  });
+
   it('descartado durante o envio e aceito pelo servidor: o pacote guardado recebe o efeito uma vez (ninguém mais aplicou)', async () => {
     sim.stores.cache.set('pacote:ace:un-a:u1', { key: 'pacote:ace:un-a:u1', data: pacote(), savedAt: '2026-11-07T08:00:00Z' });
     await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
