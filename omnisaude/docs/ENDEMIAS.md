@@ -180,7 +180,15 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
   anterior do mesmo registro estava sendo enviada não se perde em silêncio: se o servidor gravou a versão anterior, o
   registro corrigido fica na fila com o aviso "O servidor gravou a versão anterior deste registro enquanto você
   corrigia: a correção não foi enviada. Confira e descarte o registro."; se a versão anterior voltou com erro, a
-  correção continua pendente e vai no próximo envio.
+  correção continua pendente e vai no próximo envio. Sem a resposta do envio (sem rede, prazo, servidor fora, aba
+  fechada no meio), o registro lembra a versão que foi: se o agente o corrige e o envio seguinte volta "já estava no
+  servidor", o servidor ficou com a versão anterior, que entra no histórico e no pacote (com o larvicida dela), e a
+  correção fica com o mesmo aviso. O lote recusado inteiro antes de o servidor processá-lo (lote inválido, sessão
+  vencida, sem permissão, limite de envios) não conta como envio sem resposta, quando o navegador tem a trava entre
+  abas. O registro com a versão anterior gravada
+  só tem "Descartar" na aba Fila: ele sai da lista do quarteirão (o pacote já tem o imóvel do servidor), não marca a
+  casa nem conta o larvicida de novo, e descartá-lo não leva as visitas que citam o imóvel (o servidor as grava no
+  imóvel da versão gravada).
 - **Fila presa ao usuário e à lotação**: outro usuário no mesmo aparelho não envia o trabalho alheio; cada registro
   guarda a unidade da lotação ativa e só vai com ela (os de outra lotação aparecem como "Outra lotação"). Envio e
   download do pacote ficam em fila entre as abas abertas (trava do navegador), então duas abas não mandam o mesmo
@@ -196,8 +204,10 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
   mensagem.
 - **Corrigir**: o registro com erro reabre o formulário com os dados e regrava com o mesmo identificador (no imóvel
   novo dá para trocar o quarteirão; na visita, a data). A visita da fila sem ordem reabre com a ordem do quarteirão,
-  como no roteiro: a ordem volta se a correção mudar a data ou a atividade. Aceito o imóvel novo, as visitas dele que
-  tinham dado erro voltam a pendente e vão juntas. Descartar o imóvel novo descarta as visitas dele, com confirmação.
+  como no roteiro: a ordem volta se a correção mudar a data ou a atividade. A visita que o formulário mandou para uma
+  ordem mais antiga do quarteirão reabre com ela e continua nela, também se a data corrigida passar da abertura da mais
+  recente (a ordem segue válida no servidor). Aceito o imóvel novo, as visitas dele que tinham dado erro voltam a
+  pendente e vão juntas. Descartar o imóvel novo descarta as visitas dele, com confirmação.
 - **Recuperação**: a visita é recuperação quando a anterior do mesmo escopo (a mesma ordem; sem ordem, o mesmo
   ciclo), pela data da visita, foi pendência; quando uma visita anterior chega depois (outro agente sem rede), a
   seguinte é refeita.
@@ -215,9 +225,12 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
   a data da visita e o relógio do aparelho)". A do mesmo dia, antes da hora da abertura, entra, com o aviso "A hora da
   visita é anterior à abertura da ordem N/AAAA: confira a hora da visita e o relógio do aparelho".
 - **Ordem no formulário**: a ordem só vai com a atividade Bloqueio, e só então aparece "Faz parte da ordem de bloqueio
-  N". Com a data num dia anterior ao da abertura da ordem (no fuso do aparelho), a visita vai sem a ordem e a tela
-  avisa "A data é anterior à abertura da ordem N/AAAA: a visita não vai entrar nela"; o servidor ainda pode pô-la
-  numa ordem mais antiga do quarteirão, já aberta no dia dela, e o aparelho marca a casa pela ordem devolvida.
+  N". Com a data num dia anterior ao da abertura da ordem (no fuso do aparelho), o formulário segue a regra do servidor
+  para a visita sem ordem: ela vai para a ordem do pacote mais recente do mesmo quarteirão já aberta no dia dela (no
+  empate da abertura, a mesma que o servidor escolheria), com o aviso "A data é anterior à abertura da ordem N/AAAA: a visita
+  vai para a ordem M/AAAA, já aberta no dia dela", e a lista dessa ordem mostra a casa na fila. Sem nenhuma, a visita
+  vai sem ordem, com o aviso "A data é anterior à abertura da ordem N/AAAA: a visita não vai entrar nela"; o servidor
+  ainda pode pô-la numa ordem mais antiga fora do pacote, e o aparelho marca a casa pela ordem devolvida.
 - **GPS da visita**: nunca troca o quarteirão do imóvel. Só posiciona o imóvel ainda sem posição boa, e só quando o
   ponto cai no quarteirão do próprio imóvel (dentro dele, ou na rua a até 15 m e mais perto dele que de outro); fora
   disso, a posição fica só na visita e a supervisão recebe o aviso. A leitura que chega depois de o diálogo fechar é
@@ -317,6 +330,9 @@ a ordem 1 na ficha, a supervisora acompanha em Endemias e o ACE a encontra em Ca
     o imóvel do quarteirão escolhido, o centro do quarteirão vem antes da rua sem número, a correção do endereço não
     tira o quarteirão e o quarteirão desativado tem motivo próprio.
   - `campo-pacote-grande.test.ts`: pacote do ACE com 33 mil imóveis e zonas com 33 mil quarteirões.
+  - Os testes que gravam visitas de minutos atrás esperam passar a virada do ciclo bimestral (pacote grande) ou a
+    meia-noite (gestão e bloqueio) quando ela está a menos de um minuto, e os que conferem a hora da visita abrem a
+    ordem uma hora antes: os da semana 26 não dependem da hora em que rodam.
   - `territorio-escopo-campo.test.ts`: fila de pendências, mapa e pacote do ACE e da supervisão com mais de 32.766
     quarteirões nas zonas.
   - `endemias-campo.test.ts`: catálogo de insumos, GPS da visita e do imóvel novo que não trocam o quarteirão,
@@ -326,11 +342,13 @@ a ordem 1 na ficha, a supervisora acompanha em Endemias e o ACE a encontra em Ca
     imóvel fechado, titular e quarteirões da zona.
   - `esus-ledger.test.ts`: o mesmo registro não sai em dois lotes; reprocessar regera só os registros da ficha.
 - Web, sem navegador (`apps/web/test`, com IndexedDB simulado): banco do ACE separado e migrado, falha ao guardar,
-  fila por lotação, TENTAR_DE_NOVO, Corrigir, duas abas do ACE e do ACS, registro do ACS inteiro ou nada e as regras
-  das telas de gestão.
+  fila por lotação, TENTAR_DE_NOVO, Corrigir, duas abas do ACE e do ACS, registro do ACS inteiro ou nada, correção
+  salva durante o envio da versão anterior e resposta perdida (a versão que o servidor gravou vale no histórico e no
+  pacote), lote recusado inteiro antes de ser processado, o registro com a versão anterior gravada na tela, a ordem do
+  formulário em vários fusos e as regras das telas de gestão.
 - Revisão adversarial da entrega: 59 achados (55 confirmados, 1 plausível, 3 refutados), corrigidos em seis frentes
-  e conferidos por três verificadores; mais três rodadas, cada correção com o seu verificador, fecharam o que eles
-  ainda acharam.
+  e conferidos por três verificadores; mais oito rodadas, cada correção com o seu verificador, fecharam o que eles
+  ainda acharam. O que sobrou, de baixa gravidade, está em Pontos de atenção.
 - No navegador: ver `docs/STATUS.md` (Verificação feita).
 
 ## Pontos de atenção e fora do escopo
@@ -351,7 +369,18 @@ a ordem 1 na ficha, a supervisora acompanha em Endemias e o ACE a encontra em Ca
   (só nos testes desta semana) continuam nela; não há migração para tirá-las.
 - Sem a trava entre abas (navegador antigo ou fora de HTTPS), o pacote baixado noutra aba durante um envio pode
   receber de novo o larvicida aceito, e o saldo estimado no aparelho fica menor até o próximo download. Evitar isso
-  pede que o servidor diga ao aparelho quais registros o pacote já conta.
+  pede que o servidor diga ao aparelho quais registros o pacote já conta. Sem a trava, o lote recusado inteiro também
+  conta como envio sem resposta (outra aba pode ter mandado a mesma versão ao mesmo tempo): se o agente corrige o
+  registro e a resposta da correção se perde, o aparelho a toma pela versão anterior e pede o descarte.
+- Com duas abas do app abertas, a que não fez o envio só vê o efeito dele (imóvel novo, visita, larvicida) ao reabrir
+  a tela ou baixar o pacote; o registro com a versão anterior gravada já sai da lista dela antes disso.
+- A ordem que o formulário escolhe vai informada, e o servidor então não aplica a regra da visita sem ordem: uma ordem
+  do quarteirão aberta depois dela e fora do pacote do agente não recebe a visita; se a escolhida foi concluída depois
+  do download, a visita entra nela, como em toda ordem concluída informada (cancelada, a visita fica sem ordem).
+- Se o servidor levar mais que o prazo do aparelho (20 s) para gravar um registro e a correção dele for recusada nesse
+  meio-tempo, o aparelho esquece que a versão anterior pode ter sido gravada; se depois a resposta da correção
+  seguinte também se perder, o aparelho a dá como gravada, e o histórico e o pacote ficam com ela enquanto o servidor
+  tem a anterior. Fechar isso pede uma trava por registro no servidor.
 - O adulticida da nebulização não tem baixa por imóvel (o consumo é por carga da bomba): fica registrado onde houve
   nebulização; o controle do adulticida e os ciclos de UBV com intervalo entram com o laboratório (semana 28) ou
   depois.

@@ -390,6 +390,30 @@ describe('pacote do aparelho depois do envio (web-offline#2, web-offline#10)', (
     expect(item(UUID(1))).toBeUndefined();
   });
 
+  // A visita lida antes de o lote anterior aceitar o imóvel novo dela vai citando o clientId dele. Antes, o pacote guardado
+  // (que recebe cada lote à parte) não achava a casa nova: ela ficava "sem visita" até o próximo download.
+  it.each<[string, () => Promise<unknown>]>([
+    ['na fila', async () => undefined],
+    ['descartada durante o POST dela', () => filaAce.remover(UUID(600))],
+  ])('a visita do imóvel novo aceito no lote anterior do mesmo envio (%s) marca a casa nova no pacote guardado', async (_caso, noMeio) => {
+    sim.stores.cache.set('pacote:ace:un-a:u1', { key: 'pacote:ace:un-a:u1', data: pacote(), savedAt: '2026-11-07T08:00:00Z' });
+    await filaAce.adicionar(imovel(UUID(500)), ctxA, 'Imóvel novo');
+    for (let n = 1; n <= 99; n++) await filaAce.adicionar(visita(UUID(n), { visita: { atividade: 'LI_T', situacao: 'TRABALHADO' } }), ctxA, `Visita ${n}`);
+    // A visita do imóvel novo é a mais recente: vai no 2º lote da rodada, lida antes de o 1º lote aceitar o imóvel.
+    await filaAce.adicionar(visita(UUID(600), { householdId: null, householdClientId: UUID(500), registradoEm: '2026-11-07T13:00:00Z' }), ctxA, 'Visita no imóvel novo');
+    const responder = resposta();
+    sim.post.mockImplementation(async (path: string, body: { operacoes: OperacaoAce[] }) => {
+      if (sim.post.mock.calls.length === 2) await noMeio();
+      return responder(path, body);
+    });
+    expect(await filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 101, falha: null });
+    expect(sim.post.mock.calls.map((c) => (c[1] as { operacoes: OperacaoAce[] }).operacoes.length)).toEqual([100, 1]);
+    const guardado = (await pacoteAce.guardado(ctxA))!.data;
+    expect(guardado.imoveis.find((i) => i.id === `id-${UUID(500)}`)!.noCiclo).toEqual({ situacao: 'TRABALHADO', em: '2026-11-07T13:00:00Z' });
+    expect(guardado.estoque[0]!.saldo).toBe(48);
+    expect(item(UUID(600))).toBeUndefined();
+  });
+
   it('o download do pacote espera o envio em andamento e tem prazo', async () => {
     await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
     let liberar!: () => void;
@@ -525,6 +549,52 @@ describe('pacote do aparelho depois do envio (web-offline#2, web-offline#10)', (
       // Uma conexão por aba com o mesmo banco.
       expect(fake.conexoes).toHaveLength(2);
     });
+
+    it('sem a API de travas, o lote recusado inteiro numa aba não tira a marca com que a outra contou: a DUPLICADA da correção ainda é da versão anterior', async () => {
+      vi.stubGlobal('navigator', { onLine: true });
+      const abaA = await abrirAba();
+      const { ApiError: ApiErrorDeA } = await import('@/lib/api');
+      const abaB = await abrirAba();
+      const { ApiError: ApiErrorDeB } = await import('@/lib/api');
+      const gravadas = new Map<string, OperacaoAce>();
+      const grava = (body: { operacoes: OperacaoAce[] }) => ({
+        resultados: body.operacoes.map((op) => {
+          const status = gravadas.has(op.clientId) ? 'DUPLICADA' : 'OK';
+          if (status === 'OK') gravadas.set(op.clientId, op);
+          return { clientId: op.clientId, tipo: op.tipo, status, id: `id-${op.clientId}`, erro: null };
+        }),
+      });
+      let soltarA!: () => void;
+      const presoA = new Promise<void>((r) => (soltarA = r));
+      sim.post.mockImplementation(async (_path: string, body: { operacoes: OperacaoAce[] }) => {
+        const n = sim.post.mock.calls.length;
+        // 1º POST (aba A, que marcou o registro): fica no ar e volta 429, sem o servidor processá-lo.
+        if (n === 1) {
+          await presoA;
+          throw new ApiErrorDeA(429, 'Muitas requisições');
+        }
+        // 2º POST (aba B, que viu a marca de A e não marcou de novo): o servidor grava, e a resposta se perde.
+        if (n === 2) {
+          grava(body);
+          throw new ApiErrorDeB(0, 'Sem conexão com o servidor.');
+        }
+        return grava(body);
+      });
+      const envioA = abaA.filaAce.sincronizar(ctxA);
+      await vi.waitFor(() => expect(sim.post).toHaveBeenCalledTimes(1), { timeout: 5000 });
+      expect(await abaB.filaAce.sincronizar(ctxA)).toMatchObject({ falha: 'rede' });
+      soltarA();
+      expect(await envioA).toMatchObject({ falha: 'limite' });
+      expect(fake.linhas(BANCO, 'fila')).toMatchObject([{ status: 'PENDENTE', semResposta: { versao: 0 } }]);
+      // A correção (3 g) vai e volta DUPLICADA: o servidor ficou com a versão anterior (2 g).
+      const corrigida = visita(UUID(1), { registradoEm: '2026-11-07T12:30:00Z', visita: { atividade: 'LI_T', situacao: 'TRABALHADO', tratamentos: [{ produtoId: 'bti', loteId: 'l-bti', quantidade: 3, depositos: 1 }] } });
+      await abaA.filaAce.corrigir(UUID(1), corrigida, 'Visita corrigida');
+      expect(await abaA.filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 0, duplicados: 1, erros: 1 });
+      expect(gravadas.get(UUID(1))?.registradoEm).toBe('2026-11-07T12:00:00Z');
+      expect((await abaA.historicoAce.listar('u1')).map((h) => h.rotulo)).toEqual(['Visita']);
+      expect(saldoGuardado()).toBe(48);
+      expect(fake.linhas(BANCO, 'fila')).toMatchObject([{ status: 'ERRO', rotulo: 'Visita corrigida', versao: 1, versaoGravada: 0 }]);
+    });
   });
 });
 
@@ -600,15 +670,23 @@ describe('outra aba no meio de ler e regravar a fila ou o pacote: tudo numa tran
     expect(await aba.contadorTubito.ler('u1')).toBe(tubito);
   });
 
+  // A falha passageira não diz se a versão enviada foi gravada: o item fica com a marca do envio sem resposta, posta antes
+  // do POST (R8B). O ERRO a apaga (o servidor confere o clientId antes de recusar). O lote recusado inteiro antes de o
+  // servidor processá-lo só apaga a que o próprio POST pôs com a trava entre abas; aqui, sem ela, a marca fica.
+  const enviadaSemResposta = () => ({ semResposta: { versao: 0, op: naFilaDoApp(2).op, rotulo: 'Visita 2' } });
   it.each<[string, (aba: Aba, body: { operacoes: OperacaoAce[] }) => unknown, Partial<ItemFilaAce>]>([
     ['o resultado ERRO', (_aba, body) => resposta(() => ({ status: 'ERRO', id: null, erro: 'Recusado' }))('', body), { status: 'ERRO', erro: 'Recusado' }],
-    ['o resultado TENTAR_DE_NOVO', (_aba, body) => resposta(() => ({ status: 'TENTAR_DE_NOVO', id: null, erro: 'Falha passageira' }))('', body), { status: 'PENDENTE', adiado: 'Falha passageira' }],
+    [
+      'o resultado TENTAR_DE_NOVO',
+      (_aba, body) => resposta(() => ({ status: 'TENTAR_DE_NOVO', id: null, erro: 'Falha passageira' }))('', body),
+      { status: 'PENDENTE', adiado: 'Falha passageira', ...enviadaSemResposta() },
+    ],
     [
       'o lote recusado inteiro',
       (aba) => {
         throw new aba.ApiErrorDaAba(400, 'Envie no máximo 100 operações por vez', 'LOTE_GRANDE');
       },
-      { status: 'ERRO', erro: 'Envie no máximo 100 operações por vez' },
+      { status: 'ERRO', erro: 'Envie no máximo 100 operações por vez', ...enviadaSemResposta() },
     ],
   ])('descarte noutra aba entre a leitura da fila e a gravação de %s: não é desfeito, e o outro item fica com o resultado', async (_caso, responder, comoFica) => {
     criarBanco([naFilaDoApp(1), naFilaDoApp(2)]);
@@ -751,6 +829,33 @@ describe('correção salva durante o envio da versão anterior do mesmo registro
   const guardarPacote = () => sim.stores.cache.set(CHAVE, { key: CHAVE, data: pacote(), savedAt: '2026-11-07T08:00:00Z' });
   const saldoGuardado = async () => (await pacoteAce.guardado(ctxA))!.data.estoque[0]!.saldo;
   const rotulosNoHistorico = async () => (await historicoAce.listar('u1')).map((h) => h.rotulo);
+  /** Servidor idempotente: grava a primeira versão de cada clientId que chega e responde DUPLICADA às seguintes. */
+  const servidorQueGrava = () => {
+    const gravadas = new Map<string, OperacaoAce>();
+    return {
+      gravadas,
+      responder: (body: Corpo) => ({
+        resultados: body.operacoes.map((op) => {
+          const status = gravadas.has(op.clientId) ? 'DUPLICADA' : 'OK';
+          if (status === 'OK') gravadas.set(op.clientId, op);
+          return { clientId: op.clientId, tipo: op.tipo, status, id: `id-${op.clientId}`, erro: null };
+        }),
+      }),
+    };
+  };
+  type Servidor = ReturnType<typeof servidorQueGrava>;
+  const semConexao = (): never => {
+    throw new ApiError(0, 'Sem conexão com o servidor. Verifique a rede e tente de novo.');
+  };
+  /** O servidor grava e responde; a resposta dos POSTs `perdidos` (pelo número, a partir de 1) não chega ao aparelho. */
+  const perdendo =
+    (servidor: Servidor, perdidos: number[], perder: (resposta: unknown) => unknown = semConexao) =>
+    (body: Corpo) => {
+      const r = servidor.responder(body);
+      return perdidos.includes(sim.post.mock.calls.length) ? perder(r) : r;
+    };
+  /** Registradas em cada POST, na ordem: mostra qual versão foi em cada envio. */
+  const horasEnviadas = () => sim.post.mock.calls.map((c) => (c[1] as Corpo).operacoes.map((o) => o.registradoEm));
 
   it.each(['OK', 'DUPLICADA'] as const)('nesta aba, %s da versão enviada: ela fica no histórico e no pacote; a correção fica na fila com o erro, e reenviá-la não grava nada', async (status) => {
     guardarPacote();
@@ -1029,6 +1134,456 @@ describe('correção salva durante o envio da versão anterior do mesmo registro
       expect(naFila()).toEqual([corrigidaComErro()]);
       expect((await aba.historicoAce.listar('u1')).map((h) => h.rotulo)).toEqual(['Visita']);
       expect(saldoNoBanco()).toBe(48);
+    });
+
+    // A resposta da versão anterior se perde depois de o servidor gravá-la (R8B). A marca do envio sem resposta é gravada
+    // antes do POST: a outra aba a vê e, com a DUPLICADA da correção, sabe que o servidor ficou com a versão anterior.
+    it('a resposta da versão anterior se perde (o servidor a gravou) com a correção salva noutra aba durante o POST: o envio da outra aba fica com o erro da versão anterior', async () => {
+      criarBanco(naFilaDoApp());
+      const aba = await abrirAba();
+      const outra = await abrirAba();
+      const { envio, soltar } = await enviarPreso(() => aba.filaAce.sincronizar(ctxA), perdendo(servidorQueGrava(), [1]));
+      await outra.filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+      soltar();
+      expect(await envio).toMatchObject({ falha: 'rede', enviados: 0, erros: 0, restantes: 1 });
+      const depoisDaPerda = naFila();
+      expect(await outra.filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 0, duplicados: 1, erros: 1, restantes: 0, falha: null });
+      expect(horasEnviadas()).toEqual([['2026-11-07T12:00:00Z'], ['2026-11-07T12:30:00Z']]);
+      expect(naFila()).toEqual([corrigidaComErro()]);
+      expect((await outra.historicoAce.listar('u1')).map((h) => h.rotulo)).toEqual(['Visita']);
+      expect(saldoNoBanco()).toBe(48);
+      expect(depoisDaPerda).toMatchObject([{ status: 'PENDENTE', versao: 1, rotulo: 'Visita corrigida', semResposta: { versao: 0, rotulo: 'Visita' } }]);
+    });
+
+    it('sem a trava, a outra aba envia a correção com o POST da versão anterior no ar: vê a marca posta antes dele, e a DUPLICADA da correção fica com o erro (a resposta da anterior se perde)', async () => {
+      criarBanco(naFilaDoApp());
+      const aba = await abrirAba();
+      const outra = await abrirAba();
+      const servidor = servidorQueGrava();
+      // O servidor grava a versão anterior assim que o 1º POST chega; a resposta dele fica presa e se perde.
+      let perder!: () => void;
+      const presa = new Promise<void>((r) => (perder = r));
+      sim.post.mockImplementation(async (_path: string, body: Corpo) => {
+        const primeiro = sim.post.mock.calls.length === 1;
+        const r = servidor.responder(body);
+        if (!primeiro) return r;
+        await presa;
+        return semConexao();
+      });
+      const envio = aba.filaAce.sincronizar(ctxA);
+      await vi.waitFor(() => expect(sim.post).toHaveBeenCalledTimes(1), { timeout: 5000 });
+      await outra.filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+      const r = await outra.filaAce.sincronizar(ctxA);
+      expect(r).toMatchObject({ enviados: 0, duplicados: 1, erros: 1, falha: null });
+      expect(r.aceitos.map((a) => a.op.registradoEm)).toEqual(['2026-11-07T12:00:00Z']);
+      perder();
+      expect(await envio).toMatchObject({ falha: 'rede', enviados: 0, erros: 0 });
+      expect(naFila()).toEqual([corrigidaComErro()]);
+      expect((await aba.historicoAce.listar('u1')).map((h) => h.rotulo)).toEqual(['Visita']);
+      expect(saldoNoBanco()).toBe(48);
+    });
+  });
+
+  describe('a resposta da versão anterior se perde depois de o servidor gravá-la (R8B)', () => {
+    // O agente corrige o registro durante o envio da versão anterior (ou depois dele), e a resposta desse envio se perde
+    // depois de o servidor gravá-la. Antes, nada no aparelho lembrava a versão enviada: no envio seguinte, a correção
+    // voltava DUPLICADA e saía da fila como enviada, com o rótulo dela no histórico e o larvicida dela (3 g) no pacote; o
+    // servidor tinha ficado com a anterior (2 g).
+    const marcaDaAnterior = { versao: 0, rotulo: 'Visita', op: { registradoEm: '2026-11-07T12:00:00Z' } };
+
+    it.each<[string, (resposta: unknown) => unknown, ResumoSyncAce['falha']]>([
+      ['sem conexão', semConexao, 'rede'],
+      [
+        'prazo do envio',
+        () => {
+          throw new DOMException('signal timed out', 'TimeoutError');
+        },
+        'rede',
+      ],
+      [
+        'servidor fora depois de gravar (502)',
+        () => {
+          throw new ApiError(502, 'Bad Gateway');
+        },
+        'servidor',
+      ],
+      [
+        'falha do banco do aparelho ao gravar o resultado',
+        (resposta) => {
+          sim.estado.falhaGravacao = new ErroAparelho();
+          return resposta;
+        },
+        'aparelho',
+      ],
+    ])('%s: no envio seguinte, a DUPLICADA da correção é da versão anterior; ela entra no histórico e no pacote, e a correção fica com o erro', async (_caso, perder, falha) => {
+      guardarPacote();
+      await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+      const { envio, soltar } = await enviarPreso(() => filaAce.sincronizar(ctxA), perdendo(servidorQueGrava(), [1], perder));
+      await filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+      soltar();
+      expect(await envio).toMatchObject({ falha, enviados: 0, duplicados: 0, erros: 0, pendentes: 1, restantes: 1 });
+      sim.estado.falhaGravacao = null;
+      const depoisDaPerda = item(UUID(1));
+      const r = await filaAce.sincronizar(ctxA);
+      expect(horasEnviadas()).toEqual([['2026-11-07T12:00:00Z'], ['2026-11-07T12:30:00Z']]);
+      // Conta em duplicados (a versão anterior) e em erros (a correção: o aviso manda à aba Fila).
+      expect(r).toMatchObject({ enviados: 0, duplicados: 1, erros: 1, adiados: 0, restantes: 0, falha: null });
+      expect(r.aceitos.map((a) => a.op.registradoEm)).toEqual(['2026-11-07T12:00:00Z']);
+      expect(item(UUID(1))).toMatchObject({ status: 'ERRO', erro: VERSAO_ANTERIOR, rotulo: 'Visita corrigida', versao: 1, versaoGravada: 0, op: { registradoEm: '2026-11-07T12:30:00Z' } });
+      expect(item(UUID(1))!.semResposta).toBeUndefined();
+      expect(await rotulosNoHistorico()).toEqual(['Visita']);
+      expect(await saldoGuardado()).toBe(48);
+      // Entre um envio e outro, a correção esperava pendente, com a marca da versão anterior.
+      expect(depoisDaPerda).toMatchObject({ status: 'PENDENTE', erro: null, versao: 1, semResposta: marcaDaAnterior });
+    });
+
+    it('aba fechada no meio do envio (a marca ficou no aparelho, e o servidor gravou): a correção feita depois fica com o erro da versão anterior', async () => {
+      guardarPacote();
+      const anterior: OperacaoAce = { ...visita(UUID(1)), unitId: 'un-a' };
+      const servidor = servidorQueGrava();
+      servidor.responder({ operacoes: [anterior] });
+      sim.stores.fila.set(UUID(1), {
+        clientId: UUID(1),
+        op: { ...corrigida(UUID(1)), unitId: 'un-a' },
+        userId: 'u1',
+        unitId: 'un-a',
+        status: 'PENDENTE',
+        erro: null,
+        criadoEm: '2026-11-07T12:00:00Z',
+        rotulo: 'Visita corrigida',
+        versao: 1,
+        semResposta: { versao: 0, op: anterior, rotulo: 'Visita' },
+      } satisfies ItemFilaAce);
+      sim.post.mockImplementation(async (_path: string, body: Corpo) => servidor.responder(body));
+      expect(await filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 0, duplicados: 1, erros: 1, restantes: 0, falha: null });
+      expect(item(UUID(1))).toMatchObject({ status: 'ERRO', erro: VERSAO_ANTERIOR, rotulo: 'Visita corrigida', versao: 1, versaoGravada: 0 });
+      expect(await rotulosNoHistorico()).toEqual(['Visita']);
+      expect(await saldoGuardado()).toBe(48);
+    });
+
+    it('a mesma versão reenviada depois da resposta perdida: a DUPLICADA dela segue o caminho normal (sai da fila, e o histórico e o pacote a recebem uma vez)', async () => {
+      guardarPacote();
+      await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+      const responder = perdendo(servidorQueGrava(), [1]);
+      sim.post.mockImplementation(async (_path: string, body: Corpo) => responder(body));
+      expect(await filaAce.sincronizar(ctxA)).toMatchObject({ falha: 'rede', restantes: 1 });
+      const depoisDaPerda = item(UUID(1));
+      expect(await filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 0, duplicados: 1, erros: 0, restantes: 0, falha: null });
+      expect(item(UUID(1))).toBeUndefined();
+      expect(await rotulosNoHistorico()).toEqual(['Visita']);
+      expect(await saldoGuardado()).toBe(48);
+      expect(depoisDaPerda).toMatchObject({ status: 'PENDENTE', semResposta: marcaDaAnterior });
+    });
+
+    it('duas versões sem resposta: a marca fica com a mais antiga (o servidor grava a primeira que chega), e a DUPLICADA da última correção é dela', async () => {
+      guardarPacote();
+      await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+      // O 1º POST é gravado e o 2º volta DUPLICADA no servidor; as duas respostas se perdem, e o agente corrige durante cada um.
+      const responder = perdendo(servidorQueGrava(), [1, 2]);
+      const primeiro = await enviarPreso(() => filaAce.sincronizar(ctxA), responder);
+      await filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+      primeiro.soltar();
+      expect(await primeiro.envio).toMatchObject({ falha: 'rede' });
+      const segundo = await enviarPreso(() => filaAce.sincronizar(ctxA), responder, 2);
+      await filaAce.corrigir(UUID(1), corrigida(UUID(1), '2026-11-07T12:45:00Z'), 'Visita corrigida de novo');
+      segundo.soltar();
+      expect(await segundo.envio).toMatchObject({ falha: 'rede' });
+      const depoisDasPerdas = item(UUID(1));
+      const r = await filaAce.sincronizar(ctxA);
+      expect(horasEnviadas()).toEqual([['2026-11-07T12:00:00Z'], ['2026-11-07T12:30:00Z'], ['2026-11-07T12:45:00Z']]);
+      expect(r).toMatchObject({ enviados: 0, duplicados: 1, erros: 1, restantes: 0, falha: null });
+      expect(r.aceitos.map((a) => a.op.registradoEm)).toEqual(['2026-11-07T12:00:00Z']);
+      expect(item(UUID(1))).toMatchObject({ status: 'ERRO', erro: VERSAO_ANTERIOR, rotulo: 'Visita corrigida de novo', versao: 2, versaoGravada: 0 });
+      expect(await rotulosNoHistorico()).toEqual(['Visita']);
+      expect(await saldoGuardado()).toBe(48);
+      expect(depoisDasPerdas).toMatchObject({ status: 'PENDENTE', versao: 2, semResposta: marcaDaAnterior });
+    });
+
+    it('OK da correção depois da resposta perdida: a versão anterior não chegou a ser gravada; a correção é gravada e sai da fila', async () => {
+      guardarPacote();
+      await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+      const servidor = servidorQueGrava();
+      // O 1º POST cai antes de chegar ao servidor.
+      const { envio, soltar } = await enviarPreso(
+        () => filaAce.sincronizar(ctxA),
+        (body) => (sim.post.mock.calls.length === 1 ? semConexao() : servidor.responder(body)),
+      );
+      await filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+      soltar();
+      expect(await envio).toMatchObject({ falha: 'rede' });
+      const depoisDaPerda = item(UUID(1));
+      expect(await filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 1, duplicados: 0, erros: 0, restantes: 0, falha: null });
+      expect(item(UUID(1))).toBeUndefined();
+      expect(servidor.gravadas.get(UUID(1))?.registradoEm).toBe('2026-11-07T12:30:00Z');
+      expect(await rotulosNoHistorico()).toEqual(['Visita corrigida']);
+      expect(await saldoGuardado()).toBe(47);
+      expect(depoisDaPerda).toMatchObject({ status: 'PENDENTE', versao: 1, semResposta: marcaDaAnterior });
+    });
+
+    it('falha passageira, lote recusado inteiro e o tentar de novo não apagam a marca: a DUPLICADA seguinte ainda é da versão anterior', async () => {
+      guardarPacote();
+      await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+      const { envio, soltar } = await enviarPreso(() => filaAce.sincronizar(ctxA), perdendo(servidorQueGrava(), [1]));
+      await filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+      soltar();
+      expect(await envio).toMatchObject({ falha: 'rede' });
+      // A correção esbarra na gravação da versão anterior, ainda em curso no servidor, e fica para depois; o lote seguinte
+      // é recusado inteiro. Nenhum dos dois diz se a versão anterior foi gravada.
+      sim.post.mockImplementationOnce(async (_path: string, body: Corpo) => comStatus('TENTAR_DE_NOVO', 'Falha passageira')(body));
+      expect(await filaAce.sincronizar(ctxA)).toMatchObject({ adiados: 1, erros: 0, falha: null });
+      const adiada = item(UUID(1));
+      sim.post.mockRejectedValueOnce(new ApiError(400, 'Envie no máximo 100 operações por vez', 'LOTE_GRANDE'));
+      expect(await filaAce.sincronizar(ctxA)).toMatchObject({ erros: 1, falha: null });
+      const recusada = item(UUID(1));
+      await filaAce.tentarDeNovo(UUID(1));
+      const deNovo = item(UUID(1));
+      const r = await filaAce.sincronizar(ctxA);
+      expect(r).toMatchObject({ enviados: 0, duplicados: 1, erros: 1, restantes: 0, falha: null });
+      expect(item(UUID(1))).toMatchObject({ status: 'ERRO', erro: VERSAO_ANTERIOR, versao: 1, versaoGravada: 0 });
+      expect(await rotulosNoHistorico()).toEqual(['Visita']);
+      expect(await saldoGuardado()).toBe(48);
+      expect(adiada).toMatchObject({ status: 'PENDENTE', adiado: 'Falha passageira', semResposta: marcaDaAnterior });
+      expect(recusada).toMatchObject({ status: 'ERRO', erro: 'Envie no máximo 100 operações por vez', semResposta: marcaDaAnterior });
+      expect(deNovo).toMatchObject({ status: 'PENDENTE', erro: null, versao: 1, semResposta: marcaDaAnterior });
+    });
+
+    describe('lote recusado inteiro antes de o servidor processá-lo, com a trava entre abas', () => {
+      // Com a trava (Web Locks), nenhuma outra aba envia ao mesmo tempo: a marca que o POST pôs é só dele.
+      beforeEach(() => {
+        vi.stubGlobal('navigator', { onLine: true, locks: { request: async <T>(_nome: string, fn: () => Promise<T>) => fn() } });
+      });
+      afterEach(() => {
+        vi.unstubAllGlobals();
+      });
+
+      it.each<[string, unknown, ResumoSyncAce['falha'], Partial<ItemFilaAce>]>([
+        ['400 do lote inteiro', new ApiError(400, 'Envie no máximo 100 operações por vez', 'LOTE_GRANDE'), null, { status: 'ERRO', erro: 'Envie no máximo 100 operações por vez' }],
+        ['401 (sessão vencida)', new ApiError(401, 'Sessão expirada'), 'sessao', { status: 'PENDENTE', erro: null }],
+        ['403 (sem permissão)', new ApiError(403, 'Sem permissão'), 'permissao', { status: 'PENDENTE', erro: null }],
+        ['429 (limite de requisições)', new ApiError(429, 'Muitas requisições'), 'limite', { status: 'PENDENTE', erro: null }],
+      ])('%s, recusado antes de o servidor processar o lote: a marca que esse POST pôs sai; a correção gravada depois, com a resposta perdida, volta DUPLICADA e sai da fila', async (_caso, recusa, falha, depois) => {
+        guardarPacote();
+        await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+        sim.post.mockRejectedValueOnce(recusa);
+        expect(await filaAce.sincronizar(ctxA)).toMatchObject({ falha });
+        const depoisDaRecusa = item(UUID(1));
+        await filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+        // O servidor grava a correção (2º POST) e a resposta se perde; o 3º POST volta DUPLICADA.
+        const servidor = servidorQueGrava();
+        const responder = perdendo(servidor, [2]);
+        sim.post.mockImplementation(async (_path: string, body: Corpo) => responder(body));
+        expect(await filaAce.sincronizar(ctxA)).toMatchObject({ falha: 'rede' });
+        const r = await filaAce.sincronizar(ctxA);
+        expect(horasEnviadas()).toEqual([['2026-11-07T12:00:00Z'], ['2026-11-07T12:30:00Z'], ['2026-11-07T12:30:00Z']]);
+        expect(servidor.gravadas.get(UUID(1))?.registradoEm).toBe('2026-11-07T12:30:00Z');
+        // Com a marca da recusa, a DUPLICADA seria tomada como da versão que o servidor nunca gravou (saldo 48, 'Visita').
+        expect(r).toMatchObject({ enviados: 0, duplicados: 1, erros: 0, restantes: 0, falha: null });
+        expect(r.aceitos.map((a) => a.op.registradoEm)).toEqual(['2026-11-07T12:30:00Z']);
+        expect(item(UUID(1))).toBeUndefined();
+        expect(await rotulosNoHistorico()).toEqual(['Visita corrigida']);
+        expect(await saldoGuardado()).toBe(47);
+        expect(depoisDaRecusa).toMatchObject(depois);
+        expect(depoisDaRecusa!.semResposta).toBeUndefined();
+      });
+
+      it.each<[string, unknown, ResumoSyncAce['falha']]>([
+        ['401 (sessão vencida)', new ApiError(401, 'Sessão expirada'), 'sessao'],
+        ['400 do lote inteiro', new ApiError(400, 'Envie no máximo 100 operações por vez', 'LOTE_GRANDE'), null],
+      ])('%s com um registro marcado por um envio anterior sem resposta e outro marcado agora: só a marca posta por esse POST sai', async (_caso, recusa, falha) => {
+        guardarPacote();
+        await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+        const servidor = servidorQueGrava();
+        const responder = perdendo(servidor, [1]);
+        sim.post.mockImplementation(async (_path: string, body: Corpo) => responder(body));
+        // 1º POST: o servidor grava a visita 1, e a resposta se perde.
+        expect(await filaAce.sincronizar(ctxA)).toMatchObject({ falha: 'rede' });
+        await filaAce.adicionar(visita(UUID(2), { registradoEm: '2026-11-07T12:10:00Z' }), ctxA, 'Outra visita');
+        sim.post.mockRejectedValueOnce(recusa);
+        expect(await filaAce.sincronizar(ctxA)).toMatchObject({ falha });
+        expect(enviados()).toEqual([UUID(1), UUID(1), UUID(2)]);
+        expect(item(UUID(1))).toMatchObject({ semResposta: marcaDaAnterior });
+        expect(item(UUID(2))).toBeDefined();
+        expect(item(UUID(2))!.semResposta).toBeUndefined();
+        expect(servidor.gravadas.has(UUID(2))).toBe(false);
+      });
+
+      it('400 apontando outra operação: a não apontada perde a marca desse POST, ganha outra no POST seguinte, e o 401 dele também a tira', async () => {
+        await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita 1');
+        await filaAce.adicionar(visita(UUID(2), { registradoEm: '2026-11-07T12:05:00Z' }), ctxA, 'Visita 2');
+        const marcas: (number | null)[] = [];
+        sim.post
+          .mockImplementationOnce(async () => {
+            marcas.push(item(UUID(1))!.semResposta?.versao ?? null);
+            throw new ApiError(400, 'Dados inválidos', 'VALIDACAO', [{ path: 'operacoes.1.visita.amostras.0.larvas', message: 'no máximo 999' }]);
+          })
+          .mockImplementationOnce(async () => {
+            marcas.push(item(UUID(1))!.semResposta?.versao ?? null);
+            throw new ApiError(401, 'Sessão expirada');
+          });
+        expect(await filaAce.sincronizar(ctxA)).toMatchObject({ falha: 'sessao', erros: 1 });
+        expect(enviados()).toEqual([UUID(1), UUID(2), UUID(1)]);
+        // A não apontada estava marcada nos dois POSTs, e nenhum deles foi processado.
+        expect(marcas).toEqual([0, 0]);
+        expect(item(UUID(1))).toMatchObject({ status: 'PENDENTE', erro: null });
+        expect(item(UUID(1))!.semResposta).toBeUndefined();
+        expect(item(UUID(2))).toMatchObject({ status: 'ERRO', erro: 'Dados inválidos: visita.amostras.0.larvas: no máximo 999' });
+        expect(item(UUID(2))!.semResposta).toBeUndefined();
+      });
+
+      it('a correção salva durante o POST recusado (400) não leva a recusa e perde a marca desse POST', async () => {
+        await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+        const { envio, soltar } = await enviarPreso(
+          () => filaAce.sincronizar(ctxA),
+          () => {
+            throw new ApiError(400, 'Envie no máximo 100 operações por vez', 'LOTE_GRANDE');
+          },
+        );
+        await filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+        expect(item(UUID(1))).toMatchObject({ versao: 1, semResposta: marcaDaAnterior });
+        soltar();
+        expect(await envio).toMatchObject({ falha: null, erros: 0, restantes: 1 });
+        expect(item(UUID(1))).toMatchObject({ status: 'PENDENTE', versao: 1, erro: null });
+        expect(item(UUID(1))!.semResposta).toBeUndefined();
+      });
+
+      it('só sai a marca que o POST pôs: trocada durante o POST (não é mais a dele), ela fica', async () => {
+        await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+        const outraMarca = { versao: 0, op: { ...visita(UUID(1)), unitId: 'un-a', householdId: 'h-outro' }, rotulo: 'Visita' };
+        const { envio, soltar } = await enviarPreso(
+          () => filaAce.sincronizar(ctxA),
+          () => {
+            throw new ApiError(401, 'Sessão expirada');
+          },
+        );
+        sim.stores.fila.set(UUID(1), { ...item(UUID(1))!, semResposta: outraMarca });
+        soltar();
+        expect(await envio).toMatchObject({ falha: 'sessao' });
+        expect(item(UUID(1))!.semResposta).toEqual(outraMarca);
+      });
+    });
+
+    it('sem a trava entre abas, o lote recusado inteiro não tira a marca: outra aba pode ter mandado a mesma versão contando com ela', async () => {
+      guardarPacote();
+      await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+      sim.post.mockRejectedValueOnce(new ApiError(401, 'Sessão expirada'));
+      expect(await filaAce.sincronizar(ctxA)).toMatchObject({ falha: 'sessao' });
+      expect(item(UUID(1))).toMatchObject({ status: 'PENDENTE', semResposta: marcaDaAnterior });
+    });
+
+    it.each<[string, () => Promise<void>]>([
+      [
+        'da versão enviada, com a correção salva no meio',
+        async () => {
+          const { envio, soltar } = await enviarPreso(() => filaAce.sincronizar(ctxA), comStatus('ERRO', 'Dados inválidos: data'));
+          await filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+          soltar();
+          expect(await envio).toMatchObject({ erros: 0, restantes: 1, falha: null });
+        },
+      ],
+      [
+        'do reenvio, depois da resposta perdida',
+        async () => {
+          sim.post.mockRejectedValueOnce(new ApiError(0, 'Sem conexão com o servidor.')).mockImplementationOnce(async (_path: string, body: Corpo) => comStatus('ERRO', 'Dados inválidos: data')(body));
+          expect(await filaAce.sincronizar(ctxA)).toMatchObject({ falha: 'rede' });
+          expect(await filaAce.sincronizar(ctxA)).toMatchObject({ erros: 1, falha: null });
+          await filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+        },
+      ],
+    ])('ERRO %s apaga a marca (o servidor confere o clientId antes de recusar): a correção gravada depois, com a resposta perdida, volta DUPLICADA e sai da fila', async (_caso, recusar) => {
+      guardarPacote();
+      await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+      await recusar();
+      const depoisDoErro = item(UUID(1));
+      sim.post.mockReset();
+      const responder = perdendo(servidorQueGrava(), [1]);
+      sim.post.mockImplementation(async (_path: string, body: Corpo) => responder(body));
+      expect(await filaAce.sincronizar(ctxA)).toMatchObject({ falha: 'rede' });
+      // Sem a marca da versão recusada, a DUPLICADA é da correção (a mesma versão marcada no envio sem resposta).
+      expect(await filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 0, duplicados: 1, erros: 0, restantes: 0, falha: null });
+      expect(item(UUID(1))).toBeUndefined();
+      expect(await rotulosNoHistorico()).toEqual(['Visita corrigida']);
+      expect(await saldoGuardado()).toBe(47);
+      expect(depoisDoErro).toMatchObject({ status: 'PENDENTE', versao: 1 });
+      expect(depoisDoErro!.semResposta).toBeUndefined();
+    });
+
+    it('imóvel novo corrigido durante o envio cuja resposta se perde: a DUPLICADA é da versão anterior (o quarteirão antigo entra no pacote), e a visita dele sai da fila', async () => {
+      guardarPacote();
+      await filaAce.adicionar(imovel(UUID(10)), ctxA, 'Imóvel novo · Q 19');
+      await filaAce.adicionar(visita(UUID(11), { householdId: null, householdClientId: UUID(10) }), ctxA, 'Visita no imóvel novo');
+      const { envio, soltar } = await enviarPreso(() => filaAce.sincronizar(ctxA), perdendo(servidorQueGrava(), [1]));
+      await filaAce.corrigir(UUID(10), imovel(UUID(10), 'q-novo'), 'Imóvel novo · Q 20');
+      soltar();
+      expect(await envio).toMatchObject({ falha: 'rede' });
+      const r = await filaAce.sincronizar(ctxA);
+      expect(r).toMatchObject({ enviados: 0, duplicados: 2, erros: 1, restantes: 0, falha: null });
+      expect(r.aceitos.map((a) => (a.op.tipo === 'IMOVEL' ? a.op.dados.blockId : a.op.clientId))).toEqual(['q-velho', UUID(11)]);
+      expect(item(UUID(10))).toMatchObject({ status: 'ERRO', erro: VERSAO_ANTERIOR, rotulo: 'Imóvel novo · Q 20', versao: 1, versaoGravada: 0, op: { dados: { blockId: 'q-novo' } } });
+      expect(item(UUID(11))).toBeUndefined();
+      expect((await historicoAce.listar('u1')).map((h) => h.rotulo)).toEqual(['Visita no imóvel novo', 'Imóvel novo · Q 19']);
+      const guardado = (await pacoteAce.guardado(ctxA))!.data;
+      expect(guardado.imoveis.find((i) => i.id === `id-${UUID(10)}`)).toMatchObject({ quarteiraoId: 'q-velho', noCiclo: { situacao: 'TRABALHADO' } });
+      expect(guardado.estoque[0]!.saldo).toBe(48);
+    });
+
+    it('a regravação do householdId pelo imóvel novo aceito no lote anterior não é envio nem resposta: a marca da visita fica, citando o id do servidor, e a DUPLICADA da correção ainda é da versão anterior', async () => {
+      guardarPacote();
+      const noImovelNovo = (registradoEm: string, quantidade: number) =>
+        visita(UUID(600), {
+          householdId: null,
+          householdClientId: UUID(500),
+          registradoEm,
+          visita: { atividade: 'LI_T', situacao: 'TRABALHADO', tratamentos: [{ produtoId: 'bti', loteId: 'l-bti', quantidade, depositos: 1 }] },
+        });
+      await filaAce.adicionar(imovel(UUID(500)), ctxA, 'Imóvel novo');
+      await filaAce.adicionar(noImovelNovo('2026-11-07T13:00:00Z', 2), ctxA, 'Visita no imóvel novo');
+      const responder = perdendo(servidorQueGrava(), [1]);
+      sim.post.mockImplementation(async (_path: string, body: Corpo) => responder(body));
+      // O servidor grava o imóvel e a visita (2 g), e a resposta se perde. O agente corrige a visita (3 g) e registra outras
+      // 99, de antes dela: a correção vai no 2º lote do envio seguinte, lida antes de o 1º aceitar o imóvel.
+      expect(await filaAce.sincronizar(ctxA)).toMatchObject({ falha: 'rede' });
+      await filaAce.corrigir(UUID(600), noImovelNovo('2026-11-07T13:30:00Z', 3), 'Visita no imóvel novo corrigida');
+      for (let n = 1; n <= 99; n++) await filaAce.adicionar(visita(UUID(n), { visita: { atividade: 'LI_T', situacao: 'TRABALHADO' } }), ctxA, `Visita ${n}`);
+      let naFilaNoSegundoLote: ItemFilaAce | undefined;
+      sim.post.mockImplementation(async (_path: string, body: Corpo) => {
+        if (sim.post.mock.calls.length === 3) naFilaNoSegundoLote = item(UUID(600));
+        return responder(body);
+      });
+      const r = await filaAce.sincronizar(ctxA);
+      expect(sim.post.mock.calls.map((c) => (c[1] as Corpo).operacoes.length)).toEqual([2, 100, 1]);
+      expect(r).toMatchObject({ enviados: 99, duplicados: 2, erros: 1, restantes: 0, falha: null });
+      expect(item(UUID(600))).toMatchObject({
+        status: 'ERRO',
+        erro: VERSAO_ANTERIOR,
+        versao: 1,
+        versaoGravada: 0,
+        op: { householdId: `id-${UUID(500)}`, householdClientId: null, registradoEm: '2026-11-07T13:30:00Z' },
+      });
+      const rotulos = await rotulosNoHistorico();
+      expect(rotulos).toContain('Visita no imóvel novo');
+      expect(rotulos).not.toContain('Visita no imóvel novo corrigida');
+      // O servidor ficou com os 2 g da versão anterior, e o pacote marca a casa nova com ela.
+      const guardado = (await pacoteAce.guardado(ctxA))!.data;
+      expect(guardado.estoque[0]!.saldo).toBe(48);
+      expect(guardado.imoveis.find((i) => i.id === `id-${UUID(500)}`)!.noCiclo).toEqual({ situacao: 'TRABALHADO', em: '2026-11-07T13:00:00Z' });
+      // Regravada pelo 1º lote: a versão não mudou, e a marca continua a da versão anterior (versão e rótulo), citando o id.
+      expect(naFilaNoSegundoLote).toMatchObject({
+        versao: 1,
+        op: { householdId: `id-${UUID(500)}`, householdClientId: null },
+        semResposta: { versao: 0, rotulo: 'Visita no imóvel novo', op: { registradoEm: '2026-11-07T13:00:00Z', householdId: `id-${UUID(500)}`, householdClientId: null } },
+      });
+    });
+
+    it('o aparelho não grava a marca antes do POST: o envio para como falha do aparelho, e o POST não sai', async () => {
+      await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+      sim.post.mockImplementation(resposta());
+      sim.estado.falhaGravacao = new ErroAparelho();
+      const r = await filaAce.sincronizar(ctxA);
+      sim.estado.falhaGravacao = null;
+      expect(sim.post).not.toHaveBeenCalled();
+      expect(r).toMatchObject({ falha: 'aparelho', mensagem: expect.stringContaining('Não foi possível guardar no aparelho'), pendentes: 1, restantes: 1, enviados: 0 });
+      expect(item(UUID(1))).toMatchObject({ status: 'PENDENTE', erro: null });
+      expect(item(UUID(1))!.semResposta).toBeUndefined();
     });
   });
 });

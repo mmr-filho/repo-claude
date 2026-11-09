@@ -40,6 +40,7 @@ import {
   quantidadeParaTexto,
   seguinteTubito,
   type LinhaTratamento,
+  type OrdemDoContexto,
   type VisitaOp,
 } from '@/lib/ace-campo';
 import { contadorTubito } from '@/lib/ace-store';
@@ -65,6 +66,11 @@ export interface ContextoVisita {
    * anterior ao da abertura (`abertaEm`, do pacote; sem ela, o servidor confere).
    */
   ordem: { id: string; numero: string; abertaEm?: string | null } | null;
+  /**
+   * Ordens do pacote que contêm o quarteirão do imóvel (`ordensDoQuarteirao`): a visita de bloqueio de dia anterior ao da
+   * abertura da `ordem` vai para a mais recente já aberta no dia dela, como o servidor faz. Sem elas, vai sem ordem.
+   */
+  ordensDoQuarteirao?: OrdemDoContexto[] | null;
   quarteirao: string | null;
 }
 
@@ -157,8 +163,9 @@ export function VisitaVetorialForm({
   }, [aberto, contexto, userId, inicial]);
 
   const pendente = SITUACAO_INFO[situacao].pendencia;
-  // Só a visita de bloqueio entra na ordem, e só a de data a partir do dia da abertura.
-  const daOrdem = ordemDoFormulario(contexto?.ordem, atividade, quando);
+  // Só a visita de bloqueio entra na ordem, e só a de data a partir do dia da abertura; a de dia anterior vai para a ordem
+  // do quarteirão já aberta no dia dela, se houver.
+  const daOrdem = ordemDoFormulario(contexto?.ordem, atividade, quando, contexto?.ordensDoQuarteirao);
   const totais = totaisDepositos(depositos);
   const ehPe = imovel?.tipo === '04';
   const produtos = useMemo(() => produtosDoFormulario(catalogo, estoque), [catalogo, estoque]);
@@ -266,7 +273,8 @@ export function VisitaVetorialForm({
       }
     >
       <div className="space-y-4">
-        {daOrdem.ordemId && <Alert tone="info">Faz parte da ordem de bloqueio {contexto?.ordem?.numero}.</Alert>}
+        {/* Com o aviso, a visita não entra na ordem do contexto: o aviso diz para qual ordem ela vai. */}
+        {daOrdem.ordemId && !daOrdem.aviso && <Alert tone="info">Faz parte da ordem de bloqueio {contexto?.ordem?.numero}.</Alert>}
         {daOrdem.aviso && <Alert tone="warn">{daOrdem.aviso}</Alert>}
         <div className="grid gap-3 sm:grid-cols-3">
           <Field label="Atividade" htmlFor="vv-atividade">

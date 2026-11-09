@@ -5,6 +5,7 @@ import {
   centroDe,
   cicloBimestral,
   completeCpf,
+  fromZonedParts,
   localDateString,
   metrosPorGrau,
   normalizarArea,
@@ -15,6 +16,7 @@ import {
   type Depositos,
   type Posicao,
   type SituacaoVisita,
+  zonedParts,
 } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TenantsService } from '../src/core/database';
@@ -26,6 +28,14 @@ const enabled = await pgAvailable();
 const TZ = 'America/Sao_Paulo';
 const local = (dia: string, hora: string) => new Date(`${dia}T${hora}:00-03:00`);
 const diaHa = (n: number) => localDateString(new Date(Date.now() - n * 86_400_000), TZ);
+/**
+ * Quanto esperar (ms) para a 0h (na hora da prefeitura) não cair nos `depois` ms seguintes. A virada do ciclo bimestral é
+ * sempre numa 0h (dia 1º de jan, mar, mai, jul, set e nov). Perto dela, até 1 s depois; no resto do dia, nada.
+ */
+const esperaDaMeiaNoite = (agora: number, depois = 60_000) => {
+  const meiaNoite = fromZonedParts({ ...zonedParts(new Date(agora + depois), TZ), hour: 0, minute: 0, second: 0 }, TZ).getTime();
+  return Math.max(0, meiaNoite + 1000 - agora);
+};
 
 // Quarteirões de 80 m longe da demonstração e dos outros testes.
 const O: Posicao = [-48.6, -11.4];
@@ -209,6 +219,11 @@ describe.runIf(enabled)('VIG-3a gestão: produção, índices, pendências e tit
   const casas: Record<string, string> = {};
 
   it('ausência documentada só com duas visitas de imóvel fechado em dias e turnos diferentes em até 10 dias; recusa à parte', async () => {
+    // A API conta as pendências do ciclo de agora, e este teste e os dois seguintes (o próximo usa as casas deste) gravam
+    // as visitas no ciclo de agora, em dias contados a partir de hoje. A 0h não pode cair no meio deles: o "hoje" das
+    // datas conferidas mudaria e, na virada do ciclo, a lista viria do ciclo novo, sem as visitas. Perto da 0h, o teste
+    // espera ela passar.
+    await new Promise((r) => setTimeout(r, esperaDaMeiaNoite(Date.now())));
     const ciclo = cicloAtual();
     const reg = async (chave: string, ...vs: [number, string, SituacaoVisita][]) => {
       casas[chave] = await novaCasa(`Rua ${chave}`);
@@ -243,7 +258,7 @@ describe.runIf(enabled)('VIG-3a gestão: produção, índices, pendências e tit
     expect(de('fechado2')!.ultimaEm).toBe(local(diaHa(4), '15:00').toISOString());
     // A mais recente primeiro.
     expect(lista.map((p) => p.ultimaEm)).toEqual([...lista.map((p) => p.ultimaEm)].sort().reverse());
-  });
+  }, 120_000);
 
   it('com mais de 20 mil visitas no ciclo, a pendência nova aparece e o imóvel recuperado sai da lista', async () => {
     const ciclo = cicloAtual();

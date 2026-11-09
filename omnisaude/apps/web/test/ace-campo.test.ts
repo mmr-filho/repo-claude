@@ -1,21 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import type { LoteCampo, PacoteCampo, ProdutoCampo } from '@/components/endemias/types';
 import {
+  acoesDoItem,
   ajustarLinhaAutomatica,
   aplicarAceitosNoPacote,
   classificarFalha,
+  comVersaoGravada,
+  dependentesDoImovel,
   errosPorOperacao,
+  imoveisDaFila,
   loteSugerido,
   numeroDoBotao,
   ordemDoContexto,
   ordemDoFormulario,
   ordemMaisRecente,
+  ordensDoQuarteirao,
   produtoSugerido,
   produtosDoFormulario,
   quantidadeParaTexto,
   seguinteTubito,
+  usoDaFila,
+  visitasNaFila,
   type ImovelOp,
   type LinhaTratamento,
+  type RegistroDaFila,
   type VisitaOp,
 } from '@/lib/ace-campo';
 import { ApiError } from '@/lib/api';
@@ -229,6 +237,7 @@ describe('ordem que a tela do ACE passa ao formulário', () => {
     expect(ordemMaisRecente(ordens, 'q1')).toEqual(nova);
     expect(ordemDoContexto(ordens, 'q1')).toEqual(nova);
     expect(ordemDoContexto(ordens, 'q1', null)).toEqual(nova);
+    // Sem as ordens do quarteirão, vai sem ordem; com elas, vai para a o-antiga, já aberta em 4/11 (ver o bloco seguinte).
     expect(ordemDoFormulario(ordemMaisRecente(ordens, 'q1'), 'BLOQUEIO', '2026-11-04T08:00')).toEqual(fora);
     expect(ordemDoFormulario(ordemDoContexto(ordens, 'q1'), 'BLOQUEIO', '2026-11-04T08:00')).toEqual(fora);
     // Do dia da abertura em diante (mesmo antes da hora), vai com a ordem.
@@ -263,6 +272,110 @@ describe('ordem que a tela do ACE passa ao formulário', () => {
     expect(ordemDoFormulario(contexto, 'BLOQUEIO', '2026-11-06T08:00')).toEqual({ ordemId: 'o-nova', aviso: null });
     // Imóvel fora do pacote (sem quarteirão): sem ordem, como antes.
     expect(ordemDoContexto(ordens, null, null)).toBeNull();
+  });
+});
+
+describe('visita de bloqueio de dia anterior ao da abertura: a ordem do quarteirão já aberta no dia dela', () => {
+  // As aberturas no fuso do aparelho: M (o-antiga) às 10 h de 1º/11 e N (o-nova, a do roteiro) às 10 h de 5/11.
+  const local = (dia: number, hora: number) => new Date(2026, 10, dia, hora, 0).toISOString();
+  const M = { id: 'o-antiga', numero: '1/2026', abertaEm: local(1, 10) };
+  const N = { id: 'o-nova', numero: '2/2026', abertaEm: local(5, 10) };
+  const paraM = { ordemId: 'o-antiga', aviso: 'A data é anterior à abertura da ordem 2/2026: a visita vai para a ordem 1/2026, já aberta no dia dela' };
+  const semOrdem = { ordemId: null, aviso: 'A data é anterior à abertura da ordem 2/2026: a visita não vai entrar nela' };
+  const ordens = pacoteBase().ordens.map((o) => ({ ...o, abertaEm: o.id === 'o-nova' ? N.abertaEm : M.abertaEm }));
+  const ordemDoPacote = (id: string, numero: string, abertaEm: string, quarteirao: string, status: PacoteCampo['ordens'][number]['status'] = 'ABERTA'): PacoteCampo['ordens'][number] => ({
+    id,
+    numero,
+    status,
+    abertaEm,
+    raioM: 300,
+    conferirImovel: false,
+    quarteiroes: [{ id: quarteirao, ocorrencia: true }],
+    visitados: {},
+  });
+
+  // Antes, a visita de 4/11 aberta pela N ia para a fila sem ordem ("não vai entrar nela"), e o servidor a gravava na M
+  // (a visita de bloqueio sem ordem vai para a ordem mais recente do quarteirão aberta até o dia dela): sem rede, a lista
+  // da M não mostrava a casa na fila, e o agente podia voltar a ela.
+  it('M e N: a visita de 4/11 aberta pela N vai para a M, com o aviso; do dia da abertura da N em diante, a N; antes da M, nenhuma', () => {
+    const candidatas = [M, N];
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-04T08:00', candidatas)).toEqual(paraM);
+    // A M aberta no dia da visita, mesmo depois da hora dela, já conta (como a ordem do contexto).
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-01T07:00', candidatas)).toEqual(paraM);
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-05T08:00', candidatas)).toEqual({ ordemId: 'o-nova', aviso: null });
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-10-31T23:00', candidatas)).toEqual(semOrdem);
+    // Aberta pela lista da M, a visita de 4/11 fica na M, sem aviso.
+    expect(ordemDoFormulario(M, 'BLOQUEIO', '2026-11-04T08:00', candidatas)).toEqual({ ordemId: 'o-antiga', aviso: null });
+  });
+
+  it('a tela passa as ordens ativas do pacote que contêm o quarteirão do imóvel: roteiro, mapa e lista da N levam a visita de 4/11 para a M', () => {
+    expect(ordensDoQuarteirao(ordens, 'q1')).toEqual([M, N]);
+    const candidatas = ordensDoQuarteirao(ordens, 'q1');
+    expect(ordemDoFormulario(ordemDoContexto(ordens, 'q1'), 'BLOQUEIO', '2026-11-04T08:00', candidatas)).toEqual(paraM);
+    expect(ordemDoFormulario(ordemDoContexto(ordens, 'q1', 'o-nova'), 'BLOQUEIO', '2026-11-04T08:00', candidatas)).toEqual(paraM);
+    expect(ordemDoFormulario(ordemDoContexto(ordens, 'q1', 'o-antiga'), 'BLOQUEIO', '2026-11-04T08:00', candidatas)).toEqual({ ordemId: 'o-antiga', aviso: null });
+    // Sem pacote ou sem quarteirão (imóvel fora do pacote, ao corrigir): nenhuma candidata.
+    expect(ordensDoQuarteirao(undefined, 'q1')).toEqual([]);
+    expect(ordensDoQuarteirao(ordens, null)).toEqual([]);
+    expect(ordensDoQuarteirao(ordens, 'q9')).toEqual([]);
+  });
+
+  it('a ordem de outro quarteirão (ou que não está ativa) não é candidata, mesmo aberta antes do dia da visita', () => {
+    const comOutras = [...ordens, ordemDoPacote('o-q2', '3/2026', local(2, 10), 'q2'), ordemDoPacote('o-feita', '4/2026', local(3, 10), 'q1', 'CONCLUIDA')];
+    expect(ordensDoQuarteirao(comOutras, 'q1').map((o) => o.id)).toEqual(['o-antiga', 'o-nova']);
+    expect(ordensDoQuarteirao(comOutras, 'q2').map((o) => o.id)).toEqual(['o-q2']);
+    // Só a N no q1: a visita de 4/11 vai sem ordem, apesar da o-q2 (2/11) e da concluída (3/11).
+    const soN = comOutras.filter((o) => o.id !== 'o-antiga');
+    expect(ordemDoFormulario(ordemDoContexto(soN, 'q1'), 'BLOQUEIO', '2026-11-04T08:00', ordensDoQuarteirao(soN, 'q1'))).toEqual(semOrdem);
+    expect(ordemDoFormulario(ordemDoContexto(comOutras, 'q1'), 'BLOQUEIO', '2026-11-04T08:00', ordensDoQuarteirao(comOutras, 'q1'))).toEqual(paraM);
+  });
+
+  it('várias antigas: a mais recente aberta até o dia da visita; na mesma abertura, a de maior id, como no servidor', () => {
+    const M2 = { id: 'o-m2', numero: '3/2026', abertaEm: local(3, 10) };
+    const M3 = { id: 'o-m3', numero: '4/2026', abertaEm: local(3, 10) };
+    const candidatas = [M, M2, N, M3];
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-04T08:00', candidatas)).toEqual({ ordemId: 'o-m3', aviso: 'A data é anterior à abertura da ordem 2/2026: a visita vai para a ordem 4/2026, já aberta no dia dela' });
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-03T08:00', candidatas).ordemId).toBe('o-m3');
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-02T08:00', candidatas).ordemId).toBe('o-antiga');
+    // Aberta uma hora depois no mesmo dia: a mais recente, mesmo com o id menor.
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-04T08:00', [...candidatas, { id: 'o-a', numero: '5/2026', abertaEm: local(3, 11) }]).ordemId).toBe('o-a');
+  });
+
+  it('nenhuma ordem já aberta no dia da visita: vai sem ordem, com o aviso de antes; a de abertura ilegível não conta', () => {
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-04T08:00', [N])).toEqual(semOrdem);
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-04T08:00', [])).toEqual(semOrdem);
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-04T08:00', null)).toEqual(semOrdem);
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-04T08:00')).toEqual(semOrdem);
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-04T08:00', [{ ...M, abertaEm: 'ontem' }, { ...M, id: 'o-sem', abertaEm: null }, { id: 'o-x', numero: '9/2026' }, N])).toEqual(semOrdem);
+  });
+
+  it('o dia é o do fuso do aparelho, também na abertura da ordem já aberta', () => {
+    noFuso('America/Sao_Paulo', () => {
+      expect(new Date('2026-11-04T02:00:00Z').getDate()).toBe(3);
+      const nova = { ...N, abertaEm: '2026-11-05T13:00:00Z' };
+      // M aberta às 23 h de 3/11 (2 h de 4/11 no UTC): a visita das 10 h de 3/11 (13 h de 3/11 no UTC) é do mesmo dia.
+      const noite = { ...M, abertaEm: '2026-11-04T02:00:00Z' };
+      expect(ordemDoFormulario(nova, 'BLOQUEIO', '2026-11-03T10:00', [noite, nova])).toEqual(paraM);
+      // M aberta à 0h30 de 4/11 (3h30 de 4/11 no UTC): a visita das 23 h de 3/11 (2 h de 4/11 no UTC) é do dia anterior.
+      const madrugada = { ...M, abertaEm: '2026-11-04T03:30:00Z' };
+      expect(ordemDoFormulario(nova, 'BLOQUEIO', '2026-11-03T23:00', [madrugada, nova])).toEqual(semOrdem);
+      expect(ordemDoFormulario(nova, 'BLOQUEIO', '2026-11-04T00:10', [madrugada, nova])).toEqual(paraM);
+    });
+  });
+
+  it('só a visita de bloqueio vai para uma ordem: as outras atividades, nenhuma e sem aviso', () => {
+    for (const atividade of ['LI', 'LI_T', 'T', 'PE', 'DF', 'PVE'] as const) expect(ordemDoFormulario(N, atividade, '2026-11-04T08:00', [M, N])).toEqual({ ordemId: null, aviso: null });
+  });
+
+  it('sem a abertura do contexto (ausente ou ilegível) ou com a data ilegível, vai a ordem do contexto (o servidor confere)', () => {
+    const nova = { ordemId: 'o-nova', aviso: null };
+    expect(ordemDoFormulario({ id: 'o-nova', numero: '2/2026' }, 'BLOQUEIO', '2026-11-04T08:00', [M, N])).toEqual(nova);
+    expect(ordemDoFormulario({ ...N, abertaEm: null }, 'BLOQUEIO', '2026-11-04T08:00', [M, N])).toEqual(nova);
+    expect(ordemDoFormulario({ ...N, abertaEm: 'ontem' }, 'BLOQUEIO', '2026-11-04T08:00', [M, N])).toEqual(nova);
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '', [M, N])).toEqual(nova);
+    expect(ordemDoFormulario(N, 'BLOQUEIO', '2026-11-04T', [M, N])).toEqual(nova);
+    // A ordem da visita da fila que saiu do pacote (ao corrigir) vai como estava.
+    expect(ordemDoFormulario(ordemDoContexto(ordens, 'q1', 'o-saiu'), 'BLOQUEIO', '2026-11-04T08:00', ordensDoQuarteirao(ordens, 'q1'))).toEqual({ ordemId: 'o-saiu', aviso: null });
   });
 });
 
@@ -330,6 +443,94 @@ describe('efeito no pacote do que o servidor aceitou', () => {
     p = aplicarAceitosNoPacote(p, [{ op: imovelNovo('c'), id: 'h-novo' }]);
     p = aplicarAceitosNoPacote(p, [{ op: imovelNovo('c'), id: 'h-novo' }]);
     expect(p.imoveis.filter((i) => i.id === 'h-novo')).toHaveLength(1);
+  });
+});
+
+describe('registros da fila na tela: o com a versão anterior gravada no servidor', () => {
+  const VERSAO_ANTERIOR = 'O servidor gravou a versão anterior deste registro enquanto você corrigia: a correção não foi enviada. Confira e descarte o registro.';
+  const naFila = (op: ImovelOp | VisitaOp, extra: Partial<RegistroDaFila> = {}): RegistroDaFila => ({ clientId: op.clientId, op, status: 'PENDENTE', erro: null, ...extra });
+  const recusado = (op: ImovelOp | VisitaOp, erro = 'Recusado pelo servidor') => naFila(op, { status: 'ERRO', erro });
+  /** A correção salva durante o envio da versão anterior, que o servidor gravou (a versão gravada pode ser a 0). */
+  const comAGravada = (op: ImovelOp | VisitaOp, versaoGravada = 0) => naFila(op, { status: 'ERRO', erro: VERSAO_ANTERIOR, versaoGravada });
+  const larvicida = (quantidade: number) => [{ produtoId: 'bti', loteId: 'l-bti', quantidade, depositos: 1 }];
+
+  // Antes, a aba Fila mostrava Corrigir e Tentar de novo também para ele: o servidor responde DUPLICADA e o registro volta
+  // ao mesmo erro.
+  it('aba Fila: só Descartar; o recusado comum desta lotação tem as três ações', () => {
+    expect(acoesDoItem(recusado(visita('v1')), true)).toEqual(['corrigir', 'tentarDeNovo', 'descartar']);
+    expect(acoesDoItem(recusado(visita('v1')), false)).toEqual(['descartar']);
+    expect(acoesDoItem(naFila(visita('v1')), true)).toEqual(['descartar']);
+    expect(acoesDoItem(comAGravada(visita('v1')), true)).toEqual(['descartar']);
+    expect(acoesDoItem(comAGravada(imovelNovo('c1'), 2), true)).toEqual(['descartar']);
+    // De volta a pendente (tentar de novo noutra aba, com o app de antes): continua só com o descarte.
+    expect(acoesDoItem({ ...comAGravada(visita('v1')), status: 'PENDENTE', erro: null }, true)).toEqual(['descartar']);
+    expect([comVersaoGravada({ versaoGravada: 0 }), comVersaoGravada({ versaoGravada: null }), comVersaoGravada({})]).toEqual([true, false, false]);
+  });
+
+  // Antes, o imóvel novo com a versão gravada continuava na lista do quarteirão, ao lado do que o pacote já recebeu com o
+  // id do servidor, com "Recusado no envio" e aberto a visitas.
+  it('lista do quarteirão: o imóvel novo com a versão gravada fica de fora; o pacote já tem o gravado, com o id do servidor', () => {
+    const gravado = imovelNovo('c-gravado');
+    const pacote = aplicarAceitosNoPacote(pacoteBase(), [{ op: gravado, id: 'h-srv' }]);
+    const itens = [
+      naFila(imovelNovo('c-novo')),
+      recusado(imovelNovo('c-recusado'), 'O quarteirão do imóvel não existe na malha: escolha outro'),
+      comAGravada({ ...gravado, dados: { ...gravado.dados, number: '9' } }),
+      naFila(visita('v1')),
+    ];
+    const lista = [...pacote.imoveis, ...imoveisDaFila(itens)];
+    expect(lista.map((i) => i.id)).toEqual(['h1', 'h-srv', 'c-novo', 'c-recusado']);
+    expect(lista.find((i) => i.id === 'c-novo')).toMatchObject({ pendente: true, erroNaFila: null });
+    expect(lista.find((i) => i.id === 'c-recusado')).toMatchObject({ pendente: true, erroNaFila: 'O quarteirão do imóvel não existe na malha: escolha outro' });
+  });
+
+  // Antes, descartar o imóvel novo com a versão gravada levava junto as visitas que o citam pelo clientId ("Sem o imóvel,
+  // as visitas não têm como ser enviadas"): o servidor já tem o imóvel e grava as visitas nele pelo clientId.
+  it('descarte: o imóvel novo com a versão gravada sai sozinho; o recusado comum leva as visitas que o citam', () => {
+    const v1 = naFila(visita('v1', { householdId: null, householdClientId: 'c-imovel' }));
+    const v2 = naFila(visita('v2'));
+    const v3 = recusado(visita('v3', { householdId: null, householdClientId: 'c-imovel' }), 'O imóvel novo desta visita ainda não foi aceito pelo servidor');
+    const v4 = naFila(visita('v4', { householdId: null, householdClientId: 'c-outro' }));
+    const itens = [v1, v2, v3, v4];
+    expect(dependentesDoImovel(itens, recusado(imovelNovo('c-imovel')))).toEqual([v1, v3]);
+    expect(dependentesDoImovel(itens, naFila(imovelNovo('c-imovel')))).toEqual([v1, v3]);
+    expect(dependentesDoImovel(itens, comAGravada(imovelNovo('c-imovel')))).toEqual([]);
+  });
+
+  // Antes, o larvicida da correção com a versão gravada saía de novo do saldo da tela, que já tinha o da versão gravada
+  // descontado: o saldo ficava menor até o descarte.
+  it('saldo do larvicida: a correção com a versão gravada não conta; o pacote já descontou o da versão gravada', () => {
+    const pacote = aplicarAceitosNoPacote(pacoteBase(), [{ op: visita('v1', { visita: { tratamentos: larvicida(2.5) } }), id: 'vv1' }]);
+    expect(pacote.estoque[0]!.saldo).toBe(97.5);
+    const uso = usoDaFila([
+      comAGravada(visita('v1', { visita: { tratamentos: larvicida(3) } })),
+      naFila(visita('v2', { visita: { tratamentos: [...larvicida(1), { produtoId: 'ppf', loteId: null, loteNumero: 'PPF-1', quantidade: 5, depositos: 1 }] } })),
+      recusado(visita('v3', { visita: { tratamentos: larvicida(0.5) } })),
+      naFila(imovelNovo('c1')),
+    ]);
+    expect(uso).toEqual(new Map([['l-bti', 1.5]]));
+    expect(pacote.estoque[0]!.saldo - uso.get('l-bti')!).toBe(96);
+  });
+
+  it('situação da casa: a visita com a versão gravada não a marca na fila; vale a gravada, que já está no pacote', () => {
+    const pacote = aplicarAceitosNoPacote(pacoteBase(), [{ op: visita('v1', { visita: { atividade: 'BLOQUEIO', ordemId: 'o-antiga' } }), id: 'vv1', ordemId: 'o-antiga' }]);
+    const correcao = visita('v1', { registradoEm: '2026-11-07T12:30:00Z', visita: { atividade: 'BLOQUEIO', ordemId: 'o-antiga', situacao: 'FECHADO' } });
+    expect(visitasNaFila([comAGravada(correcao)]).size).toBe(0);
+    expect(pacote.imoveis[0]!.noCiclo).toEqual({ situacao: 'TRABALHADO', em: '2026-11-07T12:00:00Z' });
+    expect(pacote.ordens[0]!.visitados.h1).toEqual({ situacao: 'TRABALHADO', em: '2026-11-07T12:00:00Z' });
+    // As outras visitas da fila (pendentes ou recusadas) marcam a casa: a mais nova de cada uma, com a ordem dela.
+    const m = visitasNaFila([
+      naFila(visita('v2', { registradoEm: '2026-11-07T09:00:00Z', visita: { situacao: 'RECUSADO' } })),
+      recusado(visita('v3', { registradoEm: '2026-11-07T10:00:00Z' })),
+      comAGravada(correcao),
+      naFila(visita('v4', { householdId: null, householdClientId: 'c-novo', visita: { atividade: 'BLOQUEIO', ordemId: 'o-nova' } })),
+    ]);
+    expect(m).toEqual(
+      new Map([
+        ['h1', { situacao: 'TRABALHADO', em: '2026-11-07T10:00:00Z', ordemId: null }],
+        ['c-novo', { situacao: 'TRABALHADO', em: '2026-11-07T12:00:00Z', ordemId: 'o-nova' }],
+      ]),
+    );
   });
 });
 

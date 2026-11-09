@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { areaM2, caixaDe, centroDe, metrosPorGrau, normalizarArea, type Posicao } from '@omnisaude/shared';
+import { areaM2, caixaDe, centroDe, cicloBimestral, fromZonedParts, localDateString, metrosPorGrau, normalizarArea, type Posicao } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TenantsService } from '../src/core/database';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
@@ -20,8 +20,19 @@ const quadrado = (centro: Posicao, lado = 80) => {
   const b: Posicao = [centro[0] + lado / 2 / mpg.lng, centro[1] + lado / 2 / mpg.lat];
   return { type: 'Polygon' as const, coordinates: [[a, [b[0], a[1]], b, [a[0], b[1]], a]] };
 };
-/** Segundos atrás: as visitas ficam no ciclo bimestral de agora. */
+/** Segundos atrás: as visitas ficam no ciclo bimestral de agora (o cenário espera a virada do ciclo passar). */
 const segundosAtras = (s: number) => new Date(Date.now() - s * 1000).toISOString();
+/** 0h (na hora da prefeitura) do primeiro dia do ciclo bimestral do instante, pela mesma regra da API. */
+const inicioDoCiclo = (ms: number, tz: string) => {
+  const { inicio } = cicloBimestral(localDateString(new Date(ms), tz));
+  return fromZonedParts({ year: Number(inicio.slice(0, 4)), month: Number(inicio.slice(5, 7)), day: 1, hour: 0, minute: 0, second: 0 }, tz).getTime();
+};
+/**
+ * Quanto esperar (ms) para o cenário caber num ciclo só: as visitas de até `antes` ms atrás e as leituras dos `depois` ms
+ * seguintes (o pacote e as zonas usam o ciclo de agora). Perto da virada (0h do dia 1º de jan, mar, mai, jul, set e nov,
+ * na hora da prefeitura), até `antes` ms depois dela; no resto do ciclo, nada.
+ */
+const esperaDaVirada = (agora: number, tz: string, antes = 61_000, depois = 60_000) => Math.max(0, inicioDoCiclo(agora + depois, tz) + antes - agora);
 
 type Imovel = { id: string; noCiclo: { situacao: string; em: string } | null };
 
@@ -33,6 +44,7 @@ describe.runIf(enabled)('VIG-3a: pacote do ACE e zonas com listas acima do limit
   let gestora = '';
   let aceId = '';
   let localidade = '';
+  let tz = 'America/Sao_Paulo';
   const q: Record<string, string> = {};
   const auth = (tk: string) => ({ authorization: `Bearer ${tk}` });
   const sync = async (operacoes: unknown[]) => (await t.http().post('/api/endemias/campo/sync').set(auth(ace)).send({ operacoes }).expect(200)).body.resultados as { status: string; erro: string | null }[];
@@ -61,7 +73,9 @@ describe.runIf(enabled)('VIG-3a: pacote do ACE e zonas com listas acima do limit
     ace = await t.login('ace', 'Vigilância em Saúde', 'ACE');
     supervisora = await t.login('supervisora', 'Vigilância em Saúde', 'SUPERVISOR_ENDEMIAS');
     const tenants = t.app.get(TenantsService);
-    db = await tenants.client((await tenants.resolve(t.slug)).id);
+    const info = await tenants.resolve(t.slug);
+    tz = info.timeZone;
+    db = await tenants.client(info.id);
     aceId = (await db.user.findFirstOrThrow({ where: { name: { contains: 'Agente de Endemias' } } })).id;
     const vigUnit = (await db.unit.findFirstOrThrow({ where: { name: 'Vigilância em Saúde' } })).id;
     localidade = (await t.http().post('/api/territorio/localidades').set(auth(gestora)).send({ code: '31', name: 'Listas Grandes' }).expect(201)).body.id;
@@ -100,7 +114,29 @@ describe.runIf(enabled)('VIG-3a: pacote do ACE e zonas com listas acima do limit
     await t?.close();
   });
 
+  it('a virada do ciclo não cai no meio do cenário: perto dela, o teste espera; no resto do ciclo, não', () => {
+    const ciclo = (ms: number) => cicloBimestral(localDateString(new Date(ms), tz)).chave;
+    const ms = (iso: string) => Date.parse(iso);
+    // 1º de novembro, 5 s e 35 s depois da 0h: a visita de 40 s atrás ficaria no ciclo 5. Espera até 0h01min01.
+    expect(esperaDaVirada(ms('2026-11-01T00:00:05-03:00'), tz)).toBe(56_000);
+    expect(esperaDaVirada(ms('2026-11-01T00:00:35-03:00'), tz)).toBe(26_000);
+    // 31 de outubro, 30 s antes da 0h: o pacote, lido depois da virada, usaria o ciclo 6. Também espera até 0h01min01.
+    expect(esperaDaVirada(ms('2026-10-31T23:59:30-03:00'), tz)).toBe(91_000);
+    // Na virada do ano: do ciclo 6 de 2026 para o 1 de 2027.
+    expect(esperaDaVirada(ms('2027-01-01T00:00:10-03:00'), tz)).toBe(51_000);
+    for (const iso of ['2026-11-01T00:01:01-03:00', '2026-10-31T23:58:59-03:00', '2026-11-01T10:00:00-03:00', '2026-12-31T12:00:00-03:00']) expect(esperaDaVirada(ms(iso), tz)).toBe(0);
+    // Depois da espera, as visitas do minuto anterior e as leituras do minuto seguinte ficam no mesmo ciclo.
+    for (const iso of ['2026-11-01T00:00:05-03:00', '2026-10-31T23:59:30-03:00', '2027-01-01T00:00:10-03:00', '2026-11-01T10:00:00-03:00']) {
+      const agora = ms(iso) + esperaDaVirada(ms(iso), tz);
+      expect(ciclo(agora - 61_000)).toBe(ciclo(agora + 60_000));
+    }
+  });
+
   it(`pacote com mais de 32.766 imóveis na área: responde, com a última visita do ciclo e as visitas da ordem`, async () => {
+    // O pacote e as zonas usam o ciclo de agora: a virada do ciclo não pode cair entre as visitas deste teste e as leituras
+    // dele e dos dois seguintes. Logo depois da 0h do dia 1º do ciclo, as visitas de segundos atrás ficariam no ciclo
+    // anterior; logo antes dela, as leituras seriam do ciclo novo. Perto da virada, o teste espera a janela passar.
+    await new Promise((r) => setTimeout(r, esperaDaVirada(Date.now(), tz)));
     const [x, y, z] = await db.household.findMany({ where: { blockId: q['1'] }, select: { id: true }, orderBy: { number: 'asc' }, take: 3 });
     // Aberta antes das visitas: aberta agora, logo depois da meia-noite a visita de 20 s atrás cairia na véspera da
     // abertura e ficaria fora da ordem.
@@ -108,7 +144,7 @@ describe.runIf(enabled)('VIG-3a: pacote do ACE e zonas com listas acima do limit
     const ordem = await db.blockingOrder.create({
       data: { year: 2026, seq: 7001, status: 'ABERTA', radiusM: 150, groups: ['dengue'], openedAt: aberta, blocks: { create: [{ blockId: q['1']!, distanceM: 0 }] }, assignees: { create: [{ userId: aceId }] } },
     });
-    const rs = await sync([
+    const ops = [
       // x: fechado e, depois, trabalhado (a última do ciclo é a que vale).
       visita(x!.id, 40, { situacao: 'FECHADO', depositos: undefined }),
       visita(x!.id, 30, {}),
@@ -116,11 +152,16 @@ describe.runIf(enabled)('VIG-3a: pacote do ACE e zonas com listas acima do limit
       visita(y!.id, 20, { atividade: 'BLOQUEIO', ordemId: ordem.id, acaoEducativa: true }),
       // z: só fechado.
       visita(z!.id, 10, { situacao: 'FECHADO', depositos: undefined }),
-    ]);
+    ];
+    const rs = await sync(ops);
     for (const r of rs) expect(r, JSON.stringify(r)).toMatchObject({ status: 'OK' });
     const r = await t.http().get('/api/endemias/campo/pacote').set(auth(ace));
     expect(r.status, JSON.stringify(r.body).slice(0, 300)).toBe(200);
     const p = r.body as { ciclo: { chave: string }; imoveis: Imovel[]; ordens: { id: string; visitados: Record<string, { situacao: string; em: string }> }[] };
+    // As quatro visitas ficaram no ciclo do pacote. Sem a espera, logo depois da virada o fechado de x ficava no ciclo
+    // anterior, e o teste passava sem conferir que vale a última do ciclo.
+    const ciclos = await db.vectorVisit.findMany({ where: { clientId: { in: ops.map((o) => o.clientId) } }, select: { cycle: true } });
+    expect(ciclos.map((v) => v.cycle)).toEqual(ops.map(() => p.ciclo.chave));
     expect(p.imoveis.length).toBe(MUITOS);
     const doPacote = new Map(p.imoveis.map((i) => [i.id, i]));
     const em = async (householdId: string, situation: 'TRABALHADO' | 'FECHADO') => (await db.vectorVisit.findFirstOrThrow({ where: { householdId, situation }, orderBy: { visitedAt: 'desc' } })).visitedAt.toISOString();
@@ -130,7 +171,7 @@ describe.runIf(enabled)('VIG-3a: pacote do ACE e zonas com listas acima do limit
     expect(p.imoveis.filter((i) => i.noCiclo).length).toBe(3);
     const daOrdem = p.ordens.find((o) => o.id === ordem.id)!;
     expect(daOrdem.visitados).toEqual({ [y!.id]: { situacao: 'TRABALHADO', em: await em(y!.id, 'TRABALHADO') } });
-  });
+  }, 180_000);
 
   it('zonas e quarteirões livres com mais de 32.766 quarteirões em zonas: respondem, com o progresso do ciclo', async () => {
     const r = await t.http().get('/api/endemias/zonas').set(auth(supervisora));

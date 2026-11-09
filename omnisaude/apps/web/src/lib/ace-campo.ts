@@ -4,8 +4,8 @@ import { ApiError } from './api';
 
 /**
  * Regras do app de campo do ACE que não dependem da tela nem do banco do aparelho: lote e produto sugeridos, numeração
- * dos tubitos, linha de larvicida puxada pela tabela de depósitos, efeito no pacote do que o servidor aceitou e leitura
- * das falhas da sincronização.
+ * dos tubitos, linha de larvicida puxada pela tabela de depósitos, ordem da visita, efeito no pacote do que o servidor
+ * aceitou, registros da fila na tela e leitura das falhas da sincronização.
  */
 
 export type ImovelOp = Extract<OperacaoAce, { tipo: 'IMOVEL' }>;
@@ -185,17 +185,56 @@ export function ordemDoContexto(ordens: PacoteCampo['ordens'] | null | undefined
 }
 
 /**
- * Ordem que a visita do formulário leva: a do contexto (ver `ordemDoContexto`), só na visita de bloqueio e com a data a
- * partir do dia da abertura, no fuso do aparelho. A de dia anterior (visita anotada em papel e registrada depois) vai
- * sem a ordem, com o aviso na tela: a ordem não existia quando ela foi feita. A do dia da abertura, mesmo antes da hora
- * dela, vai com a ordem. Sem a abertura no contexto ou com a data ilegível, vai a ordem, e o servidor confere.
+ * Ordens ativas do pacote que contêm o quarteirão do imóvel, com a abertura: as candidatas da visita de bloqueio de dia
+ * anterior ao da abertura da ordem do contexto (ver `ordemDoFormulario`). O pacote só traz as abertas e em campo
+ * designadas ao agente.
  */
-export function ordemDoFormulario(ordem: OrdemDoContexto | null | undefined, atividade: AtividadeVetorial, quando: string): { ordemId: string | null; aviso: string | null } {
+export function ordensDoQuarteirao(ordens: PacoteCampo['ordens'] | null | undefined, quarteiraoId: string | null | undefined): OrdemDoContexto[] {
+  if (!ordens || !quarteiraoId) return [];
+  return ordens.filter((o) => (o.status === 'ABERTA' || o.status === 'EM_CAMPO') && o.quarteiroes.some((q) => q.id === quarteiraoId)).map((o) => ({ id: o.id, numero: o.numero, abertaEm: o.abertaEm }));
+}
+
+/** Dia da abertura no fuso do aparelho; null sem a abertura ou com ela ilegível. */
+const diaDaAbertura = (o: OrdemDoContexto) => (o.abertaEm && !Number.isNaN(Date.parse(o.abertaEm)) ? dataLocal(o.abertaEm) : null);
+
+/**
+ * A mais recente das candidatas aberta até o dia da visita, como o servidor escolhe a ordem da visita de bloqueio sem
+ * ordem informada (pela abertura e, no empate, pelo id). A de abertura ilegível fica de fora.
+ */
+function ordemAbertaAte(candidatas: readonly OrdemDoContexto[], dia: string, exceto: string): OrdemDoContexto | null {
+  let achada: { ordem: OrdemDoContexto; em: number } | null = null;
+  for (const o of candidatas) {
+    const abertura = diaDaAbertura(o);
+    if (o.id === exceto || !abertura || abertura > dia) continue;
+    const em = Date.parse(o.abertaEm!);
+    if (!achada || em > achada.em || (em === achada.em && o.id > achada.ordem.id)) achada = { ordem: o, em };
+  }
+  return achada?.ordem ?? null;
+}
+
+/**
+ * Ordem que a visita do formulário leva: a do contexto (ver `ordemDoContexto`), só na visita de bloqueio e com a data a
+ * partir do dia da abertura, no fuso do aparelho. A do dia da abertura, mesmo antes da hora dela, vai com a ordem. A de
+ * dia anterior (visita anotada em papel e registrada depois) não entra nela: a ordem não existia quando ela foi feita.
+ * Ela segue a regra do servidor para a de bloqueio sem ordem, com as ordens do pacote que contêm o quarteirão
+ * (`candidatas`, ver `ordensDoQuarteirao`): vai para a mais recente já aberta no dia dela, ou sem ordem, com o aviso na
+ * tela. Assim a lista da ordem em que o servidor vai gravá-la já mostra a casa na fila. Sem a abertura no contexto ou com
+ * a data ilegível, vai a ordem do contexto, e o servidor confere.
+ */
+export function ordemDoFormulario(
+  ordem: OrdemDoContexto | null | undefined,
+  atividade: AtividadeVetorial,
+  quando: string,
+  candidatas?: readonly OrdemDoContexto[] | null,
+): { ordemId: string | null; aviso: string | null } {
   if (!ordem || atividade !== 'BLOQUEIO') return { ordemId: null, aviso: null };
-  const diaDaAbertura = ordem.abertaEm && !Number.isNaN(Date.parse(ordem.abertaEm)) ? dataLocal(ordem.abertaEm) : null;
-  if (diaDaAbertura && !Number.isNaN(new Date(quando).getTime()) && dataLocal(quando) < diaDaAbertura)
-    return { ordemId: null, aviso: `A data é anterior à abertura da ordem ${ordem.numero}: a visita não vai entrar nela` };
-  return { ordemId: ordem.id, aviso: null };
+  const abertura = diaDaAbertura(ordem);
+  if (!abertura || Number.isNaN(new Date(quando).getTime())) return { ordemId: ordem.id, aviso: null };
+  const dia = dataLocal(quando);
+  if (dia >= abertura) return { ordemId: ordem.id, aviso: null };
+  const antes = `A data é anterior à abertura da ordem ${ordem.numero}`;
+  const ja = ordemAbertaAte(candidatas ?? [], dia, ordem.id);
+  return ja ? { ordemId: ja.id, aviso: `${antes}: a visita vai para a ordem ${ja.numero}, já aberta no dia dela` } : { ordemId: null, aviso: `${antes}: a visita não vai entrar nela` };
 }
 
 const maisNova = (atual: { em: string } | null | undefined, em: string) => !atual || Date.parse(em) >= Date.parse(atual.em);
@@ -243,9 +282,86 @@ export function daLotacao(item: { unitId?: string | null }, unitId: string | nul
   return item.unitId == null || item.unitId === unitId;
 }
 
-/** Visitas da fila que citam o imóvel novo pelo clientId (sem ele no servidor, não têm como ser gravadas). */
-export function dependentesDoImovel<T extends { op: OperacaoAce }>(itens: readonly T[], clientId: string): T[] {
-  return itens.filter((i) => i.op.tipo === 'VISITA_VETORIAL' && i.op.householdClientId === clientId);
+/** Registro da fila do aparelho como as regras da tela o leem (ver ItemFilaAce em ace-store.ts). */
+export interface RegistroDaFila {
+  clientId: string;
+  op: OperacaoAce;
+  status: 'PENDENTE' | 'ERRO';
+  erro?: string | null;
+  /** Versão que o servidor gravou enquanto o agente corrigia o registro (ver ItemFilaAce.versaoGravada; pode ser 0). */
+  versaoGravada?: number | null;
+}
+
+/**
+ * O servidor gravou a versão anterior do registro enquanto o agente o corrigia: a correção não vai mais (o reenvio volta
+ * DUPLICADA e o registro volta ao erro), e o efeito da versão gravada já entrou no pacote. O registro só espera o
+ * descarte: não é corrigido nem reenviado, não entra nas listas da tela e não conta no saldo do larvicida.
+ */
+export function comVersaoGravada(item: { versaoGravada?: number | null }): boolean {
+  return item.versaoGravada != null;
+}
+
+export type AcaoDaFila = 'corrigir' | 'tentarDeNovo' | 'descartar';
+
+/**
+ * Botões do registro na aba Fila. Corrigir e tentar de novo só no recusado desta lotação; o com a versão anterior gravada
+ * só sai pelo descarte (corrigido ou reenviado, o servidor responde DUPLICADA e ele volta ao mesmo erro).
+ */
+export function acoesDoItem(item: RegistroDaFila, daLotacaoAtiva: boolean): AcaoDaFila[] {
+  return item.status === 'ERRO' && daLotacaoAtiva && !comVersaoGravada(item) ? ['corrigir', 'tentarDeNovo', 'descartar'] : ['descartar'];
+}
+
+/**
+ * Visitas da fila que saem junto com o imóvel novo descartado: as que o citam pelo clientId (sem ele no servidor, não têm
+ * como ser gravadas). Com a versão anterior do imóvel gravada, nenhuma: o servidor acha o imóvel pelo clientId (o registro
+ * da sincronização em que ele foi gravado) e grava as visitas nele.
+ */
+export function dependentesDoImovel<T extends { op: OperacaoAce }>(itens: readonly T[], imovel: { clientId: string; versaoGravada?: number | null }): T[] {
+  if (comVersaoGravada(imovel)) return [];
+  return itens.filter((i) => i.op.tipo === 'VISITA_VETORIAL' && i.op.householdClientId === imovel.clientId);
+}
+
+/**
+ * Imóveis novos da fila na lista do quarteirão (já podem ser visitados), com a recusa do envio. O com a versão anterior
+ * gravada fica de fora: o pacote já tem o imóvel, com o id do servidor.
+ */
+export function imoveisDaFila(itens: readonly RegistroDaFila[]): ImovelCampoView[] {
+  return itens.flatMap((i) => (i.op.tipo === 'IMOVEL' && !comVersaoGravada(i) ? [{ ...imovelDaOperacao(i.op, i.clientId, true), erroNaFila: i.status === 'ERRO' ? (i.erro ?? null) : null }] : []));
+}
+
+/** Situação de um imóvel pela fila: a da última visita dele que ainda está no aparelho, com a ordem dela. */
+export interface VisitaNaFila {
+  situacao: string;
+  em: string;
+  ordemId: string | null;
+}
+
+/**
+ * Última visita de cada imóvel na fila (pelo id, ou pelo clientId do imóvel novo): sobrepõe a situação baixada. A com a
+ * versão anterior gravada fica de fora: vale a gravada, que já entrou no pacote.
+ */
+export function visitasNaFila(itens: readonly RegistroDaFila[]): Map<string, VisitaNaFila> {
+  const m = new Map<string, VisitaNaFila>();
+  for (const i of itens) {
+    if (i.op.tipo !== 'VISITA_VETORIAL' || comVersaoGravada(i)) continue;
+    const alvo = i.op.householdId ?? i.op.householdClientId;
+    const atual = alvo ? m.get(alvo) : undefined;
+    if (alvo && (!atual || Date.parse(i.op.registradoEm) >= Date.parse(atual.em))) m.set(alvo, { situacao: i.op.visita.situacao, em: i.op.registradoEm, ordemId: i.op.visita.ordemId ?? null });
+  }
+  return m;
+}
+
+/**
+ * Larvicida por lote nas visitas da fila: o saldo da tela é o do pacote menos este. A com a versão anterior gravada fica
+ * de fora: o pacote já descontou o da versão gravada.
+ */
+export function usoDaFila(itens: readonly RegistroDaFila[]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const i of itens) {
+    if (i.op.tipo !== 'VISITA_VETORIAL' || comVersaoGravada(i)) continue;
+    for (const t of i.op.visita.tratamentos ?? []) if (t.loteId) m.set(t.loteId, (m.get(t.loteId) ?? 0) + t.quantidade);
+  }
+  return m;
 }
 
 /** Motivo de uma rodada de envio interrompida (os itens não enviados continuam pendentes no aparelho). */

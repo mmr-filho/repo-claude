@@ -14,7 +14,19 @@ import { Input } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { Tabs, TabPanel } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
-import { aplicarAceitosNoPacote, dependentesDoImovel, imovelDaOperacao, ordemDoContexto, ordemMaisRecente, type FalhaSync, type OrdemDoContexto } from '@/lib/ace-campo';
+import {
+  acoesDoItem,
+  aplicarAceitosNoPacote,
+  dependentesDoImovel,
+  imoveisDaFila,
+  ordemDoContexto,
+  ordemMaisRecente,
+  ordensDoQuarteirao,
+  usoDaFila,
+  visitasNaFila,
+  type FalhaSync,
+  type OrdemDoContexto,
+} from '@/lib/ace-campo';
 import { filaAce, historicoAce, pacoteAce, useFilaAce, type ContextoAce, type EnviadoAce, type ItemFilaAce, type PacoteGuardado, type ResumoSyncAce } from '@/lib/ace-store';
 import { errorMessage } from '@/lib/api';
 import { fmtDate, fmtDateTime } from '@/lib/format';
@@ -218,27 +230,12 @@ export default function CampoAcePage() {
 
   const p = pacote?.data ?? null;
   const itensDaLotacao = fila.daLotacao;
-  // Imóveis novos ainda na fila entram na lista do quarteirão e já podem ser visitados.
-  const imoveis = useMemo<ImovelCampoView[]>(() => {
-    const novos = itensDaLotacao.flatMap((i) => (i.op.tipo === 'IMOVEL' ? [{ ...imovelDaOperacao(i.op, i.clientId, true), erroNaFila: i.status === 'ERRO' ? i.erro : null }] : []));
-    return [...(p?.imoveis ?? []), ...novos];
-  }, [p, itensDaLotacao]);
+  // Imóveis novos ainda na fila entram na lista do quarteirão e já podem ser visitados (o com a versão anterior gravada
+  // no servidor, não: o pacote já tem o imóvel).
+  const imoveis = useMemo<ImovelCampoView[]>(() => [...(p?.imoveis ?? []), ...imoveisDaFila(itensDaLotacao)], [p, itensDaLotacao]);
   /** Última visita de cada imóvel ainda na fila (sobrepõe a situação baixada). */
-  const naFila = useMemo(() => {
-    const m = new Map<string, { situacao: string; em: string; ordemId: string | null }>();
-    for (const i of itensDaLotacao) {
-      if (i.op.tipo !== 'VISITA_VETORIAL') continue;
-      const alvo = i.op.householdId ?? i.op.householdClientId;
-      const atual = alvo ? m.get(alvo) : undefined;
-      if (alvo && (!atual || Date.parse(i.op.registradoEm) >= Date.parse(atual.em))) m.set(alvo, { situacao: i.op.visita.situacao, em: i.op.registradoEm, ordemId: i.op.visita.ordemId ?? null });
-    }
-    return m;
-  }, [itensDaLotacao]);
-  const usoNaFila = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const i of itensDaLotacao) if (i.op.tipo === 'VISITA_VETORIAL') for (const t of i.op.visita.tratamentos ?? []) if (t.loteId) m.set(t.loteId, (m.get(t.loteId) ?? 0) + t.quantidade);
-    return m;
-  }, [itensDaLotacao]);
+  const naFila = useMemo(() => visitasNaFila(itensDaLotacao), [itensDaLotacao]);
+  const usoNaFila = useMemo(() => usoDaFila(itensDaLotacao), [itensDaLotacao]);
   const quarteiraoDe = useMemo(() => new Map((p?.quarteiroes ?? []).map((q) => [q.id, q])), [p]);
   /** Ordem do quarteirão no roteiro: a mais recente que o contém (a mesma que a visita aberta pelo roteiro leva). */
   const ordemDoQuarteirao = useMemo(() => {
@@ -263,11 +260,19 @@ export default function CampoAcePage() {
   };
   const filtra = (i: ImovelCampoView) => !busca.trim() || `${i.endereco} ${i.sequencia ?? ''} ${i.tipoLabel}`.toLowerCase().includes(busca.trim().toLowerCase());
   const alternar = (k: string) => setAbertos((s) => (s.has(k) ? new Set([...s].filter((x) => x !== k)) : new Set([...s, k])));
-  /** Abre a visita pela lista da ordem (`ordemId`) ou pelo roteiro e pelo mapa (a ordem do quarteirão), com a abertura. */
+  /**
+   * Abre a visita pela lista da ordem (`ordemId`) ou pelo roteiro e pelo mapa (a ordem do quarteirão), com a abertura e as
+   * ordens do quarteirão (a visita de dia anterior ao da abertura vai para a já aberta no dia dela).
+   */
   const visitar = (i: ImovelCampoView, ordemId: string | null) =>
     setDialogo({
       tipo: 'visita',
-      contexto: { imovel: i, ordem: ordemDoContexto(p?.ordens, i.quarteiraoId, ordemId), quarteirao: i.quarteiraoId ? (quarteiraoDe.get(i.quarteiraoId)?.numero ?? null) : null },
+      contexto: {
+        imovel: i,
+        ordem: ordemDoContexto(p?.ordens, i.quarteiraoId, ordemId),
+        ordensDoQuarteirao: ordensDoQuarteirao(p?.ordens, i.quarteiraoId),
+        quarteirao: i.quarteiraoId ? (quarteiraoDe.get(i.quarteiraoId)?.numero ?? null) : null,
+      },
     });
   const nomeDaUnidade = (id: string | null | undefined) => session.me?.assignments.find((a) => a.unitId === id)?.unitName ?? 'outra unidade';
 
@@ -300,15 +305,19 @@ export default function CampoAcePage() {
       contexto: {
         imovel,
         ordem: ordemDoContexto(p?.ordens, imovel.quarteiraoId, op.visita.ordemId),
+        ordensDoQuarteirao: ordensDoQuarteirao(p?.ordens, imovel.quarteiraoId),
         quarteirao: imovel.quarteiraoId ? (quarteiraoDe.get(imovel.quarteiraoId)?.numero ?? null) : null,
       },
       corrigir: item,
     });
   };
 
-  /** Descarta o registro; o imóvel novo leva junto as visitas registradas nele (sem ele, elas não têm como ser enviadas). */
+  /**
+   * Descarta o registro; o imóvel novo leva junto as visitas registradas nele (sem ele, elas não têm como ser enviadas),
+   * menos o com a versão anterior gravada: o servidor já tem o imóvel, e as visitas vão.
+   */
   const descartar = (item: ItemFilaAce) => {
-    const visitas = item.op.tipo === 'IMOVEL' ? dependentesDoImovel(fila.itens, item.clientId) : [];
+    const visitas = item.op.tipo === 'IMOVEL' ? dependentesDoImovel(fila.itens, item) : [];
     const pergunta = visitas.length
       ? `Descartar este imóvel novo e as ${visitas.length} visita(s) registradas nele? Sem o imóvel, as visitas não têm como ser enviadas. Nada disso será enviado.`
       : 'Descartar este registro do aparelho? Ele não será enviado.';
@@ -539,6 +548,8 @@ export default function CampoAcePage() {
                   <ul className="divide-y divide-slate-100">
                     {fila.itens.map((i) => {
                       const outraLotacao = !fila.daLotacao.includes(i);
+                      // O registro com a versão anterior gravada no servidor só sai pelo descarte.
+                      const acoes = acoesDoItem(i, !outraLotacao);
                       return (
                         <li key={i.clientId} className="flex flex-wrap items-center justify-between gap-2 py-2">
                           <div>
@@ -550,28 +561,30 @@ export default function CampoAcePage() {
                           </div>
                           <div className="flex items-center gap-2">
                             <Badge tone={outraLotacao ? 'amber' : i.status === 'ERRO' ? 'red' : 'blue'}>{outraLotacao ? 'Outra lotação' : i.status === 'ERRO' ? 'Erro' : 'Pendente'}</Badge>
-                            {i.status === 'ERRO' && !outraLotacao && (
-                              <>
-                                <Button size="sm" onClick={() => corrigir(i)}>
-                                  Corrigir
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="secondary"
-                                  onClick={() =>
-                                    void filaAce
-                                      .tentarDeNovo(i.clientId)
-                                      .then(() => sincronizar())
-                                      .catch((e) => toast.error(errorMessage(e)))
-                                  }
-                                >
-                                  Tentar de novo
-                                </Button>
-                              </>
+                            {acoes.includes('corrigir') && (
+                              <Button size="sm" onClick={() => corrigir(i)}>
+                                Corrigir
+                              </Button>
                             )}
-                            <Button size="sm" variant="ghost" onClick={() => descartar(i)}>
-                              Descartar
-                            </Button>
+                            {acoes.includes('tentarDeNovo') && (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() =>
+                                  void filaAce
+                                    .tentarDeNovo(i.clientId)
+                                    .then(() => sincronizar())
+                                    .catch((e) => toast.error(errorMessage(e)))
+                                }
+                              >
+                                Tentar de novo
+                              </Button>
+                            )}
+                            {acoes.includes('descartar') && (
+                              <Button size="sm" variant="ghost" onClick={() => descartar(i)}>
+                                Descartar
+                              </Button>
+                            )}
                           </div>
                         </li>
                       );

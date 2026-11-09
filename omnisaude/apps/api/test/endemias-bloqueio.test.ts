@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { areaM2, caixaDe, centroDe, cnsFromBase, completeCpf, localDateString, metrosPorGrau, normalizarArea, type Posicao } from '@omnisaude/shared';
+import { areaM2, caixaDe, centroDe, cnsFromBase, completeCpf, fromZonedParts, localDateString, metrosPorGrau, normalizarArea, zonedParts, type Posicao } from '@omnisaude/shared';
 import { Client } from 'pg';
 import { io } from 'socket.io-client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -106,6 +106,14 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
   let seq = 0;
 
   const dia = (n: number) => localDateString(new Date(Date.now() + n * DIA), tz);
+  /**
+   * Quanto esperar (ms) para a 0h (na hora da prefeitura) não cair no cenário: nem nos `depois` ms seguintes, nem nos
+   * `antes` ms anteriores. Perto dela, até `antes` ms depois; no resto do dia, nada.
+   */
+  const esperaDaMeiaNoite = (agora: number, antes = 2_000, depois = 30_000) => {
+    const meiaNoite = fromZonedParts({ ...zonedParts(new Date(agora + depois), tz), hour: 0, minute: 0, second: 0 }, tz).getTime();
+    return Math.max(0, meiaNoite + antes - agora);
+  };
   const ponto = (g: string, x: number, y: number): Posicao => {
     const O = origem[g]!;
     const m = metrosPorGrau(O[1]);
@@ -1483,6 +1491,9 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
   });
 
   it('dados-docs#4: com a ordem informada, a visita de dia anterior ao da abertura fica sem a ordem; a do dia, antes da hora, entra e o início do campo fica na abertura', async () => {
+    // A visita do começo do dia de hoje (0h00min01) tem de ser anterior a agora e do dia da abertura, que é agora: perto
+    // da 0h, o teste espera ela passar.
+    await new Promise((r) => setTimeout(r, esperaDaMeiaNoite(Date.now())));
     await caso('pi1', ponto('pdinf', 200, 200), 'dengue', dia(-1));
     const o = await ordemDe('pi1');
     const { openedAt: aberta, seq, year } = await ordem(o);
@@ -1508,9 +1519,12 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(oo.startedAt?.getTime()).toBe(aberta.getTime());
     await caso('pi2', ponto('pdinf', 210, 200), 'dengue', dia(0));
     expect(await ordemDe('pi2')).toBe(o);
-  });
+  }, 90_000);
 
   it('dados-docs#4: a visita de bloqueio sem ordem do mesmo dia da abertura, feita antes da hora dela, entra na ordem', async () => {
+    // A visita do começo do dia de hoje (0h00min01) tem de ser anterior a agora e do dia da abertura, que é agora: perto
+    // da 0h, o teste espera ela passar.
+    await new Promise((r) => setTimeout(r, esperaDaMeiaNoite(Date.now())));
     await caso('pm1', ponto('pddia', 200, 200), 'dengue', dia(-1));
     const o = await ordemDe('pm1');
     const aberta = (await ordem(o)).openedAt;
@@ -1525,7 +1539,7 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(oo.status).toBe('EM_CAMPO');
     // O início do campo não fica antes da abertura.
     expect(oo.startedAt?.getTime()).toBe(aberta.getTime());
-  });
+  }, 90_000);
 
   it('bloqueio#4: a conclusão sem nota que espera a união em curso diz que a ordem mudou, sem pedir justificativa', async () => {
     await caso('tu1', ponto('tvuni', 200, 200), 'dengue', dia(-9));
