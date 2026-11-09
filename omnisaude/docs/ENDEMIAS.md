@@ -46,7 +46,7 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
 | Coordenação de endemias (`COORDENADOR_ENDEMIAS`) | Técnico responsável | Tudo da supervisão, mais configuração do bloqueio, cancelamento de ordem, cadastro de insumo, entrada e estorno de remessa e prorrogação de validade; edita o território |
 | Vigilância epidemiológica e gestão | | Acompanham as ordens, zonas, visitas e a produção (`endemias.ler`); a ficha da notificação mostra a ordem do caso. A distância de cada quarteirão e o agravo aparecem só para quem tem o mapa de casos (`vigilancia.mapa`); a leitura do detalhe por quem não é da vigilância fica na trilha |
 
-### Modelo de dados (migrações `0027_endemias` e `0028_endemias_ajustes`)
+### Modelo de dados (migrações `0027_endemias`, `0028_endemias_ajustes` e `0029_inicio_do_campo_e_cadeia_de_unificacao`)
 
 - `vector_zones` e `vector_zone_blocks`: zona de trabalho do ACE (um quarteirão fica numa zona só).
 - `vector_visits`: visita ao imóvel com atividade, situação, recuperação, ciclo bimestral, contagens por tipo de
@@ -66,6 +66,9 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
 - Novos valores: papéis `ACE`, `SUPERVISOR_ENDEMIAS`, `COORDENADOR_ENDEMIAS`; local de estoque `ENDEMIAS`;
   movimentos `TRATAMENTO_FOCAL`, `ENTRADA_REMESSA` e `ESTORNO_REMESSA`; produto marcado como larvicida ou adulticida
   (não sai na dispensação da farmácia).
+- `0029` só corrige dados gravados antes de duas regras da semana: a ordem com o início do campo antes da abertura
+  passa a começar na abertura, e cada cadastro de uma cadeia de unificações passa a apontar para o fim dela (um ciclo
+  fica como está). Rodar de novo não muda nada.
 
 ### Ordem de bloqueio
 
@@ -158,14 +161,17 @@ detalhado fica no OmniSaúde; o SisPNCD e os sistemas estaduais não têm interf
 - **Armazenamento no aparelho**: banco próprio no IndexedDB (`omnisaude-campo-ace`: fila, pacote, histórico e
   contador de tubitos), separado do banco do ACS (`omnisaude-campo`). Se o aparelho não grava (outra aba prendendo o
   banco, falta de espaço), o formulário diz "Não foi possível guardar no aparelho" e continua aberto: nada é dado
-  como registrado.
+  como registrado. Cada gravação é toda ou nada, também quando uma parte não pode ser guardada na hora, e a falta de
+  espaço tem mensagem própria.
 - **Fila presa ao usuário e à lotação**: outro usuário no mesmo aparelho não envia o trabalho alheio; cada registro
   guarda a unidade da lotação ativa e só vai com ela (os de outra lotação aparecem como "Outra lotação"). Envio e
   download do pacote ficam em fila entre as abas abertas (trava do navegador), então duas abas não mandam o mesmo
   registro e o larvicida usado sai uma vez só do pacote guardado.
 - **Sincronização idempotente**: o diálogo fecha assim que o registro é guardado, e o envio segue em segundo plano,
   de 100 em 100. A visita (ou o imóvel), o registro do `clientId` e a baixa do estoque vão numa transação só; o
-  reenvio, em sequência ou simultâneo (resposta perdida, duas abas), volta como "já estava no servidor". Cada
+  reenvio, em sequência ou simultâneo (resposta perdida, duas abas), volta como "já estava no servidor". Cada visita
+  aceita volta com a ordem de bloqueio em que ficou (ou nenhuma), também no reenvio, e o aparelho marca a casa só nessa
+  ordem no pacote guardado; sem essa resposta (servidor de versão anterior), só na ordem informada. Cada
   operação é conferida sozinha: a inválida volta com o campo e o motivo, sem derrubar as outras. Falha passageira do
   servidor é repetida no próprio servidor e, se continuar, o registro fica pendente ("Última tentativa: ...");
   operação de outra lotação é recusada. Servidor fora, sessão vencida e falta de permissão interrompem o envio com a

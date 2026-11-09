@@ -53,8 +53,10 @@ elas vão para os geo campos 1 e 2 da ficha de notificação.
   domicílio e na visita do ACS; o app só manda coordenada quando há leitura nova no aparelho.
 - Endereço corrigido sem leitura nova apaga a posição que tinha vindo do endereço antigo (base do IBGE, centro de
   rua ou de bairro); GPS e marcação no mapa ficam.
-- A visita do ACS com GPS num imóvel sem posição, ou com posição aproximada (rua ou bairro), grava a posição como
-  GPS em campo e liga o imóvel ao quarteirão; o app avisa quando a posição é aproximada.
+- A visita do ACS com GPS num imóvel sem posição, ou com posição aproximada (centro do quarteirão, rua ou bairro),
+  grava a posição como GPS em campo. O imóvel sem quarteirão é ligado ao quarteirão do ponto; o que já tem quarteirão
+  (o escolhido pelo ACE em campo) só recebe a posição quando a malha liga o ponto a esse mesmo quarteirão, e fora dele
+  a posição fica só na visita, como no GPS da visita do ACE. O app avisa quando a posição é aproximada.
 - A ficha de cadastro domiciliar do e-SUS leva latitude e longitude só com precisão do imóvel (as quatro primeiras);
   ligar ou desligar o quarteirão não altera o cadastro e não reenvia a ficha.
 - No mapa de casos vale a residência registrada na ficha (a notificada), a não ser que o mesmo imóvel tenha sido

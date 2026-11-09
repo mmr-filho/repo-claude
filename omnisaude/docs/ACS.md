@@ -64,11 +64,18 @@ casos de busca ativa abertos da pessoa e entra nos indicadores e programas (abai
   parte dele. Duas abas não mandam a fila ao mesmo tempo (trava do navegador entre abas; sem ela, em navegador antigo ou
   fora de HTTPS, a ordem dos envios vale só por aba). O registro descartado durante o envio não volta para a fila com o
   erro do servidor.
-- Se o aparelho não consegue gravar (outra aba prendendo o banco, falta de espaço), o formulário mostra "Não foi
-  possível guardar no aparelho: feche as outras abas do OmniSaúde e tente de novo" e continua aberto: nada é dado
-  como registrado. Uma falha do aparelho durante o envio, depois de o registro estar guardado, aparece como aviso ("O
+- Se o aparelho não consegue gravar, o formulário mostra o motivo e continua aberto: nada é dado como registrado.
+  Outra aba prendendo o banco e as falhas gerais dão "Não foi possível guardar no aparelho: feche as outras abas do
+  OmniSaúde e tente de novo"; a falta de espaço, "...o espaço de armazenamento acabou. Libere espaço e tente de novo",
+  também quando a falha vem na gravação e não na confirmação. O registro é tudo ou nada também quando uma operação não
+  pode ser guardada na hora: a transação é cancelada. Uma falha do aparelho durante o envio, depois de o registro estar guardado, aparece como aviso ("O
   envio parou... Nada se perde: o que ficou na fila vai no próximo envio, sem duplicar") e não volta ao formulário
   (salvar de novo duplicaria a visita); a falha ao descartar ou ao tentar de novo também vira aviso.
+- Marcar o erro do servidor e "tentar de novo" leem e regravam o item numa transação só: o descarte feito noutra aba
+  nesse meio-tempo vale, e o item não volta.
+- A hora de cada item da fila é a do relógio do aparelho; os itens de um registro ficam na ordem das operações. O item
+  só vai para depois do último quando o relógio voltou até 1 s; se voltou mais (acerto pela hora da rede), fica com a
+  hora do relógio.
 - O território, as visitas e a produtividade ficam em cache; sem rede a tela mostra a cópia e a data.
 - A sessão (`/auth/me`) também fica guardada para a tela abrir sem rede; um 401 do servidor encerra a sessão.
 - Um **service worker** (`public/sw.js`), registrado em todas as telas autenticadas do build de produção, guarda
@@ -81,7 +88,8 @@ casos de busca ativa abertos da pessoa e entra nos indicadores e programas (abai
 
 Leaflet com OpenStreetMap: um ponto por domicílio com posição, verde (visitado em 30 dias), âmbar (até 90
 dias) ou vermelho (sem visita recente). A posição é marcada pelo GPS do aparelho ao cadastrar o domicílio ou
-ao registrar a visita. Sem internet o fundo do mapa não carrega, mas os pontos continuam.
+ao registrar a visita; na visita, o domicílio que já tem quarteirão (o escolhido pelo ACE em campo) só recebe a
+posição quando ela cai nesse quarteirão. Sem internet o fundo do mapa não carrega, mas os pontos continuam.
 
 ## Produtividade
 
