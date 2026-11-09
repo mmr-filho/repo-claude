@@ -3,7 +3,7 @@ import { avaliarGps, onlyDigits, type PrecisaoGeo } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { DomainError, notFound } from '../../core/errors';
-import { LocalizadorService, PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
+import { ENDERECO_LIGA_QUARTEIRAO, LocalizadorService, PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
 import { TerritorioService } from '../territorio/territorio.service';
 import { patientSummary } from './patients.service';
 
@@ -133,7 +133,7 @@ export class HouseholdsService {
     // ACS fora da sua equipe e microárea: o cadastro é atualizado, mas a posição não (mesma regra da marcação no mapa).
     if ((input.latitude !== undefined || input.longitude !== undefined) && !(await this.localizador.noEscopoDeCampo(ctx, id)))
       input = { ...input, latitude: undefined, longitude: undefined, geoAccuracyM: undefined, geoPrecision: undefined };
-    const geo = this.geo(input, h);
+    const geo = this.geo(input, h, await this.quarteiraoDoAceFica(ctx, input, h));
     await ctx.db.$transaction(async (tx) => {
       await tx.household.update({ where: { id }, data: { ...this.data(input), ...geo } });
       if ('geoPrecision' in geo) await this.localizador.vincularImovel(tx, id);
@@ -171,6 +171,17 @@ export class HouseholdsService {
     return this.localizador.noEscopoDeCampo(ctx, id);
   }
 
+  /**
+   * A correção do endereço tiraria o quarteirão junto com a posição que veio do endereço (endereço ou face de quadra),
+   * e o imóvel foi criado pelo ACE em campo: o quarteirão escolhido lá fica, só a posição sai. A origem do imóvel só é
+   * consultada nesse caso.
+   */
+  private async quarteiraoDoAceFica(ctx: RequestContext, input: HouseholdInput, h: AtualGeo & { id: string; blockId: string | null; geoSource: string | null }) {
+    const precisao = h.geoPrecision as PrecisaoGeo | null;
+    if (!h.blockId || h.latitude == null || !precisao || !ENDERECO_LIGA_QUARTEIRAO.includes(precisao) || !enderecoAlterado(this.data(input), h)) return false;
+    return this.localizador.quarteiraoEscolhidoEmCampo(ctx.db, h);
+  }
+
   /** Liga o imóvel ao quarteirão que contém a posição dele (ou desliga, se ficou sem posição ou fora da malha). */
   ligarAoQuarteirao(db: Parameters<LocalizadorService['vincularImovel']>[0], id: string) {
     return this.localizador.vincularImovel(db, id);
@@ -183,18 +194,20 @@ export class HouseholdsService {
 
   /**
    * Precisão da posição quando ela muda: a enviada (o app do ACS manda o raio do GPS) ou GPS em campo. Sem posição,
-   * a precisão e o quarteirão saem junto (na correção do endereço, só o quarteirão que veio da posição do endereço).
+   * a precisão e o quarteirão saem junto (na correção do endereço, só o quarteirão que veio da posição do endereço, e
+   * nunca o escolhido pelo ACE em campo: `quarteiraoDoAce`).
    */
-  private geo(input: HouseholdInput, atual: AtualGeo | null) {
+  private geo(input: HouseholdInput, atual: AtualGeo | null, quarteiraoDoAce = false) {
     const semPosicao = { latitude: null, longitude: null, geoPrecision: null, geoSource: null, geoAccuracyM: null, geoAt: null, blockId: null };
     const naoMuda = { latitude: undefined, longitude: undefined };
     // Endereço corrigido sem leitura nova: a posição que veio do endereço antigo (base do IBGE, centro de rua ou de
     // bairro) deixa de valer; GPS e marcação no mapa são do imóvel e ficam. O centro do quarteirão também fica: vem do
     // quarteirão que o imóvel já tem (o escolhido pelo ACE em campo), não do endereço. E o quarteirão só sai junto com a
-    // posição que o ligou a ele (endereço ou face de quadra na base do IBGE); o escolhido em campo fica.
+    // posição que o ligou a ele (endereço ou face de quadra na base do IBGE); o escolhido em campo fica, também no imóvel
+    // criado pelo ACE que o endereço da base do IBGE confirmou (a posição sai, o quarteirão não).
     const precisaoAtual = (atual?.geoPrecision ?? null) as PrecisaoGeo | null;
     const posicaoDoEndereco = !!atual && atual.latitude != null && !!precisaoAtual && !POSICAO_DE_CAMPO.includes(precisaoAtual) && precisaoAtual !== 'QUARTEIRAO';
-    const semPosicaoDoEndereco = precisaoAtual && PRECISAO_LIGA_QUARTEIRAO.includes(precisaoAtual) ? semPosicao : { ...semPosicao, blockId: undefined };
+    const semPosicaoDoEndereco = !quarteiraoDoAce && precisaoAtual && PRECISAO_LIGA_QUARTEIRAO.includes(precisaoAtual) ? semPosicao : { ...semPosicao, blockId: undefined };
     const enderecoMudou = !!atual && enderecoAlterado(this.data(input), atual);
     if (input.latitude === undefined && input.longitude === undefined) return posicaoDoEndereco && enderecoMudou ? semPosicaoDoEndereco : {};
     // Só uma das coordenadas no corpo: a outra continua a atual.

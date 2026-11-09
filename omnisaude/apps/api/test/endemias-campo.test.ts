@@ -8,10 +8,12 @@ import {
   completeCpf,
   conferirImovelCampo,
   conferirVisitaVetorial,
+  fromZonedParts,
   localDateString,
   metrosPorGrau,
   normalizarArea,
   ordenarOperacoesAce,
+  zonedParts,
   type Posicao,
 } from '@omnisaude/shared';
 import { Client } from 'pg';
@@ -112,6 +114,19 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     const ciclo = (ms: number) => cicloBimestral(localDateString(new Date(ms), tz)).chave;
     return ciclo(agora - janelaMin * 60_000) === ciclo(agora) ? agora : agora - (janelaMin + 1) * 60_000;
   };
+  /**
+   * Relógio da prefeitura para um cenário: `(dias, hora, minuto)` é o instante a essa hora, `dias` dias antes de hoje (no
+   * passado com `dias` ≥ 1). O "hoje" fica fixo na criação, para o cenário não mudar de dia se a suíte passar da meia-noite.
+   */
+  const horasDaPrefeitura = (agora = new Date()) => {
+    const hoje = zonedParts(agora, tz);
+    return (dias: number, hora: number, minuto = 0) => {
+      const d = new Date(Date.UTC(hoje.year, hoje.month - 1, hoje.day - dias));
+      return fromZonedParts({ year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate(), hour: hora, minute: minuto, second: 0 }, tz);
+    };
+  };
+  /** Meia-noite (na hora da prefeitura) do dia do instante. */
+  const inicioDoDia = (ms: number) => fromZonedParts({ ...zonedParts(new Date(ms), tz), hour: 0, minute: 0, second: 0 }, tz).getTime();
   /** Conexão direta ao banco do município (trava de linha por fora, como a da união do bloqueio). */
   const pgc = async () => {
     const c = new Client({ connectionString: TEST_PG.replace(/\/[^/]*$/, `/${tenantDb}`) });
@@ -632,22 +647,26 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     const [r240] = await resultados(ace, [v240]);
     expect(r240!.avisos?.join(' ')).toMatch(/já estava concluída/);
     expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'CONCLUIDA', startedAt: new Date(await visitedAt(v240)) });
-    // A de antes da abertura (relógio do aparelho atrasado) entra na ordem, com a hora do aparelho e o aviso para conferir
-    // o relógio, mas o início fica na abertura.
-    const v360 = bloqueio(360);
-    expect((await resultados(ace, [v360]))[0]).toMatchObject({
+    // A do dia da abertura feita antes da hora dela (hora digitada ou relógio do aparelho atrasado) entra na ordem, com a
+    // hora da visita e o aviso para conferir a hora, mas o início fica na abertura. Ela fica até 1 h antes da abertura sem
+    // passar para a véspera (a de dia anterior fica sem a ordem), a qualquer hora da suíte.
+    const abertura = base - 300 * 60_000;
+    const antesDaHora = { ...bloqueio(0), registradoEm: new Date(Math.max(abertura - 60 * 60_000, inicioDoDia(abertura))).toISOString() };
+    expect((await resultados(ace, [antesDaHora]))[0]).toMatchObject({
       status: 'OK',
-      avisos: [`A hora do aparelho é anterior à abertura da ordem ${await numeroDa(ordem)}: confira a data e a hora do aparelho`, `A ordem ${await numeroDa(ordem)} já estava concluída: a visita entrou nela`],
+      avisos: [`A hora da visita é anterior à abertura da ordem ${await numeroDa(ordem)}: confira a hora da visita e o relógio do aparelho`, `A ordem ${await numeroDa(ordem)} já estava concluída: a visita entrou nela`],
     });
-    expect(await db.vectorVisit.findUniqueOrThrow({ where: { clientId: v360.clientId } })).toMatchObject({ orderId: ordem, visitedAt: new Date(v360.registradoEm) });
-    expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'CONCLUIDA', startedAt: new Date(base - 300 * 60_000) });
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { clientId: antesDaHora.clientId } })).toMatchObject({ orderId: ordem, visitedAt: new Date(antesDaHora.registradoEm) });
+    expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'CONCLUIDA', startedAt: new Date(abertura) });
   });
 
   it('a recuperação da visita seguinte é refeita pelo escopo dela: o bloqueio trabalhado no meio do ciclo é a anterior da rotina', async () => {
     // As visitas do cenário (até 8 h atrás) no mesmo ciclo, a qualquer hora da suíte.
     const base = ancoraNoCiclo(8 * 60);
     const visitaAs = (householdId: string, v: Record<string, unknown>, minAtras: number) => ({ ...visita(householdId, v), registradoEm: em(minAtras, base) });
-    const ordem = await novaOrdem(bloco['21']!, 'EM_CAMPO');
+    // Aberta antes das visitas. Aberta agora, de madrugada o bloqueio de 5 h atrás seria da véspera da abertura e ficaria
+    // sem a ordem, no escopo do ciclo.
+    const ordem = await novaOrdem(bloco['21']!, 'EM_CAMPO', new Date(base - 9 * 3600_000));
     const casa = await novoImovel(bloco['21']!);
     const trabalhado = { B: { inspecionados: 1, comFoco: 0, eliminados: 1, tratados: 0 } };
     const fechado = visitaAs(casa, { atividade: 'LI', situacao: 'FECHADO' }, 480);
@@ -659,6 +678,7 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
       [supervisora, fechado],
     ] as const)
       expect((await resultados(tk, [op]))[0]!.status).toBe('OK');
+    expect((await db.vectorVisit.findUniqueOrThrow({ where: { clientId: bloqueio.clientId } })).orderId).toBe(ordem);
     const recuperacao = async (op: { clientId: string }) => (await db.vectorVisit.findUniqueOrThrow({ where: { clientId: op.clientId } })).recovery;
     // O fechado das 8 h chegou por último, mas a anterior da rotina das 14 h no ciclo é o bloqueio trabalhado das 11 h.
     expect(await recuperacao(rotina)).toBe(false);
@@ -753,7 +773,7 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     expect((await daVisita(v2)).orderId).toBe(o1);
     expect(await ordem(o1)).toMatchObject({ status: 'CONCLUIDA', startedAt: (await daVisita(v2)).visitedAt });
     // A que ficou não tem o quarteirão do imóvel: como antes, a visita fica sem ordem. As ordens também foram abertas
-    // antes das visitas (a visita de antes da abertura da informada ganha o aviso do relógio do aparelho).
+    // antes das visitas (a visita de antes da abertura da informada ganha o aviso da hora da visita).
     const outra = await novaOrdem(bloco['5']!, 'ABERTA', abertas);
     const o4 = await novaOrdem(bloco['25']!, 'ABERTA', abertas);
     await unir(o4, outra);
@@ -782,7 +802,7 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
 
   it('a visita que chega durante a união espera a trava da ordem e entra na ordem que ficou', async () => {
     const casa = await novoImovel(bloco['25']!);
-    // Abertas antes da visita, que é de 5 min atrás (a de antes da abertura ganharia o aviso do relógio do aparelho).
+    // Abertas antes da visita, que é de 5 min atrás (a de antes da abertura ganharia o aviso da hora da visita).
     const abertas = new Date(Date.now() - 3600_000);
     const ficou = await novaOrdem(bloco['25']!, 'ABERTA', abertas);
     const levada = await novaOrdem(bloco['25']!, 'ABERTA', abertas);
@@ -878,35 +898,105 @@ describe.runIf(enabled)('VIG-3a: campo do ACE e estoque de larvicida (correçõe
     expect(doImovel).not.toHaveProperty('ordemId');
   });
 
-  it('visita informada com a hora do aparelho antes da abertura da informada: fica com a hora do aparelho e ganha o aviso do relógio', async () => {
-    // A que ficou foi aberta há 6 h; a informada, há 3 h, foi unificada a ela. O aviso é pela abertura da informada, que o
-    // aparelho levou no pacote, e leva o número dela.
-    const ficou = await novaOrdem(bloco['11']!, 'ABERTA', new Date(Date.now() - 6 * 3600_000));
-    const levada = await novaOrdem(bloco['11']!, 'ABERTA', new Date(Date.now() - 3 * 3600_000));
-    const cancelada = await novaOrdem(bloco['11']!, 'ABERTA', new Date(Date.now() - 3 * 3600_000));
+  it('visita informada de antes da abertura da informada: a do mesmo dia entra, com o aviso da hora; a de dia anterior fica sem ordem, nem na que ficou', async () => {
+    // A que ficou foi aberta anteontem às 6 h; a informada, ontem às 9 h, foi unificada a ela. A conta é pela abertura da
+    // informada, que o aparelho levou no pacote, e o aviso leva o número dela. Os horários são na hora da prefeitura, no
+    // passado a qualquer hora da suíte.
+    const horaLocal = horasDaPrefeitura();
+    const ficou = await novaOrdem(bloco['11']!, 'ABERTA', horaLocal(2, 6));
+    const levada = await novaOrdem(bloco['11']!, 'ABERTA', horaLocal(1, 9));
+    const cancelada = await novaOrdem(bloco['11']!, 'ABERTA', horaLocal(1, 9));
     await unir(levada, ficou);
     await db.blockingOrder.update({ where: { id: cancelada }, data: { status: 'CANCELADA', cancelledAt: new Date(), cancelReason: 'Epidemia: a ação passa a ser por área' } });
     const casa = await novoImovel(bloco['11']!);
-    const relogio = (n: string) => `A hora do aparelho é anterior à abertura da ordem ${n}: confira a data e a hora do aparelho`;
-    // 4 h atrás: antes da abertura da informada (3 h), depois da abertura da que ficou (6 h).
-    const atrasada = visita(casa, { atividade: 'BLOQUEIO', situacao: 'FECHADO', ordemId: levada }, 4 * 60);
-    expect((await resultados(ace, [atrasada]))[0]).toMatchObject({
-      status: 'OK',
-      ordemId: ficou,
-      avisos: [relogio(await numeroDa(levada)), `A ordem ${await numeroDa(levada)} foi unificada à ordem ${await numeroDa(ficou)}: visita gravada nela`],
-    });
+    const naOrdem = (ordemId: string, quando: Date) => ({ ...visita(casa, { atividade: 'BLOQUEIO', situacao: 'FECHADO', ordemId }), registradoEm: quando.toISOString() });
+    const hora = (n: string) => `A hora da visita é anterior à abertura da ordem ${n}: confira a hora da visita e o relógio do aparelho`;
+    const data = (n: string) => `A data da visita é anterior à abertura da ordem ${n}: visita gravada sem a ordem (confira a data da visita e o relógio do aparelho)`;
+    const unificada = `A ordem ${await numeroDa(levada)} foi unificada à ordem ${await numeroDa(ficou)}: visita gravada nela`;
+    // Ontem às 8 h: antes da abertura da informada, no mesmo dia. Entra na que ficou, com a hora da visita.
+    const atrasada = naOrdem(levada, horaLocal(1, 8));
+    expect((await resultados(ace, [atrasada]))[0]).toMatchObject({ status: 'OK', ordemId: ficou, avisos: [hora(await numeroDa(levada)), unificada] });
     expect(await db.vectorVisit.findUniqueOrThrow({ where: { clientId: atrasada.clientId } })).toMatchObject({ orderId: ficou, visitedAt: new Date(atrasada.registradoEm) });
-    // Na cancelada, a visita fica sem ordem e o aviso do relógio vem do mesmo jeito.
-    const naCancelada = visita(casa, { atividade: 'BLOQUEIO', situacao: 'FECHADO', ordemId: cancelada }, 5 * 60);
+    // Anteontem às 20 h: dia anterior ao da abertura da informada, mesmo depois da abertura da que ficou. Fica sem ordem.
+    const diaAntes = naOrdem(levada, horaLocal(2, 20));
+    expect((await resultados(ace, [diaAntes]))[0]).toMatchObject({ status: 'OK', ordemId: null, avisos: [data(await numeroDa(levada))] });
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { clientId: diaAntes.clientId } })).toMatchObject({ orderId: null, activity: 'BLOQUEIO', visitedAt: new Date(diaAntes.registradoEm) });
+    // Na cancelada, a do mesmo dia fica sem ordem com o aviso da hora; a de dia anterior, só com o da data.
+    const naCancelada = naOrdem(cancelada, horaLocal(1, 7));
     expect((await resultados(ace, [naCancelada]))[0]).toMatchObject({
       status: 'OK',
       ordemId: null,
-      avisos: [relogio(await numeroDa(cancelada)), `A ordem ${await numeroDa(cancelada)} foi cancelada: visita gravada sem a ordem`],
+      avisos: [hora(await numeroDa(cancelada)), `A ordem ${await numeroDa(cancelada)} foi cancelada: visita gravada sem a ordem`],
     });
     expect(await db.vectorVisit.findUniqueOrThrow({ where: { clientId: naCancelada.clientId } })).toMatchObject({ orderId: null, visitedAt: new Date(naCancelada.registradoEm) });
+    const canceladaAntes = naOrdem(cancelada, horaLocal(2, 21));
+    expect((await resultados(ace, [canceladaAntes]))[0]).toMatchObject({ status: 'OK', ordemId: null, avisos: [data(await numeroDa(cancelada))] });
     // Depois da abertura da informada: sem o aviso.
-    const emDia = visita(casa, { atividade: 'BLOQUEIO', situacao: 'FECHADO', ordemId: levada }, 60);
-    expect((await resultados(ace, [emDia]))[0]).toMatchObject({ status: 'OK', ordemId: ficou, avisos: [`A ordem ${await numeroDa(levada)} foi unificada à ordem ${await numeroDa(ficou)}: visita gravada nela`] });
+    const emDia = naOrdem(levada, horaLocal(1, 10));
+    expect((await resultados(ace, [emDia]))[0]).toMatchObject({ status: 'OK', ordemId: ficou, avisos: [unificada] });
+    // O início do campo da que ficou é a mais antiga das visitas que entraram nela (a de anteontem não entrou).
+    expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ficou } })).toMatchObject({ status: 'EM_CAMPO', startedAt: horaLocal(1, 8) });
+  });
+
+  it('visita registrada depois com a data de um dia anterior ao da abertura da ordem informada: fica sem a ordem, que não vai para o campo', async () => {
+    // A ordem do quarteirão 12 foi aberta ontem às 0h30, na hora da prefeitura. O ACE registra hoje as visitas que anotou
+    // em papel (aparelho sem bateria) e o formulário mandou a ordem do roteiro: a de anteontem às 23h30 (no UTC, o mesmo
+    // dia da abertura) e a de ontem às 0h10, antes da abertura.
+    const horaLocal = horasDaPrefeitura();
+    const aberta = horaLocal(1, 0, 30);
+    const ordem = await novaOrdem(bloco['12']!, 'ABERTA', aberta);
+    const n = await numeroDa(ordem);
+    const casa = await novoImovel(bloco['12']!);
+    const trabalhado = { B: { inspecionados: 1, comFoco: 0, eliminados: 1, tratados: 0 } };
+    const naOrdem = (quando: Date) => ({ ...visita(casa, { atividade: 'BLOQUEIO', situacao: 'TRABALHADO', ordemId: ordem, depositos: trabalhado }), registradoEm: quando.toISOString() });
+    const progresso = async () => (await t.http().get(`/api/endemias/bloqueios/${ordem}`).set(auth(supervisora)).expect(200)).body.progresso;
+    const vespera = naOrdem(horaLocal(2, 23, 30));
+    expect(localDateString(new Date(vespera.registradoEm), tz)).not.toBe(localDateString(aberta, tz));
+    expect(vespera.registradoEm.slice(0, 10)).toBe(aberta.toISOString().slice(0, 10));
+    // Antes, entrava na ordem com o aviso do relógio: a ordem ia para o campo e a casa contava como trabalhada.
+    const [r] = await resultados(ace, [vespera]);
+    expect(r).toMatchObject({ status: 'OK', ordemId: null, avisos: [`A data da visita é anterior à abertura da ordem ${n}: visita gravada sem a ordem (confira a data da visita e o relógio do aparelho)`] });
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { clientId: vespera.clientId } })).toMatchObject({ orderId: null, activity: 'BLOQUEIO', situation: 'TRABALHADO' });
+    expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'ABERTA', startedAt: null });
+    expect(await progresso()).toMatchObject({ trabalhados: 0 });
+    // O pacote não a marca na ordem, e o reenvio diz que ficou sem ordem.
+    const pacote = (await t.http().get('/api/endemias/campo/pacote').set(auth(ace)).expect(200)).body;
+    expect(pacote.ordens.find((o: { id: string }) => o.id === ordem).visitados).toEqual({});
+    expect((await resultados(ace, [vespera]))[0]).toMatchObject({ status: 'DUPLICADA', ordemId: null });
+    // A de ontem às 0h10, no dia da abertura e antes da hora dela, entra, com o aviso da hora; o início fica na abertura.
+    const mesmoDia = naOrdem(horaLocal(1, 0, 10));
+    expect((await resultados(ace, [mesmoDia]))[0]).toMatchObject({ status: 'OK', ordemId: ordem, avisos: [`A hora da visita é anterior à abertura da ordem ${n}: confira a hora da visita e o relógio do aparelho`] });
+    expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'EM_CAMPO', startedAt: aberta });
+    expect(await progresso()).toMatchObject({ trabalhados: 1 });
+  });
+
+  it('só a visita de bloqueio entra na ordem informada: a de outra atividade fica sem a ordem e não conta no progresso', async () => {
+    // O formulário aberto pela ordem começa no bloqueio, e o ACE trocou a atividade para LI (o app de antes mandava a ordem
+    // do mesmo jeito).
+    const ordem = await novaOrdem(bloco['14']!, 'ABERTA', new Date(Date.now() - 3600_000));
+    const n = await numeroDa(ordem);
+    const casa = await novoImovel(bloco['14']!);
+    const trabalhado = { B: { inspecionados: 1, comFoco: 0, eliminados: 1, tratados: 0 } };
+    const progresso = async () => (await t.http().get(`/api/endemias/bloqueios/${ordem}`).set(auth(supervisora)).expect(200)).body.progresso;
+    const li = visita(casa, { atividade: 'LI', situacao: 'TRABALHADO', ordemId: ordem, depositos: trabalhado }, 30);
+    expect((await resultados(ace, [li]))[0]).toMatchObject({ status: 'OK', ordemId: null, avisos: [`Só a visita de bloqueio entra na ordem ${n}: visita gravada sem a ordem`] });
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { clientId: li.clientId } })).toMatchObject({ orderId: null, activity: 'LI' });
+    expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'ABERTA', startedAt: null });
+    expect(await progresso()).toMatchObject({ trabalhados: 0 });
+    expect((await resultados(ace, [li]))[0]).toMatchObject({ status: 'DUPLICADA', ordemId: null });
+    // A mesma regra com a ordem unificada: a de outra atividade não segue a cadeia de uniões.
+    const levada = await novaOrdem(bloco['14']!, 'ABERTA', new Date(Date.now() - 3600_000));
+    await unir(levada, ordem);
+    const tratamento = visita(casa, { atividade: 'T', situacao: 'FECHADO', ordemId: levada }, 20);
+    expect((await resultados(ace, [tratamento]))[0]).toMatchObject({ status: 'OK', ordemId: null, avisos: [`Só a visita de bloqueio entra na ordem ${await numeroDa(levada)}: visita gravada sem a ordem`] });
+    expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'ABERTA', startedAt: null });
+    // A de bloqueio entra, sem aviso.
+    const bloqueio = visita(casa, { atividade: 'BLOQUEIO', situacao: 'TRABALHADO', ordemId: ordem, depositos: trabalhado }, 10);
+    const [r] = await resultados(ace, [bloqueio]);
+    expect(r).toMatchObject({ status: 'OK', ordemId: ordem });
+    expect(r!.avisos).toBeUndefined();
+    expect(await db.blockingOrder.findUniqueOrThrow({ where: { id: ordem } })).toMatchObject({ status: 'EM_CAMPO', startedAt: new Date(bloqueio.registradoEm) });
+    expect(await progresso()).toMatchObject({ trabalhados: 1 });
   });
 
   it('remessas ao mesmo tempo: lote novo em duas guias entra pelas duas; a mesma guia duas vezes, uma só', async () => {

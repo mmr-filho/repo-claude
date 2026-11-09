@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PacoteCampo } from '@/components/endemias/types';
 import type { ImovelOp, VisitaOp } from '@/lib/ace-campo';
 import type { ItemFilaAce } from '@/lib/ace-store';
-import { FakeIndexedDB } from './fake-indexeddb';
+import { FakeIndexedDB, type LeituraVista } from './fake-indexeddb';
 
 // Banco do aparelho em memória (o IndexedDB de verdade é testado em offline.test.ts) e API simulada.
 const sim = vi.hoisted(() => {
@@ -12,12 +12,29 @@ const sim = vi.hoisted(() => {
   const chave = (store: Store, v: unknown) => String((v as Record<string, unknown>)[store === 'fila' ? 'clientId' : 'key']);
   const copia = <T>(v: T): T => (v === undefined ? v : structuredClone(v));
   const estado = { falhaGravacao: null as Error | null, online: true };
-  const gravar = async (gs: { store: Store; put?: unknown; delete?: string }[]) => {
+  type Gravacao = { store: Store; put?: unknown; delete?: string };
+  const gravar = async (gs: Gravacao[]) => {
     if (estado.falhaGravacao) throw estado.falhaGravacao;
     for (const g of gs) {
       if (g.delete !== undefined) stores[g.store].delete(g.delete);
       else stores[g.store].set(chave(g.store, g.put), copia(g.put));
     }
+  };
+  // Ler e gravar numa transação só: aqui nada roda entre a leitura e a gravação.
+  const atualizar = async (store: Store, key: string, fn: (atual: unknown) => unknown) => {
+    if (estado.falhaGravacao) throw estado.falhaGravacao;
+    const novo = fn(copia(stores[store].get(key)));
+    if (novo !== undefined) await gravar([{ store, put: novo }]);
+    return copia(novo);
+  };
+  const atualizarVarios = async (leituras: Partial<Record<Store, string[] | 'todas'>>, fn: (lidos: Record<Store, Map<string, unknown>>) => Gravacao[]) => {
+    if (estado.falhaGravacao) throw estado.falhaGravacao;
+    const lidos: Record<Store, Map<string, unknown>> = { fila: new Map(), cache: new Map() };
+    for (const [store, chaves] of Object.entries(leituras) as [Store, string[] | 'todas'][])
+      for (const k of chaves === 'todas' ? [...stores[store].keys()] : chaves) if (stores[store].has(k)) lidos[store].set(k, copia(stores[store].get(k)));
+    const gs = fn(lidos);
+    await gravar(gs);
+    return gs;
   };
   const localAce = {
     get: async (store: Store, key: string) => copia(stores[store].get(key)),
@@ -25,6 +42,8 @@ const sim = vi.hoisted(() => {
     put: (store: Store, value: unknown) => gravar([{ store, put: value }]),
     delete: (store: Store, key: string) => gravar([{ store, delete: key }]),
     gravar,
+    atualizar,
+    atualizarVarios,
   };
   return { stores, estado, localAce, post: vi.fn(), get: vi.fn() };
 });
@@ -202,7 +221,8 @@ describe('duas sincronizações ao mesmo tempo (corrida do histórico)', () => {
     await new Promise((r) => setTimeout(r, 5));
     await filaAce.remover(UUID(1));
     liberar();
-    await envio;
+    // O descartado não conta como erro nem como adiado: o aviso não manda procurar na fila o que não está mais lá.
+    expect(await envio).toMatchObject({ erros: 0, adiados: 0, falha: null });
     expect(item(UUID(1))).toBeUndefined();
   });
 });
@@ -248,7 +268,10 @@ describe('corrigir registro recusado (web-offline#11, sync-estoque#10)', () => {
   });
 
   it('corrigir um registro que já saiu da fila avisa em vez de criar outro', async () => {
-    await expect(filaAce.corrigir(UUID(99), visita(UUID(99)), 'x')).rejects.toBeInstanceOf(ErroAparelho);
+    await expect(filaAce.corrigir(UUID(99), visita(UUID(99)), 'x', { ultimoTubito: 3 })).rejects.toBeInstanceOf(ErroAparelho);
+    // Nada foi gravado: nem o registro, nem a posição dos tubitos.
+    expect(sim.stores.fila.size).toBe(0);
+    expect(await contadorTubito.ler('u1')).toBe(0);
   });
 
   it('descartar o imóvel novo leva junto as visitas dele (remoção numa transação)', async () => {
@@ -274,32 +297,33 @@ describe('gravação no aparelho (web-offline#1, web-offline#12)', () => {
   });
 });
 
-describe('pacote do aparelho depois do envio (web-offline#2, web-offline#10)', () => {
-  const pacote = (): PacoteCampo => ({
-    ciclo: { ano: 2026, ciclo: 6, chave: '2026-6', inicio: '2026-11-01', fim: '2026-12-31' },
-    zonas: [],
-    ordens: [],
-    quarteiroes: [],
-    imoveis: [
-      {
-        id: 'h1',
-        quarteiraoId: 'q1',
-        sequencia: '1',
-        endereco: 'Rua Exemplo, 100',
-        tipo: '01',
-        tipoLabel: 'Residência',
-        lat: null,
-        lng: null,
-        posicaoAproximada: true,
-        precisaoLabel: 'Sem posição',
-        observacao: null,
-        noCiclo: null,
-      },
-    ],
-    estoque: [{ produtoId: 'bti', produto: 'Bti', unidade: 'g', tipo: 'LARVICIDA', loteId: 'l-bti', lote: 'BTI2601', validade: '2027-01-31', vencido: false, saldo: 50, deposito: 'Depósito' }],
-    servidorEm: '2026-11-07T08:00:00Z',
-  });
+/** Pacote baixado: um imóvel sem visita no ciclo e um lote de Bti com 50 g. */
+const pacote = (): PacoteCampo => ({
+  ciclo: { ano: 2026, ciclo: 6, chave: '2026-6', inicio: '2026-11-01', fim: '2026-12-31' },
+  zonas: [],
+  ordens: [],
+  quarteiroes: [],
+  imoveis: [
+    {
+      id: 'h1',
+      quarteiraoId: 'q1',
+      sequencia: '1',
+      endereco: 'Rua Exemplo, 100',
+      tipo: '01',
+      tipoLabel: 'Residência',
+      lat: null,
+      lng: null,
+      posicaoAproximada: true,
+      precisaoLabel: 'Sem posição',
+      observacao: null,
+      noCiclo: null,
+    },
+  ],
+  estoque: [{ produtoId: 'bti', produto: 'Bti', unidade: 'g', tipo: 'LARVICIDA', loteId: 'l-bti', lote: 'BTI2601', validade: '2027-01-31', vencido: false, saldo: 50, deposito: 'Depósito' }],
+  servidorEm: '2026-11-07T08:00:00Z',
+});
 
+describe('pacote do aparelho depois do envio (web-offline#2, web-offline#10)', () => {
   it('o aceito é aplicado no pacote guardado: a casa não volta a "sem visita" nem o saldo ignora o uso', async () => {
     sim.stores.cache.set('pacote:ace:un-a:u1', { key: 'pacote:ace:un-a:u1', data: pacote(), savedAt: '2026-11-07T08:00:00Z' });
     await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
@@ -501,5 +525,199 @@ describe('pacote do aparelho depois do envio (web-offline#2, web-offline#10)', (
       // Uma conexão por aba com o mesmo banco.
       expect(fake.conexoes).toHaveLength(2);
     });
+  });
+});
+
+describe('outra aba no meio de ler e regravar a fila ou o pacote: tudo numa transação só', () => {
+  // Cada aba é uma cópia nova dos módulos com a sua conexão ao mesmo IndexedDB simulado, sem a trava entre abas. A outra
+  // aba age assim que esta lê o que vai regravar. Antes, ler e gravar eram transações separadas: a gravação desfazia o
+  // descarte feito no meio, e o pacote antigo sobrescrevia o baixado no meio.
+  const BANCO = 'omnisaude-campo-ace';
+  const CHAVE = 'pacote:ace:un-a:u1';
+  let fake: FakeIndexedDB;
+  const abrirAba = async () => {
+    vi.resetModules();
+    vi.doMock('../src/lib/offline', async (original) => ({ ...(await original<typeof import('../src/lib/offline')>()), estaOnline: () => true }));
+    const ace = await import('@/lib/ace-store');
+    // O ApiError desta aba (cada cópia dos módulos tem a sua classe).
+    const { ApiError: ApiErrorDaAba } = await import('@/lib/api');
+    return { ...ace, ApiErrorDaAba };
+  };
+  type Aba = Awaited<ReturnType<typeof abrirAba>>;
+  /** A outra aba, com a conexão já aberta: na primeira leitura desta que `quando` aceitar, faz `agir` (uma vez). */
+  const outraAbaNoMeio = async (quando: (l: LeituraVista) => boolean, agir: (outra: Aba) => Promise<unknown>) => {
+    const outra = await abrirAba();
+    await outra.filaAce.listar('u1');
+    const meio = { acao: null as Promise<unknown> | null };
+    const armar = () => {
+      fake.aoLer = (l) => {
+        if (l.banco === BANCO && !meio.acao && quando(l)) meio.acao = agir(outra);
+      };
+    };
+    return { meio, armar };
+  };
+  const naFila = () => fake.linhas(BANCO, 'fila') as unknown as ItemFilaAce[];
+  const naFilaDoApp = (n: number, extra: Partial<ItemFilaAce> = {}): ItemFilaAce => ({
+    clientId: UUID(n),
+    op: { ...visita(UUID(n)), unitId: 'un-a' },
+    userId: 'u1',
+    unitId: 'un-a',
+    status: 'PENDENTE',
+    erro: null,
+    criadoEm: `2026-11-07T12:00:0${n}Z`,
+    rotulo: `Visita ${n}`,
+    ...extra,
+  });
+  const criarBanco = (fila: ItemFilaAce[]) =>
+    fake.criar(BANCO, 1, { fila: { keyPath: 'clientId', linhas: fila as never[] }, cache: { keyPath: 'key', linhas: [{ key: CHAVE, data: pacote(), savedAt: '2026-11-07T08:00:00Z' }] } });
+
+  beforeEach(() => {
+    fake = new FakeIndexedDB();
+    vi.stubGlobal('indexedDB', fake);
+    vi.stubGlobal('navigator', { onLine: true });
+  });
+  afterEach(() => {
+    vi.doUnmock('../src/lib/offline');
+    vi.unstubAllGlobals();
+  });
+
+  it.each<[string, (aba: Aba) => Promise<unknown>, number]>([
+    ['tentar de novo', (aba) => aba.filaAce.tentarDeNovo(UUID(1)), 0],
+    // A correção foi gravada antes do descarte, e a posição dos tubitos foi junto com ela.
+    ['corrigir', (aba) => aba.filaAce.corrigir(UUID(1), visita(UUID(1), { registradoEm: '2026-11-07T12:30:00Z' }), 'Visita corrigida', { ultimoTubito: 7 }), 7],
+  ])('%s com o descarte noutra aba entre a leitura e a gravação: o descartado não volta para a fila', async (_caso, regravar, tubito) => {
+    criarBanco([naFilaDoApp(1, { status: 'ERRO', erro: 'Recusado' })]);
+    const aba = await abrirAba();
+    const { meio, armar } = await outraAbaNoMeio(
+      (l) => l.store === 'fila' && l.chave === UUID(1),
+      (outra) => outra.filaAce.remover(UUID(1)),
+    );
+    armar();
+    await regravar(aba);
+    expect(meio.acao).not.toBeNull();
+    await meio.acao;
+    expect(naFila()).toEqual([]);
+    expect(await aba.contadorTubito.ler('u1')).toBe(tubito);
+  });
+
+  it.each<[string, (aba: Aba, body: { operacoes: OperacaoAce[] }) => unknown, Partial<ItemFilaAce>]>([
+    ['o resultado ERRO', (_aba, body) => resposta(() => ({ status: 'ERRO', id: null, erro: 'Recusado' }))('', body), { status: 'ERRO', erro: 'Recusado' }],
+    ['o resultado TENTAR_DE_NOVO', (_aba, body) => resposta(() => ({ status: 'TENTAR_DE_NOVO', id: null, erro: 'Falha passageira' }))('', body), { status: 'PENDENTE', adiado: 'Falha passageira' }],
+    [
+      'o lote recusado inteiro',
+      (aba) => {
+        throw new aba.ApiErrorDaAba(400, 'Envie no máximo 100 operações por vez', 'LOTE_GRANDE');
+      },
+      { status: 'ERRO', erro: 'Envie no máximo 100 operações por vez' },
+    ],
+  ])('descarte noutra aba entre a leitura da fila e a gravação de %s: não é desfeito, e o outro item fica com o resultado', async (_caso, responder, comoFica) => {
+    criarBanco([naFilaDoApp(1), naFilaDoApp(2)]);
+    const aba = await abrirAba();
+    const { meio, armar } = await outraAbaNoMeio(
+      (l) => l.store === 'fila' && (l.chave === null || l.chave === UUID(1)),
+      (outra) => outra.filaAce.remover(UUID(1)),
+    );
+    sim.post.mockImplementation(async (_path: string, body: { operacoes: OperacaoAce[] }) => {
+      // A resposta chegou: a primeira leitura da fila para gravar o resultado dispara o descarte da outra aba.
+      armar();
+      return responder(aba, body);
+    });
+    expect(await aba.filaAce.sincronizar(ctxA)).toMatchObject({ falha: null, pendentes: 2, enviados: 0 });
+    expect(sim.post).toHaveBeenCalledTimes(1);
+    expect(meio.acao).not.toBeNull();
+    await meio.acao;
+    expect(naFila()).toEqual([{ ...naFilaDoApp(2), adiado: null, ...comoFica }]);
+  });
+
+  it('pacote baixado noutra aba entre a leitura e a gravação do pacote guardado: o mais novo fica', async () => {
+    criarBanco([naFilaDoApp(1)]);
+    const aba = await abrirAba();
+    // A outra aba baixa o pacote depois que o servidor gravou a visita: ele já traz o efeito dela.
+    const novo: PacoteCampo = { ...pacote(), servidorEm: '2026-11-07T12:10:00Z', estoque: pacote().estoque.map((l) => ({ ...l, saldo: 48 })) };
+    sim.get.mockResolvedValue(novo);
+    sim.post.mockImplementation(resposta());
+    const { meio, armar } = await outraAbaNoMeio(
+      (l) => l.store === 'cache' && l.chave === CHAVE,
+      (outra) => outra.pacoteAce.baixar(ctxA),
+    );
+    armar();
+    expect(await aba.filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 1, falha: null, aceitos: [{ id: `id-${UUID(1)}` }] });
+    expect(meio.acao).not.toBeNull();
+    await meio.acao;
+    const guardado = fake.linhas(BANCO, 'cache').find((l) => l.key === CHAVE) as { data: PacoteCampo; savedAt: string };
+    expect(guardado.data.servidorEm).toBe('2026-11-07T12:10:00Z');
+    expect(guardado.savedAt).not.toBe('2026-11-07T08:00:00Z');
+    expect(guardado.data.estoque[0]!.saldo).toBe(48);
+    expect(naFila()).toEqual([]);
+  });
+
+  it('visita que citava o imóvel novo, descartada noutra aba entre a leitura e a gravação do resultado: não volta a pendente nem é enviada', async () => {
+    const imovelNovo: ItemFilaAce = { ...naFilaDoApp(5), op: { ...imovel(UUID(5), 'q1'), unitId: 'un-a' }, rotulo: 'Imóvel novo' };
+    // Recusada antes por falta do imóvel: com ele aceito, voltaria a pendente com o id do servidor e iria na rodada seguinte.
+    const visitaDele = naFilaDoApp(6, { op: { ...visita(UUID(6), { householdId: null, householdClientId: UUID(5) }), unitId: 'un-a' }, status: 'ERRO', erro: 'O imóvel desta visita não foi cadastrado' });
+    criarBanco([imovelNovo, visitaDele]);
+    const aba = await abrirAba();
+    const { meio, armar } = await outraAbaNoMeio(
+      (l) => l.store === 'fila' && l.chave === null,
+      (outra) => outra.filaAce.remover(UUID(6)),
+    );
+    const responder = resposta();
+    sim.post.mockImplementation(async (path: string, body: { operacoes: OperacaoAce[] }) => {
+      armar();
+      return responder(path, body);
+    });
+    expect(await aba.filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 1, falha: null });
+    expect(meio.acao).not.toBeNull();
+    await meio.acao;
+    expect(enviados()).toEqual([UUID(5)]);
+    expect(naFila()).toEqual([]);
+  });
+
+  it('sem trava, a resposta da outra aba (DUPLICADA) chega enquanto esta grava a sua (OK): o pacote guardado recebe o larvicida uma vez', async () => {
+    criarBanco([naFilaDoApp(1)]);
+    const abaA = await abrirAba();
+    const abaB = await abrirAba();
+    const recebidos = new Set<string>();
+    const servidor = (body: { operacoes: OperacaoAce[] }) => ({
+      resultados: body.operacoes.map((op) => {
+        const status = recebidos.has(op.clientId) ? 'DUPLICADA' : 'OK';
+        recebidos.add(op.clientId);
+        return { clientId: op.clientId, tipo: op.tipo, status, id: `id-${op.clientId}`, erro: null };
+      }),
+    });
+    // As duas abas chegam ao envio; sai a primeira resposta, e a leitura da fila para gravá-la solta a segunda.
+    let soltarPrimeira!: () => void;
+    const primeira = new Promise<void>((r) => (soltarPrimeira = r));
+    let soltarSegunda!: () => void;
+    const segunda = new Promise<void>((r) => (soltarSegunda = r));
+    sim.post.mockImplementation(async (_path: string, body: { operacoes: OperacaoAce[] }) => {
+      if (sim.post.mock.calls.length === 1) {
+        await primeira;
+        fake.aoLer = (l) => {
+          if (l.banco !== BANCO || l.store !== 'fila' || l.chave !== null) return;
+          fake.aoLer = null;
+          soltarSegunda();
+        };
+        return servidor(body);
+      }
+      soltarPrimeira();
+      await segunda;
+      return servidor(body);
+    });
+    // Antes, as duas liam a fila com o item e as duas aplicavam (a segunda gravação, sobre o pacote lido antes da primeira).
+    const gravacoesDoPacote: string[] = [];
+    fake.aoGravar = (g) => {
+      if (g.store === 'cache' && g.chave === CHAVE) gravacoesDoPacote.push(g.tipo);
+      return undefined;
+    };
+    const resumos = await Promise.all([abaA.filaAce.sincronizar(ctxA), abaB.filaAce.sincronizar(ctxA)]);
+    expect(resumos.map((r) => [r.enviados, r.duplicados, r.falha]).sort()).toEqual([
+      [0, 1, null],
+      [1, 0, null],
+    ]);
+    expect(gravacoesDoPacote).toEqual(['put']);
+    expect((fake.linhas(BANCO, 'cache').find((l) => l.key === CHAVE) as { data: PacoteCampo }).data.estoque[0]!.saldo).toBe(48);
+    expect(naFila()).toEqual([]);
+    expect((await abaA.historicoAce.listar('u1')).map((h) => h.clientId)).toEqual([UUID(1)]);
   });
 });

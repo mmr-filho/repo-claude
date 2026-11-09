@@ -153,67 +153,80 @@ export const pacoteAce = {
       return g;
     });
   },
-  /** Aplica no pacote guardado o que o servidor aceitou (a tela aplica no que está em memória). */
+  /**
+   * Aplica no pacote guardado o que o servidor aceitou (a tela aplica no que está em memória). Lê e grava numa transação
+   * só: o pacote baixado noutra aba nesse meio-tempo não é sobrescrito pelo antigo.
+   */
   async aplicar(ctx: ContextoAce, aceitos: AceitoAce[]) {
     if (!aceitos.length) return;
-    const e = await localAce.get<{ key: string; data: PacoteCampo; savedAt: string }>('cache', chavePacote(ctx));
-    if (e) await localAce.put('cache', { ...e, data: aplicarAceitosNoPacote(e.data, aceitos), atualizadoEm: new Date().toISOString() });
+    await localAce.atualizar<PacoteGuardado & { key: string; atualizadoEm?: string }>(
+      'cache',
+      chavePacote(ctx),
+      (e) => e && { ...e, data: aplicarAceitosNoPacote(e.data, aceitos), atualizadoEm: new Date().toISOString() },
+    );
   },
 };
 
-/** Grava o resultado de um lote: fila, histórico e as visitas que citavam um imóvel novo aceito, numa transação só. */
+/**
+ * Grava o resultado de um lote: fila, histórico e as visitas que citavam um imóvel novo aceito. Lê a fila e o histórico e
+ * grava numa transação só (nada de outra aba entra no meio): o resultado vale sobre o que está na fila nessa hora.
+ */
 async function gravarResultados(ctx: ContextoAce, resultados: ResultadoSyncAce[], porId: Map<string, ItemFilaAce>, resumo: ResumoSyncAce) {
-  // O resultado vale sobre o que está na fila agora: o item descartado durante o envio não volta.
-  const atuais = new Map((await itensDoUsuario(ctx.userId)).map((i) => [i.clientId, i]));
-  const algumAceito = resultados.some((r) => (r.status === 'OK' || r.status === 'DUPLICADA') && porId.has(r.clientId));
-  const historico = algumAceito ? await historicoAce.listar(ctx.userId) : [];
-  const jaNoHistorico = new Set(historico.map((h) => h.clientId));
-  const saida = new Map<string, ItemFilaAce | null>();
-  const novos: EnviadoAce[] = [];
+  const chave = chaveHistorico(ctx.userId);
   const aceitos: AceitoAce[] = [];
   const noPacote: AceitoAce[] = [];
-  const agora = new Date().toISOString();
-  for (const r of resultados) {
-    const enviado = porId.get(r.clientId);
-    if (!enviado) continue;
-    const item = atuais.get(r.clientId);
-    if (r.status === 'ERRO') {
-      if (item) saida.set(item.clientId, { ...item, status: 'ERRO', erro: r.erro || 'Recusado pelo servidor', adiado: null });
-      resumo.erros++;
-    } else if (r.status === 'TENTAR_DE_NOVO') {
-      if (item) saida.set(item.clientId, { ...item, status: 'PENDENTE', adiado: r.erro || FALHA_PASSAGEIRA });
-      resumo.adiados++;
-    } else if (r.status === 'OK' || r.status === 'DUPLICADA') {
-      saida.set(enviado.clientId, null);
-      novos.push({ clientId: r.clientId, tipo: r.tipo, rotulo: enviado.rotulo, id: r.id, em: agora, ...(r.avisos?.length ? { avisos: r.avisos } : {}) });
-      // A visita vai para o pacote na ordem em que o servidor a gravou; sem o campo (servidor de antes), na informada.
-      const aceito: AceitoAce = { op: enviado.op, id: r.id, ...(r.ordemId !== undefined ? { ordemId: r.ordemId } : {}) };
-      aceitos.push(aceito);
-      // O pacote guardado não recebe de novo o que outra aba já tirou da fila e pôs no histórico (OK lá, DUPLICADA aqui):
-      // ela aplicou o efeito. O descartado durante o envio não está no histórico e recebe (o servidor gravou).
-      if (item || !jaNoHistorico.has(r.clientId)) noPacote.push(aceito);
-      if (r.status === 'OK') resumo.enviados++;
-      else resumo.duplicados++;
-      resumo.avisos += r.avisos?.length ?? 0;
+  await localAce.atualizarVarios({ fila: 'todas', cache: [chave] }, (lidos) => {
+    const atuais = new Map(([...lidos.fila.values()] as ItemFilaAce[]).filter((i) => i.userId === ctx.userId).map((i) => [i.clientId, i]));
+    const historico = semRepetidos((lidos.cache.get(chave) as { data: EnviadoAce[] } | undefined)?.data ?? []);
+    const jaNoHistorico = new Set(historico.map((h) => h.clientId));
+    const saida = new Map<string, ItemFilaAce | null>();
+    const novos: EnviadoAce[] = [];
+    const agora = new Date().toISOString();
+    for (const r of resultados) {
+      const enviado = porId.get(r.clientId);
+      if (!enviado) continue;
+      const item = atuais.get(r.clientId);
+      // O descartado durante o envio (nesta aba ou noutra) não volta com o erro, e o aviso não manda procurá-lo na fila.
+      if (r.status === 'ERRO') {
+        if (!item) continue;
+        saida.set(item.clientId, { ...item, status: 'ERRO', erro: r.erro || 'Recusado pelo servidor', adiado: null });
+        resumo.erros++;
+      } else if (r.status === 'TENTAR_DE_NOVO') {
+        if (!item) continue;
+        saida.set(item.clientId, { ...item, status: 'PENDENTE', adiado: r.erro || FALHA_PASSAGEIRA });
+        resumo.adiados++;
+      } else if (r.status === 'OK' || r.status === 'DUPLICADA') {
+        saida.set(enviado.clientId, null);
+        novos.push({ clientId: r.clientId, tipo: r.tipo, rotulo: enviado.rotulo, id: r.id, em: agora, ...(r.avisos?.length ? { avisos: r.avisos } : {}) });
+        // A visita vai para o pacote na ordem em que o servidor a gravou; sem o campo (servidor de antes), na informada.
+        const aceito: AceitoAce = { op: enviado.op, id: r.id, ...(r.ordemId !== undefined ? { ordemId: r.ordemId } : {}) };
+        aceitos.push(aceito);
+        // O pacote guardado não recebe de novo o que outra aba já tirou da fila e pôs no histórico (OK lá, DUPLICADA
+        // aqui): ela aplicou o efeito. O descartado durante o envio não está no histórico e recebe (o servidor gravou).
+        if (item || !jaNoHistorico.has(r.clientId)) noPacote.push(aceito);
+        if (r.status === 'OK') resumo.enviados++;
+        else resumo.duplicados++;
+        resumo.avisos += r.avisos?.length ?? 0;
+      }
     }
-  }
-  // Imóvel novo aceito: as visitas que o citam pelo clientId passam a citar o id do servidor, e as recusadas antes por
-  // falta dele voltam a pendente. A recusada neste mesmo envio fica com o erro: o imóvel já estava antes dela no lote.
-  const idDoImovel = new Map(aceitos.flatMap((a) => (a.op.tipo === 'IMOVEL' && a.id ? [[a.op.clientId, a.id] as const] : [])));
-  const nesteEnvio = new Set(resultados.map((r) => r.clientId));
-  if (idDoImovel.size) {
-    for (const i of atuais.values()) {
-      const base = saida.has(i.clientId) ? saida.get(i.clientId) : i;
-      if (!base || base.op.tipo !== 'VISITA_VETORIAL' || !base.op.householdClientId) continue;
-      const id = idDoImovel.get(base.op.householdClientId);
-      if (!id) continue;
-      const voltaAPendente = base.status === 'ERRO' && !nesteEnvio.has(i.clientId);
-      saida.set(i.clientId, { ...base, op: { ...base.op, householdId: id, householdClientId: null }, ...(voltaAPendente ? { status: 'PENDENTE' as const, erro: null } : {}) });
+    // Imóvel novo aceito: as visitas que o citam pelo clientId passam a citar o id do servidor, e as recusadas antes por
+    // falta dele voltam a pendente. A recusada neste mesmo envio fica com o erro: o imóvel já estava antes dela no lote.
+    const idDoImovel = new Map(aceitos.flatMap((a) => (a.op.tipo === 'IMOVEL' && a.id ? [[a.op.clientId, a.id] as const] : [])));
+    const nesteEnvio = new Set(resultados.map((r) => r.clientId));
+    if (idDoImovel.size) {
+      for (const i of atuais.values()) {
+        const base = saida.has(i.clientId) ? saida.get(i.clientId) : i;
+        if (!base || base.op.tipo !== 'VISITA_VETORIAL' || !base.op.householdClientId) continue;
+        const id = idDoImovel.get(base.op.householdClientId);
+        if (!id) continue;
+        const voltaAPendente = base.status === 'ERRO' && !nesteEnvio.has(i.clientId);
+        saida.set(i.clientId, { ...base, op: { ...base.op, householdId: id, householdClientId: null }, ...(voltaAPendente ? { status: 'PENDENTE' as const, erro: null } : {}) });
+      }
     }
-  }
-  const gravacoes: Gravacao[] = [...saida].map(([clientId, item]) => (item ? { store: 'fila', put: item } : { store: 'fila', delete: clientId }));
-  if (novos.length) gravacoes.push({ store: 'cache', put: { key: chaveHistorico(ctx.userId), data: semRepetidos([...novos.reverse(), ...historico]).slice(0, 300), savedAt: agora } });
-  await localAce.gravar(gravacoes);
+    const gravacoes: Gravacao[] = [...saida].map(([clientId, item]) => (item ? { store: 'fila', put: item } : { store: 'fila', delete: clientId }));
+    if (novos.length) gravacoes.push({ store: 'cache', put: { key: chave, data: semRepetidos([...novos.reverse(), ...historico]).slice(0, 300), savedAt: agora } });
+    return gravacoes;
+  });
   // A tela aplica todos os aceitos no pacote que tem em memória (lido antes deste envio, sem o efeito deles).
   resumo.aceitos.push(...aceitos);
   if (noPacote.length) await pacoteAce.aplicar(ctx, noPacote).catch((e) => console.warn('Pacote do aparelho não atualizado', e));
@@ -251,20 +264,22 @@ async function enviar(ctx: ContextoAce): Promise<ResumoSyncAce> {
             break rodadas;
           }
           // Lote recusado inteiro pelo conteúdo: cada operação apontada leva a mensagem dela, e as outras vão de novo na
-          // próxima rodada; sem apontar, todas levam a mensagem real do servidor.
+          // próxima rodada; sem apontar, todas levam a mensagem real do servidor. Lê e grava numa transação só: o item
+          // descartado durante o envio (nesta aba ou noutra) não volta com o erro.
           const porOp = errosPorOperacao(err instanceof ApiError ? err.details : null, lote);
-          const atuais = new Map((await itensDoUsuario(ctx.userId)).map((i) => [i.clientId, i]));
-          const gravacoes: Gravacao[] = [];
-          for (const op of lote) {
-            const item = atuais.get(op.clientId);
-            const msg = porOp ? porOp.get(op.clientId) : errorMessage(err);
-            if (!item) continue;
-            if (msg) {
-              gravacoes.push({ store: 'fila', put: { ...item, status: 'ERRO', erro: msg, adiado: null } satisfies ItemFilaAce });
-              resumo.erros++;
-            } else tentados.delete(op.clientId);
-          }
-          await localAce.gravar(gravacoes);
+          await localAce.atualizarVarios({ fila: lote.map((op) => op.clientId) }, (lidos) => {
+            const gravacoes: Gravacao[] = [];
+            for (const op of lote) {
+              const item = lidos.fila.get(op.clientId) as ItemFilaAce | undefined;
+              const msg = porOp ? porOp.get(op.clientId) : errorMessage(err);
+              if (!item) continue;
+              if (msg) {
+                gravacoes.push({ store: 'fila', put: { ...item, status: 'ERRO', erro: msg, adiado: null } satisfies ItemFilaAce });
+                resumo.erros++;
+              } else tentados.delete(op.clientId);
+            }
+            return gravacoes;
+          });
           continue;
         }
         await gravarResultados(ctx, resultados, porId, resumo);
@@ -322,13 +337,19 @@ export const filaAce = {
     avisar();
     return item;
   },
-  /** Regrava o registro corrigido com o mesmo clientId (o servidor continua reconhecendo o reenvio) e volta a pendente. */
+  /**
+   * Regrava o registro corrigido com o mesmo clientId (o servidor continua reconhecendo o reenvio) e volta a pendente. Lê
+   * e grava numa transação só, com a posição dos tubitos: o descartado noutra aba nesse meio-tempo não volta.
+   */
   async corrigir(clientId: string, op: OperacaoAce, rotulo: string, extras?: { ultimoTubito?: number | null }) {
-    const atual = await localAce.get<ItemFilaAce>('fila', clientId);
-    if (!atual) throw new ErroAparelho('O registro não está mais na fila do aparelho: já foi enviado ou descartado');
-    const unitId = atual.unitId ?? null;
-    const item: ItemFilaAce = { ...atual, op: { ...op, clientId, unitId }, rotulo, status: 'PENDENTE', erro: null, adiado: null, avisos: undefined };
-    await localAce.gravar([{ store: 'fila', put: item }, ...gravacaoDoTubito(atual.userId, extras?.ultimoTubito)]);
+    const feitas = await localAce.atualizarVarios({ fila: [clientId] }, (lidos) => {
+      const atual = lidos.fila.get(clientId) as ItemFilaAce | undefined;
+      if (!atual) return [];
+      const unitId = atual.unitId ?? null;
+      const item: ItemFilaAce = { ...atual, op: { ...op, clientId, unitId }, rotulo, status: 'PENDENTE', erro: null, adiado: null, avisos: undefined };
+      return [{ store: 'fila', put: item }, ...gravacaoDoTubito(atual.userId, extras?.ultimoTubito)];
+    });
+    if (!feitas.length) throw new ErroAparelho('O registro não está mais na fila do aparelho: já foi enviado ou descartado');
     avisar();
   },
   async remover(clientIds: string | string[]) {
@@ -336,8 +357,8 @@ export const filaAce = {
     avisar();
   },
   async tentarDeNovo(clientId: string) {
-    const item = await localAce.get<ItemFilaAce>('fila', clientId);
-    if (item) await localAce.put('fila', { ...item, status: 'PENDENTE', erro: null, adiado: null } satisfies ItemFilaAce);
+    // Lê e grava numa transação só: o descartado noutra aba nesse meio-tempo não volta como pendente.
+    await localAce.atualizar<ItemFilaAce>('fila', clientId, (item) => item && { ...item, status: 'PENDENTE', erro: null, adiado: null });
     avisar();
   },
   sincronizar,

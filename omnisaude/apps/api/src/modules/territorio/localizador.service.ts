@@ -9,7 +9,24 @@ export const TOLERANCIA_QUARTEIRAO_M = 15;
 /** Precisões boas o bastante para ligar o imóvel ao quarteirão pela posição (as demais não dizem em qual está). */
 export const PRECISAO_LIGA_QUARTEIRAO: PrecisaoGeo[] = ['GPS_CAMPO', 'MAPA', 'ENDERECO', 'FACE'];
 
+/** Precisões da posição pelo endereço (base do IBGE) que ligam o imóvel ao quarteirão: o quarteirão veio dessa posição. */
+export const ENDERECO_LIGA_QUARTEIRAO: PrecisaoGeo[] = ['ENDERECO', 'FACE'];
+
+/**
+ * Origens (geo_source) das ações explícitas sobre a posição do imóvel: marcar no mapa ou ler o GPS na tela do território
+ * ('mapa', 'gps') e o cadastro do domicílio com posição ('cadastro'). GPS de visita ('visita', 'visita-ace'), GPS do
+ * imóvel novo do ACE ('ace') e a geocodificação ('cnefe:...', 'centro-do-...') não são.
+ */
+const ORIGEM_EXPLICITA = ['mapa', 'gps', 'cadastro'];
+
+/** A posição atual do imóvel veio de uma ação explícita (marcação no mapa, precisão MAPA, ou cadastro com posição). */
+export function posicaoExplicita(h: { geoPrecision: string | null; geoSource: string | null }): boolean {
+  return h.geoPrecision === 'MAPA' || (!!h.geoSource && ORIGEM_EXPLICITA.includes(h.geoSource));
+}
+
 type Db = Pick<TenantClient, 'block' | 'household' | '$executeRaw'>;
+/** Para religar: a origem do imóvel (criado pelo ACE em campo) está na sincronização. */
+type DbVinculo = Db & Pick<TenantClient, 'fieldSyncOp'>;
 
 interface QuarteiraoGeo {
   id: string;
@@ -170,33 +187,63 @@ export class LocalizadorService {
     return !escopo || (await ctx.db.household.count({ where: { id: householdId, OR: escopo } })) > 0;
   }
 
-  /** Liga um imóvel ao quarteirão pela posição (só com precisão suficiente); devolve o quarteirão gravado. */
-  async vincularImovel(db: Db, householdId: string): Promise<string | null> {
-    const h = await db.household.findUnique({ where: { id: householdId }, select: { latitude: true, longitude: true, geoPrecision: true, blockId: true } });
+  /**
+   * Imóveis criados pelo ACE em campo (operação ACE_IMOVEL da sincronização, que não é apagada) entre os dados, ou todos.
+   * A tabela não tem índice pelo imóvel: quem confere muitos imóveis lê o conjunto uma vez.
+   */
+  async criadosPeloAce(db: Pick<TenantClient, 'fieldSyncOp'>, ids?: string[]): Promise<Set<string>> {
+    if (ids && !ids.length) return new Set();
+    const ops = await db.fieldSyncOp.findMany({ where: { kind: 'ACE_IMOVEL', entityType: 'Household', entityId: ids ? { in: ids } : { not: null } }, select: { entityId: true } });
+    return new Set(ops.map((o) => o.entityId!));
+  }
+
+  /**
+   * O imóvel fica no quarteirão escolhido pelo ACE em campo: foi criado por ele, tem quarteirão e a posição atual não veio
+   * de uma ação explícita (marcar no mapa, cadastro do domicílio com posição). GPS de visita, endereço da base do IBGE e
+   * religação da malha não o tiram de lá, qualquer que seja a precisão da posição. `doAce`: os criados pelo ACE, já lidos
+   * por quem confere muitos imóveis; sem ele, a sincronização é lida só para este.
+   */
+  async quarteiraoEscolhidoEmCampo(db: Pick<TenantClient, 'fieldSyncOp'>, h: { id: string; blockId: string | null; geoPrecision: string | null; geoSource: string | null }, doAce?: ReadonlySet<string>): Promise<boolean> {
+    if (!h.blockId || posicaoExplicita(h)) return false;
+    return (doAce ?? (await this.criadosPeloAce(db, [h.id]))).has(h.id);
+  }
+
+  /**
+   * Liga um imóvel ao quarteirão pela posição (só com precisão suficiente); devolve o quarteirão gravado. O imóvel no
+   * quarteirão escolhido pelo ACE em campo fica nele (`doAce`: os criados pelo ACE, já lidos por quem liga muitos imóveis).
+   */
+  async vincularImovel(db: DbVinculo, householdId: string, doAce?: ReadonlySet<string>): Promise<string | null> {
+    const h = await db.household.findUnique({ where: { id: householdId }, select: { id: true, latitude: true, longitude: true, geoPrecision: true, geoSource: true, blockId: true } });
     if (!h || h.latitude == null || h.longitude == null || !h.geoPrecision) return h?.blockId ?? null;
     if (!PRECISAO_LIGA_QUARTEIRAO.includes(h.geoPrecision as PrecisaoGeo)) return h.blockId;
     const b = await this.quarteiraoDoPonto(db, h.latitude, h.longitude);
     const novo = b?.id ?? null;
+    if (novo === h.blockId) return novo;
+    // A origem só é consultada quando o quarteirão mudaria.
+    if (await this.quarteiraoEscolhidoEmCampo(db, h, doAce)) return h.blockId;
     // SQL direto: ligar ao quarteirão não é alteração do cadastro (não mexe em updated_at, que dispara a ficha do e-SUS).
-    if (novo !== h.blockId) await db.$executeRaw`UPDATE households SET block_id = ${novo}::uuid WHERE id = ${householdId}::uuid`;
+    await db.$executeRaw`UPDATE households SET block_id = ${novo}::uuid WHERE id = ${householdId}::uuid`;
     return novo;
   }
 
   /**
    * Religa todos os imóveis com posição boa aos quarteirões (depois de importar ou editar a malha). Imóvel com a
-   * posição no centro do quarteirão (precisão QUARTEIRAO) mantém o quarteirão de origem. `aoAlterar` recebe os imóveis
-   * que mudaram de quarteirão (a ordem de bloqueio dos moradores é reavaliada).
+   * posição no centro do quarteirão (precisão QUARTEIRAO) mantém o quarteirão de origem, e o imóvel criado pelo ACE em
+   * campo fica no quarteirão escolhido lá até uma ação explícita mudar a posição dele (`foraDoQuarteirao` conta os que
+   * ficaram com a posição em outro quarteirão ou fora da malha). `aoAlterar` recebe os imóveis que mudaram de quarteirão
+   * (a ordem de bloqueio dos moradores é reavaliada).
    */
-  async vincularTodos(db: Db, aoAlterar?: (ids: string[]) => void): Promise<{ analisados: number; comQuarteirao: number; semQuarteirao: number; alterados: number }> {
+  async vincularTodos(db: DbVinculo, aoAlterar?: (ids: string[]) => void): Promise<{ analisados: number; comQuarteirao: number; semQuarteirao: number; alterados: number; foraDoQuarteirao: number }> {
     const todos = await db.block.findMany({ where: { active: true }, select: { id: true, number: true, localityId: true, neighborhoodId: true, geometry: true, minLng: true, minLat: true, maxLng: true, maxLat: true } });
     const grade = new Grade(todos.map((r) => ({ ...r, geometry: r.geometry as unknown as Area, caixa: caixaDoBloco(r) })));
-    const r = { analisados: 0, comQuarteirao: 0, semQuarteirao: 0, alterados: 0 };
+    const doAce = await this.criadosPeloAce(db);
+    const r = { analisados: 0, comQuarteirao: 0, semQuarteirao: 0, alterados: 0, foraDoQuarteirao: 0 };
     let cursor: string | undefined;
     for (;;) {
       const lote = await db.household.findMany({
         // "id maior que o último" (e não o cursor do Prisma): o último imóvel pode ter saído do filtro entre um lote e outro.
         where: { active: true, latitude: { not: null }, longitude: { not: null }, geoPrecision: { in: PRECISAO_LIGA_QUARTEIRAO }, ...(cursor ? { id: { gt: cursor } } : {}) },
-        select: { id: true, latitude: true, longitude: true, blockId: true },
+        select: { id: true, latitude: true, longitude: true, blockId: true, geoPrecision: true, geoSource: true },
         orderBy: { id: 'asc' },
         take: 1000,
       });
@@ -207,7 +254,12 @@ export class LocalizadorService {
         r.analisados++;
         const p: Posicao = [h.longitude!, h.latitude!];
         const b = escolher(p, grade.candidatos(ampliarCaixa([p[0], p[1], p[0], p[1]], TOLERANCIA_QUARTEIRAO_M)));
-        const novo = b?.id ?? null;
+        let novo = b?.id ?? null;
+        // O quarteirão escolhido pelo ACE em campo fica, com a posição em outro (a supervisão confere no mapa).
+        if (novo !== h.blockId && h.blockId && doAce.has(h.id) && !posicaoExplicita(h)) {
+          novo = h.blockId;
+          r.foraDoQuarteirao++;
+        }
         if (novo) r.comQuarteirao++;
         else r.semQuarteirao++;
         if (novo !== h.blockId) (mudancas.get(novo) ?? mudancas.set(novo, []).get(novo)!).push(h.id);

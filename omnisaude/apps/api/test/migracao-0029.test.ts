@@ -72,7 +72,7 @@ describe.runIf(enabled)('Migração 0029: início do campo antes da abertura e c
       ['c', 'a'],
     ])
       await db.query('UPDATE patients SET merged_into_id = $2 WHERE id = $1', [p[de], p[para]]);
-    const nome = new Map(Object.entries(p).map(([k, id]) => [id, k]));
+    const nome = new Map<string, string>(Object.entries(p).map(([k, id]) => [id, k]));
     const retrato = async () => ({
       ordens: Object.fromEntries(
         (await db.query<{ id: string; opened_at: Date; started_at: Date | null }>('SELECT id, opened_at, started_at FROM blocking_orders WHERE id = ANY($1::uuid[])', [Object.values(ordem)])).rows.map((o) => [
@@ -115,5 +115,37 @@ describe.runIf(enabled)('Migração 0029: início do campo antes da abertura e c
     const rodada = await db.query(sql);
     expect((Array.isArray(rodada) ? rodada : [rodada]).map((r) => `${r.command} ${r.rowCount}`)).toEqual(['UPDATE 0', 'UPDATE 0']);
     expect(await retrato()).toEqual(depois);
+  });
+
+  it('uma rodada só achata a cadeia de 60 saltos; o ciclo longo (e a cadeia que entra nele) fica como está', async () => {
+    const sql = loadMigrations('tenant').find((m) => m.name === MIGRACAO)!.sql;
+    const comandos = (r: unknown) => (Array.isArray(r) ? r : [r]).map((x: { command: string; rowCount: number }) => `${x.command} ${x.rowCount}`);
+    // Cadeia p0 → p1 → ... → p60 (60 saltos até p60, que não foi unificado); ciclo k0 → k1 → ... → k59 → k0 (60 saltos)
+    // e t → k0, que entra no ciclo e não chega a um fim.
+    const cadeia = Array.from({ length: 61 }, () => randomUUID());
+    const ciclo = Array.from({ length: 60 }, () => randomUUID());
+    const t = randomUUID();
+    const todos = [...cadeia, ...ciclo, t];
+    await db.query(
+      `INSERT INTO patients (id, name, name_key, birth_date, sex, updated_at)
+       SELECT id, 'Pessoa Longa ' || n, 'PESSOA LONGA ' || n, '1980-01-01', 'F', '2026-01-02 03:04:05' FROM unnest($1::uuid[]) WITH ORDINALITY AS x(id, n)`,
+      [todos],
+    );
+    const apontar = (de: string[], para: string[]) => db.query('UPDATE patients p SET merged_into_id = x.para FROM unnest($1::uuid[], $2::uuid[]) AS x(de, para) WHERE p.id = x.de', [de, para]);
+    await apontar(cadeia.slice(0, 60), cadeia.slice(1));
+    await apontar([...ciclo, t], [...ciclo.slice(1), ciclo[0]!, ciclo[0]!]);
+    const destinos = async () =>
+      new Map((await db.query<{ id: string; merged_into_id: string | null }>('SELECT id, merged_into_id FROM patients WHERE id = ANY($1::uuid[])', [todos])).rows.map((x) => [x.id, x.merged_into_id]));
+    const antes = await destinos();
+
+    // Antes (até 50 saltos): p0 a p9 não chegavam a p60 na primeira rodada, e a segunda ainda mudava 10 cadastros.
+    expect(comandos(await db.query(sql))).toEqual(['UPDATE 0', 'UPDATE 59']);
+    const depois = await destinos();
+    for (const id of cadeia.slice(0, 60)) expect(depois.get(id)).toBe(cadeia[60]);
+    expect(depois.get(cadeia[60]!)).toBeNull();
+    for (const id of [...ciclo, t]) expect(depois.get(id)).toBe(antes.get(id));
+    // Rodar de novo não muda nada.
+    expect(comandos(await db.query(sql))).toEqual(['UPDATE 0', 'UPDATE 0']);
+    expect(await destinos()).toEqual(depois);
   });
 });

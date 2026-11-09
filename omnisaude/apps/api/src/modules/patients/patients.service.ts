@@ -4,6 +4,7 @@ import { AuditService } from '../../core/audit.service';
 import { APP_CONFIG, type AppConfig } from '../../core/config';
 import type { RequestContext } from '../../core/context';
 import { conflict, DomainError, notFound } from '../../core/errors';
+import { ehConflitoPassageiro } from '../endemias/erros-banco';
 import { TerritorioService } from '../territorio/territorio.service';
 import type { PatientInput } from './patients.schemas';
 
@@ -20,6 +21,9 @@ export function patientSummary(p: { id: string; name: string; socialName: string
     motherName: p.motherName,
   };
 }
+
+/** Repetições da unificação que o banco desfez por impasse com outra unificação simultânea. */
+const NOVAS_TENTATIVAS_UNIFICACAO = 3;
 
 const ENCOUNTER_STATUS: Record<string, string> = {
   ABERTO: 'aguardando',
@@ -485,6 +489,21 @@ export class PatientsService {
    * duplicado deixa de aparecer nas buscas e passa a redirecionar.
    */
   async merge(ctx: RequestContext, survivorId: string, duplicateId: string) {
+    // O cadastro unificado no duplicado por outra unificação enquanto esta esperava a vez não estava na leitura da trava
+    // ordenada e só é travado ao passar para o que fica, fora da ordem: três unificações simultâneas ainda podem se
+    // esperar em roda. O banco desfaz uma delas, que é repetida do começo, com os cadastros lidos de novo (ela passa, ou
+    // recebe 404 ou 409), em vez de responder 500.
+    for (let tentativa = 0; ; tentativa++) {
+      try {
+        return await this.unificar(ctx, survivorId, duplicateId);
+      } catch (err) {
+        if (tentativa >= NOVAS_TENTATIVAS_UNIFICACAO || !ehConflitoPassageiro(err)) throw err;
+        await new Promise((r) => setTimeout(r, 25 * 2 ** tentativa + Math.random() * 25));
+      }
+    }
+  }
+
+  private async unificar(ctx: RequestContext, survivorId: string, duplicateId: string) {
     if (survivorId === duplicateId) throw new DomainError('MESMO_CADASTRO', 'Escolha dois cadastros diferentes');
     const [s, d] = await Promise.all([ctx.db.patient.findUnique({ where: { id: survivorId } }), ctx.db.patient.findUnique({ where: { id: duplicateId } })]);
     if (!s || s.mergedIntoId) throw notFound('Cadastro que fica');
@@ -519,11 +538,15 @@ export class PatientsService {
     for (const f of fillable) if (s[f] == null && d[f] != null) fill[f] = d[f];
     if (s.racaCor === '99' && d.racaCor !== '99') fill.racaCor = d.racaCor;
     const r = await ctx.db.$transaction(async (tx) => {
-      // Os dois cadastros travados (na ordem dos ids: a unificação no sentido contrário espera, sem impasse) e conferidos
-      // de novo: outra unificação pode ter entrado depois da leitura e deixaria uma cadeia (ou um ciclo) de unificações.
-      const travados = await tx.$queryRaw<{ merged_into_id: string | null }[]>`
-        SELECT merged_into_id FROM patients WHERE id IN (${s.id}::uuid, ${d.id}::uuid) ORDER BY id FOR UPDATE`;
-      if (travados.length !== 2 || travados.some((p) => p.merged_into_id)) throw new DomainError('PACIENTE_UNIFICADO', 'Um dos cadastros acabou de ser unificado em outro: confira e tente de novo', HttpStatus.CONFLICT);
+      // Os dois cadastros e os já unificados no duplicado (que passam ao que fica logo abaixo) travados num comando só, na
+      // ordem dos ids: a unificação no sentido contrário, ou a que trava um desses cadastros e espera um dos dois, espera
+      // sem impasse (travar os unificados só depois deixava três unificações simultâneas se esperando em roda, e o banco
+      // desfazia uma delas). Os dois são conferidos de novo: outra unificação pode ter entrado depois da leitura e
+      // deixaria uma cadeia (ou um ciclo) de unificações.
+      const travados = await tx.$queryRaw<{ id: string; merged_into_id: string | null }[]>`
+        SELECT id, merged_into_id FROM patients WHERE id IN (${s.id}::uuid, ${d.id}::uuid) OR merged_into_id = ${d.id}::uuid ORDER BY id FOR UPDATE`;
+      const par = travados.filter((p) => p.id === s.id || p.id === d.id);
+      if (par.length !== 2 || par.some((p) => p.merged_into_id)) throw new DomainError('PACIENTE_UNIFICADO', 'Um dos cadastros acabou de ser unificado em outro: confira e tente de novo', HttpStatus.CONFLICT);
       // CPF e CNS são únicos: saem do duplicado antes de irem para o que fica.
       await tx.patient.update({ where: { id: d.id }, data: { cpf: null, cns: null, familyId: null, kinship: null, mergedIntoId: s.id, mergedAt: new Date() } });
       const moved: Record<string, number> = {};

@@ -7,6 +7,7 @@ import {
   errosPorOperacao,
   loteSugerido,
   numeroDoBotao,
+  ordemDoFormulario,
   produtoSugerido,
   produtosDoFormulario,
   quantidadeParaTexto,
@@ -150,6 +151,65 @@ describe('numeração dos tubitos', () => {
     expect(seguinteTubito(0)).toBe(1);
     expect(seguinteTubito(null)).toBe(1);
     expect(seguinteTubito(1000)).toBe(1);
+  });
+});
+
+/** Roda com o aparelho em outro fuso: o Node relê o TZ quando ele muda. */
+function noFuso<T>(fuso: string, fn: () => T): T {
+  const antes = process.env.TZ;
+  process.env.TZ = fuso;
+  try {
+    return fn();
+  } finally {
+    if (antes === undefined) delete process.env.TZ;
+    else process.env.TZ = antes;
+  }
+}
+
+describe('ordem da visita no formulário', () => {
+  // A abertura às 10 h de 5/11 no fuso do aparelho (o do processo dos testes); o campo datetime-local também é nesse fuso.
+  const ordem = { id: 'o1', numero: '7/2026', abertaEm: new Date(2026, 10, 5, 10, 0).toISOString() };
+  const fora = { ordemId: null, aviso: 'A data é anterior à abertura da ordem 7/2026: a visita não vai entrar nela' };
+
+  // Antes, o formulário mandava a ordem do contexto com qualquer data e qualquer atividade, e a visita entrava nela.
+  it('a visita de dia anterior ao da abertura vai sem a ordem, com o aviso; a do dia da abertura, mesmo antes da hora, vai com ela', () => {
+    expect(ordemDoFormulario(ordem, 'BLOQUEIO', '2026-11-04T23:59')).toEqual(fora);
+    expect(ordemDoFormulario(ordem, 'BLOQUEIO', '2026-10-30T08:00')).toEqual(fora);
+    expect(ordemDoFormulario(ordem, 'BLOQUEIO', '2026-11-05T00:00')).toEqual({ ordemId: 'o1', aviso: null });
+    expect(ordemDoFormulario(ordem, 'BLOQUEIO', '2026-11-05T09:59')).toEqual({ ordemId: 'o1', aviso: null });
+    expect(ordemDoFormulario(ordem, 'BLOQUEIO', '2026-11-06T08:00')).toEqual({ ordemId: 'o1', aviso: null });
+  });
+
+  it('só a visita de bloqueio leva a ordem (e o alerta dela); sem ordem no contexto, nenhuma', () => {
+    for (const atividade of ['LI', 'LI_T', 'T', 'PE', 'DF', 'PVE'] as const) {
+      expect(ordemDoFormulario(ordem, atividade, '2026-11-06T08:00')).toEqual({ ordemId: null, aviso: null });
+      // Fora do bloqueio, a data de antes da abertura não é com a ordem: sem aviso.
+      expect(ordemDoFormulario(ordem, atividade, '2026-11-04T08:00')).toEqual({ ordemId: null, aviso: null });
+    }
+    expect(ordemDoFormulario(null, 'BLOQUEIO', '2026-11-06T08:00')).toEqual({ ordemId: null, aviso: null });
+    expect(ordemDoFormulario(undefined, 'BLOQUEIO', '2026-11-04T08:00')).toEqual({ ordemId: null, aviso: null });
+  });
+
+  it('sem a abertura no contexto ou com a data ilegível, vai a ordem (o servidor confere)', () => {
+    expect(ordemDoFormulario({ id: 'o1', numero: '7/2026' }, 'BLOQUEIO', '2026-11-04T08:00')).toEqual({ ordemId: 'o1', aviso: null });
+    expect(ordemDoFormulario({ ...ordem, abertaEm: null }, 'BLOQUEIO', '2026-11-04T08:00')).toEqual({ ordemId: 'o1', aviso: null });
+    expect(ordemDoFormulario({ ...ordem, abertaEm: 'ontem' }, 'BLOQUEIO', '2026-11-04T08:00')).toEqual({ ordemId: 'o1', aviso: null });
+    expect(ordemDoFormulario(ordem, 'BLOQUEIO', '')).toEqual({ ordemId: 'o1', aviso: null });
+    expect(ordemDoFormulario(ordem, 'BLOQUEIO', '2026-11-04T')).toEqual({ ordemId: 'o1', aviso: null });
+  });
+
+  it('o dia é o do fuso do aparelho, não o do UTC', () => {
+    noFuso('America/Sao_Paulo', () => {
+      expect(new Date('2026-11-05T03:30:00Z').getHours()).toBe(0);
+      // Aberta à 0h30 de 5/11 (3h30 no UTC): a visita das 23h30 de 4/11 (2h30 de 5/11 no UTC) é do dia anterior.
+      const madrugada = { ...ordem, abertaEm: '2026-11-05T03:30:00Z' };
+      expect(ordemDoFormulario(madrugada, 'BLOQUEIO', '2026-11-04T23:30')).toEqual(fora);
+      expect(ordemDoFormulario(madrugada, 'BLOQUEIO', '2026-11-05T00:10')).toEqual({ ordemId: 'o1', aviso: null });
+      // Aberta às 23h de 4/11 (2h de 5/11 no UTC): a visita das 20h de 4/11 (23h de 4/11 no UTC) é do mesmo dia.
+      const noite = { ...ordem, abertaEm: '2026-11-05T02:00:00Z' };
+      expect(ordemDoFormulario(noite, 'BLOQUEIO', '2026-11-04T20:00')).toEqual({ ordemId: 'o1', aviso: null });
+      expect(ordemDoFormulario(noite, 'BLOQUEIO', '2026-11-03T23:00')).toEqual(fora);
+    });
   });
 });
 

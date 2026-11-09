@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { areaM2, caixaDe, centroDe, distanciaM, metrosPorGrau, normalizarArea, normalizarLogradouro, normalizarNumero, type Posicao } from '@omnisaude/shared';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { TenantsService } from '../src/core/database';
 import { MOTIVO_FORA_DO_QUARTEIRAO, MOTIVO_QUARTEIRAO_DESATIVADO } from '../src/modules/territorio/geocodificacao.service';
+import { LocalizadorService } from '../src/modules/territorio/localizador.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 
 const enabled = await pgAvailable();
@@ -222,5 +223,62 @@ describe.runIf(enabled)('Território: a geocodificação por endereço não tira
     const h = await imovel(id);
     expect(h).toMatchObject({ blockId: bloco['15'], geoPrecision: 'ENDERECO', geoSource: 'cnefe:endereco' });
     expect(distanciaM([h.longitude!, h.latitude!], exato)).toBeLessThan(0.5);
+  });
+
+  it('P8: o imóvel do ACE que a face de quadra confirmou no quarteirão escolhido fica nele quando a base nova traz o endereço exato em outro, e é contado', async () => {
+    const rua = 'Rua P8 Geo';
+    const r = await doAce('3', '40', {}, rua);
+    expect(await imovel(r.id!)).toMatchObject({ blockId: bloco['3'], latitude: null });
+    // Face de quadra na rua, a 8 m do 3 e a 12 m do 8: a malha liga o ponto ao 3, o escolhido; o imóvel ganha a posição.
+    const face = await endereco('40', ponto(200, 48), rua, 4);
+    expect(await geocodificar({ ids: [r.id] })).toMatchObject({ atualizados: 1, foraDoQuarteirao: 0, porPrecisao: { FACE: 1 } });
+    expect(await imovel(r.id!)).toMatchObject({ blockId: bloco['3'], geoPrecision: 'FACE', geoSource: 'cnefe:endereco' });
+    const antes = await geocodificar({});
+
+    // A base nova traz o ponto exato do endereço, dentro do 8.
+    await db.addressPoint.delete({ where: { id: face.id } });
+    await endereco('40', ponto(200, 80), rua);
+    const geo = await geocodificar({});
+    // Antes: o imóvel passava em silêncio a ENDERECO no 8 (o quarteirão "veio da face de quadra") e saía do pacote do ACE.
+    expect({ foraDoQuarteirao: geo.foraDoQuarteirao, quarteiraoDesativado: geo.quarteiraoDesativado }).toEqual({ foraDoQuarteirao: antes.foraDoQuarteirao + 1, quarteiraoDesativado: antes.quarteiraoDesativado });
+    expect(geo.avisos[0]).toBe(`${geo.foraDoQuarteirao} imóvel(is) ficaram como estavam: ${MOTIVO_FORA_DO_QUARTEIRAO}.`);
+    expect(await imovel(r.id!)).toMatchObject({ blockId: bloco['3'], geoPrecision: 'FACE' });
+    // Pedida só para ele: o mesmo.
+    expect(await geocodificar({ ids: [r.id] })).toMatchObject({ analisados: 1, atualizados: 0, foraDoQuarteirao: 1, avisos: [`1 imóvel(is) ficaram como estavam: ${MOTIVO_FORA_DO_QUARTEIRAO}.`] });
+    expect(await imovel(r.id!)).toMatchObject({ blockId: bloco['3'], geoPrecision: 'FACE' });
+    const p = (await t.http().get('/api/endemias/campo/pacote').set(auth(ace)).expect(200)).body;
+    expect(p.imoveis.find((i: { id: string }) => i.id === r.id)).toMatchObject({ quarteiraoId: bloco['3'] });
+
+    // O imóvel da recepção na mesma situação segue o endereço exato, como na rodada anterior.
+    const recep = await daRecepcao(rua, '42');
+    const faceRecep = await endereco('42', ponto(210, 48), rua, 4);
+    await geocodificar({ ids: [recep] });
+    expect(await imovel(recep)).toMatchObject({ blockId: bloco['3'], geoPrecision: 'FACE' });
+    await db.addressPoint.delete({ where: { id: faceRecep.id } });
+    await endereco('42', ponto(210, 80), rua);
+    expect(await geocodificar({ ids: [recep] })).toMatchObject({ atualizados: 1, foraDoQuarteirao: 0 });
+    expect(await imovel(recep)).toMatchObject({ blockId: bloco['8'], geoPrecision: 'ENDERECO' });
+  });
+
+  it('a origem dos imóveis (criados pelo ACE) é lida uma vez por chamada, também quando imóveis da recepção mudam de quarteirão', async () => {
+    const rua = 'Rua Leitura Unica Geo';
+    const ids = [await daRecepcao(rua, '10'), await daRecepcao(rua, '12')];
+    // Faces de quadra a 8 m do 3 e a 12 m do 8: os dois ficam no 3. A base nova traz os pontos exatos dentro do 8.
+    const faces = [await endereco('10', ponto(180, 48), rua, 4), await endereco('12', ponto(220, 48), rua, 4)];
+    await geocodificar({ ids });
+    for (const id of ids) expect(await imovel(id)).toMatchObject({ blockId: bloco['3'], geoPrecision: 'FACE' });
+    for (const f of faces) await db.addressPoint.delete({ where: { id: f.id } });
+    await endereco('10', ponto(180, 80), rua);
+    await endereco('12', ponto(220, 80), rua);
+    const leitura = vi.spyOn(t.app.get(LocalizadorService), 'criadosPeloAce');
+    try {
+      expect(await geocodificar({ ids })).toMatchObject({ atualizados: 2, foraDoQuarteirao: 0 });
+      // Antes: uma leitura da sincronização no começo e mais uma por imóvel que mudou de quarteirão (sem índice pelo
+      // imóvel, cada uma percorre a tabela inteira).
+      expect(leitura).toHaveBeenCalledTimes(1);
+    } finally {
+      leitura.mockRestore();
+    }
+    for (const id of ids) expect(await imovel(id)).toMatchObject({ blockId: bloco['8'], geoPrecision: 'ENDERECO' });
   });
 });

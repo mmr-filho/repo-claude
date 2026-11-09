@@ -441,8 +441,9 @@ export class CampoAceService {
       await this.refazerRecuperacaoSeguinte(tx, escopo);
       if (ordem) {
         // Início em campo: a visita mais antiga da ordem, mesmo a que chega depois (aparelho sem rede), mas nunca antes da
-        // abertura (relógio do aparelho atrasado). É a âncora de tempo da ordem em campo (BloqueioService.ordensQueAgrupam):
-        // um início antes da abertura deixaria o próprio caso da ordem fora da janela e abriria outra sobre os quarteirões.
+        // abertura (visita do dia da abertura feita antes da hora dela). É a âncora de tempo da ordem em campo
+        // (BloqueioService.ordensQueAgrupam): um início antes da abertura deixaria o próprio caso da ordem fora da janela e
+        // abriria outra sobre os quarteirões.
         const inicio = visitedAt > ordem.openedAt ? visitedAt : ordem.openedAt;
         await tx.blockingOrder.updateMany({
           where: { id: ordem.id, status: { in: ['ABERTA', 'EM_CAMPO', 'CONCLUIDA'] }, OR: [{ startedAt: null }, { startedAt: { gt: inicio } }] },
@@ -464,10 +465,12 @@ export class CampoAceService {
   }
 
   /**
-   * Ordem de bloqueio da visita: a informada pelo aparelho, se o imóvel está nela. A unificada a outra depois que o
-   * aparelho a levou (CANCELADA com mergedIntoId) leva a visita à ordem que ficou, seguindo a cadeia de uniões, se o
-   * quarteirão do imóvel está nela; senão a visita fica sem ordem, como na cancelada. A visita de antes da abertura da
-   * informada fica com a hora do aparelho e ganha o aviso de relógio atrasado. Sem ordem informada, a visita de
+   * Ordem de bloqueio da visita: a informada pelo aparelho, se a visita é de bloqueio e o imóvel está nela. A unificada a
+   * outra depois que o aparelho a levou (CANCELADA com mergedIntoId) leva a visita à ordem que ficou, seguindo a cadeia
+   * de uniões, se o quarteirão do imóvel está nela; senão a visita fica sem ordem, como na cancelada. A visita de outra
+   * atividade não é trabalho da ordem e fica sem ordem. A de dia anterior ao da abertura da informada (no fuso da
+   * prefeitura) também fica sem ordem, nem na que ficou na união: a ordem não existia quando ela foi feita. A do mesmo
+   * dia, com a hora antes da abertura, entra, com o aviso para conferir a hora. Sem ordem informada, a visita de
    * bloqueio vai para a ordem ativa mais recente do quarteirão aberta até o dia dela (a mais antiga pode ser de outra
    * transmissão, com o quarteirão já trabalhado; a aberta depois do dia da visita não existia quando ela foi feita, e a
    * casa contaria como trabalhada para um caso que ainda não era conhecido). Cada ordem é lida com a linha travada (ver
@@ -481,9 +484,21 @@ export class CampoAceService {
         avisos.push('A ordem de bloqueio não existe mais: visita gravada sem a ordem');
         return null;
       }
-      // O aparelho só conhece a ordem depois da abertura: a visita de antes dela (da informada, não da que ficou na união)
-      // é relógio do aparelho atrasado. Ela fica com a hora do aparelho, e a supervisão confere.
-      if (quando.visitedAt.getTime() < informada.openedAt.getTime()) avisos.push(`A hora do aparelho é anterior à abertura da ordem ${numeroOrdem(informada)}: confira a data e a hora do aparelho`);
+      // O formulário aberto pela ordem começa no bloqueio, mas o agente pode trocar a atividade: a visita de outra
+      // atividade não conta no progresso da ordem.
+      if (v.atividade !== 'BLOQUEIO') {
+        avisos.push(`Só a visita de bloqueio entra na ordem ${numeroOrdem(informada)}: visita gravada sem a ordem`);
+        return null;
+      }
+      // O aparelho só conhece a ordem depois da abertura, mas a data da visita é editável (visita anotada em papel e
+      // registrada depois) e o relógio pode estar atrasado. A de dia anterior ao da abertura da informada (não da que
+      // ficou na união) não entra: a casa contaria como trabalhada para um caso que ainda não era conhecido. A do mesmo
+      // dia entra, como a de bloqueio sem ordem, e a supervisão confere a hora.
+      if (quando.dataLocal < localDateString(informada.openedAt, quando.timeZone)) {
+        avisos.push(`A data da visita é anterior à abertura da ordem ${numeroOrdem(informada)}: visita gravada sem a ordem (confira a data da visita e o relógio do aparelho)`);
+        return null;
+      }
+      if (quando.visitedAt.getTime() < informada.openedAt.getTime()) avisos.push(`A hora da visita é anterior à abertura da ordem ${numeroOrdem(informada)}: confira a hora da visita e o relógio do aparelho`);
       let o = informada;
       for (let passo = 0; o.status === 'CANCELADA' && o.mergedIntoId && passo < MAX_UNIOES; passo++) {
         const destino = await this.ordemTravada(tx, o.mergedIntoId);

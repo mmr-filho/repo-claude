@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { distanciaM, normalizarLogradouro, normalizarNome, normalizarNumero, quadraLote, type PrecisaoGeo, type Posicao } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
-import { LocalizadorService, posicaoMelhorOuIgual, PRECISAO_LIGA_QUARTEIRAO } from './localizador.service';
+import { ENDERECO_LIGA_QUARTEIRAO, LocalizadorService, posicaoExplicita, posicaoMelhorOuIgual, PRECISAO_LIGA_QUARTEIRAO } from './localizador.service';
 import { TerritorioService } from './territorio.service';
 
 /** Precisão pelo nível de geocodificação do CNEFE (NV_GEO_COORD). */
@@ -51,15 +51,13 @@ export const MOTIVO_FORA_DO_QUARTEIRAO = 'o endereço na base do IBGE cai fora d
 export const MOTIVO_QUARTEIRAO_DESATIVADO =
   'o quarteirão escolhido em campo para o imóvel foi desativado na malha, e a posição pelo endereço não troca esse quarteirão. Marque o imóvel no mapa para ligá-lo ao quarteirão novo';
 
-/** Precisões da posição pelo endereço que ligam o imóvel ao quarteirão: o quarteirão veio dessa posição. */
-const ENDERECO_LIGA_QUARTEIRAO: PrecisaoGeo[] = ['ENDERECO', 'FACE'];
-
 /**
  * Geocodificação só local (LGPD: o endereço não sai para serviços externos). Ordem: endereço com número na base do
  * IBGE (CNEFE), quadra e lote do complemento, centro do quarteirão do imóvel (o que já tem quarteirão), logradouro sem
  * número, centro do bairro ou da localidade pelo nome. Nunca troca uma posição melhor (GPS em campo, mapa) por uma
  * pior, e a posição pelo endereço nunca tira o imóvel do quarteirão escolhido em campo (o do ACE manda). O quarteirão
- * que veio da própria posição pelo endereço (endereço ou face de quadra) segue a posição melhor.
+ * que veio da própria posição pelo endereço (endereço ou face de quadra) segue a posição melhor, menos no imóvel criado
+ * pelo ACE em campo: lá o quarteirão é sempre o escolhido, até uma ação explícita mudar a posição dele.
  */
 @Injectable()
 export class GeocodificacaoService {
@@ -74,7 +72,7 @@ export class GeocodificacaoService {
     const limite = Math.min(input.limite ?? 20_000, 50_000);
     const explicito = !!input.ids?.length;
     const piores: PrecisaoGeo[] = ['LOGRADOURO', 'QUARTEIRAO', 'LOCALIDADE', 'SETOR', 'CEP', 'MUNICIPIO', 'FACE'];
-    const select = { id: true, street: true, number: true, complement: true, district: true, cep: true, ibgeCode: true, latitude: true, longitude: true, geoPrecision: true, blockId: true } as const;
+    const select = { id: true, street: true, number: true, complement: true, district: true, cep: true, ibgeCode: true, latitude: true, longitude: true, geoPrecision: true, geoSource: true, blockId: true } as const;
     // Base inteira na memória (um município: dezenas de milhares de endereços) em índices por chave.
     const base = await ctx.db.addressPoint.findMany({ select: { latitude: true, longitude: true, level: true, locality: true, cep: true, ibgeCode: true, streetKey: true, number: true, quadraKey: true, loteKey: true } });
     const porRuaNumero = new Map<string, Ponto[]>();
@@ -94,6 +92,8 @@ export class GeocodificacaoService {
     // Municípios do território (unidades e base de endereços): imóvel de outro município não ganha posição daqui.
     const municipios = new Set([...(await ctx.db.unit.findMany({ select: { ibgeCode: true } })).map((u) => u.ibgeCode), ...base.map((p) => p.ibgeCode)].map((c) => (c ?? '').slice(0, 6)).filter(Boolean));
     const centroBloco = new Map(blocos.map((b) => [b.id, b]));
+    // Imóveis criados pelo ACE em campo (lidos uma vez: a sincronização não tem índice pelo imóvel).
+    const doAce = await this.localizador.criadosPeloAce(ctx.db, explicito ? input.ids : undefined);
     // Nome de bairro ou localidade que existe em mais de um lugar (o "Centro" da sede e o do distrito) é ambíguo: não
     // posiciona ninguém por ele.
     const porNome = new Map<string, { lat: number; lng: number }[]>();
@@ -141,13 +141,17 @@ export class GeocodificacaoService {
         if (h.geoPrecision === r.precisao && h.latitude != null && (!explicito || (h.latitude === r.lat && h.longitude === r.lng))) continue;
         // O quarteirão que veio da posição pelo endereço do próprio imóvel (endereço ou face de quadra na base do IBGE)
         // segue a posição melhor, como sempre: o endereço exato corrige o quarteirão ligado pela face de quadra, e liga ao
-        // ativo o imóvel cujo quarteirão saiu da malha. Imóvel sem quarteirão também segue a regra de sempre.
+        // ativo o imóvel cujo quarteirão saiu da malha. Imóvel sem quarteirão também segue a regra de sempre. A exceção é
+        // o imóvel criado pelo ACE em campo: o quarteirão é o escolhido lá, qualquer que seja a precisão da posição atual
+        // (a face de quadra que o confirmou não o troca pelo do endereço exato), até uma ação explícita mudar a posição.
         const doEndereco = h.latitude != null && ENDERECO_LIGA_QUARTEIRAO.includes(h.geoPrecision as PrecisaoGeo);
-        if (h.blockId && !doEndereco) {
+        const escolhidoEmCampo = !!h.blockId && doAce.has(h.id) && !posicaoExplicita(h);
+        if (h.blockId && (!doEndereco || escolhidoEmCampo)) {
           // O quarteirão que veio de outro lugar (imóvel sem posição, ou com posição que não liga quarteirão: centro do
-          // quarteirão, rua, bairro) é o escolhido em campo e fica. O desativado na malha não está entre os ativos (nem no
-          // índice dos centros): nenhum ponto cai nele, nem a mediana da rua sem o número ou o centro do bairro, que não
-          // ligam quarteirão mas poriam o imóvel longe do dele. O motivo é outro: ligar o imóvel ao quarteirão novo.
+          // quarteirão, rua, bairro) e o do imóvel criado pelo ACE são os escolhidos em campo e ficam. O desativado na
+          // malha não está entre os ativos (nem no índice dos centros): nenhum ponto cai nele, nem a mediana da rua sem o
+          // número ou o centro do bairro, que não ligam quarteirão mas poriam o imóvel longe do dele. O motivo é outro:
+          // ligar o imóvel ao quarteirão novo.
           if (!centroBloco.has(h.blockId)) {
             quarteiraoDesativado++;
             continue;
@@ -168,7 +172,8 @@ export class GeocodificacaoService {
           await ctx.db
             .$executeRaw`UPDATE households SET latitude = ${r.lat}, longitude = ${r.lng}, geo_precision = ${r.precisao}::"GeoPrecision", geo_source = ${r.fonte}, geo_accuracy_m = NULL, geo_at = now() WHERE id = ${h.id}::uuid`;
         }
-        await this.localizador.vincularImovel(ctx.db, h.id);
+        // Com os criados pelo ACE já lidos: a sincronização não é lida de novo a cada imóvel que muda de quarteirão.
+        await this.localizador.vincularImovel(ctx.db, h.id, doAce);
         resumo[r.precisao] = (resumo[r.precisao] ?? 0) + 1;
         posicionados.push(h.id);
         atualizados++;

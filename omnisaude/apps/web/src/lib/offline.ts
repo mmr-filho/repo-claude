@@ -141,6 +141,11 @@ export interface Gravacao {
   delete?: string;
 }
 
+/** O que `atualizarVarios` lê de cada store: as chaves pedidas, ou 'todas' (o store inteiro). */
+export type Leituras = Partial<Record<Store, string[] | 'todas'>>;
+/** O que `atualizarVarios` leu, por store: chave → registro guardado (a chave que não está guardada não aparece). */
+export type Lidos = Record<Store, Map<string, unknown>>;
+
 export interface BancoLocal {
   get<T>(store: Store, key: string): Promise<T | undefined>;
   all<T>(store: Store): Promise<T[]>;
@@ -153,6 +158,12 @@ export interface BancoLocal {
    * está guardado (undefined se não está) e devolve o que gravar, ou undefined para não gravar. Resolve com o que gravou.
    */
   atualizar<T>(store: Store, key: string, fn: (atual: T | undefined) => T | undefined): Promise<T | undefined>;
+  /**
+   * Lê vários registros e grava numa transação só, sobre os dois stores (nada de outra aba entra entre a leitura e a
+   * gravação): `fn` recebe o que está guardado nas chaves pedidas e devolve as gravações, em qualquer store, feitas todas
+   * ou nenhuma. Resolve com as gravações feitas.
+   */
+  atualizarVarios(leituras: Leituras, fn: (lidos: Lidos) => Gravacao[]): Promise<Gravacao[]>;
 }
 
 /**
@@ -246,6 +257,50 @@ function criarBanco(nome: string, preparar?: (db: IDBDatabase) => Promise<void>)
             }
           };
           return () => novo;
+        }),
+      ),
+    atualizarVarios: (leituras: Leituras, fn: (lidos: Lidos) => Gravacao[]) =>
+      usar((d) =>
+        transacao(d, Object.keys(STORES), 'readwrite', (t, falhar) => {
+          const lidos: Lidos = { fila: new Map(), cache: new Map() };
+          let feitas: Gravacao[] = [];
+          // Leituras que faltam, mais esta chamada: com tudo lido (ou nada a ler), fn e as gravações, ainda na transação.
+          let faltam = 1;
+          const lido = () => {
+            if (--faltam) return;
+            try {
+              feitas = fn(lidos);
+              for (const g of feitas) {
+                if (g.delete !== undefined) t.objectStore(g.store).delete(g.delete);
+                else t.objectStore(g.store).put(g.put);
+              }
+            } catch (e) {
+              // fn lançou, ou um valor novo não se copia: nada é gravado e a causa sobe.
+              falhar(e);
+            }
+          };
+          for (const [store, chaves] of Object.entries(leituras) as [Store, Leituras[Store]][]) {
+            const s = t.objectStore(store);
+            if (chaves === 'todas') {
+              faltam++;
+              const r = s.getAll();
+              r.onsuccess = () => {
+                for (const v of (r.result ?? []) as Record<string, unknown>[]) lidos[store].set(String(v[STORES[store]]), v);
+                lido();
+              };
+              continue;
+            }
+            for (const chave of new Set(chaves)) {
+              faltam++;
+              const r = s.get(chave);
+              r.onsuccess = () => {
+                if (r.result !== undefined) lidos[store].set(chave, r.result);
+                lido();
+              };
+            }
+          }
+          lido();
+          return () => feitas;
         }),
       ),
   };

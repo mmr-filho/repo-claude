@@ -29,7 +29,19 @@ import { Button } from '@/components/ui/button';
 import { Dialog } from '@/components/ui/dialog';
 import { Field, Input, Select, Textarea } from '@/components/ui/input';
 import { Alert } from '@/components/ui/misc';
-import { ajustarLinhaAutomatica, loteSugerido, numeroDoBotao, paraDataHoraLocal, produtoSugerido, produtosDoFormulario, quantidadeParaTexto, seguinteTubito, type LinhaTratamento, type VisitaOp } from '@/lib/ace-campo';
+import {
+  ajustarLinhaAutomatica,
+  loteSugerido,
+  numeroDoBotao,
+  ordemDoFormulario,
+  paraDataHoraLocal,
+  produtoSugerido,
+  produtosDoFormulario,
+  quantidadeParaTexto,
+  seguinteTubito,
+  type LinhaTratamento,
+  type VisitaOp,
+} from '@/lib/ace-campo';
 import { contadorTubito } from '@/lib/ace-store';
 import { cn } from '@/lib/cn';
 import { ErroAparelho, obterPosicao, uuid, type Posicao } from '@/lib/offline';
@@ -48,8 +60,11 @@ const contagem = (texto: string) => Math.min(L.contagem, Number(texto.replace(/\
 
 export interface ContextoVisita {
   imovel: ImovelCampoView;
-  /** Ordem de bloqueio que inclui o quarteirão do imóvel (a visita entra nela). */
-  ordem: { id: string; numero: string } | null;
+  /**
+   * Ordem de bloqueio que inclui o quarteirão do imóvel: a visita de bloqueio entra nela, se a data não for de dia
+   * anterior ao da abertura (`abertaEm`, do pacote; sem ela, o servidor confere).
+   */
+  ordem: { id: string; numero: string; abertaEm?: string | null } | null;
   quarteirao: string | null;
 }
 
@@ -142,6 +157,8 @@ export function VisitaVetorialForm({
   }, [aberto, contexto, userId, inicial]);
 
   const pendente = SITUACAO_INFO[situacao].pendencia;
+  // Só a visita de bloqueio entra na ordem, e só a de data a partir do dia da abertura.
+  const daOrdem = ordemDoFormulario(contexto?.ordem, atividade, quando);
   const totais = totaisDepositos(depositos);
   const ehPe = imovel?.tipo === '04';
   const produtos = useMemo(() => produtosDoFormulario(catalogo, estoque), [catalogo, estoque]);
@@ -188,7 +205,7 @@ export function VisitaVetorialForm({
     const visita: VisitaVetorialCampo = {
       atividade,
       situacao,
-      ordemId: contexto?.ordem?.id ?? null,
+      ordemId: daOrdem.ordemId,
       ...(pendente
         ? {}
         : {
@@ -249,7 +266,8 @@ export function VisitaVetorialForm({
       }
     >
       <div className="space-y-4">
-        {contexto?.ordem && <Alert tone="info">Faz parte da ordem de bloqueio {contexto.ordem.numero}.</Alert>}
+        {daOrdem.ordemId && <Alert tone="info">Faz parte da ordem de bloqueio {contexto?.ordem?.numero}.</Alert>}
+        {daOrdem.aviso && <Alert tone="warn">{daOrdem.aviso}</Alert>}
         <div className="grid gap-3 sm:grid-cols-3">
           <Field label="Atividade" htmlFor="vv-atividade">
             <Select id="vv-atividade" value={atividade} onChange={(e) => setAtividade(e.target.value as AtividadeVetorial)}>

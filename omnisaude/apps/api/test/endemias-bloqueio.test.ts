@@ -1482,16 +1482,27 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     expect(await ordemDe('pa2')).toBe(o);
   });
 
-  it('dados-docs#4: com a ordem informada e o relógio do aparelho atrasado, o início do campo fica na abertura', async () => {
+  it('dados-docs#4: com a ordem informada, a visita de dia anterior ao da abertura fica sem a ordem; a do dia, antes da hora, entra e o início do campo fica na abertura', async () => {
     await caso('pi1', ponto('pdinf', 200, 200), 'dengue', dia(-1));
     const o = await ordemDe('pi1');
-    const aberta = (await ordem(o)).openedAt;
+    const { openedAt: aberta, seq, year } = await ordem(o);
+    // O aparelho ficou sem rede com o relógio atrasado (ou a data foi digitada): a visita informada é de 9 dias antes da
+    // abertura. Antes, ela entrava na ordem, com o início do campo na abertura; agora fica sem a ordem, com o aviso.
     const r = await visitar(casa.pi1!, o, {}, new Date(Date.now() - 9 * DIA).toISOString());
     expect(r.status).toBe('OK');
-    expect(await db.vectorVisit.findUniqueOrThrow({ where: { id: r.id }, select: { orderId: true } })).toEqual({ orderId: o });
+    expect(r.avisos).toEqual([`A data da visita é anterior à abertura da ordem ${seq}/${year}: visita gravada sem a ordem (confira a data da visita e o relógio do aparelho)`]);
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { id: r.id }, select: { orderId: true } })).toEqual({ orderId: null });
+    expect(await ordem(o)).toMatchObject({ status: 'ABERTA', startedAt: null });
+    // A do começo do dia da abertura (no fuso da prefeitura), antes da hora dela, entra na ordem.
+    const [inicio] = await consultar<{ t: Date }>(`SELECT (date_trunc('day', now() AT TIME ZONE $1) AT TIME ZONE $1) + interval '1 second' AS t`, [tz]);
+    expect(localDateString(inicio!.t, tz)).toBe(localDateString(aberta, tz));
+    const r2 = await visitar(casa.pi1!, o, {}, inicio!.t.toISOString());
+    expect(r2.status).toBe('OK');
+    expect(r2.avisos).toEqual([`A hora da visita é anterior à abertura da ordem ${seq}/${year}: confira a hora da visita e o relógio do aparelho`]);
+    expect(await db.vectorVisit.findUniqueOrThrow({ where: { id: r2.id }, select: { orderId: true } })).toEqual({ orderId: o });
     const oo = await ordem(o);
     expect(oo.status).toBe('EM_CAMPO');
-    // Antes, o início do campo era a hora do aparelho, 9 dias antes da abertura.
+    // O início do campo não fica antes da abertura (antes da regra do relógio, era a hora da visita).
     expect(oo.startedAt?.getTime()).toBe(aberta.getTime());
     await caso('pi2', ponto('pdinf', 210, 200), 'dengue', dia(0));
     expect(await ordemDe('pi2')).toBe(o);

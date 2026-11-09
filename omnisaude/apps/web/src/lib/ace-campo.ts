@@ -1,4 +1,4 @@
-import { LIMITES_CAMPO_ACE, TIPO_IMOVEL, type OperacaoAce, type TratamentoCampo } from '@omnisaude/shared';
+import { LIMITES_CAMPO_ACE, TIPO_IMOVEL, type AtividadeVetorial, type OperacaoAce, type TratamentoCampo } from '@omnisaude/shared';
 import type { ImovelCampoView, LoteCampo, PacoteCampo, ProdutoCampo } from '@/components/endemias/types';
 import { ApiError } from './api';
 
@@ -159,6 +159,20 @@ export function imovelDaOperacao(op: ImovelOp, id: string, pendente: boolean): I
 export function ordemMaisRecente(ordens: PacoteCampo['ordens'], quarteiraoId: string): { id: string; numero: string } | null {
   const o = ordens.filter((x) => x.quarteiroes.some((q) => q.id === quarteiraoId)).sort((a, b) => Date.parse(b.abertaEm) - Date.parse(a.abertaEm))[0];
   return o ? { id: o.id, numero: o.numero } : null;
+}
+
+/**
+ * Ordem que a visita do formulário leva: a do contexto (roteiro ou lista da ordem), só na visita de bloqueio e com a
+ * data a partir do dia da abertura, no fuso do aparelho. A de dia anterior (visita anotada em papel e registrada depois)
+ * vai sem a ordem, com o aviso na tela: a ordem não existia quando ela foi feita. A do dia da abertura, mesmo antes da
+ * hora dela, vai com a ordem. Sem a abertura no contexto ou com a data ilegível, vai a ordem, e o servidor confere.
+ */
+export function ordemDoFormulario(ordem: { id: string; numero: string; abertaEm?: string | null } | null | undefined, atividade: AtividadeVetorial, quando: string): { ordemId: string | null; aviso: string | null } {
+  if (!ordem || atividade !== 'BLOQUEIO') return { ordemId: null, aviso: null };
+  const diaDaAbertura = ordem.abertaEm && !Number.isNaN(Date.parse(ordem.abertaEm)) ? dataLocal(ordem.abertaEm) : null;
+  if (diaDaAbertura && !Number.isNaN(new Date(quando).getTime()) && dataLocal(quando) < diaDaAbertura)
+    return { ordemId: null, aviso: `A data é anterior à abertura da ordem ${ordem.numero}: a visita não vai entrar nela` };
+  return { ordemId: ordem.id, aviso: null };
 }
 
 const maisNova = (atual: { em: string } | null | undefined, em: string) => !atual || Date.parse(em) >= Date.parse(atual.em);

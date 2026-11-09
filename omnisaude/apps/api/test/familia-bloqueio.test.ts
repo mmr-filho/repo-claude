@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { areaM2, caixaDe, centroDe, cnsFromBase, completeCpf, localDateString, metrosPorGrau, normalizarArea, type Posicao } from '@omnisaude/shared';
+import { Client } from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AuditService } from '../src/core/audit.service';
 import { TenantsService } from '../src/core/database';
 import { TerritorioService } from '../src/modules/territorio/territorio.service';
-import { pgAvailable, startTestApp, type TestApp } from './harness';
+import { pgAvailable, startTestApp, TEST_PG, type TestApp } from './harness';
 
 /**
  * A mudança de família (incluir ou tirar a pessoa, pela recepção ou pela sincronização do ACS) refaz na hora o caso da
@@ -25,6 +26,7 @@ describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da 
   let acs = '';
   let coordenador = '';
   let tz = 'America/Sao_Paulo';
+  let tenantDb = '';
   let localidade = '';
   let numeroQuarteirao = 0;
   let seq = 0;
@@ -123,6 +125,7 @@ describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da 
     const tenants = t.app.get(TenantsService);
     const info = await tenants.resolve(t.slug);
     tz = info.timeZone;
+    tenantDb = info.db.name;
     db = await tenants.client(info.id);
     territorio = t.app.get(TerritorioService);
     localidade = (await t.http().post('/api/territorio/localidades').set(auth(gestora)).send({ code: '51', name: 'Familia e Bloqueio' }).expect(201)).body.id;
@@ -306,5 +309,86 @@ describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da 
     expect(segundaR.body).toMatchObject({ code: 'PACIENTE_UNIFICADO' });
     expect(await db.patient.findUniqueOrThrow({ where: { id: a } })).toMatchObject({ mergedIntoId: null });
     expect(await db.patient.findUniqueOrThrow({ where: { id: b } })).toMatchObject({ mergedIntoId: a });
+  });
+  it('três unificações simultâneas: a que trava um cadastro já unificado no duplicado e espera o que fica não forma impasse', async () => {
+    // x (o menor id dos três) já foi unificado em d. A terceira unificação, por fora, faz como a unificação de verdade:
+    // trava x e depois s, na ordem dos ids (ela leu x antes de x ser unificado e vai desistir ao conferir de novo).
+    const [x, d, s] = [await novoPaciente('tx'), await novoPaciente('td'), await novoPaciente('ts')].sort();
+    await t.http().post(`/api/patients/${d}/merge`).set(auth(recepcao)).send({ duplicateId: x }).expect(naoPassou);
+    const c = new Client({ connectionString: TEST_PG.replace(/\/[^/]*$/, `/${tenantDb}`) });
+    await c.connect();
+    try {
+      // No impasse, o banco desfaz a transação que confere primeiro: a de fora só confere depois de 30 s, e a desfeita é a
+      // unificação (que não repete).
+      await c.query(`SET deadlock_timeout = '30s'`);
+      const pid = (await c.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      await c.query('BEGIN');
+      await c.query('SELECT id FROM patients WHERE id = $1 FOR UPDATE', [x]);
+      // d em s: com x travado por fora.
+      const unificacao = t
+        .http()
+        .post(`/api/patients/${s}/merge`)
+        .set(auth(recepcao))
+        .send({ duplicateId: d })
+        .then((r) => r);
+      const presos = async () => (await db.$queryRaw<{ n: number }[]>`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND ${pid}::int = ANY(pg_blocking_pids(pid))`)[0]!.n;
+      let esperando = false;
+      for (let i = 0; i < 100 && !esperando; i++) {
+        esperando = (await presos()) > 0;
+        if (!esperando) await new Promise((ok) => setTimeout(ok, 30));
+      }
+      expect(esperando).toBe(true);
+      // A terceira pede s. Antes: a unificação já tinha s e d e esperava x (ao repor os unificados em d); a terceira
+      // esperava s; o banco desfazia a unificação (40P01) e a resposta era 500. Agora a unificação espera x sem ter s.
+      await c.query('SELECT id FROM patients WHERE id = $1 FOR UPDATE', [s]);
+      await c.query('ROLLBACK');
+      const r = await unificacao;
+      expect(r.status, JSON.stringify(r.body)).toBe(201);
+      expect(r.body.moved).toMatchObject({ mergedPatients: 1 });
+    } finally {
+      await c.end();
+    }
+    for (const id of [x, d]) expect(await db.patient.findUniqueOrThrow({ where: { id } })).toMatchObject({ mergedIntoId: s });
+  });
+  it('três unificações simultâneas, com o cadastro unificado no duplicado enquanto a unificação espera: a que o banco desfaz é repetida, sem 500', async () => {
+    // Ids ordenados: s < y < d. A primeira unificação (y em d), por fora para controlar o tempo, trava y e d e unifica y
+    // em d sem confirmar. A segunda (d em s) lê d antes disso: trava s e espera d. A terceira (d em y) leu y antes de y
+    // ser unificado: trava y primeiro e espera.
+    const [s, y, d] = [await novoPaciente('ws'), await novoPaciente('wy'), await novoPaciente('wd')].sort();
+    const c = new Client({ connectionString: TEST_PG.replace(/\/[^/]*$/, `/${tenantDb}`) });
+    await c.connect();
+    try {
+      const pid = (await c.query<{ pid: number }>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
+      await c.query('BEGIN');
+      await c.query('SELECT id FROM patients WHERE id IN ($1, $2) ORDER BY id FOR UPDATE', [y, d]);
+      await c.query('UPDATE patients SET merged_into_id = $2, merged_at = now(), cpf = NULL, cns = NULL WHERE id = $1', [y, d]);
+      const unificar = (fica: string, sai: string) =>
+        t
+          .http()
+          .post(`/api/patients/${fica}/merge`)
+          .set(auth(recepcao))
+          .send({ duplicateId: sai })
+          .then((r) => r);
+      const segunda = unificar(s, d);
+      const terceira = unificar(y, d);
+      const presos = async () => (await db.$queryRaw<{ n: number }[]>`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND ${pid}::int = ANY(pg_blocking_pids(pid))`)[0]!.n;
+      let n = 0;
+      for (let i = 0; i < 200 && n < 2; i++) {
+        n = await presos();
+        if (n < 2) await new Promise((ok) => setTimeout(ok, 30));
+      }
+      expect(n).toBe(2);
+      // A primeira confirma: a terceira fica com y e espera d; a segunda fica com d e, ao repor em s os unificados em d,
+      // espera y (unificado depois da leitura da trava dela). Antes: o banco desfazia uma das duas (40P01) e a resposta
+      // era 500. Agora a desfeita é repetida: a segunda passa, e a terceira recebe 404 ou 409 (y já foi unificado).
+      await c.query('COMMIT');
+      const [r2, r3] = await Promise.all([segunda, terceira]);
+      expect(r2.status, JSON.stringify(r2.body)).toBe(201);
+      expect([404, 409], JSON.stringify(r3.body)).toContain(r3.status);
+    } finally {
+      await c.end();
+    }
+    for (const id of [y, d]) expect(await db.patient.findUniqueOrThrow({ where: { id } })).toMatchObject({ mergedIntoId: s });
+    expect(await db.patient.findUniqueOrThrow({ where: { id: s } })).toMatchObject({ mergedIntoId: null });
   });
 });

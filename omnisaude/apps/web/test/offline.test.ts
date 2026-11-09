@@ -247,3 +247,92 @@ describe('atualizar: ler e regravar um registro numa transação só', () => {
     expect(await localAce.get('fila', 'a')).toEqual(item('a'));
   });
 });
+
+describe('atualizarVarios: ler vários registros e gravar numa transação só', () => {
+  interface Item {
+    clientId: string;
+    status: string;
+    erro: string | null;
+    [campo: string]: unknown;
+  }
+
+  it('lê as chaves pedidas (ou o store inteiro) e grava o que fn devolve nos dois stores; resolve com as gravações', async () => {
+    const { localAce, BANCO_ACE } = await carregar();
+    await localAce.gravar([
+      { store: 'fila', put: item('a') },
+      { store: 'fila', put: item('b') },
+      { store: 'cache', put: { key: 'historico-ace:u1', data: ['x'] } },
+    ]);
+    const vistos: Record<string, unknown> = {};
+    const gravacoes = [
+      { store: 'fila' as const, delete: 'a' },
+      { store: 'fila' as const, put: item('b', { status: 'ERRO', erro: 'Recusado' }) },
+      { store: 'cache' as const, put: { key: 'historico-ace:u1', data: ['a', 'x'] } },
+    ];
+    await expect(
+      localAce.atualizarVarios({ fila: 'todas', cache: ['historico-ace:u1', 'tubito:u1'] }, (lidos) => {
+        vistos.fila = [...lidos.fila.keys()].sort();
+        vistos.cache = [...lidos.cache.keys()];
+        vistos.b = lidos.fila.get('b');
+        return gravacoes;
+      }),
+    ).resolves.toEqual(gravacoes);
+    // A chave que não está guardada não aparece.
+    expect(vistos).toEqual({ fila: ['a', 'b'], cache: ['historico-ace:u1'], b: item('b') });
+    expect(fake.linhas(BANCO_ACE, 'fila')).toEqual([item('b', { status: 'ERRO', erro: 'Recusado' })]);
+    expect(fake.linhas(BANCO_ACE, 'cache')).toEqual([{ key: 'historico-ace:u1', data: ['a', 'x'] }]);
+    // O store inteiro do cache vem pela chave 'key'; sem nada a ler, fn roda do mesmo jeito.
+    await localAce.atualizarVarios({ cache: 'todas' }, (lidos) => {
+      vistos.todoCache = [...lidos.cache.keys()];
+      return [];
+    });
+    expect(vistos.todoCache).toEqual(['historico-ace:u1']);
+    await expect(localAce.atualizarVarios({}, () => [{ store: 'cache', put: { key: 'tubito:u1', data: 3 } }])).resolves.toHaveLength(1);
+    expect(await localAce.get('cache', 'tubito:u1')).toEqual({ key: 'tubito:u1', data: 3 });
+  });
+
+  it('a gravação de outra aba pedida entre a leitura e a gravação fica depois dela (não é desfeita)', async () => {
+    const { localAce, BANCO_ACE } = await carregar();
+    await localAce.put('fila', item('a'));
+    const outra = await abrirOutraAba(fake, BANCO_ACE);
+    let descarte: Promise<'complete' | 'abort'> | null = null;
+    fake.aoLer = ({ store }) => {
+      if (store !== 'fila' || descarte) return;
+      const t = outra.transaction(['fila'], 'readwrite');
+      t.objectStore('fila').delete('a');
+      descarte = new Promise((resolve) => {
+        t.oncomplete = () => resolve('complete');
+        t.onabort = () => resolve('abort');
+      });
+    };
+    await localAce.atualizarVarios({ fila: ['a'] }, (lidos) => {
+      const a = lidos.fila.get('a') as Item | undefined;
+      return a ? [{ store: 'fila', put: { ...a, status: 'ERRO', erro: 'Recusado' } }] : [];
+    });
+    expect(await descarte).toBe('complete');
+    expect(fake.linhas(BANCO_ACE, 'fila')).toEqual([]);
+  });
+
+  it('fn que lança, gravação que não se copia ou cota estourada: rejeita com a causa e nada muda', async () => {
+    const { localAce, ErroAparelho, BANCO_ACE } = await carregar();
+    await localAce.put('fila', item('a'));
+    const falha = new Error('fn falhou');
+    await expect(
+      localAce.atualizarVarios({ fila: ['a'] }, () => {
+        throw falha;
+      }),
+    ).rejects.toMatchObject({ name: 'ErroAparelho', causa: falha });
+    await expect(
+      localAce.atualizarVarios({ fila: 'todas' }, () => [
+        { store: 'fila', delete: 'a' },
+        { store: 'cache', put: { key: 'tubito:u1', data: 4 } },
+        { store: 'fila', put: item('b', { anexo: () => undefined }) },
+      ]),
+    ).rejects.toBeInstanceOf(ErroAparelho);
+    fake.cancelarNaConfirmacao = true;
+    await expect(localAce.atualizarVarios({ fila: ['a'] }, () => [{ store: 'fila', delete: 'a' }])).rejects.toThrow(/espaço de armazenamento acabou/);
+    fake.cancelarNaConfirmacao = false;
+    expect(fake.linhas(BANCO_ACE, 'fila')).toEqual([item('a')]);
+    expect(fake.linhas(BANCO_ACE, 'cache')).toEqual([]);
+  });
+});
