@@ -14,7 +14,7 @@ import { Input } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { Tabs, TabPanel } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
-import { aplicarAceitosNoPacote, dependentesDoImovel, imovelDaOperacao, ordemMaisRecente, type FalhaSync } from '@/lib/ace-campo';
+import { aplicarAceitosNoPacote, dependentesDoImovel, imovelDaOperacao, ordemDoContexto, ordemMaisRecente, type FalhaSync, type OrdemDoContexto } from '@/lib/ace-campo';
 import { filaAce, historicoAce, pacoteAce, useFilaAce, type ContextoAce, type EnviadoAce, type ItemFilaAce, type PacoteGuardado, type ResumoSyncAce } from '@/lib/ace-store';
 import { errorMessage } from '@/lib/api';
 import { fmtDate, fmtDateTime } from '@/lib/format';
@@ -240,9 +240,9 @@ export default function CampoAcePage() {
     return m;
   }, [itensDaLotacao]);
   const quarteiraoDe = useMemo(() => new Map((p?.quarteiroes ?? []).map((q) => [q.id, q])), [p]);
-  /** Ordem do quarteirão para a visita aberta pelo roteiro: a mais recente que o contém (a mesma que o servidor usa). */
+  /** Ordem do quarteirão no roteiro: a mais recente que o contém (a mesma que a visita aberta pelo roteiro leva). */
   const ordemDoQuarteirao = useMemo(() => {
-    const m = new Map<string, { id: string; numero: string }>();
+    const m = new Map<string, OrdemDoContexto>();
     for (const o of p?.ordens ?? [])
       for (const q of o.quarteiroes)
         if (!m.has(q.id)) {
@@ -263,10 +263,11 @@ export default function CampoAcePage() {
   };
   const filtra = (i: ImovelCampoView) => !busca.trim() || `${i.endereco} ${i.sequencia ?? ''} ${i.tipoLabel}`.toLowerCase().includes(busca.trim().toLowerCase());
   const alternar = (k: string) => setAbertos((s) => (s.has(k) ? new Set([...s].filter((x) => x !== k)) : new Set([...s, k])));
-  const visitar = (i: ImovelCampoView, ordem: { id: string; numero: string } | null) =>
+  /** Abre a visita pela lista da ordem (`ordemId`) ou pelo roteiro e pelo mapa (a ordem do quarteirão), com a abertura. */
+  const visitar = (i: ImovelCampoView, ordemId: string | null) =>
     setDialogo({
       tipo: 'visita',
-      contexto: { imovel: i, ordem: ordem ?? (i.quarteiraoId ? (ordemDoQuarteirao.get(i.quarteiraoId) ?? null) : null), quarteirao: i.quarteiraoId ? (quarteiraoDe.get(i.quarteiraoId)?.numero ?? null) : null },
+      contexto: { imovel: i, ordem: ordemDoContexto(p?.ordens, i.quarteiraoId, ordemId), quarteirao: i.quarteiraoId ? (quarteiraoDe.get(i.quarteiraoId)?.numero ?? null) : null },
     });
   const nomeDaUnidade = (id: string | null | undefined) => session.me?.assignments.find((a) => a.unitId === id)?.unitName ?? 'outra unidade';
 
@@ -293,12 +294,12 @@ export default function CampoAcePage() {
       noCiclo: null,
       pendente: !op.householdId,
     };
-    const ordemId = op.visita.ordemId;
+    // A visita gravada sem a ordem (pela data ou pela atividade) abre com a do quarteirão: corrigida, volta para ela.
     setDialogo({
       tipo: 'visita',
       contexto: {
         imovel,
-        ordem: ordemId ? { id: ordemId, numero: p?.ordens.find((o) => o.id === ordemId)?.numero ?? '?' } : null,
+        ordem: ordemDoContexto(p?.ordens, imovel.quarteiraoId, op.visita.ordemId),
         quarteirao: imovel.quarteiraoId ? (quarteiraoDe.get(imovel.quarteiraoId)?.numero ?? null) : null,
       },
       corrigir: item,
@@ -315,7 +316,7 @@ export default function CampoAcePage() {
     filaAce.remover([item.clientId, ...visitas.map((v) => v.clientId)]).catch((e) => toast.error(errorMessage(e)));
   };
 
-  const listaImoveis = (doQuarteirao: ImovelCampoView[], estado: (i: ImovelCampoView) => Estado, ordem: { id: string; numero: string } | null) => (
+  const listaImoveis = (doQuarteirao: ImovelCampoView[], estado: (i: ImovelCampoView) => Estado, ordemId: string | null) => (
     <ul className="divide-y divide-slate-100">
       {doQuarteirao
         .filter(filtra)
@@ -337,7 +338,7 @@ export default function CampoAcePage() {
             </div>
             <div className="flex items-center gap-2">
               <SituacaoBadge estado={estado(i)} />
-              <Button size="sm" onClick={() => visitar(i, ordem)}>
+              <Button size="sm" onClick={() => visitar(i, ordemId)}>
                 Visitar
               </Button>
             </div>
@@ -490,7 +491,7 @@ export default function CampoAcePage() {
                             </button>
                             {abertos.has(k) && (
                               <div className="px-3 pb-2">
-                                {doBloco.length ? listaImoveis(doBloco, (i) => estadoNaOrdem(o, i), { id: o.id, numero: o.numero }) : <p className="text-sm text-slate-500">Nenhum imóvel cadastrado.</p>}
+                                {doBloco.length ? listaImoveis(doBloco, (i) => estadoNaOrdem(o, i), o.id) : <p className="text-sm text-slate-500">Nenhum imóvel cadastrado.</p>}
                                 <Button size="sm" variant="ghost" className="mt-1" onClick={() => setDialogo({ tipo: 'imovel', quarteirao: { id: qq.id, numero: q?.numero ?? '?' } })}>
                                   <Plus className="mr-1 h-4 w-4" /> Imóvel novo
                                 </Button>

@@ -172,13 +172,19 @@ export class HouseholdsService {
   }
 
   /**
-   * A correção do endereço tiraria o quarteirão junto com a posição que veio do endereço (endereço ou face de quadra),
-   * e o imóvel foi criado pelo ACE em campo: o quarteirão escolhido lá fica, só a posição sai. A origem do imóvel só é
-   * consultada nesse caso.
+   * A posição sai e levaria o quarteirão junto, e o imóvel foi criado pelo ACE em campo: o quarteirão escolhido lá fica,
+   * só a posição sai. Vale para o cadastro que tira a posição (latitude ou longitude nula) e para a correção do endereço
+   * que tira a posição que veio do endereço (endereço ou face de quadra). A origem do imóvel só é consultada nesses casos.
    */
   private async quarteiraoDoAceFica(ctx: RequestContext, input: HouseholdInput, h: AtualGeo & { id: string; blockId: string | null; geoSource: string | null }) {
+    if (!h.blockId || h.latitude == null) return false;
     const precisao = h.geoPrecision as PrecisaoGeo | null;
-    if (!h.blockId || h.latitude == null || !precisao || !ENDERECO_LIGA_QUARTEIRAO.includes(precisao) || !enderecoAlterado(this.data(input), h)) return false;
+    // Como em `geo`: com só uma das coordenadas no corpo, a outra continua a atual.
+    const lat = input.latitude !== undefined ? input.latitude : h.latitude;
+    const lng = input.longitude !== undefined ? input.longitude : h.longitude;
+    const tiraPosicao = (input.latitude !== undefined || input.longitude !== undefined) && (lat == null || lng == null);
+    const tiraPosicaoDoEndereco = !!precisao && ENDERECO_LIGA_QUARTEIRAO.includes(precisao) && enderecoAlterado(this.data(input), h);
+    if (!tiraPosicao && !tiraPosicaoDoEndereco) return false;
     return this.localizador.quarteiraoEscolhidoEmCampo(ctx.db, h);
   }
 
@@ -194,8 +200,8 @@ export class HouseholdsService {
 
   /**
    * Precisão da posição quando ela muda: a enviada (o app do ACS manda o raio do GPS) ou GPS em campo. Sem posição,
-   * a precisão e o quarteirão saem junto (na correção do endereço, só o quarteirão que veio da posição do endereço, e
-   * nunca o escolhido pelo ACE em campo: `quarteiraoDoAce`).
+   * a precisão e o quarteirão saem junto, mas nunca o quarteirão escolhido pelo ACE em campo (`quarteiraoDoAce`): só a
+   * posição sai. Na correção do endereço, só sai o quarteirão que veio da posição do endereço.
    */
   private geo(input: HouseholdInput, atual: AtualGeo | null, quarteiraoDoAce = false) {
     const semPosicao = { latitude: null, longitude: null, geoPrecision: null, geoSource: null, geoAccuracyM: null, geoAt: null, blockId: null };
@@ -213,7 +219,8 @@ export class HouseholdsService {
     // Só uma das coordenadas no corpo: a outra continua a atual.
     const lat = input.latitude !== undefined ? input.latitude : (atual?.latitude ?? null);
     const lng = input.longitude !== undefined ? input.longitude : (atual?.longitude ?? null);
-    if (lat == null || lng == null) return atual?.latitude != null ? semPosicao : {};
+    // Posição tirada pelo cadastro: tirar a posição não é escolher outro quarteirão, e o escolhido pelo ACE em campo fica.
+    if (lat == null || lng == null) return atual?.latitude == null ? {} : quarteiraoDoAce ? { ...semPosicao, blockId: undefined } : semPosicao;
     if (atual && atual.latitude === lat && atual.longitude === lng && input.geoPrecision === undefined) return posicaoDoEndereco && enderecoMudou ? semPosicaoDoEndereco : naoMuda;
     // Leitura do GPS acima de 50 m (rede ou ambiente fechado) não serve à posição do imóvel: não é gravada.
     if (input.geoAccuracyM != null && avaliarGps(input.geoAccuracyM) === 'NOVA_LEITURA') return posicaoDoEndereco && enderecoMudou ? semPosicaoDoEndereco : naoMuda;

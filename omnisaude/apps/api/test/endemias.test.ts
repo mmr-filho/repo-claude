@@ -256,6 +256,10 @@ describe.runIf(enabled)('VIG-3a: ACE em campo e ordem de bloqueio de transmissã
 
   it('o ACE trabalha sem rede e nada duplica ao sincronizar (reenvio em sequência e simultâneo)', async () => {
     const o1 = await ordemDe('p1');
+    // O ACE leva a ordem no pacote depois da abertura: as visitas feitas sem rede (até 50 min atrás) e o retorno do teste
+    // seguinte são posteriores a ela. Aberta agora, logo depois da meia-noite as visitas cairiam na véspera da abertura e
+    // ficariam fora da ordem.
+    await db.blockingOrder.update({ where: { id: o1 }, data: { openedAt: new Date(Date.now() - 60 * 60_000) } });
     const terreno = randomUUID();
     const g = ponto(230, 230);
     ops.imovel = {

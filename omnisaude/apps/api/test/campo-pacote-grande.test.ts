@@ -102,8 +102,11 @@ describe.runIf(enabled)('VIG-3a: pacote do ACE e zonas com listas acima do limit
 
   it(`pacote com mais de 32.766 imóveis na área: responde, com a última visita do ciclo e as visitas da ordem`, async () => {
     const [x, y, z] = await db.household.findMany({ where: { blockId: q['1'] }, select: { id: true }, orderBy: { number: 'asc' }, take: 3 });
+    // Aberta antes das visitas: aberta agora, logo depois da meia-noite a visita de 20 s atrás cairia na véspera da
+    // abertura e ficaria fora da ordem.
+    const aberta = new Date(segundosAtras(60));
     const ordem = await db.blockingOrder.create({
-      data: { year: 2026, seq: 7001, status: 'ABERTA', radiusM: 150, groups: ['dengue'], openedAt: new Date(), blocks: { create: [{ blockId: q['1']!, distanceM: 0 }] }, assignees: { create: [{ userId: aceId }] } },
+      data: { year: 2026, seq: 7001, status: 'ABERTA', radiusM: 150, groups: ['dengue'], openedAt: aberta, blocks: { create: [{ blockId: q['1']!, distanceM: 0 }] }, assignees: { create: [{ userId: aceId }] } },
     });
     const rs = await sync([
       // x: fechado e, depois, trabalhado (a última do ciclo é a que vale).

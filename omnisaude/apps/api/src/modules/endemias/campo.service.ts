@@ -68,6 +68,7 @@ const MENSAGEM_RESTRICAO: Record<string, string> = {
 const RESTRICAO_GENERICA = 'O registro tem um valor que o banco de dados não aceita: confira os números e corrija';
 /** Passos que a visita segue na cadeia de uniões (a ordem que ficou com outra pode ter sido unificada depois). */
 const MAX_UNIOES = 5;
+const ORDEM_INEXISTENTE = 'A ordem de bloqueio não existe mais: visita gravada sem a ordem';
 
 type OrdemDaVisita = { id: string; status: string; seq: number; year: number; mergedIntoId: string | null; openedAt: Date };
 const numeroOrdem = (o: { seq: number; year: number }) => `${o.seq}/${o.year}`;
@@ -469,36 +470,45 @@ export class CampoAceService {
    * outra depois que o aparelho a levou (CANCELADA com mergedIntoId) leva a visita à ordem que ficou, seguindo a cadeia
    * de uniões, se o quarteirão do imóvel está nela; senão a visita fica sem ordem, como na cancelada. A visita de outra
    * atividade não é trabalho da ordem e fica sem ordem. A de dia anterior ao da abertura da informada (no fuso da
-   * prefeitura) também fica sem ordem, nem na que ficou na união: a ordem não existia quando ela foi feita. A do mesmo
-   * dia, com a hora antes da abertura, entra, com o aviso para conferir a hora. Sem ordem informada, a visita de
-   * bloqueio vai para a ordem ativa mais recente do quarteirão aberta até o dia dela (a mais antiga pode ser de outra
-   * transmissão, com o quarteirão já trabalhado; a aberta depois do dia da visita não existia quando ela foi feita, e a
-   * casa contaria como trabalhada para um caso que ainda não era conhecido). Cada ordem é lida com a linha travada (ver
-   * `ordemTravada`).
+   * prefeitura) é tratada como sem ordem informada, mesmo com a informada unificada ou cancelada: a ordem não existia
+   * quando ela foi feita. A do mesmo dia, com a hora antes da abertura, entra, com o aviso para conferir a hora. Sem ordem
+   * informada, a visita de bloqueio vai para a ordem ativa mais recente do quarteirão aberta até o dia dela (ver
+   * `ordemAtivaNoDia`). Cada ordem é lida com a linha travada (ver `ordemTravada`), menos o número e a abertura da
+   * informada, que não mudam.
    */
   private async ordemDaVisita(tx: Tx, blockId: string | null, v: VisitaVetorialCampo, avisos: string[], quando: { visitedAt: Date; dataLocal: string; timeZone: string }): Promise<OrdemDaVisita | null> {
-    const temQuarteirao = async (o: OrdemDaVisita) => !!blockId && !!(await tx.blockingOrderBlock.findUnique({ where: { orderId_blockId: { orderId: o.id, blockId } }, select: { orderId: true } }));
+    const temQuarteirao = (o: OrdemDaVisita) => this.temQuarteirao(tx, o.id, blockId);
     if (v.ordemId) {
-      const informada = await this.ordemTravada(tx, v.ordemId);
-      if (!informada) {
-        avisos.push('A ordem de bloqueio não existe mais: visita gravada sem a ordem');
+      // O número e a abertura não mudam: as regras da atividade e da data os leem sem travar a linha da informada.
+      const dados = await tx.blockingOrder.findUnique({ where: { id: v.ordemId }, select: { seq: true, year: true, openedAt: true } });
+      if (!dados) {
+        avisos.push(ORDEM_INEXISTENTE);
         return null;
       }
       // O formulário aberto pela ordem começa no bloqueio, mas o agente pode trocar a atividade: a visita de outra
       // atividade não conta no progresso da ordem.
       if (v.atividade !== 'BLOQUEIO') {
-        avisos.push(`Só a visita de bloqueio entra na ordem ${numeroOrdem(informada)}: visita gravada sem a ordem`);
+        avisos.push(`Só a visita de bloqueio entra na ordem ${numeroOrdem(dados)}: visita gravada sem a ordem`);
         return null;
       }
       // O aparelho só conhece a ordem depois da abertura, mas a data da visita é editável (visita anotada em papel e
       // registrada depois) e o relógio pode estar atrasado. A de dia anterior ao da abertura da informada (não da que
-      // ficou na união) não entra: a casa contaria como trabalhada para um caso que ainda não era conhecido. A do mesmo
-      // dia entra, como a de bloqueio sem ordem, e a supervisão confere a hora.
-      if (quando.dataLocal < localDateString(informada.openedAt, quando.timeZone)) {
-        avisos.push(`A data da visita é anterior à abertura da ordem ${numeroOrdem(informada)}: visita gravada sem a ordem (confira a data da visita e o relógio do aparelho)`);
+      // ficou na união) não entra nela: a casa contaria como trabalhada para um caso que ainda não era conhecido. Ela
+      // segue como a de bloqueio sem ordem (a mesma visita sem a ordem teria esse destino), com um aviso só. A do mesmo
+      // dia entra, como a de bloqueio sem ordem, e a supervisão confere a hora. A informada não é travada antes da outra
+      // ordem do quarteirão: a união das duas trava as duas linhas em ordem de id, e cada uma esperaria a outra (impasse).
+      if (quando.dataLocal < localDateString(dados.openedAt, quando.timeZone)) {
+        const { ordem } = await this.ordemAtivaNoDia(tx, blockId, quando.dataLocal, quando.timeZone);
+        const destino = ordem ? `visita gravada na ordem ${numeroOrdem(ordem)}, já aberta no dia dela` : 'visita gravada como bloqueio sem ordem';
+        avisos.push(`A data da visita é anterior à abertura da ordem ${numeroOrdem(dados)}: ${destino} (confira a data da visita e o relógio do aparelho)`);
+        return ordem;
+      }
+      if (quando.visitedAt.getTime() < dados.openedAt.getTime()) avisos.push(`A hora da visita é anterior à abertura da ordem ${numeroOrdem(dados)}: confira a hora da visita e o relógio do aparelho`);
+      const informada = await this.ordemTravada(tx, v.ordemId);
+      if (!informada) {
+        avisos.push(ORDEM_INEXISTENTE);
         return null;
       }
-      if (quando.visitedAt.getTime() < informada.openedAt.getTime()) avisos.push(`A hora da visita é anterior à abertura da ordem ${numeroOrdem(informada)}: confira a hora da visita e o relógio do aparelho`);
       let o = informada;
       for (let passo = 0; o.status === 'CANCELADA' && o.mergedIntoId && passo < MAX_UNIOES; passo++) {
         const destino = await this.ordemTravada(tx, o.mergedIntoId);
@@ -521,6 +531,24 @@ export class CampoAceService {
       return o;
     }
     if (v.atividade !== 'BLOQUEIO' || !blockId) return null;
+    const { ordem, depoisDaVisita } = await this.ordemAtivaNoDia(tx, blockId, quando.dataLocal, quando.timeZone);
+    if (!ordem)
+      avisos.push(
+        depoisDaVisita
+          ? 'A ordem de bloqueio deste quarteirão foi aberta depois do dia da visita: visita gravada como bloqueio sem ordem'
+          : 'Nenhuma ordem de bloqueio ativa neste quarteirão: visita gravada como bloqueio sem ordem',
+      );
+    return ordem;
+  }
+
+  /**
+   * Ordem da visita de bloqueio sem ordem informada: a ativa (aberta ou em campo) mais recente do quarteirão aberta até o
+   * dia da visita, no fuso da prefeitura. A mais antiga pode ser de outra transmissão, com o quarteirão já trabalhado; a
+   * aberta depois do dia da visita não existia quando ela foi feita, e a casa contaria como trabalhada para um caso que
+   * ainda não era conhecido (`depoisDaVisita`: o quarteirão só tem ordem ativa aberta depois). Sem quarteirão, nenhuma.
+   */
+  private async ordemAtivaNoDia(tx: Tx, blockId: string | null, dataLocal: string, timeZone: string): Promise<{ ordem: OrdemDaVisita | null; depoisDaVisita: boolean }> {
+    if (!blockId) return { ordem: null, depoisDaVisita: false };
     let depoisDaVisita = false;
     // Duas tentativas: a ordem achada pode ter sido unificada ou refeita enquanto a visita esperava a linha.
     for (let tentativa = 0; tentativa < 2; tentativa++) {
@@ -529,18 +557,17 @@ export class CampoAceService {
         orderBy: [{ openedAt: 'desc' }, { id: 'desc' }],
         select: { id: true, openedAt: true },
       });
-      const achada = ativas.find((a) => localDateString(a.openedAt, quando.timeZone) <= quando.dataLocal);
+      const achada = ativas.find((a) => localDateString(a.openedAt, timeZone) <= dataLocal);
       depoisDaVisita = !achada && ativas.length > 0;
       if (!achada) break;
       const o = await this.ordemTravada(tx, achada.id);
-      if (o && (o.status === 'ABERTA' || o.status === 'EM_CAMPO') && (await temQuarteirao(o))) return o;
+      if (o && (o.status === 'ABERTA' || o.status === 'EM_CAMPO') && (await this.temQuarteirao(tx, o.id, blockId))) return { ordem: o, depoisDaVisita: false };
     }
-    avisos.push(
-      depoisDaVisita
-        ? 'A ordem de bloqueio deste quarteirão foi aberta depois do dia da visita: visita gravada como bloqueio sem ordem'
-        : 'Nenhuma ordem de bloqueio ativa neste quarteirão: visita gravada como bloqueio sem ordem',
-    );
-    return null;
+    return { ordem: null, depoisDaVisita };
+  }
+
+  private async temQuarteirao(tx: Tx, orderId: string, blockId: string | null): Promise<boolean> {
+    return !!blockId && !!(await tx.blockingOrderBlock.findUnique({ where: { orderId_blockId: { orderId, blockId } }, select: { orderId: true } }));
   }
 
   /**

@@ -12,7 +12,8 @@ import { comPrazo, ErroAparelho, estaOnline, localAce, type Gravacao } from './o
  * (IndexedDB) e vai para /endemias/campo/sync quando há conexão. Cada item guarda quem registrou e em que lotação: outro
  * usuário no mesmo aparelho não envia o trabalho alheio, e o registro feito numa unidade só vai com a sessão dessa unidade
  * (a visita, a baixa do larvicida e a ficha do e-SUS são da unidade). Queda de rede, sessão vencida, servidor fora e
- * falha passageira (TENTAR_DE_NOVO) deixam o item pendente; só a recusa da operação vira erro, com a mensagem.
+ * falha passageira (TENTAR_DE_NOVO) deixam o item pendente; só a recusa da operação vira erro, com a mensagem. O
+ * resultado de um envio é da versão enviada: a correção salva no meio dele não fica com o resultado (ItemFilaAce.versao).
  */
 export interface ContextoAce {
   userId: string;
@@ -33,6 +34,16 @@ export interface ItemFilaAce {
   avisos?: string[];
   criadoEm: string;
   rotulo: string;
+  /**
+   * Versão do registro (ausente = 0): só a correção a incrementa. O resultado de um envio só vale para o item se a versão
+   * não mudou no meio; a regravação pelo imóvel novo aceito e o tentar de novo não mudam a versão.
+   */
+  versao?: number;
+  /**
+   * Versão que o servidor gravou enquanto o agente corrigia o registro. O servidor fica com ela: o reenvio da correção
+   * (mesmo clientId) volta DUPLICADA sem gravar nada, e o registro continua com o erro até ser descartado.
+   */
+  versaoGravada?: number;
 }
 
 export interface EnviadoAce {
@@ -72,6 +83,7 @@ export interface PacoteGuardado {
 const PRAZO_ENVIO_MS = 20_000;
 const PRAZO_PACOTE_MS = 30_000;
 const FALHA_PASSAGEIRA = 'Falha passageira no servidor: vai no próximo envio';
+const VERSAO_ANTERIOR_GRAVADA = 'O servidor gravou a versão anterior deste registro enquanto você corrigia: a correção não foi enviada. Confira e descarte o registro.';
 
 const ouvintes = new Set<() => void>();
 const avisar = () => ouvintes.forEach((f) => f());
@@ -121,6 +133,12 @@ function gravacaoDoTubito(userId: string, ultimoTubito: number | null | undefine
   return ultimoTubito != null ? [{ store: 'cache', put: { key: chaveTubito(userId), data: ultimoTubito, savedAt: new Date().toISOString() } }] : [];
 }
 
+/** Versão do registro na fila; ausente nos de antes da regra. */
+const versaoDe = (item: ItemFilaAce) => item.versao ?? 0;
+
+/** O registro foi corrigido depois de lido para o envio: o resultado que volta é da versão anterior. */
+const mudouNoEnvio = (item: ItemFilaAce, enviado: ItemFilaAce | undefined) => !!enviado && versaoDe(item) !== versaoDe(enviado);
+
 /** Histórico com os mais novos primeiro e sem repetição (duas sincronizações não duplicam a entrada). */
 function semRepetidos(lista: EnviadoAce[]): EnviadoAce[] {
   const vistos = new Set<string>();
@@ -169,7 +187,8 @@ export const pacoteAce = {
 
 /**
  * Grava o resultado de um lote: fila, histórico e as visitas que citavam um imóvel novo aceito. Lê a fila e o histórico e
- * grava numa transação só (nada de outra aba entra no meio): o resultado vale sobre o que está na fila nessa hora.
+ * grava numa transação só (nada de outra aba entra no meio): o resultado vale sobre o que está na fila nessa hora. O
+ * resultado é da versão enviada (porId): o registro corrigido no meio do envio, nesta aba ou noutra, não fica com ele.
  */
 async function gravarResultados(ctx: ContextoAce, resultados: ResultadoSyncAce[], porId: Map<string, ItemFilaAce>, resumo: ResumoSyncAce) {
   const chave = chaveHistorico(ctx.userId);
@@ -186,17 +205,31 @@ async function gravarResultados(ctx: ContextoAce, resultados: ResultadoSyncAce[]
       const enviado = porId.get(r.clientId);
       if (!enviado) continue;
       const item = atuais.get(r.clientId);
-      // O descartado durante o envio (nesta aba ou noutra) não volta com o erro, e o aviso não manda procurá-lo na fila.
+      const corrigido = item && mudouNoEnvio(item, enviado) ? item : null;
+      // O descartado durante o envio (nesta aba ou noutra) não volta com o erro, e o aviso não manda procurá-lo na fila. O
+      // corrigido no meio não leva o erro nem o adiamento da versão anterior: continua pendente e vai no próximo envio.
       if (r.status === 'ERRO') {
-        if (!item) continue;
+        if (!item || corrigido) continue;
         saida.set(item.clientId, { ...item, status: 'ERRO', erro: r.erro || 'Recusado pelo servidor', adiado: null });
         resumo.erros++;
       } else if (r.status === 'TENTAR_DE_NOVO') {
-        if (!item) continue;
+        if (!item || corrigido) continue;
         saida.set(item.clientId, { ...item, status: 'PENDENTE', adiado: r.erro || FALHA_PASSAGEIRA });
         resumo.adiados++;
       } else if (r.status === 'OK' || r.status === 'DUPLICADA') {
-        saida.set(enviado.clientId, null);
+        // O servidor ficou com a versão anterior, cujo efeito já entrou no histórico e no pacote: reenvio da correção
+        // (tentar de novo, nova correção, outra aba) ou, sem a trava entre abas, a resposta da outra aba que levou a mesma
+        // versão (OK lá e DUPLICADA aqui, em qualquer ordem). O registro continua com o erro, e nada se aplica de novo.
+        if ((item?.versaoGravada ?? enviado.versaoGravada) !== undefined) {
+          if (!item) continue;
+          saida.set(item.clientId, { ...item, status: 'ERRO', erro: VERSAO_ANTERIOR_GRAVADA, adiado: null });
+          resumo.erros++;
+          continue;
+        }
+        // A versão enviada foi gravada. A corrigida no meio não vai mais (o servidor não grava outra versão do mesmo
+        // clientId): fica na fila com o erro, para o agente conferir e descartar.
+        saida.set(enviado.clientId, corrigido && { ...corrigido, status: 'ERRO', erro: VERSAO_ANTERIOR_GRAVADA, adiado: null, versaoGravada: versaoDe(enviado) });
+        if (corrigido) resumo.erros++;
         novos.push({ clientId: r.clientId, tipo: r.tipo, rotulo: enviado.rotulo, id: r.id, em: agora, ...(r.avisos?.length ? { avisos: r.avisos } : {}) });
         // A visita vai para o pacote na ordem em que o servidor a gravou; sem o campo (servidor de antes), na informada.
         const aceito: AceitoAce = { op: enviado.op, id: r.id, ...(r.ordemId !== undefined ? { ordemId: r.ordemId } : {}) };
@@ -211,6 +244,7 @@ async function gravarResultados(ctx: ContextoAce, resultados: ResultadoSyncAce[]
     }
     // Imóvel novo aceito: as visitas que o citam pelo clientId passam a citar o id do servidor, e as recusadas antes por
     // falta dele voltam a pendente. A recusada neste mesmo envio fica com o erro: o imóvel já estava antes dela no lote.
+    // Regravar não é corrigir: a versão não muda, e o resultado da visita em envio continua valendo para ela.
     const idDoImovel = new Map(aceitos.flatMap((a) => (a.op.tipo === 'IMOVEL' && a.id ? [[a.op.clientId, a.id] as const] : [])));
     const nesteEnvio = new Set(resultados.map((r) => r.clientId));
     if (idDoImovel.size) {
@@ -265,7 +299,8 @@ async function enviar(ctx: ContextoAce): Promise<ResumoSyncAce> {
           }
           // Lote recusado inteiro pelo conteúdo: cada operação apontada leva a mensagem dela, e as outras vão de novo na
           // próxima rodada; sem apontar, todas levam a mensagem real do servidor. Lê e grava numa transação só: o item
-          // descartado durante o envio (nesta aba ou noutra) não volta com o erro.
+          // descartado durante o envio (nesta aba ou noutra) não volta com o erro, e o corrigido no meio não leva a recusa
+          // da versão anterior (continua pendente e vai no próximo envio).
           const porOp = errosPorOperacao(err instanceof ApiError ? err.details : null, lote);
           await localAce.atualizarVarios({ fila: lote.map((op) => op.clientId) }, (lidos) => {
             const gravacoes: Gravacao[] = [];
@@ -273,10 +308,11 @@ async function enviar(ctx: ContextoAce): Promise<ResumoSyncAce> {
               const item = lidos.fila.get(op.clientId) as ItemFilaAce | undefined;
               const msg = porOp ? porOp.get(op.clientId) : errorMessage(err);
               if (!item) continue;
-              if (msg) {
+              if (!msg) tentados.delete(op.clientId);
+              else if (!mudouNoEnvio(item, porId.get(op.clientId))) {
                 gravacoes.push({ store: 'fila', put: { ...item, status: 'ERRO', erro: msg, adiado: null } satisfies ItemFilaAce });
                 resumo.erros++;
-              } else tentados.delete(op.clientId);
+              }
             }
             return gravacoes;
           });
@@ -338,15 +374,16 @@ export const filaAce = {
     return item;
   },
   /**
-   * Regrava o registro corrigido com o mesmo clientId (o servidor continua reconhecendo o reenvio) e volta a pendente. Lê
-   * e grava numa transação só, com a posição dos tubitos: o descartado noutra aba nesse meio-tempo não volta.
+   * Regrava o registro corrigido com o mesmo clientId (o servidor continua reconhecendo o reenvio), na versão seguinte, e
+   * volta a pendente: o resultado do envio da versão anterior, se estiver em curso, não vale para a correção. Lê e grava
+   * numa transação só, com a posição dos tubitos: o descartado noutra aba nesse meio-tempo não volta.
    */
   async corrigir(clientId: string, op: OperacaoAce, rotulo: string, extras?: { ultimoTubito?: number | null }) {
     const feitas = await localAce.atualizarVarios({ fila: [clientId] }, (lidos) => {
       const atual = lidos.fila.get(clientId) as ItemFilaAce | undefined;
       if (!atual) return [];
       const unitId = atual.unitId ?? null;
-      const item: ItemFilaAce = { ...atual, op: { ...op, clientId, unitId }, rotulo, status: 'PENDENTE', erro: null, adiado: null, avisos: undefined };
+      const item: ItemFilaAce = { ...atual, op: { ...op, clientId, unitId }, rotulo, status: 'PENDENTE', erro: null, adiado: null, avisos: undefined, versao: versaoDe(atual) + 1 };
       return [{ store: 'fila', put: item }, ...gravacaoDoTubito(atual.userId, extras?.ultimoTubito)];
     });
     if (!feitas.length) throw new ErroAparelho('O registro não está mais na fila do aparelho: já foi enviado ou descartado');
@@ -357,7 +394,8 @@ export const filaAce = {
     avisar();
   },
   async tentarDeNovo(clientId: string) {
-    // Lê e grava numa transação só: o descartado noutra aba nesse meio-tempo não volta como pendente.
+    // Lê e grava numa transação só: o descartado noutra aba nesse meio-tempo não volta como pendente. Não é correção: a
+    // versão não muda, e o resultado do envio em curso vale para o registro.
     await localAce.atualizar<ItemFilaAce>('fila', clientId, (item) => item && { ...item, status: 'PENDENTE', erro: null, adiado: null });
     avisar();
   },

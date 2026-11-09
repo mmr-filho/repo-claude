@@ -7,7 +7,9 @@ import {
   errosPorOperacao,
   loteSugerido,
   numeroDoBotao,
+  ordemDoContexto,
   ordemDoFormulario,
+  ordemMaisRecente,
   produtoSugerido,
   produtosDoFormulario,
   quantidadeParaTexto,
@@ -210,6 +212,57 @@ describe('ordem da visita no formulário', () => {
       expect(ordemDoFormulario(noite, 'BLOQUEIO', '2026-11-04T20:00')).toEqual({ ordemId: 'o1', aviso: null });
       expect(ordemDoFormulario(noite, 'BLOQUEIO', '2026-11-03T23:00')).toEqual(fora);
     });
+  });
+});
+
+describe('ordem que a tela do ACE passa ao formulário', () => {
+  // As aberturas no fuso do aparelho: a o-antiga às 10 h de 1º/11 e a o-nova (a mais recente do q1) às 10 h de 5/11.
+  const local = (dia: number, hora: number) => new Date(2026, 10, dia, hora, 0).toISOString();
+  const ordens = pacoteBase().ordens.map((o) => ({ ...o, abertaEm: local(o.id === 'o-nova' ? 5 : 1, 10) }));
+  const nova = { id: 'o-nova', numero: '2/2026', abertaEm: local(5, 10) };
+  const fora = { ordemId: null, aviso: 'A data é anterior à abertura da ordem 2/2026: a visita não vai entrar nela' };
+
+  // Antes, a tela montava a ordem só com o id e o número (no roteiro, na lista da ordem e ao corrigir): sem a abertura, a
+  // regra da data do formulário nunca ligava, e a visita de bloqueio de dia anterior ia para a fila com a ordem (a lista
+  // da ordem mostrava a casa "na fila" até o envio, quando o servidor a tirava da ordem).
+  it('roteiro e mapa: a ordem mais recente do quarteirão, com a abertura; a visita de dia anterior vai sem ela', () => {
+    expect(ordemMaisRecente(ordens, 'q1')).toEqual(nova);
+    expect(ordemDoContexto(ordens, 'q1')).toEqual(nova);
+    expect(ordemDoContexto(ordens, 'q1', null)).toEqual(nova);
+    expect(ordemDoFormulario(ordemMaisRecente(ordens, 'q1'), 'BLOQUEIO', '2026-11-04T08:00')).toEqual(fora);
+    expect(ordemDoFormulario(ordemDoContexto(ordens, 'q1'), 'BLOQUEIO', '2026-11-04T08:00')).toEqual(fora);
+    // Do dia da abertura em diante (mesmo antes da hora), vai com a ordem.
+    expect(ordemDoFormulario(ordemDoContexto(ordens, 'q1'), 'BLOQUEIO', '2026-11-05T08:00')).toEqual({ ordemId: 'o-nova', aviso: null });
+    // Sem quarteirão, com quarteirão sem ordem ou sem pacote: nenhuma.
+    expect(ordemDoContexto(ordens, null)).toBeNull();
+    expect(ordemDoContexto(ordens, 'q9')).toBeNull();
+    expect(ordemDoContexto(undefined, 'q1')).toBeNull();
+  });
+
+  it('lista da ordem: a ordem da lista, com a abertura dela, mesmo que não seja a mais recente do quarteirão', () => {
+    expect(ordemDoContexto(ordens, 'q1', 'o-nova')).toEqual(nova);
+    expect(ordemDoFormulario(ordemDoContexto(ordens, 'q1', 'o-nova'), 'BLOQUEIO', '2026-11-04T08:00')).toEqual(fora);
+    expect(ordemDoContexto(ordens, 'q1', 'o-antiga')).toEqual({ id: 'o-antiga', numero: '1/2026', abertaEm: local(1, 10) });
+    // A o-antiga já existia em 4/11: a visita vai com ela.
+    expect(ordemDoFormulario(ordemDoContexto(ordens, 'q1', 'o-antiga'), 'BLOQUEIO', '2026-11-04T08:00')).toEqual({ ordemId: 'o-antiga', aviso: null });
+  });
+
+  it('corrigir: a visita da fila com a ordem abre com ela; a gravada sem a ordem abre com a do quarteirão e volta para ela, corrigida', () => {
+    // Com a ordem: a do pacote, com a abertura; a que saiu do pacote vai como estava (o servidor confere).
+    expect(ordemDoContexto(ordens, 'q1', 'o-antiga')).toMatchObject({ id: 'o-antiga', abertaEm: local(1, 10) });
+    expect(ordemDoContexto(ordens, 'q1', 'o-saiu')).toEqual({ id: 'o-saiu', numero: '?', abertaEm: null });
+    expect(ordemDoContexto(undefined, null, 'o-saiu')).toEqual({ id: 'o-saiu', numero: '?', abertaEm: null });
+    // Sem a ordem (antes, o formulário abria sem nenhuma, e a correção da data ou da atividade não a trazia de volta).
+    const contexto = ordemDoContexto(ordens, 'q1', null);
+    expect(contexto).toEqual(nova);
+    // Gravada sem a ordem pela data (4/11): continua sem ela até o agente corrigir a data.
+    expect(ordemDoFormulario(contexto, 'BLOQUEIO', '2026-11-04T08:00')).toEqual(fora);
+    expect(ordemDoFormulario(contexto, 'BLOQUEIO', '2026-11-06T08:00')).toEqual({ ordemId: 'o-nova', aviso: null });
+    // Gravada sem a ordem pela atividade (LI): trocada para bloqueio, vai com a ordem.
+    expect(ordemDoFormulario(contexto, 'LI', '2026-11-06T08:00')).toEqual({ ordemId: null, aviso: null });
+    expect(ordemDoFormulario(contexto, 'BLOQUEIO', '2026-11-06T08:00')).toEqual({ ordemId: 'o-nova', aviso: null });
+    // Imóvel fora do pacote (sem quarteirão): sem ordem, como antes.
+    expect(ordemDoContexto(ordens, null, null)).toBeNull();
   });
 });
 

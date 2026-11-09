@@ -155,19 +155,42 @@ export function imovelDaOperacao(op: ImovelOp, id: string, pendente: boolean): I
   };
 }
 
+/** Ordem do contexto do formulário da visita: o número para o agente e a abertura para a regra da data. */
+export interface OrdemDoContexto {
+  id: string;
+  numero: string;
+  /** Abertura da ordem, do pacote. Sem ela, o formulário manda a ordem com qualquer data, e o servidor confere. */
+  abertaEm?: string | null;
+}
+
 /** Ordem ativa mais recente do pacote que contém o quarteirão: a do roteiro, que abre a visita nova já com ela. */
-export function ordemMaisRecente(ordens: PacoteCampo['ordens'], quarteiraoId: string): { id: string; numero: string } | null {
+export function ordemMaisRecente(ordens: PacoteCampo['ordens'], quarteiraoId: string): OrdemDoContexto | null {
   const o = ordens.filter((x) => x.quarteiroes.some((q) => q.id === quarteiraoId)).sort((a, b) => Date.parse(b.abertaEm) - Date.parse(a.abertaEm))[0];
-  return o ? { id: o.id, numero: o.numero } : null;
+  return o ? { id: o.id, numero: o.numero, abertaEm: o.abertaEm } : null;
 }
 
 /**
- * Ordem que a visita do formulário leva: a do contexto (roteiro ou lista da ordem), só na visita de bloqueio e com a
- * data a partir do dia da abertura, no fuso do aparelho. A de dia anterior (visita anotada em papel e registrada depois)
- * vai sem a ordem, com o aviso na tela: a ordem não existia quando ela foi feita. A do dia da abertura, mesmo antes da
- * hora dela, vai com a ordem. Sem a abertura no contexto ou com a data ilegível, vai a ordem, e o servidor confere.
+ * Ordem que o formulário da visita recebe, sempre com a abertura do pacote (sem ela, a regra da data do formulário não
+ * liga). Com a ordem informada (a da lista da ordem, ou a da visita da fila que está sendo corrigida), essa; a que saiu
+ * do pacote vai sem a abertura, e o servidor confere. Sem ordem informada (roteiro e mapa, ou a visita da fila gravada sem
+ * a ordem pela data, pela atividade ou por falta de ordem no quarteirão), a ordem do quarteirão do imóvel, como no
+ * roteiro: corrigida a data ou a atividade, a visita volta para a ordem.
  */
-export function ordemDoFormulario(ordem: { id: string; numero: string; abertaEm?: string | null } | null | undefined, atividade: AtividadeVetorial, quando: string): { ordemId: string | null; aviso: string | null } {
+export function ordemDoContexto(ordens: PacoteCampo['ordens'] | null | undefined, quarteiraoId: string | null | undefined, ordemId?: string | null): OrdemDoContexto | null {
+  if (ordemId) {
+    const o = ordens?.find((x) => x.id === ordemId);
+    return o ? { id: o.id, numero: o.numero, abertaEm: o.abertaEm } : { id: ordemId, numero: '?', abertaEm: null };
+  }
+  return ordens && quarteiraoId ? ordemMaisRecente(ordens, quarteiraoId) : null;
+}
+
+/**
+ * Ordem que a visita do formulário leva: a do contexto (ver `ordemDoContexto`), só na visita de bloqueio e com a data a
+ * partir do dia da abertura, no fuso do aparelho. A de dia anterior (visita anotada em papel e registrada depois) vai
+ * sem a ordem, com o aviso na tela: a ordem não existia quando ela foi feita. A do dia da abertura, mesmo antes da hora
+ * dela, vai com a ordem. Sem a abertura no contexto ou com a data ilegível, vai a ordem, e o servidor confere.
+ */
+export function ordemDoFormulario(ordem: OrdemDoContexto | null | undefined, atividade: AtividadeVetorial, quando: string): { ordemId: string | null; aviso: string | null } {
   if (!ordem || atividade !== 'BLOQUEIO') return { ordemId: null, aviso: null };
   const diaDaAbertura = ordem.abertaEm && !Number.isNaN(Date.parse(ordem.abertaEm)) ? dataLocal(ordem.abertaEm) : null;
   if (diaDaAbertura && !Number.isNaN(new Date(quando).getTime()) && dataLocal(quando) < diaDaAbertura)

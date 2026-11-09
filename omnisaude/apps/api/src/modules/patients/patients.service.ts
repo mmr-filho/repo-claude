@@ -505,9 +505,11 @@ export class PatientsService {
 
   private async unificar(ctx: RequestContext, survivorId: string, duplicateId: string) {
     if (survivorId === duplicateId) throw new DomainError('MESMO_CADASTRO', 'Escolha dois cadastros diferentes');
-    const [s, d] = await Promise.all([ctx.db.patient.findUnique({ where: { id: survivorId } }), ctx.db.patient.findUnique({ where: { id: duplicateId } })]);
-    if (!s || s.mergedIntoId) throw notFound('Cadastro que fica');
-    if (!d || d.mergedIntoId) throw notFound('Cadastro duplicado');
+    // Leitura de antes da trava: só para o 404 rápido. Os campos são combinados com a leitura feita depois da trava.
+    const sel = { id: true, mergedIntoId: true } as const;
+    const [fica, sai] = await Promise.all([ctx.db.patient.findUnique({ where: { id: survivorId }, select: sel }), ctx.db.patient.findUnique({ where: { id: duplicateId }, select: sel })]);
+    if (!fica || fica.mergedIntoId) throw notFound('Cadastro que fica');
+    if (!sai || sai.mergedIntoId) throw notFound('Cadastro duplicado');
     const fillable = [
       'cpf',
       'cns',
@@ -534,19 +536,24 @@ export class PatientsService {
       'occupationCbo',
       'etnia',
     ] as const;
-    const fill: Record<string, unknown> = {};
-    for (const f of fillable) if (s[f] == null && d[f] != null) fill[f] = d[f];
-    if (s.racaCor === '99' && d.racaCor !== '99') fill.racaCor = d.racaCor;
-    const r = await ctx.db.$transaction(async (tx) => {
+    const { r, familias } = await ctx.db.$transaction(async (tx) => {
       // Os dois cadastros e os já unificados no duplicado (que passam ao que fica logo abaixo) travados num comando só, na
       // ordem dos ids: a unificação no sentido contrário, ou a que trava um desses cadastros e espera um dos dois, espera
       // sem impasse (travar os unificados só depois deixava três unificações simultâneas se esperando em roda, e o banco
       // desfazia uma delas). Os dois são conferidos de novo: outra unificação pode ter entrado depois da leitura e
       // deixaria uma cadeia (ou um ciclo) de unificações.
       const travados = await tx.$queryRaw<{ id: string; merged_into_id: string | null }[]>`
-        SELECT id, merged_into_id FROM patients WHERE id IN (${s.id}::uuid, ${d.id}::uuid) OR merged_into_id = ${d.id}::uuid ORDER BY id FOR UPDATE`;
-      const par = travados.filter((p) => p.id === s.id || p.id === d.id);
+        SELECT id, merged_into_id FROM patients WHERE id IN (${fica.id}::uuid, ${sai.id}::uuid) OR merged_into_id = ${sai.id}::uuid ORDER BY id FOR UPDATE`;
+      const par = travados.filter((p) => p.id === fica.id || p.id === sai.id);
       if (par.length !== 2 || par.some((p) => p.merged_into_id)) throw new DomainError('PACIENTE_UNIFICADO', 'Um dos cadastros acabou de ser unificado em outro: confira e tente de novo', HttpStatus.CONFLICT);
+      // Os dois lidos de novo, já travados: outra unificação no mesmo cadastro que fica pode ter gravado entre a leitura de
+      // antes e a trava. Com a leitura de antes, a segunda completava o que fica por cima do que a primeira trouxe (o CPF
+      // do primeiro duplicado sumia) e tirava dele a família que tinha acabado de ganhar.
+      const s = await tx.patient.findUniqueOrThrow({ where: { id: fica.id } });
+      const d = await tx.patient.findUniqueOrThrow({ where: { id: sai.id } });
+      const fill: Record<string, unknown> = {};
+      for (const f of fillable) if (s[f] == null && d[f] != null) fill[f] = d[f];
+      if (s.racaCor === '99' && d.racaCor !== '99') fill.racaCor = d.racaCor;
       // CPF e CNS são únicos: saem do duplicado antes de irem para o que fica.
       await tx.patient.update({ where: { id: d.id }, data: { cpf: null, cns: null, familyId: null, kinship: null, mergedIntoId: s.id, mergedAt: new Date() } });
       const moved: Record<string, number> = {};
@@ -599,12 +606,12 @@ export class PatientsService {
         },
       });
       await this.audit.record(ctx, tx, { action: 'paciente.unificar', entityType: 'Patient', entityId: s.id, payload: { duplicateId: d.id, moved, filled: Object.keys(fill) } });
-      return { survivorId: s.id, duplicateId: d.id, moved, filled: Object.keys(fill) };
+      return { r: { survivorId: s.id, duplicateId: d.id, moved, filled: Object.keys(fill) }, familias: [s.familyId, d.familyId].filter((x): x is string => !!x) };
     });
     // Depois do commit: o caso do duplicado (e o do que fica, se ganhou a família do outro) passa a morar no domicílio da
-    // família que ficou. O gancho de posição do território refaz na hora o retrato na ordem de bloqueio. Nunca lança: a
-    // unificação já foi gravada, e a varredura periódica recupera uma falha.
-    const familias = [s.familyId, d.familyId].filter((x): x is string => !!x);
+    // família que ficou (as famílias são as da leitura de depois da trava). O gancho de posição do território refaz na
+    // hora o retrato na ordem de bloqueio. Nunca lança: a unificação já foi gravada, e a varredura periódica recupera uma
+    // falha.
     if (familias.length)
       try {
         const casas = await ctx.db.family.findMany({ where: { id: { in: familias } }, select: { householdId: true } });

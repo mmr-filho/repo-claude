@@ -1,14 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { areaM2, caixaDe, centroDe, cnsFromBase, completeCpf, distanciaM, localDateString, metrosPorGrau, normalizarArea, normalizarLogradouro, normalizarNumero, type Posicao } from '@omnisaude/shared';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { TenantsService } from '../src/core/database';
+import { LocalizadorService } from '../src/modules/territorio/localizador.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 
 /**
  * O quarteirão escolhido pelo ACE em campo manda também quando o imóvel não tem endereço com número na base do IBGE e
  * quando a recepção corrige o endereço: o imóvel fica com o centro do próprio quarteirão (e não com a mediana da rua, que
  * pode cair em outro quarteirão), e a correção do endereço não o tira do quarteirão. A religação depois de mexer na
- * malha também não; só uma ação explícita (marcar no mapa, cadastro do domicílio com posição) muda o quarteirão dele.
+ * malha também não, nem tirar a posição pelo cadastro; só uma ação explícita (marcar no mapa, cadastro do domicílio com
+ * posição) muda o quarteirão dele.
  */
 const enabled = await pgAvailable();
 
@@ -131,6 +133,10 @@ describe.runIf(enabled)('Território: o quarteirão escolhido pelo ACE fica com 
       .send({ nome: 'Zona Quarteirão Escolhido', aceId, quarteiroes: Object.values(bloco) })
       .expect(201);
   }, 120_000);
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
 
   afterAll(async () => {
     await t?.close();
@@ -296,5 +302,47 @@ describe.runIf(enabled)('Território: o quarteirão escolhido pelo ACE fica com 
     // A correção do endereço não tira a posição explícita (nem o quarteirão que veio dela).
     await t.http().patch(`/api/households/${marcado}`).set(auth(recepcao)).send({ number: '2' }).expect(200);
     expect(await imovel(marcado)).toMatchObject({ blockId: novo, geoPrecision: 'MAPA' });
+  });
+
+  it('o cadastro que tira a posição tira só a posição do imóvel do ACE no quarteirão escolhido; o da recepção e o marcado no mapa perdem os dois', async () => {
+    // No 10 (x de 360 a 440, y de 60 a 140): o do ACE com o GPS do aparelho, o do ACE com o centro do quarteirão, o da
+    // recepção com a posição do cadastro, o da recepção com a posição do endereço da base do IBGE e o do ACE marcado no
+    // mapa.
+    const rua = 'Rua da Posicao Tirada';
+    const comGps = await doAceComGps('10', rua, '1', ponto(380, 90));
+    const comCentro = await doAce('10', rua, '3');
+    expect((await geocodificar({ ids: [comCentro] })).porPrecisao).toEqual({ QUARTEIRAO: 1 });
+    const p = ponto(390, 110);
+    const recep = (await t.http().post('/api/households').set(auth(recepcao)).send({ street: rua, number: '5', latitude: p[1], longitude: p[0] }).expect(201)).body.id as string;
+    await endereco(rua, '9', ponto(420, 120));
+    const recepEndereco = (await t.http().post('/api/households').set(auth(recepcao)).send({ street: rua, number: '9', ibgeCode: ibge }).expect(201)).body.id as string;
+    expect((await geocodificar({ ids: [recepEndereco] })).porPrecisao).toEqual({ ENDERECO: 1 });
+    const marcado = await doAce('10', rua, '7');
+    const m = ponto(410, 100);
+    await t.http().post(`/api/territorio/imoveis/${marcado}/posicao`).set(auth(gestora)).send({ lat: m[1], lng: m[0], origem: 'MAPA' }).expect(200);
+    for (const id of [comGps, comCentro, recep, recepEndereco, marcado]) expect(await imovel(id)).toMatchObject({ blockId: bloco['10'] });
+
+    // A origem do imóvel só é consultada quando a posição sai: corrigir o número não lê a sincronização.
+    const origem = vi.spyOn(t.app.get(LocalizadorService), 'criadosPeloAce');
+    await t.http().patch(`/api/households/${comGps}`).set(auth(recepcao)).send({ number: '1-A' }).expect(200);
+    expect(origem).not.toHaveBeenCalled();
+
+    // A API aceita latitude e longitude nulas no cadastro (a tela não manda).
+    for (const id of [comGps, comCentro, recep, recepEndereco, marcado]) await t.http().patch(`/api/households/${id}`).set(auth(recepcao)).send({ latitude: null, longitude: null }).expect(200);
+    const lidas = origem.mock.calls.map(([, ids]) => ids);
+    // Antes: os dois do ACE perdiam o quarteirão junto com a posição e sumiam do pacote do agente.
+    for (const id of [comGps, comCentro]) {
+      expect(await imovel(id)).toMatchObject({ blockId: bloco['10'], latitude: null, longitude: null, geoPrecision: null, geoSource: null, geoAt: null });
+      expect(await noPacote(id)).toMatchObject({ quarteiraoId: bloco['10'] });
+    }
+    // Como sempre: a posição explícita (cadastro ou mapa) sai com o quarteirão que veio dela, e o imóvel da recepção perde
+    // os dois também com a posição do endereço (não explícita).
+    for (const id of [recep, recepEndereco, marcado]) {
+      expect(await imovel(id)).toMatchObject({ blockId: null, latitude: null, longitude: null, geoPrecision: null });
+      expect(await noPacote(id)).toBeUndefined();
+    }
+    // A origem é lida para os dois do ACE e para o da recepção com a posição do endereço; o da recepção com a posição do
+    // cadastro e o marcado no mapa têm posição explícita.
+    expect(lidas).toEqual([[comGps], [comCentro], [recepEndereco]]);
   });
 });

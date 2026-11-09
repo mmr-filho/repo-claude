@@ -1487,10 +1487,12 @@ describe.runIf(enabled)('VIG-3a: ordem de bloqueio (correções da revisão)', (
     const o = await ordemDe('pi1');
     const { openedAt: aberta, seq, year } = await ordem(o);
     // O aparelho ficou sem rede com o relógio atrasado (ou a data foi digitada): a visita informada é de 9 dias antes da
-    // abertura. Antes, ela entrava na ordem, com o início do campo na abertura; agora fica sem a ordem, com o aviso.
+    // abertura. Antes, ela entrava na ordem, com o início do campo na abertura; agora não entra: segue a regra da visita
+    // de bloqueio sem ordem e, sem outra ordem ativa no quarteirão já aberta no dia dela, fica como bloqueio sem ordem,
+    // com o aviso da data (um só).
     const r = await visitar(casa.pi1!, o, {}, new Date(Date.now() - 9 * DIA).toISOString());
     expect(r.status).toBe('OK');
-    expect(r.avisos).toEqual([`A data da visita é anterior à abertura da ordem ${seq}/${year}: visita gravada sem a ordem (confira a data da visita e o relógio do aparelho)`]);
+    expect(r.avisos).toEqual([`A data da visita é anterior à abertura da ordem ${seq}/${year}: visita gravada como bloqueio sem ordem (confira a data da visita e o relógio do aparelho)`]);
     expect(await db.vectorVisit.findUniqueOrThrow({ where: { id: r.id }, select: { orderId: true } })).toEqual({ orderId: null });
     expect(await ordem(o)).toMatchObject({ status: 'ABERTA', startedAt: null });
     // A do começo do dia da abertura (no fuso da prefeitura), antes da hora dela, entra na ordem.

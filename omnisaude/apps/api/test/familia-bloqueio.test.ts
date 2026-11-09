@@ -15,7 +15,7 @@ import { pgAvailable, startTestApp, TEST_PG, type TestApp } from './harness';
 const enabled = await pgAvailable();
 
 const DIA = 86_400_000;
-const GRADES = ['inc', 'acs', 'nova', 'falha', 'unif', 'unif2', 'cadeia'];
+const GRADES = ['inc', 'acs', 'nova', 'falha', 'unif', 'unif2', 'cadeia', 'relida', 'relida2'];
 
 describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da pessoa na ordem de bloqueio', () => {
   let t: TestApp;
@@ -64,7 +64,7 @@ describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da 
       }
   }
 
-  async function novoPaciente(chave: string) {
+  async function novoPaciente(chave: string, extra: Record<string, unknown> = {}) {
     seq++;
     const dados = {
       name: `Pessoa Familia ${chave.toUpperCase()} ${['Andrade', 'Barbosa', 'Cardoso', 'Duarte', 'Esteves', 'Ferraz', 'Gomes', 'Holanda'][seq % 8]} ${'abcdefghij'[seq % 10]}son`,
@@ -73,6 +73,7 @@ describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da 
       cpf: completeCpf(String(496000000 + seq)),
       cns: cnsFromBase(String(29600000000 + seq)),
       motherName: `Mae Familia ${chave}`,
+      ...extra,
     };
     const id = (await t.http().post('/api/patients').set(auth(recepcao)).send(dados).expect(201)).body.id as string;
     pessoa[chave] = { id, dados };
@@ -108,8 +109,8 @@ describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da 
   };
 
   /** Pessoa sem domicílio com caso de dengue: a ordem aguarda a localização. */
-  async function casoSemDomicilio(chave: string) {
-    await novoPaciente(chave);
+  async function casoSemDomicilio(chave: string, extra: Record<string, unknown> = {}) {
+    await novoPaciente(chave, extra);
     const n = await notificar(pessoa[chave]!.id);
     expect((await ordemDoCaso(n)).status).toBe('AGUARDANDO_LOCALIZACAO');
     return n;
@@ -390,5 +391,106 @@ describe.runIf(enabled)('VIG-3a: a mudança de família refaz na hora o caso da 
     }
     for (const id of [y, d]) expect(await db.patient.findUniqueOrThrow({ where: { id } })).toMatchObject({ mergedIntoId: s });
     expect(await db.patient.findUniqueOrThrow({ where: { id: s } })).toMatchObject({ mergedIntoId: null });
+  });
+  it('duas unificações no mesmo cadastro que fica, a segunda esperando a primeira: a segunda combina com o cadastro já completado', async () => {
+    // s, sem CPF, CNS, raça/cor e família. d1 traz CPF, CNS, raça/cor, WhatsApp, CADSUS e a família de um imóvel
+    // posicionado. d2, sem domicílio, traz outro CPF, outro CNS, outra raça/cor e o caso de dengue.
+    const s = await novoPaciente('rs', { cpf: null, cns: null });
+    const d1 = await novoPaciente('r1', { racaCor: '01', whatsappOptIn: true, cadsusValidated: true });
+    const { casa, familia } = await novaCasa(ponto('relida', 200, 200), d1);
+    const n = await casoSemDomicilio('r2', { racaCor: '03' });
+    const d2 = pessoa.r2!.id;
+    const aviso = vi.spyOn(territorio, 'imoveisPosicionados');
+    const unificar = (sai: string) =>
+      t
+        .http()
+        .post(`/api/patients/${s}/merge`)
+        .set(auth(recepcao))
+        .send({ duplicateId: sai })
+        .then((r) => r);
+    const esperando = async (quantas: number) => {
+      for (let i = 0; i < 200; i++) {
+        const [x] = await db.$queryRaw<{ n: number }[]>`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+        if (x!.n >= quantas) return true;
+        await new Promise((ok) => setTimeout(ok, 30));
+      }
+      return false;
+    };
+    const c = new Client({ connectionString: TEST_PG.replace(/\/[^/]*$/, `/${tenantDb}`) });
+    await c.connect();
+    try {
+      // Uma transação por fora segura s. As duas unificações leem s sem nada e esperam a trava: d1 chega primeiro e passa
+      // primeiro, e d2 só passa depois do commit da de d1.
+      await c.query('BEGIN');
+      await c.query('SELECT id FROM patients WHERE id = $1 FOR UPDATE', [s]);
+      const primeira = unificar(d1);
+      expect(await esperando(1)).toBe(true);
+      const segunda = unificar(d2);
+      expect(await esperando(2)).toBe(true);
+      await c.query('COMMIT');
+      const [r1, r2] = await Promise.all([primeira, segunda]);
+      expect(r1.status, JSON.stringify(r1.body)).toBe(201);
+      expect(r2.status, JSON.stringify(r2.body)).toBe(201);
+      expect(r1.body.filled).toEqual(expect.arrayContaining(['cpf', 'cns', 'racaCor']));
+      // Antes: a segunda completava s com a leitura de antes da trava (s sem nada). O CPF e o CNS de d1 sumiam (os de d2
+      // ficavam no lugar), a raça/cor virava a de d2, e s perdia o WhatsApp, o CADSUS e a família que tinha acabado de ganhar.
+      for (const f of ['cpf', 'cns', 'racaCor']) expect(r2.body.filled).not.toContain(f);
+    } finally {
+      await c.end();
+    }
+    const fica = await db.patient.findUniqueOrThrow({ where: { id: s } });
+    expect(fica).toMatchObject({ cpf: pessoa.r1!.dados.cpf, cns: pessoa.r1!.dados.cns, racaCor: '01', whatsappOptIn: true, familyId: familia, kinship: '00', mergedIntoId: null });
+    expect(fica.cadsusSyncedAt).not.toBeNull();
+    // O CPF e o CNS de d2 são descartados, como numa unificação depois da outra.
+    for (const id of [d1, d2]) expect(await db.patient.findUniqueOrThrow({ where: { id } })).toMatchObject({ mergedIntoId: s, cpf: null, cns: null });
+    // O aviso da segunda leva o domicílio da família que s ganhou na primeira: o caso de d2 abre a ordem na hora.
+    expect(aviso.mock.calls.filter(([, ids]) => ids.includes(casa))).toHaveLength(2);
+    const aberta = await ordemDoCaso(n);
+    expect(aberta.status).toBe('ABERTA');
+    expect(aberta.blocks.map((b) => b.blockId)).toContain(bloco('relida', 2, 2));
+    expect(await ligacao(n)).toMatchObject({ householdId: casa, blockId: bloco('relida', 2, 2), active: true });
+  });
+  it('o duplicado entra numa família enquanto a unificação espera a trava: o que fica combina com o duplicado relido', async () => {
+    // s, sem domicílio, tem o caso de dengue; d, também sem domicílio, entra na família de um imóvel posicionado depois
+    // da leitura de antes da trava (uma transação por fora segura os dois e grava a família de d).
+    const n = await casoSemDomicilio('rs2');
+    const s = pessoa.rs2!.id;
+    const d = await novoPaciente('rd2');
+    const { casa, familia } = await novaCasa(ponto('relida2', 200, 200), await novoPaciente('rr2'));
+    const aviso = vi.spyOn(territorio, 'imoveisPosicionados');
+    const c = new Client({ connectionString: TEST_PG.replace(/\/[^/]*$/, `/${tenantDb}`) });
+    await c.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query('SELECT id FROM patients WHERE id IN ($1, $2) ORDER BY id FOR UPDATE', [s, d]);
+      const unificacao = t
+        .http()
+        .post(`/api/patients/${s}/merge`)
+        .set(auth(recepcao))
+        .send({ duplicateId: d })
+        .then((r) => r);
+      let esperando = false;
+      for (let i = 0; i < 200 && !esperando; i++) {
+        const [x] = await db.$queryRaw<{ n: number }[]>`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+        esperando = x!.n > 0;
+        if (!esperando) await new Promise((ok) => setTimeout(ok, 30));
+      }
+      expect(esperando).toBe(true);
+      await c.query(`UPDATE patients SET family_id = $2, kinship = '03' WHERE id = $1`, [d, familia]);
+      await c.query('COMMIT');
+      const r = await unificacao;
+      expect(r.status, JSON.stringify(r.body)).toBe(201);
+    } finally {
+      await c.end();
+    }
+    // Antes: a unificação combinava com d lido antes da trava (sem família). s ficava sem família, d saía da dele, e o caso
+    // de s seguia aguardando a localização.
+    expect(await db.patient.findUniqueOrThrow({ where: { id: s } })).toMatchObject({ familyId: familia, kinship: '03', mergedIntoId: null });
+    expect(await db.patient.findUniqueOrThrow({ where: { id: d } })).toMatchObject({ familyId: null, mergedIntoId: s });
+    expect(aviso.mock.calls.filter(([, ids]) => ids.includes(casa))).toHaveLength(1);
+    const aberta = await ordemDoCaso(n);
+    expect(aberta.status).toBe('ABERTA');
+    expect(aberta.blocks.map((b) => b.blockId)).toContain(bloco('relida2', 2, 2));
+    expect(await ligacao(n)).toMatchObject({ householdId: casa, blockId: bloco('relida2', 2, 2), active: true });
   });
 });

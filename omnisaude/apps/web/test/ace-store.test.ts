@@ -2,7 +2,7 @@ import type { OperacaoAce, ResultadoSyncAce } from '@omnisaude/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PacoteCampo } from '@/components/endemias/types';
 import type { ImovelOp, VisitaOp } from '@/lib/ace-campo';
-import type { ItemFilaAce } from '@/lib/ace-store';
+import type { ItemFilaAce, ResumoSyncAce } from '@/lib/ace-store';
 import { FakeIndexedDB, type LeituraVista } from './fake-indexeddb';
 
 // Banco do aparelho em memória (o IndexedDB de verdade é testado em offline.test.ts) e API simulada.
@@ -719,5 +719,316 @@ describe('outra aba no meio de ler e regravar a fila ou o pacote: tudo numa tran
     expect((fake.linhas(BANCO, 'cache').find((l) => l.key === CHAVE) as { data: PacoteCampo }).data.estoque[0]!.saldo).toBe(48);
     expect(naFila()).toEqual([]);
     expect((await abaA.historicoAce.listar('u1')).map((h) => h.clientId)).toEqual([UUID(1)]);
+  });
+});
+
+describe('correção salva durante o envio da versão anterior do mesmo registro', () => {
+  // O agente corrige um registro recusado enquanto o envio da versão anterior dele está em curso, nesta aba ou noutra.
+  // Antes, o resultado da versão anterior valia para a correção: com OK (ou DUPLICADA) ela saía da fila sem ir ao
+  // servidor, sem aviso; com ERRO (ou TENTAR_DE_NOVO, ou o lote recusado) ficava com o erro da versão anterior.
+  const VERSAO_ANTERIOR = 'O servidor gravou a versão anterior deste registro enquanto você corrigia: a correção não foi enviada. Confira e descarte o registro.';
+  const CHAVE = 'pacote:ace:un-a:u1';
+  type Corpo = { operacoes: OperacaoAce[] };
+  /** A correção muda a hora e o larvicida (3 g em vez de 2 g): o pacote mostra de qual versão é o efeito. */
+  const corrigida = (clientId: string, registradoEm = '2026-11-07T12:30:00Z'): VisitaOp =>
+    visita(clientId, { registradoEm, visita: { atividade: 'LI_T', situacao: 'TRABALHADO', tratamentos: [{ produtoId: 'bti', loteId: 'l-bti', quantidade: 3, depositos: 1 }] } });
+  /** Começa o envio com o POST de número `n` preso até `soltar` (os outros respondem na hora) e espera esse POST sair. */
+  const enviarPreso = async (enviar: () => Promise<ResumoSyncAce>, responder: (body: Corpo) => unknown, n = 1) => {
+    let soltar!: () => void;
+    const segura = new Promise<void>((r) => (soltar = r));
+    sim.post.mockImplementation(async (_path: string, body: Corpo) => {
+      if (sim.post.mock.calls.length === n) await segura;
+      return responder(body);
+    });
+    const envio = enviar();
+    await vi.waitFor(() => expect(sim.post).toHaveBeenCalledTimes(n), { timeout: 5000 });
+    return { envio, soltar };
+  };
+  const comStatus =
+    (status: ResultadoSyncAce['status'], erro = 'Recusado (versão anterior)') =>
+    (body: Corpo) =>
+      resposta(() => (status === 'OK' || status === 'DUPLICADA' ? { status } : { status, id: null, erro }))('', body);
+  const guardarPacote = () => sim.stores.cache.set(CHAVE, { key: CHAVE, data: pacote(), savedAt: '2026-11-07T08:00:00Z' });
+  const saldoGuardado = async () => (await pacoteAce.guardado(ctxA))!.data.estoque[0]!.saldo;
+  const rotulosNoHistorico = async () => (await historicoAce.listar('u1')).map((h) => h.rotulo);
+
+  it.each(['OK', 'DUPLICADA'] as const)('nesta aba, %s da versão enviada: ela fica no histórico e no pacote; a correção fica na fila com o erro, e reenviá-la não grava nada', async (status) => {
+    guardarPacote();
+    await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+    const { envio, soltar } = await enviarPreso(() => filaAce.sincronizar(ctxA), comStatus(status));
+    await filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+    soltar();
+    const r = await envio;
+    // Conta em erros (o aviso manda à aba Fila); enviados e duplicados contam a versão enviada.
+    expect(r).toMatchObject({ enviados: status === 'OK' ? 1 : 0, duplicados: status === 'DUPLICADA' ? 1 : 0, erros: 1, adiados: 0, pendentes: 1, restantes: 0, falha: null });
+    expect(r.aceitos.map((a) => a.op.registradoEm)).toEqual(['2026-11-07T12:00:00Z']);
+    expect(item(UUID(1))).toMatchObject({ status: 'ERRO', erro: VERSAO_ANTERIOR, rotulo: 'Visita corrigida', versao: 1, versaoGravada: 0, op: { registradoEm: '2026-11-07T12:30:00Z' } });
+    expect(await rotulosNoHistorico()).toEqual(['Visita']);
+    expect(await saldoGuardado()).toBe(48);
+
+    // O servidor ficou com a versão anterior e responde DUPLICADA a este clientId: o reenvio (tentar de novo, ou outra
+    // correção) não tira o registro da fila nem repete o efeito no histórico e no pacote.
+    sim.post.mockReset();
+    sim.post.mockImplementation(resposta(() => ({ status: 'DUPLICADA' })));
+    await filaAce.tentarDeNovo(UUID(1));
+    expect(await filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 0, duplicados: 0, erros: 1, aceitos: [] });
+    expect(item(UUID(1))).toMatchObject({ status: 'ERRO', erro: VERSAO_ANTERIOR, versao: 1, versaoGravada: 0 });
+    await filaAce.corrigir(UUID(1), corrigida(UUID(1), '2026-11-07T12:45:00Z'), 'Visita corrigida de novo');
+    expect(await filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 0, duplicados: 0, erros: 1, aceitos: [] });
+    expect(item(UUID(1))).toMatchObject({ status: 'ERRO', erro: VERSAO_ANTERIOR, rotulo: 'Visita corrigida de novo', versao: 2, versaoGravada: 0 });
+    expect(enviados()).toEqual([UUID(1), UUID(1)]);
+    expect(await rotulosNoHistorico()).toEqual(['Visita']);
+    expect(await saldoGuardado()).toBe(48);
+  });
+
+  it.each<[string, (body: Corpo) => unknown]>([
+    ['ERRO', comStatus('ERRO')],
+    ['TENTAR_DE_NOVO', comStatus('TENTAR_DE_NOVO', 'Falha passageira')],
+    [
+      'o lote recusado inteiro',
+      () => {
+        throw new ApiError(400, 'Dados inválidos', 'VALIDACAO', [{ path: 'operacoes.0.visita.observacao', message: 'No máximo 1000 caracteres' }]);
+      },
+    ],
+  ])('nesta aba, %s da versão enviada: a correção não leva o erro nem o adiamento dela e vai no próximo envio', async (_caso, responder) => {
+    guardarPacote();
+    await filaAce.adicionar(visita(UUID(1)), ctxA, 'Visita');
+    const { envio, soltar } = await enviarPreso(() => filaAce.sincronizar(ctxA), responder);
+    await filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+    soltar();
+    expect(await envio).toMatchObject({ enviados: 0, erros: 0, adiados: 0, pendentes: 1, restantes: 1, falha: null });
+    expect(item(UUID(1))).toMatchObject({ status: 'PENDENTE', erro: null, adiado: null, rotulo: 'Visita corrigida', versao: 1 });
+    sim.post.mockReset();
+    sim.post.mockImplementation(resposta());
+    expect(await filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 1, erros: 0, restantes: 0 });
+    expect((sim.post.mock.calls[0]![1] as { operacoes: VisitaOp[] }).operacoes.map((o) => o.registradoEm)).toEqual(['2026-11-07T12:30:00Z']);
+    expect(item(UUID(1))).toBeUndefined();
+    // Só a correção foi gravada: o pacote recebe os 3 g dela.
+    expect(await rotulosNoHistorico()).toEqual(['Visita corrigida']);
+    expect(await saldoGuardado()).toBe(47);
+  });
+
+  it.each<['OK' | 'ERRO', Partial<ResumoSyncAce>, Partial<ItemFilaAce>]>([
+    ['OK', { enviados: 2, erros: 1, restantes: 0 }, { status: 'ERRO', erro: VERSAO_ANTERIOR, versaoGravada: 0 }],
+    ['ERRO', { enviados: 1, erros: 0, restantes: 1 }, { status: 'PENDENTE', erro: null }],
+  ])('o caso relatado: a visita recusada por falta do imóvel novo vai na 2ª rodada e é corrigida durante o POST dela (%s)', async (status, resumo, comoFica) => {
+    await filaAce.adicionar(imovel(UUID(10)), ctxA, 'Imóvel novo · Q 19');
+    await filaAce.adicionar(visita(UUID(11), { householdId: null, householdClientId: UUID(10) }), ctxA, 'Visita no imóvel novo');
+    sim.post.mockImplementation(
+      resposta((op) => ({
+        status: 'ERRO',
+        id: null,
+        erro: op.tipo === 'IMOVEL' ? 'O quarteirão do imóvel não existe na malha: escolha outro' : 'O imóvel desta visita não foi cadastrado (a operação do imóvel deu erro)',
+      })),
+    );
+    await filaAce.sincronizar(ctxA);
+    // O agente abre a correção da visita (o formulário guarda a operação de agora) e corrige o imóvel; o envio automático
+    // aceita o imóvel na 1ª rodada e leva a visita, regravada com o id do servidor, na 2ª.
+    const formulario = item(UUID(11))!.op as VisitaOp;
+    await filaAce.corrigir(UUID(10), imovel(UUID(10), 'q-novo'), 'Imóvel novo · Q 20');
+    sim.post.mockReset();
+    const { envio, soltar } = await enviarPreso(
+      () => filaAce.sincronizar(ctxA),
+      (body) => resposta((op) => (op.tipo === 'IMOVEL' || status === 'OK' ? {} : { status: 'ERRO', id: null, erro: 'Recusado (versão anterior)' }))('', body),
+      2,
+    );
+    expect((sim.post.mock.calls[1]![1] as { operacoes: VisitaOp[] }).operacoes).toMatchObject([{ clientId: UUID(11), householdId: `id-${UUID(10)}` }]);
+    // Durante o POST da visita, o agente salva a correção dela.
+    await filaAce.corrigir(UUID(11), { ...formulario, registradoEm: '2026-11-07T12:30:00Z' }, 'Visita corrigida');
+    soltar();
+    expect(await envio).toMatchObject({ duplicados: 0, adiados: 0, falha: null, ...resumo });
+    expect(item(UUID(10))).toBeUndefined();
+    expect(item(UUID(11))).toMatchObject({ rotulo: 'Visita corrigida', versao: 1, op: { registradoEm: '2026-11-07T12:30:00Z' }, ...comoFica });
+  });
+
+  it('imóvel novo corrigido durante o envio, OK da versão anterior: o servidor ficou com ela (e com a visita dele); a correção fica com o erro', async () => {
+    await filaAce.adicionar(imovel(UUID(10)), ctxA, 'Imóvel novo · Q 19');
+    await filaAce.adicionar(visita(UUID(11), { householdId: null, householdClientId: UUID(10) }), ctxA, 'Visita no imóvel novo');
+    const { envio, soltar } = await enviarPreso(() => filaAce.sincronizar(ctxA), comStatus('OK'));
+    await filaAce.corrigir(UUID(10), imovel(UUID(10), 'q-novo'), 'Imóvel novo · Q 20');
+    soltar();
+    const r = await envio;
+    expect(r).toMatchObject({ enviados: 2, erros: 1, restantes: 0, falha: null });
+    expect(r.aceitos.map((a) => (a.op.tipo === 'IMOVEL' ? a.op.dados.blockId : a.op.clientId))).toEqual(['q-velho', UUID(11)]);
+    expect(item(UUID(10))).toMatchObject({ status: 'ERRO', erro: VERSAO_ANTERIOR, rotulo: 'Imóvel novo · Q 20', versao: 1, versaoGravada: 0, op: { dados: { blockId: 'q-novo' } } });
+    expect(item(UUID(11))).toBeUndefined();
+    expect((await historicoAce.listar('u1')).map((h) => h.rotulo)).toEqual(['Visita no imóvel novo', 'Imóvel novo · Q 19']);
+  });
+
+  it('imóvel novo corrigido durante o envio, ERRO da versão anterior: a correção continua pendente e, aceita, leva junto a visita recusada por falta dele', async () => {
+    await filaAce.adicionar(imovel(UUID(10)), ctxA, 'Imóvel novo · Q 19');
+    await filaAce.adicionar(visita(UUID(11), { householdId: null, householdClientId: UUID(10) }), ctxA, 'Visita no imóvel novo');
+    const faltaDoImovel = 'O imóvel desta visita não foi cadastrado (a operação do imóvel deu erro)';
+    const { envio, soltar } = await enviarPreso(
+      () => filaAce.sincronizar(ctxA),
+      (body) => resposta((op) => ({ status: 'ERRO', id: null, erro: op.tipo === 'IMOVEL' ? 'O quarteirão do imóvel não existe na malha: escolha outro' : faltaDoImovel }))('', body),
+    );
+    await filaAce.corrigir(UUID(10), imovel(UUID(10), 'q-novo'), 'Imóvel novo · Q 20');
+    soltar();
+    expect(await envio).toMatchObject({ enviados: 0, erros: 1, restantes: 1, falha: null });
+    expect(item(UUID(10))).toMatchObject({ status: 'PENDENTE', erro: null, versao: 1, op: { dados: { blockId: 'q-novo' } } });
+    expect(item(UUID(11))).toMatchObject({ status: 'ERRO', erro: faltaDoImovel });
+    sim.post.mockReset();
+    sim.post.mockImplementation(resposta());
+    expect(await filaAce.sincronizar(ctxA)).toMatchObject({ enviados: 2, erros: 0, restantes: 0 });
+    expect(enviados()).toEqual([UUID(10), UUID(11)]);
+    expect((sim.post.mock.calls[0]![1] as { operacoes: ImovelOp[] }).operacoes[0]!.dados.blockId).toBe('q-novo');
+    expect(sim.stores.fila.size).toBe(0);
+  });
+
+  it('a regravação do householdId pelo imóvel novo aceito no lote anterior não é correção: o resultado da visita em envio vale para ela', async () => {
+    await filaAce.adicionar(imovel(UUID(500)), ctxA, 'Imóvel novo');
+    for (let n = 1; n <= 99; n++) await filaAce.adicionar(visita(UUID(n)), ctxA, `Visita ${n}`);
+    // A visita do imóvel novo é a mais recente: vai no 2º lote da rodada, lida antes de o 1º lote aceitar o imóvel.
+    await filaAce.adicionar(visita(UUID(600), { householdId: null, householdClientId: UUID(500), registradoEm: '2026-11-07T13:00:00Z' }), ctxA, 'Visita no imóvel novo');
+    const responder = resposta();
+    let naFilaDuranteOEnvio: OperacaoAce | undefined;
+    sim.post.mockImplementation(async (path: string, body: Corpo) => {
+      if (sim.post.mock.calls.length === 2) naFilaDuranteOEnvio = item(UUID(600))?.op;
+      return responder(path, body);
+    });
+    const r = await filaAce.sincronizar(ctxA);
+    // O 2º lote levou a visita como foi lida; na fila, o 1º já a tinha regravado com o id do servidor.
+    expect((sim.post.mock.calls[1]![1] as { operacoes: VisitaOp[] }).operacoes.map((o) => [o.clientId, o.householdClientId])).toEqual([[UUID(600), UUID(500)]]);
+    expect(naFilaDuranteOEnvio).toMatchObject({ householdId: `id-${UUID(500)}`, householdClientId: null });
+    expect(r).toMatchObject({ enviados: 101, erros: 0, restantes: 0, falha: null });
+    expect(sim.stores.fila.size).toBe(0);
+  });
+
+  describe('noutra aba', () => {
+    // Cada aba é uma cópia nova dos módulos com a sua conexão ao mesmo IndexedDB simulado. Corrigir e tentar de novo não
+    // esperam a trava do envio (só o envio e o download do pacote a usam): a outra aba age durante o POST desta.
+    const BANCO = 'omnisaude-campo-ace';
+    let fake: FakeIndexedDB;
+    const abrirAba = async () => {
+      vi.resetModules();
+      vi.doMock('../src/lib/offline', async (original) => ({ ...(await original<typeof import('../src/lib/offline')>()), estaOnline: () => true }));
+      return import('@/lib/ace-store');
+    };
+    const naFila = () => fake.linhas(BANCO, 'fila') as unknown as ItemFilaAce[];
+    const naFilaDoApp = (extra: Partial<ItemFilaAce> = {}): ItemFilaAce => ({
+      clientId: UUID(1),
+      op: { ...visita(UUID(1)), unitId: 'un-a' },
+      userId: 'u1',
+      unitId: 'un-a',
+      status: 'PENDENTE',
+      erro: null,
+      criadoEm: '2026-11-07T12:00:00Z',
+      rotulo: 'Visita',
+      ...extra,
+    });
+    const criarBanco = (fila: ItemFilaAce) =>
+      fake.criar(BANCO, 1, { fila: { keyPath: 'clientId', linhas: [fila as never] }, cache: { keyPath: 'key', linhas: [{ key: CHAVE, data: pacote(), savedAt: '2026-11-07T08:00:00Z' }] } });
+    const saldoNoBanco = () => (fake.linhas(BANCO, 'cache').find((l) => l.key === CHAVE) as { data: PacoteCampo }).data.estoque[0]!.saldo;
+
+    beforeEach(() => {
+      fake = new FakeIndexedDB();
+      vi.stubGlobal('indexedDB', fake);
+      vi.stubGlobal('navigator', { onLine: true });
+    });
+    afterEach(() => {
+      vi.doUnmock('../src/lib/offline');
+      vi.unstubAllGlobals();
+    });
+
+    it.each<['OK' | 'ERRO', Partial<ResumoSyncAce>, Partial<ItemFilaAce>, string[], number]>([
+      ['OK', { enviados: 1, erros: 1, restantes: 0 }, { status: 'ERRO', erro: VERSAO_ANTERIOR, versaoGravada: 0 }, ['Visita'], 48],
+      ['ERRO', { enviados: 0, erros: 0, restantes: 1 }, { status: 'PENDENTE', erro: null }, [], 50],
+    ])('%s da versão enviada com a correção salva noutra aba durante o POST', async (status, resumo, comoFica, historico, saldo) => {
+      criarBanco(naFilaDoApp());
+      const aba = await abrirAba();
+      const outra = await abrirAba();
+      const { envio, soltar } = await enviarPreso(() => aba.filaAce.sincronizar(ctxA), comStatus(status));
+      await outra.filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+      soltar();
+      expect(await envio).toMatchObject({ duplicados: 0, adiados: 0, falha: null, ...resumo });
+      expect(naFila()).toEqual([{ ...naFilaDoApp(), op: { ...corrigida(UUID(1)), unitId: 'un-a' }, rotulo: 'Visita corrigida', adiado: null, versao: 1, ...comoFica }]);
+      expect((await aba.historicoAce.listar('u1')).map((h) => h.rotulo)).toEqual(historico);
+      expect(saldoNoBanco()).toBe(saldo);
+    });
+
+    it.each<['OK' | 'ERRO', Partial<ResumoSyncAce>, ItemFilaAce[]]>([
+      ['OK', { enviados: 1, erros: 0 }, []],
+      ['ERRO', { enviados: 0, erros: 1 }, [naFilaDoApp({ status: 'ERRO', erro: 'Recusado de novo', adiado: null })]],
+    ])('tentar de novo noutra aba (lista desatualizada) durante o envio não é correção: o resultado %s vale para o registro', async (status, resumo, fila) => {
+      criarBanco(naFilaDoApp({ status: 'ERRO', erro: 'Recusado' }));
+      const aba = await abrirAba();
+      const outra = await abrirAba();
+      // Nesta aba o agente tocou em "Tentar de novo" e o envio saiu; a outra ainda mostra o registro com o erro.
+      await aba.filaAce.tentarDeNovo(UUID(1));
+      const { envio, soltar } = await enviarPreso(() => aba.filaAce.sincronizar(ctxA), comStatus(status, 'Recusado de novo'));
+      await outra.filaAce.tentarDeNovo(UUID(1));
+      soltar();
+      expect(await envio).toMatchObject({ falha: null, ...resumo });
+      expect(naFila()).toEqual(fila);
+    });
+
+    // Sem a trava entre abas, as duas abas podem enviar ao mesmo tempo. O servidor grava a primeira requisição (OK) e
+    // responde DUPLICADA às outras; cada resposta fica presa até `soltar[n]` (n: ordem da requisição).
+    const servidorPreso = () => {
+      const recebidos = new Set<string>();
+      const soltar: (() => void)[] = [];
+      const presas = [0, 1].map(() => new Promise<void>((r) => soltar.push(r)));
+      sim.post.mockImplementation(async (_path: string, body: Corpo) => {
+        const n = sim.post.mock.calls.length - 1;
+        const resultados = body.operacoes.map((op) => {
+          const status = recebidos.has(op.clientId) ? 'DUPLICADA' : 'OK';
+          recebidos.add(op.clientId);
+          return { clientId: op.clientId, tipo: op.tipo, status, id: `id-${op.clientId}`, erro: null };
+        });
+        await presas[n];
+        return { resultados };
+      });
+      return soltar;
+    };
+    const corrigidaComErro = () => ({ ...naFilaDoApp(), op: { ...corrigida(UUID(1)), unitId: 'un-a' }, rotulo: 'Visita corrigida', status: 'ERRO', erro: VERSAO_ANTERIOR, adiado: null, versao: 1, versaoGravada: 0 });
+
+    it.each(['DUPLICADA', 'OK'] as const)('sem a trava, as duas abas levam a versão anterior e a correção é salva no meio; a resposta %s chega antes: o larvicida entra uma vez no pacote guardado', async (primeira) => {
+      criarBanco(naFilaDoApp());
+      const abaA = await abrirAba();
+      const abaB = await abrirAba();
+      const outra = await abrirAba();
+      const soltar = servidorPreso();
+      const envioA = abaA.filaAce.sincronizar(ctxA);
+      await vi.waitFor(() => expect(sim.post).toHaveBeenCalledTimes(1), { timeout: 5000 });
+      const envioB = abaB.filaAce.sincronizar(ctxA);
+      await vi.waitFor(() => expect(sim.post).toHaveBeenCalledTimes(2), { timeout: 5000 });
+      await outra.filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+      // A requisição de A foi gravada (OK); a de B volta DUPLICADA. Antes, o OK que chegava depois da DUPLICADA aplicava o
+      // larvicida de novo no pacote guardado.
+      const envios = [envioA, envioB];
+      const resumos: ResumoSyncAce[] = [];
+      for (const n of primeira === 'OK' ? [0, 1] : [1, 0]) {
+        soltar[n]!();
+        resumos[n] = await envios[n]!;
+      }
+      expect(saldoNoBanco()).toBe(48);
+      expect(naFila()).toEqual([corrigidaComErro()]);
+      expect((await abaA.historicoAce.listar('u1')).map((h) => h.rotulo)).toEqual(['Visita']);
+      // Cada aba manda à aba Fila; a versão anterior conta uma vez como aceita.
+      expect(resumos.map((r) => r.erros)).toEqual([1, 1]);
+      expect(resumos.reduce((s, r) => s + r.enviados + r.duplicados, 0)).toBe(1);
+    });
+
+    it('sem a trava, a outra aba envia a correção logo depois de salvá-la e recebe DUPLICADA depois do OK da versão anterior: a correção continua com o erro', async () => {
+      criarBanco(naFilaDoApp());
+      const aba = await abrirAba();
+      const outra = await abrirAba();
+      const soltar = servidorPreso();
+      const envio = aba.filaAce.sincronizar(ctxA);
+      await vi.waitFor(() => expect(sim.post).toHaveBeenCalledTimes(1), { timeout: 5000 });
+      await outra.filaAce.corrigir(UUID(1), corrigida(UUID(1)), 'Visita corrigida');
+      const envioDaOutra = outra.filaAce.sincronizar(ctxA);
+      await vi.waitFor(() => expect(sim.post).toHaveBeenCalledTimes(2), { timeout: 5000 });
+      expect((sim.post.mock.calls[1]![1] as { operacoes: VisitaOp[] }).operacoes.map((o) => o.registradoEm)).toEqual(['2026-11-07T12:30:00Z']);
+      soltar[0]!();
+      expect(await envio).toMatchObject({ enviados: 1, erros: 1 });
+      // O servidor tem a versão anterior: a DUPLICADA da correção não a tira da fila nem troca o rótulo no histórico.
+      soltar[1]!();
+      expect(await envioDaOutra).toMatchObject({ enviados: 0, duplicados: 0, erros: 1, aceitos: [] });
+      expect(naFila()).toEqual([corrigidaComErro()]);
+      expect((await aba.historicoAce.listar('u1')).map((h) => h.rotulo)).toEqual(['Visita']);
+      expect(saldoNoBanco()).toBe(48);
+    });
   });
 });
