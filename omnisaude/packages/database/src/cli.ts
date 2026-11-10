@@ -4,6 +4,7 @@ import { bootstrapCluster } from './bootstrap';
 import type { PrismaClient as MasterClient } from './generated/master/client';
 import { applyMigrations } from './migrate';
 import { hashPassword, passwordProblems } from './passwords';
+import { registrarFalhaDePartida } from './partida';
 import { migrateAllTenants, provisionTenant } from './provision';
 import { DEMO_PLATFORM_EMAIL, seedDemo } from './seed/demo';
 import { createMasterClient, envCredentials } from './tenancy';
@@ -21,6 +22,9 @@ import { createMasterClient, envCredentials } from './tenancy';
  * TENANT_DB_USER/PASSWORD, TENANT_ADMIN_USER/PASSWORD, TENANT_BI_USER/PASSWORD e, em seed/boot,
  * PLATFORM_ADMIN_EMAIL/PASSWORD (conta de operação da plataforma).
  */
+/** Passo em que a partida (`boot`) está: vai para a mensagem de diagnóstico se ela falhar. */
+let etapa = 'configuração';
+
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
   const masterUrl = required('MASTER_DATABASE_URL');
@@ -33,17 +37,22 @@ async function main() {
 
   if (command === 'bootstrap' || command === 'boot') {
     if (command === 'bootstrap' || process.env.BOOTSTRAP === 'true') {
+      etapa = 'papéis e banco master (conexão com PG_ADMIN_USER)';
       await bootstrapCluster({ host, port, masterDb, credentials, log: console.log });
     }
     if (command === 'bootstrap') return;
+    etapa = 'migrações do banco master (conexão com o usuário da aplicação)';
     await applyMigrations(masterUrl, 'master');
     const master = createMasterClient(masterUrl);
     try {
       if (process.env.SEED_DEMO === 'true') {
+        etapa = 'instituição de demonstração';
         const result = await seedDemo({ master, credentials, primaryHost: host, primaryPort: port, replicaHost, replicaPort, platformUser: !process.env.PLATFORM_ADMIN_PASSWORD, territorioDemo: true });
         console.log(result.skipped ? `Tenant demo já existe (${result.dbName})` : `Tenant demo criado em ${result.dbName}`);
       }
+      etapa = 'conta da plataforma (PLATFORM_ADMIN_PASSWORD)';
       await ensurePlatformAdmin(master);
+      etapa = 'migrações das instituições';
       // Na partida, um tenant com migração falhando não derruba a API dos demais: o erro fica no log.
       for (const r of await migrateAllTenants(master, credentials)) {
         if (r.error) console.error(`${r.slug}: ERRO na migração (o tenant segue na versão anterior): ${r.error}`);
@@ -153,5 +162,7 @@ function required(name: string): string {
 
 main().catch((err) => {
   console.error(err instanceof Error ? err.message : err);
+  // Na partida do container, o servidor de diagnóstico (partida-falhou.js) mostra a etapa e o motivo, sem segredos.
+  if (process.argv[2] === 'boot') registrarFalhaDePartida(etapa, err);
   process.exit(1);
 });

@@ -11,3 +11,4 @@ export * from './passwords';
 export { seedDemo } from './seed/demo';
 export * as demoFixtures from './seed/fixtures';
 export * from './bootstrap';
+export * from './partida';

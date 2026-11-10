@@ -68,14 +68,16 @@ export interface OmniVars extends Partial<Record<(typeof PASSTHROUGH)[number], s
 
 /**
  * Partida do container: prepara o banco (papéis, master, demo, migrações), sobe os simulados se pedidos e
- * troca o shell pelo processo da API. A porta só abre depois das migrações.
+ * troca o shell pelo processo da API. A porta só abre depois das migrações. Se a preparação do banco falhar, o
+ * servidor de diagnóstico responde 503 com a etapa e o motivo (sem segredos) por alguns minutos e sai, para a
+ * partida ser refeita; a API que não sobe faz o mesmo (PARTIDA_DIAGNOSTICO).
  */
 export const CONTAINER_ENTRYPOINT = [
   'sh',
   '-c',
   [
     'set -e',
-    'node packages/database/dist/cli.js boot',
+    'if ! node packages/database/dist/cli.js boot; then exec node packages/database/dist/partida-falhou.js; fi',
     `if [ "$DEMO_MOCKS" = "true" ]; then PORT=${MOCKS_PORT} MOCK_LOG=0 node infra/mocks/dist/index.js & fi`,
     'exec node apps/api/dist/main.js',
   ].join('\n'),
@@ -180,6 +182,8 @@ export function containerEnv(vars: OmniVars): Record<string, string> {
     // O disco do container é apagado a cada reinício: configure o R2 para guardar documentos.
     LOCAL_STORAGE_DIR: '/tmp/omnisaude-arquivos',
     DEMO_MOCKS: demoMocks ? 'true' : 'false',
+    // A API que não sobe responde 503 com o motivo, sem segredos (packages/database/src/partida.ts).
+    PARTIDA_DIAGNOSTICO: 'true',
   };
   if (demoMocks) {
     env.MOCKS_URL = `http://127.0.0.1:${MOCKS_PORT}`;

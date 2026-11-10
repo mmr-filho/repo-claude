@@ -135,6 +135,26 @@ Para conferir: **Workers & Pages → repo-claude → Logs** mostra o Worker e os
 instância e o log da API (a partida escreve "Papéis e banco master conferidos" e o estado das migrações de
 cada instituição).
 
+## Se o login mostrar "O OmniSaúde não conseguiu subir"
+
+Quando a preparação do banco ou a própria API falham, o container não cai mais em silêncio. A tela de login (e
+`https://mm.api.br/omnisaude/api/health`) mostra a etapa e o motivo, sem senhas, sem o endereço e sem os
+usuários do banco. Depois de 3 minutos a partida é refeita sozinha. Corrija o que a mensagem aponta em
+**repo-claude → Settings → Variables and Secrets**: o Worker reinicia a API com os valores novos na requisição
+seguinte.
+
+| Etapa na mensagem | O que conferir |
+|---|---|
+| papéis e banco master (conexão com PG_ADMIN_USER) | `PG_HOST`, `PG_ADMIN_USER` e `PG_ADMIN_PASSWORD` (passo 1). Código 28P01: a senha foi recusada. ENOTFOUND: o endereço não existe. 42501: o papel do provedor não pode criar papéis ou bancos. |
+| migrações do banco master (conexão com o usuário da aplicação) | `APP_DB_PASSWORD` (passo 3) e o sufixo do branch em `PG_ADMIN_USER` (`postgres.<id>`): o usuário da aplicação usa o mesmo sufixo. |
+| instituição de demonstração | A carga da demonstração (`SEED_DEMO`). O detalhe vem na mensagem; o log do container tem o resto. |
+| conta da plataforma (PLATFORM_ADMIN_PASSWORD) | A senha precisa de pelo menos 10 caracteres, com letras e números. |
+| API | Formato dos segredos: `JWT_SECRET` com 32 caracteres ou mais, `DATA_KEY` com exatamente 32 bytes em base64 e `JOBS_SECRET` com 24 caracteres ou mais. Gere de novo pelo passo 3 e cole só o valor, sem o nome nem os espaços. |
+
+Se a mensagem disser "a API parou na partida (código N)", o container foi encerrado antes de responder. O código
+137 indica falta de memória: troque `instance_type` para `"standard-1"` em `wrangler.jsonc`. Para outros códigos,
+veja o log em **repo-claude → Containers**.
+
 ## Se aparecer "Não encontrado — mm.api.br" (404)
 
 Essa página é do outro sistema que atende `mm.api.br`, não do OmniSaúde: a Cloudflare só manda `/omnisaude`

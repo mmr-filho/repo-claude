@@ -20,6 +20,9 @@ export interface Env extends OmniVars {
 }
 
 const STARTED_WITH = 'omni:config';
+/** Última parada com erro do container: distingue "subindo" de "caindo na partida" na mensagem da tela de login. */
+const LAST_CRASH = 'omni:ultima-parada';
+const CRASH_WINDOW_MS = 10 * 60_000;
 
 /**
  * A API roda numa única instância: o Socket.IO (painel, censo) e a central de intérpretes de Libras guardam
@@ -50,8 +53,16 @@ export class OmniApi extends Container<Env> {
       await (this.starting ??= this.ensureRunning().finally(() => (this.starting = undefined)));
     } catch (err) {
       console.error('API não subiu', err);
+      const last = await this.ctx.storage.get<{ code: number; reason: string; at: number }>(LAST_CRASH);
+      const crashed = last && Date.now() - last.at < CRASH_WINDOW_MS ? last : null;
       return Response.json(
-        { message: 'O OmniSaúde está iniciando. Tente de novo em instantes.' },
+        {
+          message: crashed
+            ? `O OmniSaúde não conseguiu subir: a API parou na partida (código ${crashed.code}). Tente de novo em instantes; se continuar, o motivo está no log do container (Cloudflare: Workers & Pages > repo-claude > Containers).`
+            : 'O OmniSaúde está iniciando. Tente de novo em instantes.',
+          // Mensagem da biblioteca de containers (sem segredos), para quem diagnostica pelo navegador ou pelo curl.
+          detalhe: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+        },
         { status: 503, headers: { 'retry-after': '15' } },
       );
     }
@@ -60,10 +71,13 @@ export class OmniApi extends Container<Env> {
 
   override async onStart() {
     await this.ctx.storage.put(STARTED_WITH, await this.fingerprint());
+    await this.ctx.storage.delete(LAST_CRASH);
   }
 
-  override onStop(params: { exitCode: number; reason: string }) {
-    if (params.exitCode !== 0) console.error(`Container da API parou (código ${params.exitCode}, ${params.reason})`);
+  override async onStop(params: { exitCode: number; reason: string }) {
+    if (params.exitCode === 0) return;
+    console.error(`Container da API parou (código ${params.exitCode}, ${params.reason})`);
+    await this.ctx.storage.put(LAST_CRASH, { code: params.exitCode, reason: params.reason, at: Date.now() });
   }
 
   /** Sobe a API; se ela está no ar com variáveis ou segredos antigos, reinicia com os atuais. */

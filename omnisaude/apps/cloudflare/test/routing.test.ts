@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CONTAINER_ENTRYPOINT,
   CRON_JOBS,
   apiPath,
   basePath,
@@ -106,6 +107,15 @@ describe('variáveis da API no container', () => {
     // Sem senha própria, a conta da plataforma ficaria com a senha pública da demonstração.
     expect(() => containerEnv({ ...vars, PLATFORM_ADMIN_PASSWORD: '' })).toThrow(/PLATFORM_ADMIN_PASSWORD/);
     expect(() => containerEnv({ ...vars, PLATFORM_ADMIN_PASSWORD: 'semnumerosaqui' })).toThrow(/letras e números/);
+  });
+
+  it('a partida que falha responde com o motivo em vez de derrubar o container', () => {
+    expect(containerEnv(vars).PARTIDA_DIAGNOSTICO).toBe('true');
+    const script = CONTAINER_ENTRYPOINT[2]!;
+    expect(script).toContain(
+      'if ! node packages/database/dist/cli.js boot; then exec node packages/database/dist/partida-falhou.js; fi',
+    );
+    expect(script.indexOf('partida-falhou')).toBeLessThan(script.indexOf('exec node apps/api/dist/main.js'));
   });
 
   it('a impressão digital muda quando um segredo muda', async () => {
