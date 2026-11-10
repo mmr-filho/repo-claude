@@ -1,5 +1,8 @@
+import { applyQuietHours } from '@omnisaude/messaging';
 import { cnsFromBase, completeCpf } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { TenantsService } from '../src/core/database';
+import { MessagingService } from '../src/modules/integrations/messaging.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 import { startMocks } from './mocks';
 
@@ -26,6 +29,18 @@ describe.runIf(enabled)('TFD e transporte sanitário', () => {
   let processoId = '';
   let protocolo = '';
   const auth = (token: string) => ({ authorization: `Bearer ${token}` });
+  /**
+   * Dispara as mensagens agendadas para `refId` no horário em que vencem: fora da janela de silêncio saem na hora;
+   * dentro dela (21h às 8h) ficam para a manhã seguinte. Assim o teste não depende da hora em que roda.
+   */
+  async function dispararAgendadas(refId: string) {
+    const tenants = t.app.get(TenantsService);
+    const tenant = await tenants.resolve(t.slug);
+    const sys = { tenant, db: await tenants.client(tenant.id) };
+    const agendadas = await sys.db.messageLog.findMany({ where: { refId, status: 'AGENDADA' }, select: { scheduledFor: true } });
+    const vence = Math.max(Date.now(), ...agendadas.map((m) => m.scheduledFor.getTime()));
+    return t.app.get(MessagingService).dispatchDue(sys, applyQuietHours(new Date(vence + 1000), { timeZone: tenant.timeZone, priority: 'ROTINA' }));
+  }
   const address = { cep: '77405070', street: 'Rua do Embarque', number: '12', district: 'Setor Central', city: 'Gurupi', uf: 'TO', ibgeCode: '1709500' };
   const laudo = (patientId: string, extra: Record<string, unknown> = {}) => ({
     patientId,
@@ -353,16 +368,14 @@ describe.runIf(enabled)('TFD e transporte sanitário', () => {
       const det = (await t.http().get(`/api/tfd/processos/${processoId}`).set(auth(recepcao)).expect(200)).body;
       expect(det.allowance.paidAt).toBeTruthy();
       expect(det.eventos.map((e: { kind: string }) => e.kind)).toEqual(expect.arrayContaining(['ABERTO', 'ENVIADO', 'DEFERIDO', 'AGENDADO', 'AJUDA_CUSTO', 'AJUDA_PAGA']));
-      // Devolutiva ao cidadão (parecer deferido + agendamento) pelo mesmo modelo da regulação; fora da janela de silêncio fica adiada.
-      const disparo = (await t.http().post('/api/integrations/dispatch').set(auth(gestora)).expect(200)).body;
-      expect(disparo.whatsapp.sent + disparo.whatsapp.postponed).toBeGreaterThanOrEqual(2);
-      if (disparo.whatsapp.sent >= 2) {
-        const sent = (await fetch(`${mocks.url}/whatsapp/_sent`).then((r) => r.json())) as { to: string; payload: { template?: { name: string } } }[];
-        const avisos = sent.filter((m) => m.payload.template?.name === 'regulacao_atualizacao' && JSON.stringify(m.payload).includes(protocolo));
-        expect(avisos.length).toBeGreaterThanOrEqual(2);
-        expect(JSON.stringify(avisos)).toContain('radioterapia');
-        expect(avisos.every((m) => m.to.endsWith('999990401'))).toBe(true);
-      }
+      // Devolutiva ao cidadão (parecer deferido + agendamento) pelo mesmo modelo da regulação, no horário em que vence.
+      const disparo = await dispararAgendadas(processoId);
+      expect(disparo.sent).toBeGreaterThanOrEqual(2);
+      const sent = (await fetch(`${mocks.url}/whatsapp/_sent`).then((r) => r.json())) as { to: string; payload: { template?: { name: string } } }[];
+      const avisos = sent.filter((m) => m.payload.template?.name === 'regulacao_atualizacao' && JSON.stringify(m.payload).includes(protocolo));
+      expect(avisos.length).toBeGreaterThanOrEqual(2);
+      expect(JSON.stringify(avisos)).toContain('radioterapia');
+      expect(avisos.every((m) => m.to.endsWith('999990401'))).toBe(true);
     });
 
     it('não aceita ajuda para acompanhante quando o laudo não prevê', async () => {

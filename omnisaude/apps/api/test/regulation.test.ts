@@ -1,5 +1,8 @@
+import { applyQuietHours } from '@omnisaude/messaging';
 import { cnsFromBase, completeCpf } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { TenantsService } from '../src/core/database';
+import { MessagingService } from '../src/modules/integrations/messaging.service';
 import { pgAvailable, startTestApp, type TestApp } from './harness';
 import { startMocks } from './mocks';
 
@@ -19,6 +22,18 @@ describe.runIf(enabled)('Regulação ambulatorial: solicitação, protocolo, fil
   let encounterId = '';
   let solicitacaoId = '';
   const auth = (token: string) => ({ authorization: `Bearer ${token}` });
+  /**
+   * Dispara as mensagens agendadas para `refId` no horário em que vencem: fora da janela de silêncio saem na hora;
+   * dentro dela (21h às 8h) ficam para a manhã seguinte. Assim o teste não depende da hora em que roda.
+   */
+  async function dispararAgendadas(refId: string) {
+    const tenants = t.app.get(TenantsService);
+    const tenant = await tenants.resolve(t.slug);
+    const sys = { tenant, db: await tenants.client(tenant.id) };
+    const agendadas = await sys.db.messageLog.findMany({ where: { refId, status: 'AGENDADA' }, select: { scheduledFor: true } });
+    const vence = Math.max(Date.now(), ...agendadas.map((m) => m.scheduledFor.getTime()));
+    return t.app.get(MessagingService).dispatchDue(sys, applyQuietHours(new Date(vence + 1000), { timeZone: tenant.timeZone, priority: 'ROTINA' }));
+  }
   const address = { cep: '77405070', street: 'Rua da Regulação', number: '12', district: 'Setor Central', city: 'Gurupi', uf: 'TO', ibgeCode: '1709500' };
 
   beforeAll(async () => {
@@ -214,15 +229,13 @@ describe.runIf(enabled)('Regulação ambulatorial: solicitação, protocolo, fil
       .body;
     expect(autorizada).toMatchObject({ status: 'AUTORIZADA', priority: 'VERDE', requestedPriority: 'AMARELA', providerUnit: { name: 'Policlínica Municipal' }, regulator: { name: 'Fábio Teixeira NIR' } });
     expect(autorizada.eventos.at(-1).notes).toContain('reclassificada de urgência para prioridade');
-    // Devolutiva ao cidadão por WhatsApp (modelo regulacao_atualizacao), enviada pelo disparo dos jobs.
-    const disparo = (await t.http().post('/api/integrations/dispatch').set(auth(gestora)).expect(200)).body;
-    expect(disparo.whatsapp.sent + disparo.whatsapp.postponed).toBeGreaterThanOrEqual(1);
-    if (disparo.whatsapp.sent >= 1) {
-      const enviadas = (await (await fetch(`${mocks.url}/whatsapp/_sent`)).json()) as { to: string; payload: { template?: { name: string } } }[];
-      const msg = enviadas.find((m) => m.payload.template?.name === 'regulacao_atualizacao');
-      expect(msg).toBeDefined();
-      expect(msg!.to.endsWith('999990201')).toBe(true);
-    }
+    // Devolutiva ao cidadão por WhatsApp (modelo regulacao_atualizacao), enviada pelo disparo dos jobs no horário em que vence.
+    const disparo = await dispararAgendadas(solicitacaoId);
+    expect(disparo.sent).toBeGreaterThanOrEqual(1);
+    const enviadas = (await (await fetch(`${mocks.url}/whatsapp/_sent`)).json()) as { to: string; payload: { template?: { name: string } } }[];
+    const msg = enviadas.find((m) => m.payload.template?.name === 'regulacao_atualizacao');
+    expect(msg).toBeDefined();
+    expect(msg!.to.endsWith('999990201')).toBe(true);
     const detalhe = (await t.http().get(`/api/regulacao/solicitacoes/${solicitacaoId}`).set(auth(recepcao)).expect(200)).body;
     expect(detalhe.status).toBe('AUTORIZADA');
     // Autorizada não volta para a fila nem é autorizada de novo.
