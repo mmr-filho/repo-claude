@@ -151,6 +151,11 @@ seguinte.
 | conta da plataforma (PLATFORM_ADMIN_PASSWORD) | A senha precisa de pelo menos 10 caracteres, com letras e números. |
 | API | Formato dos segredos: `JWT_SECRET` com 32 caracteres ou mais, `DATA_KEY` com exatamente 32 bytes em base64 e `JOBS_SECRET` com 24 caracteres ou mais. Gere de novo pelo passo 3 e cole só o valor, sem o nome nem os espaços. |
 
+Em qualquer etapa, "A migração X foi alterada depois de aplicada" ou "Falha ao aplicar" vêm da versão publicada, não
+da configuração: não mexa no banco, a correção vem numa versão nova. Migração publicada não muda mais (o SHA-256 de
+cada uma fica em `packages/database/prisma/migracoes-publicadas.json`, conferido pelos testes); correção vai numa
+migração nova.
+
 Se a mensagem disser "a API parou na partida (código N)", o container foi encerrado antes de responder. O código
 137 indica falta de memória: troque `instance_type` para `"standard-1"` em `wrangler.jsonc`. Para outros códigos,
 veja o log em **repo-claude → Containers**.

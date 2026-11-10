@@ -50,7 +50,12 @@ describe('diagnóstico da partida do container', () => {
     expect(api.mensagem).toBe('Configuração inválida: DATA_KEY: DATA_KEY deve ser 32 bytes em base64');
     expect(api.codigo).toBeUndefined();
     expect(mensagemDaFalha(api)).toContain('etapa "API"');
+    expect(mensagemDaFalha(api)).toContain('painel da Cloudflare');
     expect(mensagemDaFalha(null)).toContain('log do container');
+    // Migração alterada depois de aplicada é da versão publicada: a mensagem não manda mexer no painel.
+    const migracao = mensagemDaFalha({ etapa: 'instituição de demonstração', mensagem: 'A migração 0029_x foi alterada depois de aplicada', em: falha.em });
+    expect(migracao).toContain('versão publicada');
+    expect(migracao).not.toContain('painel da Cloudflare');
   });
 
   it('responde 503 com o motivo em qualquer rota e sai depois do tempo combinado', async () => {

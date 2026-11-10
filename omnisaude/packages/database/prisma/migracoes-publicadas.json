@@ -1,0 +1,38 @@
+{
+  "master": {
+    "0001_init": "5448cc879158e2bb6806f8faf6da9b61b1c5fb5bf959ae790b93449ea0bd20c2",
+    "0002_esus_pec": "8a846c76655db583264a4b9e9a5a88a53593bf41ac212f9571ab803279287e57"
+  },
+  "tenant": {
+    "0001_init": "e0d64c88d174ae7a223548acbc2f3a8d7e315b029142d1fb3f86b93113051361",
+    "0002_bi_e_auditoria": "bc2f1ccf8a6603d0f9369283e9648810382a7a693672e4b2ff3ab08f0c80ffaf",
+    "0003_administracao": "5fd867171aecfda61c39ae4bc604053f4b10a7853d0befadb331c6e8e4aa2255",
+    "0004_cnes": "53405b965f5a4bb30ecb06a1d80f0205c291f607155b4b76c2a873a49a15d56d",
+    "0005_cidadao": "6e26d8bd25ce5cbd4d86786a61f2446d9853ba0034440d11a54828a7d386d6a5",
+    "0006_assinatura_icp": "b801e360bc57e1064ad426c0339dde7529e461fd82b677c375501bf72f9578bc",
+    "0007_esus_ledi": "9d2811c3c7aa9cc60ba403a6e7c48e5baa7bcdf6b829666d12e775e6eb3d783b",
+    "0008_indicadores_aps": "fcac8aaac27b326a7308da480482ad511e486c992834e3db1d70c6f9e615b8b4",
+    "0009_programas_aps": "7cf64c892733aa32adb7fbfae760ad7e4ed42a63853d8c2cc8845a6a3efbc904",
+    "0010_vacinas": "d7e4fa41bfa4d523324411d2e0a24a4d2bc7909e05b562cc5b0d698d93b71ccd",
+    "0011_acs": "dfe08146b5fb17c44dd49e8a7aa192395b6dd3f4ba5a00df86f9f5bf175bb0bf",
+    "0012_regulacao": "66a2c5d2b35dbf1ca95df371f27d69543decdecd7fd2786e54158aa6be321e81",
+    "0013_regulacao_prestadores": "fbdeef0d1b07b43e7bbf5eda21cbd105d4c8c19fcc0c9353bfb6b199edc33730",
+    "0014_tfd_transporte": "1015228dfa5b2cbd69d4566f0fb9453eb3b6afda90dbe758c72658bb859c3198",
+    "0015_regulacao_leitos_aih": "3c36ddd2f3dafb08306fccd6c1e36e2aa8bee0a1fc6e0056d4191d8cc544c494",
+    "0016_rnds_regulacao": "f15ab143be655d62a6783e15f88abb2d6dbf97d9e7f617cc33ee6f33dfa32c32",
+    "0017_app_cidadao": "e263e132638973869a5d91776c555aa5aee5a7980eed6b7578524bb7314455ab",
+    "0018_assistente_whatsapp": "d11633051ac07a0445e474ee34dea0568dffcb0f8586c8bf1ad95afe8be8e594",
+    "0019_ouvidoria_satisfacao": "5777e8032a7c2a47e03b39616067443454ac4d3e416f3294316e9519e80f7796",
+    "0020_outbox_por_registro": "914604a5d27e54bd46bb9bb6ac107ce24e354f2a2deb10e6c111dc8bb5744c19",
+    "0021_vigilancia_notificacao": "74db3c4899371017137ef01566783d142488cd23f1e0222027c8b1f56f70baf2",
+    "0022_vigilancia_ajustes": "73d419044de2d18867b414e376850ea614a8cac75df1760baeb224c25a9de63f",
+    "0023_vigilancia_saida_sistemas": "9f1c9ee61925a65f43a57fbe098319e88ebfcc1e7dbba79822244c840800426e",
+    "0024_vigilancia_numero_descartadas": "1f4ca4018333f62b12682048e2925fea233768bf2c2c82d7f3539b078be157d6",
+    "0025_territorio": "610050fc7f88e174a9ca6eb155980825008211c96826dbfca9ad7ffe603a9eae",
+    "0026_bairro_com_localidade": "2a626c0cdb957767f940e748dfcc5b272bbf8ba2dbb19f306c001e85420ba769",
+    "0027_endemias": "f487db628777f9b8daeb507689afd5285bf94e1fec8d28ccbe067688f2012cd3",
+    "0028_endemias_ajustes": "45a6b9c4035e2164bc7d19ddc8aafc1daf15344bb612f615166cb4fc934a9a39",
+    "0029_inicio_do_campo_e_cadeia_de_unificacao": "918f8482b799dddaafc1aa9b92499f4ee8beb1c79da9b3c6635d2be137c79860",
+    "0030_cadeia_de_unificacao_sem_limite": "72099b781234a73ac61a7ead20ca8ebf20b4cc138e84cf1cb917e67e3033376c"
+  }
+}

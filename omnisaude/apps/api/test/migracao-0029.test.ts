@@ -7,11 +7,13 @@ import { pgAvailable, TEST_PG } from './harness';
 /**
  * A migração 0029 corrige dados gravados antes de duas regras da semana 26: a ordem de bloqueio com o início do campo
  * antes da abertura passa a começar na abertura, e cada cadastro unificado numa cadeia (x em d, d em s) passa a apontar
- * para o fim dela. Aplicada pelo pacote de banco como num município que estava na 0028, e rodada de novo sem mudar nada.
+ * para o fim dela, seguindo até 50 saltos. Aplicada pelo pacote de banco como num município que estava na 0028, e rodada
+ * de novo sem mudar nada. A 0030 (já publicada a 0029, que não pode mudar) segue a cadeia até o fim.
  */
 const enabled = await pgAvailable();
 
 const MIGRACAO = '0029_inicio_do_campo_e_cadeia_de_unificacao';
+const SEM_LIMITE = '0030_cadeia_de_unificacao_sem_limite';
 const SUFIXO = (process.env.OMNI_TEST_SUFFIX ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const BANCO = `omni_test_mig0029${SUFIXO}`;
 
@@ -117,8 +119,9 @@ describe.runIf(enabled)('Migração 0029: início do campo antes da abertura e c
     expect(await retrato()).toEqual(depois);
   });
 
-  it('uma rodada só achata a cadeia de 60 saltos; o ciclo longo (e a cadeia que entra nele) fica como está', async () => {
+  it('a 0029 segue até 50 saltos e a 0030 termina a cadeia de 60; o ciclo longo (e a cadeia que entra nele) fica como está', async () => {
     const sql = loadMigrations('tenant').find((m) => m.name === MIGRACAO)!.sql;
+    const semLimite = loadMigrations('tenant').find((m) => m.name === SEM_LIMITE)!.sql;
     const comandos = (r: unknown) => (Array.isArray(r) ? r : [r]).map((x: { command: string; rowCount: number }) => `${x.command} ${x.rowCount}`);
     // Cadeia p0 → p1 → ... → p60 (60 saltos até p60, que não foi unificado); ciclo k0 → k1 → ... → k59 → k0 (60 saltos)
     // e t → k0, que entra no ciclo e não chega a um fim.
@@ -138,14 +141,21 @@ describe.runIf(enabled)('Migração 0029: início do campo antes da abertura e c
       new Map((await db.query<{ id: string; merged_into_id: string | null }>('SELECT id, merged_into_id FROM patients WHERE id = ANY($1::uuid[])', [todos])).rows.map((x) => [x.id, x.merged_into_id]));
     const antes = await destinos();
 
-    // Antes (até 50 saltos): p0 a p9 não chegavam a p60 na primeira rodada, e a segunda ainda mudava 10 cadastros.
-    expect(comandos(await db.query(sql))).toEqual(['UPDATE 0', 'UPDATE 59']);
+    // 0029 (até 50 saltos, a versão aplicada nos bancos publicados): p10 a p58 chegam a p60 (p59 já apontava para
+    // ele); p0 a p9 não chegam e ficam como estavam.
+    expect(comandos(await db.query(sql))).toEqual(['UPDATE 0', 'UPDATE 49']);
+    const meio = await destinos();
+    for (const id of cadeia.slice(0, 10)) expect(meio.get(id)).toBe(antes.get(id));
+    for (const id of cadeia.slice(10, 60)) expect(meio.get(id)).toBe(cadeia[60]);
+    // 0030: segue até o fim e termina, numa rodada só, o que a 0029 deixou.
+    expect(comandos(await db.query(semLimite))).toEqual(['UPDATE 10']);
     const depois = await destinos();
     for (const id of cadeia.slice(0, 60)) expect(depois.get(id)).toBe(cadeia[60]);
     expect(depois.get(cadeia[60]!)).toBeNull();
     for (const id of [...ciclo, t]) expect(depois.get(id)).toBe(antes.get(id));
-    // Rodar de novo não muda nada.
+    // Rodar de novo (as duas) não muda nada.
     expect(comandos(await db.query(sql))).toEqual(['UPDATE 0', 'UPDATE 0']);
+    expect(comandos(await db.query(semLimite))).toEqual(['UPDATE 0']);
     expect(await destinos()).toEqual(depois);
   });
 });

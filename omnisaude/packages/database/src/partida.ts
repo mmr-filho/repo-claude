@@ -94,7 +94,11 @@ export function mensagemDaFalha(falha: FalhaDePartida | null): string {
   const onde = 'O detalhe completo está no log do container (Cloudflare: Workers & Pages > repo-claude > Containers).';
   if (!falha) return `O OmniSaúde não conseguiu subir. ${onde}`;
   const codigo = falha.codigo ? ` (código ${falha.codigo})` : '';
-  return `O OmniSaúde não conseguiu subir na etapa "${falha.etapa}": ${falha.mensagem}${codigo}. Corrija no painel da Cloudflare (Settings > Variables and Secrets); a partida é refeita sozinha em instantes. ${onde}`;
+  // Migração alterada depois de aplicada, ou que falha ao rodar, é da versão publicada: o painel não resolve.
+  const oQueFazer = /migra[çc][ãa]o/i.test(falha.mensagem)
+    ? 'Isso é da versão publicada, não da configuração: não mexa no banco; a correção vem numa versão nova.'
+    : 'Corrija no painel da Cloudflare (Settings > Variables and Secrets); a partida é refeita sozinha em instantes.';
+  return `O OmniSaúde não conseguiu subir na etapa "${falha.etapa}": ${falha.mensagem}${codigo}. ${oQueFazer} ${onde}`;
 }
 
 /**
