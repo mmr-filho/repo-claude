@@ -1,7 +1,8 @@
-# Vigilância em saúde: notificação compulsória (VIG-1a e VIG-1b)
+# Vigilância em saúde: notificação compulsória (VIG-1a, VIG-1b e VIG-1c)
 
-Entregas das semanas 23 (notificação a partir do atendimento) e 24 (investigação, encerramento, saída para os
-sistemas oficiais, REL de covid-19 e mpox e comunicação policial; seção [Semana 24](#semana-24-vig-1b--int-4a)).
+Entregas das semanas 23 (notificação a partir do atendimento), 24 (investigação, encerramento, saída para os
+sistemas oficiais, REL de covid-19 e mpox e comunicação policial; seção [Semana 24](#semana-24-vig-1b--int-4a)) e 27
+(consolidação e detecção de surto; seção [Semana 27](#semana-27-vig-1c)).
 
 ## Base normativa (conferida em 01/11/2026)
 
@@ -168,7 +169,7 @@ alcance. Na ficha do paciente, quem não pode abrir uma notificação a vê sem 
 | ESAVI | e-SUS Notifica | NT nº 6/2026-CGFAM/DPNI/SVSA/MS |
 | Anomalias congênitas | sem ficha no Sinan: Declaração de Nascido Vivo (bloco VI, campo 41) ou Declaração de Óbito; identificada depois da DNV (até 1 ano de idade), formulário do Anexo 2 à vigilância municipal (à estadual, se fora do município de nascimento) em até 7 dias | NT nº 3/2026-SVSA/MS; NT Conjunta nº 54/2026-DAENT/DEMSP/SVSA |
 | Demais agravos | Sinan Net, versão vigente do Sinan | — |
-| Encerramento oportuno | 60 dias da notificação para os agudos; 180 dias para hepatites virais, leishmaniose tegumentar e visceral; Oropouche em 60 dias | Manual de Normas e Rotinas do Sinan (2ª ed., 2007), item 4.5.3; modelo de informação do e-SUS Sinan |
+| Encerramento oportuno | 60 dias da notificação para os agudos, inclusive a leishmaniose visceral; 180 dias para hepatites virais e leishmaniose tegumentar; Oropouche em 60 dias | Manual de Normas e Rotinas do Sinan (2ª ed., 2007), item 4.5.3, com a errata do GT-Sinan de 01/11/2007 (pp. 29 e 38: leishmaniose visceral em 60 dias); modelo de informação do e-SUS Sinan |
 | REL | resultados de covid-19 e mpox (positivos, negativos e inconclusivos) à RNDS em até 24 h | Anexo V da PRC GM/MS nº 4/2017, arts. 22 a 26 |
 | Violência contra a mulher | casos de **violência interpessoal contra a mulher** comunicados à autoridade policial em até 24 h da constatação, à autoridade de referência definida pela SES; crianças e adolescentes seguem o ECA e idosas o Estatuto da Pessoa Idosa; os arts. 14-D a 14-F foram revogados | Lei nº 10.778/2003, art. 1º, § 4º; Anexo V da PRC 4/2017, arts. 14-A a 14-C (PRT nº 1.077/2021 revogou os arts. 14-D a 14-F e o Anexo 4) |
 | Sigilo da vítima | fora do setor saúde, a identificação só em caráter excepcional, em caso de risco à comunidade ou à vítima, a juízo da autoridade sanitária e com conhecimento prévio da vítima | Lei nº 10.778/2003, art. 3º, parágrafo único |
@@ -190,15 +191,19 @@ dia anterior; vigências sobrepostas são recusadas), com o ato ou acordo que a 
   sistema: Sinan Net até 7 dígitos (NU_NOTIFIC, varchar2(7) no dicionário, atribuído pela unidade); e-SUS Sinan
   com 12 dígitos no formato UFAANNNNNNNN (código IBGE da UF, ano e sequencial, conforme o dicionário de dados da
   notificação); Sivep-Gripe com 12 ou 14 dígitos (o dicionário diz 12; os dados abertos de 2023 em diante têm 14;
-  o 1º dígito é o tipo da ficha, 3 na Srag hospitalizada); Sinan Online até 12 dígitos e e-SUS Notifica de 8 a 15
-  (em geral 12), com validação larga porque o formato não está em documento nacional. O número é sempre o que o
-  sistema oficial devolve: o OmniSaúde nunca o gera.
+  o 1º dígito é o tipo da ficha, 3 na Srag hospitalizada); Sinan Online até 12 dígitos (o formato não está em
+  documento nacional); e-SUS Notifica com 12 dígitos, no formato documentado pelo DATASUS (dicionários da exportação,
+  11/2022, e da API, 12/2022): UF + ano com 2 dígitos + sequencial de 8 (UFAA + 8 desde 23/04/2020; AAUF + 8 nas
+  notificações antigas), e 14 dígitos no ESAVI. Os "00" do modelo UFAA00NNNNNN não são fixos (o sequencial de SP
+  passou de 999.999 por ano). A validação do e-SUS Notifica segue larga (8 a 15 dígitos) porque há fichas sem formato
+  documentado. O número é sempre o que o sistema oficial devolve: o OmniSaúde nunca o gera.
 - **Número repetido**: recusado no mesmo sistema (descartadas não contam). No Sinan Net a chave é número + data
   da notificação + município + agravo do Sinan, então o mesmo NU_NOTIFIC é aceito em outro agravo, data ou
   município. O agravo segue a divisão do Sinan: as violências são uma ficha só; sífilis adquirida, em gestante
-  (campo 12 ou CID) e congênita, tétano acidental e neonatal, toxoplasmose gestacional e congênita, sarampo e
-  rubéola são agravos distintos (sem CID, como na notificação manual, a variante fica desconhecida e casa com
-  qualquer uma do grupo).
+  (campo 12 ou CID) e congênita, tétano acidental e neonatal, toxoplasmose gestacional e congênita são agravos
+  distintos (sem CID, como na notificação manual, a variante fica desconhecida e casa com qualquer uma do grupo).
+  Sarampo e rubéola são o **mesmo** agravo no Sinan Net (ID_AGRAVO B09; o CS_SUSPEIT 1 ou 2 não é campo-chave), como
+  as meningites (G03.9): o mesmo NU_NOTIFIC na mesma data e município é recusado entre os dois (correção da semana 27).
 - Só a vigilância municipal **desfaz** a digitação (com motivo, na linha do tempo); a notificação volta à fila.
 - **Descartada** sai da fila e não recebe nem perde número; o número já informado fica como histórico e não
   impede outra notificação de recebê-lo (ex.: caso reclassificado e notificado de novo).
@@ -328,12 +333,288 @@ de saída) e é conferido pelo simulador. O REL v4 só está no Portal de Servi�
 (`POST /api/clinical/exams/:id/result`) aceita `examKey`, `qualitative`, `collectedAt`, `method` e `labCnes` e
 devolve `notificacoes`.
 
+## Semana 27 (VIG-1c)
+
+Consolidação e detecção de surto: importação e conciliação das exportações oficiais, base consolidada sem dupla
+contagem, diagrama de controle por agravo e território, estágios do plano de contingência, notificação de surto e
+notificação negativa semanal com atesto do responsável. Pronto quando: o DBF do município importa sem duplicar; o
+diagrama bate com a planilha; a unidade silenciosa aparece.
+
+### Base normativa e técnica (conferida em 10/11/2026)
+
+| Tema | Regra | Fonte |
+|---|---|---|
+| Exportação do Sinan Net | DBF dBase III em CP850 (byte 29 = 0x25), um arquivo por tipo: NINDINET (individuais), NNEGANET (negativas), NSURTNET (surtos) e um por agravo com a investigação (ex.: DENGNET). A mesma notificação sai no NINDINET e no DBF do agravo. A exportação é um retrato: excluídos não aparecem, sem marca | caderno e roteiro de exportação do Sinan Net; dicionário de dados v5; tabelas do SinanRelatórios |
+| Sinan Online | DENGON e CHIKON. CLASSI_FIN 5 descartado; dengue 10, 11 (sinais de alarme) e 12 (grave); chikungunya 13; CRITERIO 3 = em investigação; EVOLUCAO 2 óbito pelo agravo, 4 óbito em investigação | dicionário de dados do Sinan Online, dengue e chikungunya (rev. 21/10/2015) |
+| Chave do registro | número + data da notificação + município + agravo (a negativa troca o agravo pelo CNES); no e-SUS Sinan, número + agravo; no e-SUS Notifica, o número | Manual de Normas e Rotinas do Sinan (2ª ed., 2007); dicionários dos sistemas |
+| Duplicidade | NDUPLIC_N = 2 (não contar) não é exportado nem contado; no e-SUS Notifica, "Cancelado" | Manual de Normas e Rotinas do Sinan (2007); dicionário da exportação do e-SUS Notifica |
+| Diagrama de controle | para cada SE, mediana, Q1 (limite inferior) e Q3 (limite superior) da incidência de casos prováveis nos 5 anos anteriores | Plano de Contingência Nacional para Dengue, Chikungunya e Zika (MS, 2025), pp. 22-23 |
+| Outras receitas | 7 anos e QUARTIL.EXC (NT nº 1/2023-CGARB); 10 anos (VigiEPI 2025); média + 1,96 DP com janela de 5 semanas (Diretrizes Nacionais de 2009, Anexo VIII) | documentos citados |
+| Semana do caso | SE de início dos sintomas (SEM_PRI); caso provável = notificado menos descartado | Diretrizes 2009; VigiEPI; Guia de Vigilância em Saúde (6ª ed. rev., 2024) |
+| População | estimativa anual do IBGE publicada no DOU (1º de julho); estimativas da RIPSA/MS no TabNet (popsvs, revistas todo ano, com a série passada refeita); Censo 2022 (V0001) por setor, bairro e distrito | Lei nº 8.443/1992, art. 102, e LC nº 143/2013; Nota Técnica RIPSA 01/2025; IBGE |
+| Plano de contingência | estágios normalidade, mobilização, alerta e situação de epidemia; critérios municipais ligados por "E/OU"; ações por estágio e eixo; desmobilização depois de 4 SE de redução sustentada. O sistema sugere; a vigilância decide e registra | Plano de Contingência Nacional (MS, 2025), Apêndice B e item 7.2.3 (p. 52) |
+| Surto | casos acima do esperado numa área pequena ou numa população institucionalizada. Vai ao módulo de surto do Sinan: agravo inusitado (pela síndrome), doença fora da lista, doença da lista com acordo entre gestores e 10% dos casos notificados individualmente, e DTA. O surto não substitui a notificação individual | Manual de Normas e Rotinas do Sinan (2007), itens 3.1.1 e 5.3.1 e Anexo A; Guia de Vigilância em Saúde (6ª ed. rev., 2024) |
+| Prazo do surto | imediato (24 h) à SMS; com evento de saúde pública (item 22 da lista), também à SES e ao MS | Anexo V da PRC GM/MS nº 4/2017, art. 2º, V e VII, e Anexo 1, item 22 |
+| Notificação negativa | comunicação semanal do responsável pelo estabelecimento de que não houve caso da lista na SE; data = último dia da SE; não cabe em semana com notificação individual, de surto ou agregado (RQ002), e cai quando uma delas é digitada (RQ003) | Anexo V da PRC nº 4/2017, art. 2º, IX; IN SVS nº 2/2005, art. 14; Manual de Normas e Rotinas do Sinan (2007); dicionário da negativa do Sinan Net |
+| Regularidade do Sinan | o município fica irregular com 8 SE consecutivas sem notificação individual, de surto, de epizootia, de tracoma ou negativa; monitoramento mensal | PRC GM/MS nº 6/2017, arts. 454-A a 454-E, na redação da PRT GM/MS nº 1.573/2023 (revogou a PT SVS nº 47/2016) |
+| Meta por unidade | 80% das unidades notificantes informando toda semana (positiva ou negativa) | indicador da vigilância da PFA (Informe PFA, CGVDI, dez/2025; Guia de Vigilância em Saúde); NT SESPA nº 01/2025 |
+
+Sem regra federal: o prazo da negativa (dia e hora), o número de semanas da "unidade silenciosa" e o formato do atesto.
+O padrão segue a NT SESPA nº 01/2025 (segunda-feira até 14h, para a SE anterior) e fica nas configurações da
+instituição (sem tela de edição nesta semana: ver *Pontos de atenção*).
+
+### Importação e conciliação
+
+- **Envio** (zip, DBF ou CSV, até 95 MB; zip até 600 MB descompactado): o tipo de cada arquivo é **detectado pelo
+  conteúdo**, nunca pelo nome: NINDINET, DBF de agravo, NNEGANET, NSURTNET, DENGON, CHIKON, CSV do e-SUS Notifica,
+  CSV do e-SUS Sinan; tabelas do Sinan (MUNICNET, REGIONET...) ficam de fora com aviso.
+- **DBF**: código de página pelo byte 29 (0x25 e 0x02 CP850, 0x01 CP437, 0x24 CP860, CP1252); sem marca (0x00), vence
+  a página que acerta mais letras portuguesas (empate: CP850). A tela mostra a codificação e permite trocar e refazer a
+  prévia. Datas vazias viram nulo; arquivo regravado pelo R (cabeçalho de 26/07/1995) recebe aviso.
+- **CSV**: sem BOM; UTF-8 e, se inválido, Windows-1252 com aviso; separador `;` ou `,`; cabeçalho comparado sem
+  acento e com sinônimos. Arquivo regravado pelo Excel (número em notação científica no número da notificação, CPF ou
+  CNS) é recusado. Colunas de contato (telefone, e-mail, endereço, notificante) são descartadas na leitura.
+- **Prévia**: lê, normaliza (município de 7 dígitos comparado pelos 6 primeiros, ano epidemiológico pelo SEM_NOT e
+  SEM_PRI, nunca pelo NU_ANO), junta por chave dentro do envio (NINDINET + DBF do agravo viram um registro só) e compara
+  com o banco: lidos, novos, alterados, iguais, recusados com o motivo, duplicados no arquivo e ausentes previstos. O
+  mesmo arquivo (SHA-256) já aplicado não cria nada: a resposta aponta a importação anterior. A prévia expira em
+  24 horas (padrão das configurações).
+- **Aplicar**: grava pela chave natural, **campo a campo**: valor preenchido sobrescreve; valor vazio só apaga o campo
+  que o mesmo tipo de arquivo tinha gravado (o NINDINET não apaga a classificação que veio do DBF do agravo). Registro
+  que não veio numa exportação do mesmo sistema, tipo, agravos e período fica **ausente** (nunca apagado) e volta se
+  reaparecer. Liga a unidade pelo CNES e roda a conciliação automática. Importar o mesmo DBF de novo não duplica.
+- **Conciliação** em degraus: (1) número oficial informado na fila de digitação, mesmo agravo do Sinan e data a até 7
+  dias; (2) CNS ou CPF + mesmo agravo + data a até 7 dias; os dois só ligam sozinhos com candidato único dos dois
+  lados; (3) nome normalizado + nascimento + sexo: só sugestão; (4) sem identificação: só nas contagens. "Não é o mesmo
+  caso" fica gravado e não volta como sugestão. Vínculo manual e desvínculo pedem motivo e são auditados. Ao vincular,
+  a tela oferece preencher o número oficial da notificação (mesma regra da fila de digitação).
+- **Listas**: resumo, só no oficial, só no OmniSaúde (notificada ou encerrada, de sistema e período cobertos por
+  importação aplicada, sem vínculo), divergentes (situação, evolução e data de encerramento), sugestões e bairros sem
+  correspondência (com contagem; o apelido novo vai para o bairro do território e vale na próxima consulta).
+- **Sigilo**: registro de grupo sigiloso (aids, HIV, sífilis, violências) sai sem identificação para quem não tem
+  `notificacao.sensivel`; as listas identificadas são auditadas como a exportação CSV.
+
+### Base consolidada
+
+Registros oficiais individuais, não excluídos e não ausentes, mais as notificações do OmniSaúde notificadas ou
+encerradas, não descartadas e **sem vínculo** com registro oficial: o par vinculado conta uma vez, pelo registro
+oficial. A semana é a de início dos sintomas; sem ela, a da notificação (contada à parte, com aviso). Base de casos
+prováveis (situação diferente de descartado), notificados ou confirmados. Território: município pela residência;
+bairro e localidade pelo código ou pelo nome do bairro do registro (com os apelidos) e pelo quarteirão da residência
+da notificação. **Cobertura** do ano: há caso do agravo, uma importação aplicada cobre o ano ou o OmniSaúde já tinha
+notificações; ano sem cobertura fica fora do canal (nulo, diferente de zero).
+
+### Diagrama de controle e receitas
+
+- **Receita por agravo** (tabela `diagram_settings`), escolhida a partir de um modelo: MS 2025 (padrão: QUARTIL.EXC,
+  5 anos, sem janela, incidência de prováveis), NT 1/2023 (7 anos), VigiEPI 2025 (10 anos) e Diretrizes 2009 (média e
+  desvio-padrão amostral, LS = média + 1,96 DP, janela de 5 semanas agrupada, borda circular, ano em análise com todos
+  os notificados). Na NT 1/2023, a janela de 5 semanas fica como opção suavizada (cada ano suavizado antes dos
+  quartis), nunca agrupada.
+- **Funções iguais às do Excel** (MED, QUARTIL.EXC, QUARTIL.INC, MÉDIA, DESVPAD.A e ARRED, com meia unidade para longe
+  do zero), em precisão total; o arredondamento é só da tela. A SE 53 do histórico soma na SE 52; a SE 53 observada é
+  comparada com o canal da SE 52. Com menos de 3 valores numa SE, o QUARTIL.EXC fica indefinido e a SE fica sem canal;
+  com poucos casos na referência, a tela sugere a curva epidêmica.
+- **Anos excluídos** com motivo (decisão da vigilância). O sistema só **sugere** anos epidêmicos pela regra do painel
+  da SES-GO (anos com contagem de SE acima de média + 1 DP igual ou maior que o Q3 das contagens; interpretação
+  documentada).
+- **Congelar**: o canal do ano é gravado com a receita, a fonte e a versão da população (nova versão ativa; a anterior
+  fica inativa). Sem canal congelado, a tela mostra a prévia calculada na hora.
+- **Eixo** epidemiológico (SE 1 a 52/53) ou sazonal (SE 27 a 26 do ano seguinte, cada ponto com o canal do seu ano).
+  As semanas incompletas (2 por padrão, contando a em curso) aparecem tracejadas.
+- **CSV** com `;`, vírgula decimal e BOM: uma coluna por ano de referência, os limites, o observado e, no cabeçalho, as
+  fórmulas do Excel equivalentes, para refazer a conta na planilha.
+- O canal **bate com os exemplos publicados**: VigiEPI (dengue em Londrina, 26 SE: igualdade exata partindo dos casos
+  e da população RIPSA de cada ano; QUARTIL.INC não acerta), VigiEPI meningocócica mensal, Diretrizes 2009 Anexo VIII
+  (média + 1 DP: o anexo usa 1 DP, não 1,96; a SE 2 publicada não se reproduz por nenhuma regra) e o exemplo da
+  Microsoft do QUARTIL.EXC. A Tabela 1 da NT 1/2023 só se reproduz com QUARTIL.INC e o ano em análise na referência
+  (exemplo inconsistente da própria NT, com os rótulos dos limites trocados).
+
+### População
+
+- Tabela `population_estimates`: ano, nível (município, localidade, bairro), território, população, fonte (IBGE/DOU,
+  RIPSA, Censo 2022, informada) e versão. A tela aceita colar "ano;população".
+- A incidência de cada ano usa a população **daquele ano**, da **mesma fonte e versão** em todos os anos, inclusive o
+  ano em análise (o exemplo do VigiEPI mistura RIPSA na série e Censo 2022 no ano observado, o que infla a curva em
+  cerca de 3,8%). Ano de referência sem a fonte escolhida sai do canal com aviso; no ano em análise, vale o último ano
+  da mesma série, marcado "repetida".
+- Bairro e localidade sem estimativa anual: estimativa do município no ano × fração do território no Censo 2022,
+  marcada "estimada" (inferência nossa, a validar com a vigilância).
+- A RIPSA refaz a série toda a cada ano: o canal congelado guarda a versão usada, e a tela avisa quando a população
+  mudou depois do congelamento.
+
+### Plano de contingência
+
+- **Plano** (tabela `contingency_plans`) criado a partir do modelo do MS 2025 ou copiado de outro, editável só em
+  rascunho e posto em vigor com data (o vigente anterior do mesmo escopo é arquivado). Modelo: estágios normalidade
+  (preparação), mobilização, alerta e situação de epidemia; dengue, chikungunya e Zika; critérios do Apêndice B com a
+  fonte e a página; ações por estágio e eixo (gestão, vigilância, laboratório, vetores, APS, atenção especializada,
+  comunicação).
+- **Critérios automáticos** sobre o canal e a base consolidada: incidência acima da mediana por 4 SE seguidas
+  (mobilização; as semanas acima do limite superior também contam, para a sugestão não cair quando a curva passa do
+  limite antes de completar 4 SE: interpretação), acima do limite superior por 4 SE (alerta), percentual de graves e
+  com sinais de alarme (> 1% e > 2%), letalidade (> 0,05% e > 0,07%; > 3% e > 5% entre os graves) e óbitos em
+  investigação (> 1% e > 2%). Só semanas completas contam.
+- **Critérios manuais** (nowcasting do InfoDengue, positividade do RT-PCR e do teste ZDC, sorotipo, atendimentos): a
+  vigilância responde a cada semana; sem resposta, o critério fica "não avaliado", nunca "atendido".
+- **Sugestão**: combinação "qualquer critério" (o "E/OU" do plano; o estágio de maior ordem com algum critério
+  atendido) ou "dois ou mais" (regra da SES-MG). Descer de estágio só é sugerido depois de 4 SE completas seguidas com
+  a sugestão abaixo do estágio em vigor.
+- **Acionamento** (tabela `contingency_activations`): estágio, justificativa (20 caracteres ou mais), ato, retrato dos
+  indicadores; fecha o acionamento aberto na véspera e cria a lista de ações do estágio e dos anteriores ("manter e
+  intensificar"), com situação, responsável e nota. Sem acionamento, vale a normalidade.
+
+### Notificação de surto
+
+- **Ficha** (tabela `outbreaks`): tipo 3 da Ficha de Notificação do Sinan Net, sem paciente: data, unidade, agravo,
+  síndrome ou CID, primeiros sintomas do 1º caso, casos suspeitos ou expostos, local inicial (1 a 11) e local de
+  ocorrência (campos 17 a 33); investigação (data, modo de transmissão, veículo, observações); bloco da ficha de surto
+  de DTA (campos 27 a 60); encerramento com a delimitação; número do Sinan (NU_NOTIFIC, até 7 dígitos). Numeração
+  interna `AAAA/NNNN`. Cada etapa é validada (manual 5.3.1).
+- **Planilha de acompanhamento** (uma linha por caso): de uma notificação, de um registro oficial ou digitada.
+  Caso de agravo da lista sem notificação individual gera aviso (o surto não substitui a notificação); na categoria
+  "doença da lista", aviso quando as individuais não chegam a 10% dos casos.
+- **Prazo**: 24 h do conhecimento para a SMS (cumprido no próprio registro quando a vigilância municipal registra) e,
+  com evento de saúde pública, para a SES e o MS (comunicação registrada). Linha do tempo com cada evento.
+- **Espelho** com as variáveis do dicionário (TP_NOT = 3, ID_AGRAVO, DT_NOTIFIC, ID_UNIDADE, DT_SIN_PRI, QT_TOTAL_C,
+  CS_LOCAL...) e a planilha como vai ao Sinan, para a digitação.
+- **Sugestões** (o sistema sugere, a vigilância confirma ou dispensa com motivo): dois casos do mesmo agravo no mesmo
+  quarteirão ou no mesmo bairro em 7 dias (fora dengue, chikungunya e Zika, que aparecem pelo excesso no diagrama do
+  bairro ou da localidade); varicela atendida em hospital (1 caso); síndrome gripal por covid-19 na mesma unidade
+  (3 casos em 7 dias); evento inusitado (primeiro caso do agravo depois de 365 dias sem casos, ou nunca visto). As
+  regras padrão ficam nas configurações da instituição. Violências, agravos do trabalho e condições crônicas ou congênitas nunca viram sugestão.
+  A dispensada volta quando aparece caso conhecido depois dela.
+- O núcleo do estabelecimento só vê e cria surtos das unidades em que está lotado.
+
+### Notificação negativa e unidade silenciosa
+
+- **Unidades notificantes** (tabela `notifying_units`): períodos em que a unidade é notificante, o denominador da
+  negativa. A migração abriu um período desde 01/01/2026 para cada unidade ativa, exceto farmácia central,
+  almoxarifado e vigilância em saúde; unidade nova aparece "sem configuração" até a vigilância abrir o período.
+- **Responsáveis** (titular e substituto, tabela `notifying_unit_responsibles`): designados pela vigilância entre os
+  lotados na unidade. A palavra "atesto" não está nas normas: é o bloco "Notificante" da ficha (nome, função e
+  assinatura), que o Sinan Net não guarda. No OmniSaúde, o atesto é o registro identificado do responsável logado.
+- **Atesto** (tabela `negative_reports`, tela *Notificação negativa*): só semana terminada e dentro das últimas 8;
+  texto da declaração à vista, com a citação do art. 2º, IX, do Anexo V da PRC nº 4/2017; grava nome, função, CBO,
+  data e hora e se foi **fora do prazo** (padrão: segunda-feira 14h da semana seguinte). Recusado se a unidade tem na
+  semana notificação, surto ou registro oficial (ou rascunho a confirmar); cai sozinho (cancelado, com a causa) quando
+  um deles aparece depois (as regras RQ002 e RQ003 do Sinan). A vigilância atesta em nome da unidade com motivo e anula
+  com motivo. Espelho em PDF.
+- **Grade** unidade × semana: positiva, negativa, negativa atrasada, sem informação, aguardando (antes do prazo), em
+  curso e fora do período, com a fonte de cada célula (notificações, surtos, registros oficiais, atesto, negativa do
+  Sinan). Cartões: **unidades silenciosas** (2 semanas fechadas seguidas sem informação, padrão), **só negativas**
+  (12 semanas só com negativa: pede busca ativa, como manda o manual do Sinan), percentual por semana com a meta de 80%
+  e **regularidade do município** (8 SE seguidas sem nenhuma informação: PRC nº 6/2017, art. 454-E). Diferenças com o
+  Sinan Net: atestado e não digitado (sem NNEGANET) e digitado sem atesto.
+- A importação casa o atesto com a negativa do NNEGANET (mesma unidade pelo CNES e mesma SE). A tarefa `vigilancia`
+  (a cada 5 minutos) reconcilia os atestos e expira as prévias.
+
+### Perfis (semana 27)
+
+| Permissão | Quem |
+|---|---|
+| `vigilancia.importar` (importar e conciliar; listas identificadas) | vigilância municipal |
+| `vigilancia.consolidacao` (receitas, população, congelar canal, unidades notificantes, responsáveis, anular atesto, atestar em nome da unidade) | vigilância municipal |
+| `vigilancia.contingencia` (critérios manuais, plano, acionamento, ações) | vigilância municipal |
+| `vigilancia.surto` (sugestões e notificações de surto) | vigilância municipal; núcleo do estabelecimento, só das suas unidades |
+| `notificacao.negativa` (tela do atesto; a ação exige designação) | todo papel com `notificacao.registrar`, o gestor e as vigilâncias |
+| leitura do diagrama, da contingência e da grade | `vigilancia.resumo` (gestor) ou `vigilancia.painel` |
+
+### Telas (semana 27)
+
+- **Consolidação e surtos** (`/vigilancia/consolidacao`), com abas por permissão: *Importação* (envio, prévia,
+  codificação, aplicar, descartar, histórico), *Conciliação* (resumo, listas, vincular, rejeitar, apelidos de bairro),
+  *Diagrama de controle* (agravo, território, ano, eixo; gráfico com a faixa do canal, a mediana, o limite superior e a
+  curva observada; tabela com os mesmos números; receita, população, anos epidêmicos, congelar e CSV),
+  *Contingência* (estágio em vigor, sugestão com cada critério, respostas da semana, acionamento, plano e lista de
+  ações), *Surtos* (sugestões, lista, ficha, planilha, espelho) e *Notificação negativa* (grade, cartões e configuração
+  das unidades notificantes e dos responsáveis).
+- **Notificação negativa** (`/notificacao-negativa`): as unidades do responsável, as semanas a atestar com o texto à
+  vista, o botão *Atestar*, o histórico e o PDF.
+
+### API (semana 27)
+
+`/api/vigilancia/...`: `importacoes` (POST com o arquivo cru e `?nome=&de=&ate=&codificacao=`; GET),
+`importacoes/:id` (GET), `.../aplicar`, `.../descartar`; `conciliacao/resumo`, `/so-oficial`, `/so-omnisaude`,
+`/divergentes`, `/sugestoes`, `/bairros`, `/vincular`, `/desvincular`, `/rejeitar`, `/bairros/apelido`; `populacao`
+(GET, PUT), `populacao/:id` (DELETE); `diagrama`, `diagrama.csv`, `diagrama/congelar`, `diagrama/configuracao/:grupo`
+(GET, PUT), `diagrama/anos-epidemicos`; `contingencia`, `contingencia/planos` (GET, POST), `contingencia/planos/:id`
+(GET, PUT), `.../vigencia`, `contingencia/respostas`, `contingencia/acionar`, `contingencia/acoes/:id` (PATCH);
+`surtos` (GET, POST), `surtos/sugestoes`, `surtos/sugestoes/dispensar`, `surtos/:id` (GET, PATCH), `.../casos` (POST),
+`.../casos/:caseId` (DELETE), `.../comunicacoes`, `.../encerrar`, `.../descartar`, `.../numero-oficial`,
+`.../espelho`; `negativas` (POST), `negativas/minhas`, `negativas/grade?semanas=&ate=`, `negativas/:id/espelho.pdf`,
+`negativas/:id/anular`; `unidades-notificantes` (GET, POST), `unidades-notificantes/:unitId/encerrar`,
+`.../responsaveis`, `.../lotados?busca=`, `responsaveis/:id/revogar`.
+
+### Demonstração
+
+A carga de desenvolvimento (`node packages/database/dist/cli.js seed`, que também cria a malha da sede) semeia a
+semana 27 com datas relativas ao dia em que roda (os testes da API não a carregam). Como o resto da carga, só roda
+num tenant de demonstração vazio: o já populado é pulado inteiro (para ver a semana 27, recrie o banco do tenant
+`demo`). Tudo é sintético: nenhum registro corresponde a pessoa real.
+
+- **População**: RIPSA de São Paulo (355030, o IBGE do tenant de demonstração) de 2016 a 2025, consultada no TabNet
+  (popsvs, versão 2000-2025); Censo 2022 do município (11.451.999, SIDRA, tabela 4709); Censo 2022 **sintético** da
+  localidade Sede e do bairro Centro. O ano em análise usa a de 2025, marcada "repetida".
+- **Importação APLICADA** "Demonstração (dados sintéticos)": DENGON de 7 anos (o penúltimo epidêmico, 2024 quando o
+  ano em análise é 2026), CHIKON menor e NNEGANET com as negativas digitadas. No ano em análise, a dengue fica acima da
+  mediana e abaixo do limite superior nas 6 últimas semanas completas: a contingência sugere **mobilização**. Excluir
+  2024 da referência (na receita, com o motivo) põe a curva acima do limite superior: a sugestão sobe para **alerta**.
+- **Receita** MS 2025 para a dengue com a RIPSA; **plano** modelo do MS em vigor desde o início do ano epidemiológico,
+  com acionamento **normalidade** e a lista de ações; dois critérios manuais respondidos na semana de referência.
+- **Notificações de dengue**: duas casadas com o registro oficial pelo número (Maria, com divergência de situação,
+  evolução e encerramento; José, sem divergência), duas só no OmniSaúde (Carlos e Juliana) e uma com **sugestão de
+  vínculo** por nome, nascimento e sexo (Thiago). Registros com bairros "JD DAS FLORES" e "VL NOVA" aparecem em
+  *bairros sem correspondência* para virar apelido do Centro.
+- **Surto de DTA** aberto numa escola da malha (14 expostos, 6 linhas na planilha, investigação e bloco de DTA) e duas
+  **coqueluches** no bairro Centro na mesma semana: sugestão de surto pelo bairro e de evento inusitado.
+- **Negativa**: unidades notificantes, responsáveis (UBS Centro: Bruno, titular, e Íris, substituta; UPA 24h Norte:
+  Bruno; Hospital Municipal São Lucas: Nelson; Policlínica: Fábio; CEO Sorriso: Diego) e atestos das últimas 16
+  semanas, um fora do prazo. A **UBS Jardim das Flores**, sem responsável, fica sem informação nas 3 últimas semanas
+  fechadas: a unidade silenciosa. O CEO só manda negativas. A Policlínica não atestou a última semana (Fábio pode
+  atestar na tela) e tem uma negativa só digitada no Sinan.
+
+Senha `OmniSaude2026`, instituição `demo`: vigilância epidemiológica 100.000.014-14; NIR (Policlínica) 100.000.006-04;
+núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80; gestora 100.000.009-57.
+
+### Como foi verificado
+
+- Regras compartilhadas (`packages/shared/test/vigilancia-*.test.ts`): tabela de agravos do Sinan, chaves naturais,
+  funções do Excel e exemplos publicados do diagrama, avaliação do plano, regras de surto e grade da negativa.
+- API contra PostgreSQL real (`apps/api/test/vigilancia-importacao.test.ts`, `-diagrama`, `-contingencia`, `-surto`,
+  `-negativa` e `migracao-0030.test.ts`).
+- Demonstração: `packages/database/test/seed-consolidacao.test.ts` refaz a sugestão do plano só com as funções
+  compartilhadas em seis datas de 2026 (mobilização; alerta com 2024 excluído) e
+  `apps/api/test/demo-consolidacao.test.ts` semeia a demonstração num dia fixo e confere pela API a sugestão de
+  mobilização, o diagrama, a unidade silenciosa, o "só negativas", o surto de DTA, a sugestão de surto e as listas da
+  conciliação; rodar a carga duas vezes não duplica (o tenant já populado é pulado).
+
+### Pontos de atenção (semana 27)
+
+- **DBC do DATASUS** (compressão implode) não é lido: as bases públicas são anonimizadas e não servem para conciliar.
+  Vale a exportação do Sinan Net (DBF) e do Sinan Online.
+- **Sivep-Gripe e ESAVI** não são importados nesta semana.
+- **Nowcasting** não é calculado: os critérios de nowcasting ficam manuais (InfoDengue).
+- **Sinais de surto por atendimento** (síndromes nos atendimentos sem notificação) ficam fora: as sugestões olham só
+  as notificações e o diagrama.
+- **Consórcio com vários municípios**: o nível município usa o IBGE do tenant.
+- **Virada do ano**: nas primeiras semanas do ano epidemiológico, o critério de 4 SE seguidas só enxerga as semanas
+  do ano novo, então a sugestão automática fica na normalidade até haver 4 SE completas.
+- **População de bairro** pela proporção do Censo 2022 é inferência a validar; o Censo por bairro só existe para
+  bairro legalmente instituído (no Tocantins, a soma por setor censitário).
+- **Unidade silenciosa** (2 semanas) e **só negativas** (12 semanas) são escolhas locais: não há definição federal.
+  Com 12 semanas, o cartão "só negativas" precisa de uma grade com mais de 12 colunas (a semana em curso não conta).
+- **Ocupação de leitos** não é critério de estágio no plano do MS (só aparece nas ações).
+- O código das síndromes do surto vem de fonte secundária: conferir no Sinan Net antes de digitar.
+- As configurações novas (prazo e semanas da negativa, semanas incompletas, expiração da prévia, regras de surto)
+  ainda não têm tela nem rota de edição: valem os padrões.
+
 ## Pendências e limites
 
 - **Acordo com a SES**: quem digita em cada sistema e o destino da caxumba (marcada "a definir"); contas dos
   digitadores em cada sistema oficial.
-- **Números oficiais**: os formatos do Sinan Online e do e-SUS Notifica não estão em documento nacional; a
-  validação é larga e deve ser ajustada com os primeiros números reais.
+- **Números oficiais**: o formato do Sinan Online não está em documento nacional; o do e-SUS Notifica está (DATASUS),
+  mas a validação segue larga porque há fichas sem formato documentado. Ajustar com os primeiros números reais.
 - **Lesão autoprovocada fora da comunicação policial**: interpretação a validar com a SES ou a assessoria jurídica.
 - **REL**: credenciamento na RNDS e homologação (o REL v4 só está no Portal de Serviços); confirmar se a rede faz
   testes de covid-19 e mpox e com quais métodos (o catálogo traz os LOINC conferidos no pacote público).

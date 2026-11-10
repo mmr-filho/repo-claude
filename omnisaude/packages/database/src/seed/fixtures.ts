@@ -1,4 +1,4 @@
-import { cnsFromBase, completeCpf, gtinCheckDigit } from '@omnisaude/shared';
+import { cnsFromBase, completeCpf, deslocarSemana, gtinCheckDigit, semanaEpidemiologica, semanasNoAno } from '@omnisaude/shared';
 
 /**
  * Dados fictícios de demonstração. CNES iniciados por 9, CPFs e CNS gerados com dígitos válidos
@@ -656,3 +656,239 @@ export const VACCINES = [
   { code: 'VAC033', vaccineCode: '33', description: 'Vacina influenza trivalente', manufacturer: 'INSTITUTO BUTANTAN', unit: 'DS' },
   { code: 'VAC087', vaccineCode: '87', description: 'Vacina covid-19 RNAm (Comirnaty)', manufacturer: 'PFIZER', unit: 'DS' },
 ] as const;
+
+// ───────────────────────── Semana 27 (VIG-1c): consolidação, diagrama, contingência, surto e negativa ─────────────────────────
+
+/**
+ * População residente do município do tenant de demonstração (São Paulo, IBGE 355030): estimativas da RIPSA/MS do
+ * "Estudo de Estimativas Populacionais por Município, Idade e Sexo 2000-2025" (TabNet do DATASUS, popsvs), consultadas
+ * em 10/11/2026. O ano em análise sem estimativa usa a do último ano da mesma série (o diagrama marca "repetida").
+ */
+export const POPULACAO_RIPSA_DEMO = {
+  versao: '2000-2025',
+  nota: 'TabNet/DATASUS, popsvs: Estudo de Estimativas Populacionais por Município, Idade e Sexo 2000-2025 (São Paulo, 355030), consulta de 10/11/2026',
+  anos: {
+    2016: 11_980_837,
+    2017: 11_999_421,
+    2018: 12_010_314,
+    2019: 12_015_228,
+    2020: 12_012_528,
+    2021: 11_986_673,
+    2022: 11_950_472,
+    2023: 11_930_850,
+    2024: 11_895_578,
+    2025: 11_904_961,
+  } as Record<number, number>,
+};
+
+/** Censo 2022 do município (IBGE, SIDRA) e, sintéticos, os da localidade e do bairro da malha de demonstração. */
+export const CENSO_2022_DEMO = {
+  municipio: 11_451_999,
+  notaMunicipio: 'IBGE, Censo 2022, população residente (SIDRA, tabela 4709), consulta de 10/11/2026',
+  localidade: 62_400,
+  bairro: 18_700,
+  notaSintetica: 'Valor sintético da demonstração: troque pela soma do V0001 dos setores censitários do território (Censo 2022)',
+};
+
+/** Nome da importação sintética (o mesmo arquivo não é aplicado duas vezes). */
+export const IMPORTACAO_DEMO = 'Demonstração (dados sintéticos)';
+
+/** Agravos da importação sintética (DENGON e CHIKON do Sinan Online). */
+export type GrupoDemo = 'dengue' | 'chikungunya';
+
+export interface SerieDemo {
+  grupo: GrupoDemo;
+  ano: number;
+  /** Casos prováveis por SE de início dos sintomas (índice 0 = SE 1 … 52 = SE 53; 0 fora do ano e no futuro). */
+  provaveis: number[];
+  /** Casos descartados por SE (ficam fora da base de prováveis). */
+  descartados: number[];
+}
+
+export interface SemanasDemo {
+  /** Semana em curso no fuso da instituição (AAAASS). */
+  atual: string;
+  /** Última semana completa: as `semanasIncompletas` mais recentes, contando a em curso, ficam de fora. */
+  ultimaCompleta: string;
+  /** Ano epidemiológico em análise: o da última semana completa (o mesmo da contingência). */
+  anoAnalise: number;
+  /** Subida da dengue: as 6 semanas que terminam na última completa. */
+  subida: string[];
+}
+
+/** Curva sazonal da dengue no Sudeste: pico na SE 14. */
+const sazonal = (s: number) => Math.exp(-((s - 14) ** 2) / 98);
+/** Casos prováveis de dengue numa SE de ano típico (o centro do canal da demonstração). */
+export const baseDengueDemo = (s: number) => Math.round(4 + 20 * sazonal(s));
+const baseChikDemo = (s: number) => Math.round(1 + 6 * sazonal(s));
+/** Anos de histórico antes do ano em análise (7: cobre as receitas de 5 e de 7 anos). */
+export const ANOS_HISTORICO_DEMO = 7;
+/** Fator de cada ano de referência, pelo recuo em anos. O recuo 2 (2024, quando o ano em análise é 2026) é epidêmico. */
+const FATOR_DENGUE: Record<number, number> = { 7: 1.1, 6: 0.7, 5: 0.6, 4: 0.8, 3: 1, 1: 1.25 };
+const FATOR_CHIK: Record<number, number> = { 7: 0.4, 6: 0.3, 5: 0.5, 4: 1, 3: 1.5, 2: 2, 1: 0.8 };
+
+/** Semanas da demonstração no instante `agora`. */
+export function semanasDemo(agora: Date, timeZone: string, semanasIncompletas = 2): SemanasDemo {
+  const atual = semanaEpidemiologica(agora, timeZone).codigo;
+  const ultimaCompleta = deslocarSemana(atual, -Math.max(1, Math.trunc(semanasIncompletas)));
+  return { atual, ultimaCompleta, anoAnalise: Number(ultimaCompleta.slice(0, 4)), subida: Array.from({ length: 6 }, (_, i) => deslocarSemana(ultimaCompleta, i - 5)) };
+}
+
+/**
+ * Casos sintéticos por SE de início dos sintomas, já consolidados (registro oficial ou notificação sem vínculo). Nos
+ * anos de referência: um ano típico (fator 1), anos menores e maiores e um ano epidêmico (2,5 a 8 vezes o típico). No
+ * ano em análise: abaixo do centro até a subida; nas 6 últimas semanas completas, acima da mediana e abaixo do limite
+ * superior (sugestão de MOBILIZAÇÃO no modelo do MS); a semana anterior e a em curso, incompletas. Chikungunya menor e
+ * sem casos nas 10 últimas semanas. Tudo relativo à semana em curso: a demonstração continua coerente em outra data.
+ */
+export function seriesDemo(semanas: SemanasDemo): SerieDemo[] {
+  const { atual, anoAnalise, subida } = semanas;
+  const anoAtual = Number(atual.slice(0, 4));
+  const anterior = deslocarSemana(atual, -1);
+  const semChik = deslocarSemana(atual, -10);
+  const out: SerieDemo[] = [];
+  for (let ano = anoAnalise - ANOS_HISTORICO_DEMO; ano <= anoAtual; ano++) {
+    const recuo = anoAnalise - ano;
+    const dengue = Array<number>(53).fill(0);
+    const chik = Array<number>(53).fill(0);
+    for (let s = 1; s <= semanasNoAno(ano); s++) {
+      const codigo = `${ano}${String(s).padStart(2, '0')}`;
+      const b = baseDengueDemo(s);
+      const bc = baseChikDemo(s);
+      if (recuo > 0) {
+        dengue[s - 1] = recuo === 2 ? Math.round(b * (2.5 + 5.5 * sazonal(s))) : Math.round(b * FATOR_DENGUE[recuo]!);
+        chik[s - 1] = Math.round(bc * FATOR_CHIK[recuo]!);
+        continue;
+      }
+      if (codigo > atual) continue;
+      dengue[s - 1] = codigo === atual ? Math.round(b / 2) : codigo === anterior ? b + 1 : subida.includes(codigo) ? b + Math.max(2, Math.round(0.4 * b)) : Math.round(0.75 * b);
+      chik[s - 1] = codigo >= semChik ? 0 : Math.round(0.6 * bc);
+    }
+    out.push({ grupo: 'dengue', ano, provaveis: dengue, descartados: dengue.map((c) => Math.round(c / 4)) });
+    out.push({ grupo: 'chikungunya', ano, provaveis: chik, descartados: chik.map((c) => Math.round(c * 0.3)) });
+  }
+  return out;
+}
+
+/** Como a notificação da demonstração aparece na conciliação com a importação sintética. */
+export type VinculoDemo = 'CASADA' | 'CASADA_DIVERGENTE' | 'SO_OMNISAUDE' | 'SUGESTAO' | null;
+
+/**
+ * Notificações da demonstração, em semanas relativas à em curso (−1 = a anterior) e dias da semana (0 = domingo).
+ * Dengue: duas casadas com o registro oficial pelo número (uma com divergência), duas só no OmniSaúde e uma com
+ * sugestão de vínculo por nome, nascimento e sexo. Coqueluche: duas no mesmo bairro em 7 dias (sugestão de surto).
+ */
+export const NOTIFICACOES_DEMO: {
+  chave: string;
+  paciente: string;
+  grupo: 'dengue' | 'coqueluche';
+  unidade: UnitKey;
+  notificador: string;
+  semana: number;
+  sintomas: number;
+  conhecimento: number;
+  vinculo: VinculoDemo;
+}[] = [
+  { chave: 'dengue-maria', paciente: 'maria', grupo: 'dengue', unidade: 'ubs', notificador: 'medica', semana: -3, sintomas: 1, conhecimento: 3, vinculo: 'CASADA_DIVERGENTE' },
+  { chave: 'dengue-jose', paciente: 'jose', grupo: 'dengue', unidade: 'upa', notificador: 'medica', semana: -4, sintomas: 2, conhecimento: 4, vinculo: 'CASADA' },
+  { chave: 'dengue-carlos', paciente: 'carlos', grupo: 'dengue', unidade: 'ubs', notificador: 'enfermeiro', semana: -2, sintomas: 1, conhecimento: 2, vinculo: 'SO_OMNISAUDE' },
+  { chave: 'dengue-juliana', paciente: 'juliana', grupo: 'dengue', unidade: 'upa', notificador: 'medica', semana: -1, sintomas: 2, conhecimento: 4, vinculo: 'SO_OMNISAUDE' },
+  { chave: 'dengue-thiago', paciente: 'thiago', grupo: 'dengue', unidade: 'upa', notificador: 'enfermeiro', semana: -5, sintomas: 3, conhecimento: 5, vinculo: 'SUGESTAO' },
+  { chave: 'coqueluche-pedro', paciente: 'pedro', grupo: 'coqueluche', unidade: 'ubs', notificador: 'medica', semana: -1, sintomas: 1, conhecimento: 3, vinculo: null },
+  { chave: 'coqueluche-antonia', paciente: 'antonia', grupo: 'coqueluche', unidade: 'ubs', notificador: 'medica', semana: -1, sintomas: 3, conhecimento: 5, vinculo: null },
+];
+
+/** Quem atesta a notificação negativa de cada unidade. A UBS Jardim das Flores fica sem responsável (e silenciosa). */
+export const RESPONSAVEIS_NEGATIVA_DEMO: { unidade: UnitKey; pessoa: string; tipo: 'TITULAR' | 'SUBSTITUTO' }[] = [
+  { unidade: 'ubs', pessoa: 'enfermeiro', tipo: 'TITULAR' },
+  { unidade: 'ubs', pessoa: 'gestora', tipo: 'SUBSTITUTO' },
+  { unidade: 'upa', pessoa: 'enfermeiro', tipo: 'TITULAR' },
+  { unidade: 'hosp', pessoa: 'nucleo', tipo: 'TITULAR' },
+  { unidade: 'poli', pessoa: 'nir', tipo: 'TITULAR' },
+  { unidade: 'ceo', pessoa: 'dentista', tipo: 'TITULAR' },
+];
+
+/**
+ * Grade da negativa nas 16 últimas semanas fechadas (k = 1 é a anterior à em curso). `semRegistro`: semanas em que a
+ * unidade não recebe registro oficial sintético (para a negativa aparecer); `todas` = nunca. `exigeRegistro`: semanas em
+ * que a unidade precisa de pelo menos um. Sem notificação, surto nem registro, a unidade com responsável atesta, menos
+ * em `semAtesto`. A UBS Jardim das Flores fica sem informação nas 3 últimas semanas fechadas: a unidade silenciosa.
+ */
+export const NEGATIVA_DEMO = {
+  semanas: 16,
+  semRegistro: {
+    ubs: [5, 8, 11, 14],
+    ubs2: [1, 2, 3],
+    hosp: [1, 3, 5, 7, 8, 10, 12, 14, 16],
+    poli: [1, 2, 3, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16],
+    ceo: 'todas',
+  } as Partial<Record<UnitKey, number[] | 'todas'>>,
+  exigeRegistro: { upa: 'todas', ubs2: [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] } as Partial<Record<UnitKey, number[] | 'todas'>>,
+  /** Semanas sem atesto: a Policlínica não atestou a última e só digitou no Sinan Net a da semana 6. */
+  semAtesto: { poli: [1, 6] } as Partial<Record<UnitKey, number[]>>,
+  /** Negativa digitada no Sinan Net (NNEGANET) sem atesto no OmniSaúde. */
+  soNoSinan: { poli: [6] } as Partial<Record<UnitKey, number[]>>,
+  /** Atesto depois do prazo. */
+  atrasado: { hosp: [7] } as Partial<Record<UnitKey, number[]>>,
+  /** Atesto feito pela substituta (Íris, na UBS Centro). */
+  substituto: { ubs: [8] } as Partial<Record<UnitKey, number[]>>,
+  /** Semanas atestadas que ainda não foram digitadas no Sinan Net (sem NNEGANET). */
+  naoDigitadas: [1],
+};
+
+/**
+ * Surto de doença transmitida por alimento numa escola da malha de demonstração (DTA, Ficha de Investigação de Surto
+ * de DTA): aberto, investigado, com a planilha de acompanhamento preenchida à mão (sem notificação individual: DTA não
+ * é agravo individual da lista). Dias da semana anterior à em curso (0 = domingo).
+ */
+export const SURTO_DEMO = {
+  cid: 'A059',
+  casos: 14,
+  localInicial: '3',
+  endereco: 'Rua das Flores, 50',
+  referencia: 'Escola municipal (imóvel especial do território)',
+  /** Posição da escola em DEMO_PROPERTIES. */
+  lat: -11.73055,
+  lng: -49.0683,
+  diaSintomas: 1,
+  diaConhecimento: 2,
+  diaInvestigacao: 3,
+  observacoes: 'Merenda de segunda-feira (arroz, frango desfiado e salada de maionese). Vômitos e diarreia de 2 a 8 horas depois. Amostras da salada enviadas ao laboratório; aguardando o resultado.',
+  dta: {
+    NU_ENTR: 38,
+    NU_ENT_DOE: 14,
+    NU_TOT: 14,
+    NU_TOT_HOS: 2,
+    NU_OBITO: 0,
+    DS_ALICAUS: 'Salada de maionese (suspeita)',
+    TP_PRO_PRE: 'Cozinha da escola',
+    ST_ALIMEN: 'Refeitório da escola',
+  },
+  planilha: [
+    { iniciais: 'A.S.L.', sexo: 'F', idade: '9A', dia: 1, hospitalizado: false },
+    { iniciais: 'B.R.O.', sexo: 'M', idade: '10A', dia: 1, hospitalizado: true },
+    { iniciais: 'C.M.P.', sexo: 'F', idade: '8A', dia: 1, hospitalizado: false },
+    { iniciais: 'D.F.A.', sexo: 'M', idade: '9A', dia: 2, hospitalizado: false },
+    { iniciais: 'E.C.N.', sexo: 'F', idade: '34A', dia: 1, hospitalizado: false },
+    { iniciais: 'F.G.T.', sexo: 'M', idade: '11A', dia: 2, hospitalizado: true },
+  ],
+} as const;
+
+/** Nomes sintéticos dos pacientes dos registros oficiais da demonstração (nenhuma pessoa real). */
+export const NOMES_SINTETICOS = {
+  femininos: ['Ana', 'Bruna', 'Camila', 'Débora', 'Eliane', 'Flávia', 'Gisele', 'Helena', 'Isabela', 'Jéssica', 'Larissa', 'Mirela', 'Natália', 'Olívia', 'Priscila', 'Renata'],
+  masculinos: ['André', 'Bernardo', 'César', 'Davi', 'Emerson', 'Felipe', 'Gustavo', 'Henrique', 'Igor', 'Jonas', 'Leandro', 'Murilo', 'Nilton', 'Otávio', 'Rodrigo', 'Sérgio'],
+  sobrenomes: ['Abreu', 'Bastos', 'Correia', 'Duarte', 'Esteves', 'Fontes', 'Guimarães', 'Leal', 'Macedo', 'Neves', 'Paiva', 'Quintana', 'Rocha', 'Saraiva', 'Tavares', 'Valadares'],
+  /** Bairros dos registros: os três primeiros casam com o bairro Centro da malha (nome e apelidos); os abreviados pedem apelido. */
+  bairros: ['CENTRO', 'VILA NOVA', 'JARDIM DAS FLORES', 'JD DAS FLORES', 'VL NOVA', 'PARQUE INDUSTRIAL', 'SAO JOSE', 'BELA VISTA', 'JARDIM AMERICA', 'VILA SANTA RITA'],
+};
+
+/**
+ * Casos graves e com sinais de alarme de dengue no ano em análise (até a última semana completa): menos de 1% dos
+ * prováveis, para a sugestão não subir para ALERTA pelo percentual de graves (modelo do MS, Apêndice B).
+ */
+export function gravesDemo(provaveis: number): { graves: number; sinaisAlarme: number } {
+  const total = Math.floor(Math.max(0, provaveis) * 0.008);
+  const graves = Math.floor(total / 3);
+  return { graves, sinaisAlarme: total - graves };
+}

@@ -29,6 +29,8 @@ const DESCRIPTIONS: Record<string, string> = {
   '/acs': 'Território do agente, visitas domiciliares e cadastros em campo, também sem internet.',
   '/vacinas': 'Sala de vacina, cartão, aprazamento, faltosos e estoque por lote.',
   '/vigilancia': 'Notificação compulsória com prazo de 24 h ou 7 dias, ciência e repasse da vigilância, lista vigente e de-para de códigos.',
+  '/vigilancia/consolidacao': 'Exportações do Sinan e do e-SUS conciliadas com as notificações, diagrama de controle, contingência, surtos e notificação negativa.',
+  '/notificacao-negativa': 'Atesto semanal da unidade: nenhum caso de doença ou agravo da lista nacional na semana epidemiológica.',
   '/territorio': 'Localidades, bairros, quarteirões e imóveis no mapa: importação da malha, editor de quarteirões e raio do bloqueio.',
   '/campo-ace': 'Zona e ordens de bloqueio do agente de endemias: visita ao imóvel com depósitos, focos e larvicida, também sem internet.',
   '/endemias': 'Ordens de bloqueio de transmissão abertas pelas notificações, zonas dos agentes, pendências, larvicidas e índices larvários.',

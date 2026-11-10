@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
 import { DomainError } from '../../core/errors';
+import { rawBody } from '../../core/raw-body';
 import { zv } from '../../core/zod';
 import { BillingService } from './billing.service';
 
@@ -37,18 +38,6 @@ const exportSchema = z.object({
   destinationType: z.enum(['M', 'E']).optional(),
 });
 const syncSchema = z.object({ competencia });
-
-/** Lê o corpo cru (application/zip ou octet-stream), que não passa pelos parsers JSON/texto. */
-async function rawBody(req: Request, limit = 60 * 1024 * 1024): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > limit) throw new DomainError('ARQUIVO_GRANDE', 'Arquivo maior que o permitido', 413);
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks);
-}
 
 @Controller('billing')
 export class BillingController {

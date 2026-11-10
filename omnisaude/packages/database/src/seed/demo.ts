@@ -1,13 +1,74 @@
-import { areaM2, caixaDe, centroDe, cnsFromBase, competencia, completeCpf, distanciaAteArea, gs1HumanReadable, localDateString, metrosPorGrau, normalizarArea, personNameKey, type Area } from '@omnisaude/shared';
+import { createHash } from 'node:crypto';
+import {
+  areaM2,
+  caixaDe,
+  calcularPrazo,
+  centroDe,
+  chaveNatural,
+  cnsFromBase,
+  competencia,
+  completeCpf,
+  deslocarSemana,
+  distanciaAteArea,
+  fromZonedParts,
+  gravidadeOficial,
+  gs1HumanReadable,
+  idadeSinan,
+  inicioAnoEpidemiologico,
+  intervaloDaSemana,
+  LNNC_NACIONAL,
+  localDateString,
+  metrosPorGrau,
+  normalizarArea,
+  normalizarNomePessoa,
+  personNameKey,
+  PLANO_MODELO_MS_2025,
+  prazoDaNegativa,
+  RECEITAS_MODELO,
+  ROLE_LABELS,
+  semanaDaData,
+  situacaoOficial,
+  textoDoAtesto,
+  versaoNaData,
+  type Area,
+  type Role,
+} from '@omnisaude/shared';
 import type { PrismaClient as MasterClient } from '../generated/master/client';
 import type { Prisma, PrismaClient as TenantClient } from '../generated/tenant/client';
 import { appendAudit } from '../audit';
 import { hashPassword } from '../passwords';
 import { provisionTenant } from '../provision';
+import { DEFAULT_TENANT_SETTINGS } from '../settings';
 import { connectionUrl, type CredentialsResolver } from '../tenancy';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/tenant/client';
-import { DEMO_PASSWORD, DEMO_PROPERTIES, DEMO_TENANT, LARVICIDES, PATIENTS, POPS, PRODUCTS, SIGTAP_SAMPLE, STAFF, UNITS, VACCINES, type UnitKey } from './fixtures';
+import {
+  ANOS_HISTORICO_DEMO,
+  CENSO_2022_DEMO,
+  DEMO_PASSWORD,
+  DEMO_PROPERTIES,
+  DEMO_TENANT,
+  gravesDemo,
+  IMPORTACAO_DEMO,
+  LARVICIDES,
+  NEGATIVA_DEMO,
+  NOMES_SINTETICOS,
+  NOTIFICACOES_DEMO,
+  PATIENTS,
+  POPS,
+  POPULACAO_RIPSA_DEMO,
+  PRODUCTS,
+  RESPONSAVEIS_NEGATIVA_DEMO,
+  semanasDemo,
+  seriesDemo,
+  SIGTAP_SAMPLE,
+  STAFF,
+  SURTO_DEMO,
+  UNITS,
+  VACCINES,
+  type GrupoDemo,
+  type UnitKey,
+} from './fixtures';
 
 export interface SeedOptions {
   master: MasterClient;
@@ -28,6 +89,12 @@ export interface SeedOptions {
    * Ligada pela linha de comando; os testes da API constroem a própria malha.
    */
   territorioDemo?: boolean;
+  /**
+   * Consolidação e detecção de surto (VIG-1c, semana 27): população, importação sintética do Sinan, diagrama, plano de
+   * contingência, surto, notificação negativa e unidade silenciosa. Padrão: junto com a malha (a linha de comando); os
+   * testes da API não a carregam.
+   */
+  consolidacaoDemo?: boolean;
 }
 
 const DAY = 86_400_000;
@@ -114,6 +181,789 @@ async function territorioDemo(db: TenantClient, p: { households: string[]; unitV
       // SQL direto, como o localizador: não muda o updated_at (que regeraria a ficha de cadastro domiciliar do e-SUS).
       await db.$executeRaw`UPDATE households SET block_id = ${blockId}::uuid, rg_sequence = ${String(i + 1)} WHERE id = ${h.id}::uuid`;
   await db.vectorZone.create({ data: { unitId: p.unitVig, name: 'Zona 01', aceId: p.ace, createdBy: p.coordenador, blocks: { create: blocos.map((b) => ({ blockId: b.id })) } } });
+}
+
+// ───────────────────────── Semana 27 (VIG-1c): consolidação, diagrama, contingência, surto e negativa ─────────────────────────
+
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+/** Coluna date a partir de AAAA-MM-DD. */
+const dataCivil = (iso: string) => new Date(`${iso}T00:00:00Z`);
+const somarDias = (iso: string, n: number) => new Date(Date.parse(`${iso}T12:00:00Z`) + n * DAY).toISOString().slice(0, 10);
+const doisDigitos = (n: number) => String(n).padStart(2, '0');
+/** Raça/cor do cadastro (e-SUS) → Sinan, como na ficha da API. */
+const RACA_SINAN: Record<string, string> = { '01': '1', '02': '2', '03': '4', '04': '3', '05': '5', '99': '9' };
+/** Unidades que não entram na notificação negativa (como na semeadura da migração 0030). */
+const FORA_DA_NEGATIVA = ['FARMACIA_CENTRAL', 'ALMOXARIFADO', 'VIGILANCIA_SAUDE'];
+
+interface ContextoConsolidacao {
+  now: Date;
+  timeZone: string;
+  ibgeCode: string;
+  uf: string;
+  unit: Record<UnitKey, string>;
+  staff: Record<string, string>;
+  patient: Record<string, string>;
+}
+
+/** Registro oficial sintético, montado em memória antes de gravar. */
+interface RegistroDemo {
+  grupo: GrupoDemo;
+  inicio: string;
+  notificadoEm: string;
+  semanaNot: string;
+  classificacao: string | null;
+  criterio: string | null;
+  evolucao: string | null;
+  encerradoEm: string | null;
+  obitoEm: string | null;
+  unidade: UnitKey | null;
+  bairro: string;
+  nome: string;
+  nascimento: string;
+  sexo: 'M' | 'F';
+  mae: string;
+  cns: string | null;
+  /** Notificação da demonstração que corresponde ao registro (casada ou sugerida). */
+  notificacao?: string;
+  numero?: string;
+}
+
+/**
+ * Demonstração da semana 27 (VIG-1c), relativa ao dia em que a carga roda: catálogo nacional da lista (as notificações
+ * apontam para ele), população (RIPSA e Censo 2022), importação sintética APLICADA do Sinan Online (dengue de 7 anos,
+ * com o penúltimo epidêmico, e chikungunya menor) e do Sinan Net (negativas digitadas), notificações casadas e não
+ * casadas, receita do diagrama, plano modelo do MS em vigor com acionamento NORMALIDADE, surto de DTA aberto, par de
+ * coqueluche que gera sugestão de surto, unidades notificantes, responsáveis, atestos e a UBS Jardim das Flores
+ * silenciosa nas 3 últimas semanas fechadas. A sugestão do plano no dia da carga é MOBILIZAÇÃO.
+ */
+async function consolidacaoDemo(db: TenantClient, c: ContextoConsolidacao) {
+  const tz = c.timeZone;
+  const vera = c.staff.vigilancia!;
+  const cfg = DEFAULT_TENANT_SETTINGS.vigilancia;
+  const sem = semanasDemo(c.now, tz, cfg.consolidacao.semanasIncompletas);
+  const hoje = localDateString(c.now, tz);
+  const domingoDeHoje = new Date(`${hoje}T12:00:00Z`).getUTCDay();
+  const limite = new Date(c.now.getTime() - 5 * 60_000);
+  /** Nada da demonstração fica depois de agora. */
+  const noPassado = (d: Date) => (d.getTime() > limite.getTime() ? limite : d);
+  const ate = (iso: string) => (iso > hoje ? hoje : iso);
+  /** Dia da semana AAAASS (0 = domingo). */
+  const diaDa = (semana: string, dow: number) => somarDias(intervaloDaSemana(Number(semana.slice(0, 4)), Number(semana.slice(4))).inicio, dow);
+  const as = (iso: string, hora: number, minuto = 0) => fromZonedParts({ year: Number(iso.slice(0, 4)), month: Number(iso.slice(5, 7)), day: Number(iso.slice(8, 10)), hour: hora, minute: minuto, second: 0 }, tz);
+  const semanaK = (k: number) => deslocarSemana(sem.atual, -k);
+  /** Semana AAAASS → k (0 = a em curso, 1 = a anterior...), nas semanas da grade da negativa; fora dela, −1. */
+  const kPorSemana = new Map(Array.from({ length: NEGATIVA_DEMO.semanas + 1 }, (_, k) => [semanaK(k), k] as const));
+  const kDa = (semana: string) => kPorSemana.get(semana) ?? -1;
+  const municipio6 = c.ibgeCode.slice(0, 6);
+  const unidade = (k: UnitKey) => UNITS.find((u) => u.key === k)!;
+  const porCnes = new Map<string, UnitKey>(UNITS.map((u) => [u.cnes, u.key]));
+  const [sede, centro] = await Promise.all([db.locality.findFirst({ where: { name: 'Sede (demonstração)' } }), db.neighborhood.findFirst({ where: { name: 'Centro' } })]);
+  /** Início dos períodos de notificante e das designações: 1º de janeiro, ou antes se a grade de 16 semanas pedir. */
+  const inicioDemo = [`${sem.atual.slice(0, 4)}-01-01`, diaDa(semanaK(NEGATIVA_DEMO.semanas + 4), 0)].sort()[0]!;
+  const inicioAno = new Date(inicioAnoEpidemiologico(sem.anoAnalise)).toISOString().slice(0, 10);
+
+  // ── Catálogo nacional da lista: a API completa e atualiza na primeira leitura (hash nulo), mantendo os ids ──
+  for (const v of LNNC_NACIONAL) {
+    const versao =
+      (await db.notifiableListVersion.findUnique({ where: { nationalId: v.id } })) ??
+      (await db.notifiableListVersion.create({
+        data: {
+          scope: 'NACIONAL',
+          scopeKey: 'NACIONAL',
+          nationalId: v.id,
+          act: v.act,
+          publishedIn: v.publishedIn,
+          actUrl: v.actUrl,
+          sourceUrl: v.sourceUrl,
+          sourceSha256: v.sourceSha256,
+          consultedAt: dataCivil(v.consultedAt),
+          validFrom: dataCivil(v.validFrom),
+          validTo: v.validTo ? dataCivil(v.validTo) : null,
+          notes: v.notes,
+        },
+      }));
+    await db.notifiableCondition.createMany({
+      data: v.conditions.map((x) => ({
+        versionId: versao.id,
+        key: x.key,
+        groupKey: x.group,
+        item: x.item,
+        subitem: x.subitem,
+        name: x.name,
+        context: x.context,
+        immediateMs: x.immediateMs,
+        immediateSes: x.immediateSes,
+        immediateSms: x.immediateSms,
+        weekly: x.weekly,
+        notifyOn: x.notifyOn,
+        deadlineStart: x.deadlineStart,
+        sensitive: x.sensitive,
+        once: x.once,
+        normativeStatus: x.normativeStatus,
+        normativeNote: x.normativeNote,
+        sinanCode: x.sinanCode,
+      })),
+      skipDuplicates: true,
+    });
+  }
+
+  // ── População: RIPSA do município, Censo 2022 do município e, sintético, da localidade e do bairro da malha ──
+  await db.populationEstimate.createMany({
+    data: [
+      ...Object.entries(POPULACAO_RIPSA_DEMO.anos).map(([ano, populacao]) => ({
+        year: Number(ano),
+        level: 'MUNICIPIO' as const,
+        population: populacao,
+        source: 'RIPSA' as const,
+        version: POPULACAO_RIPSA_DEMO.versao,
+        notes: POPULACAO_RIPSA_DEMO.nota,
+        createdBy: vera,
+      })),
+      { year: 2022, level: 'MUNICIPIO' as const, population: CENSO_2022_DEMO.municipio, source: 'CENSO_2022' as const, notes: CENSO_2022_DEMO.notaMunicipio, createdBy: vera },
+      ...(sede ? [{ year: 2022, level: 'LOCALIDADE' as const, territoryId: sede.id, population: CENSO_2022_DEMO.localidade, source: 'CENSO_2022' as const, notes: CENSO_2022_DEMO.notaSintetica, createdBy: vera }] : []),
+      ...(centro ? [{ year: 2022, level: 'BAIRRO' as const, territoryId: centro.id, population: CENSO_2022_DEMO.bairro, source: 'CENSO_2022' as const, notes: CENSO_2022_DEMO.notaSintetica, createdBy: vera }] : []),
+    ],
+  });
+
+  // ── Receita do diagrama da dengue: modelo do MS 2025 com a população RIPSA ──
+  await db.diagramSetting.create({
+    data: { groupKey: 'dengue', recipe: { ...RECEITAS_MODELO.MS_2025.receita }, excludedYears: [], populationSource: 'RIPSA', populationVersion: POPULACAO_RIPSA_DEMO.versao, updatedBy: vera },
+  });
+
+  // ── Unidades notificantes e responsáveis pelo atesto ──
+  const notificantes = UNITS.filter((u) => !FORA_DA_NEGATIVA.includes(u.type));
+  await db.notifyingUnit.createMany({ data: notificantes.map((u) => ({ unitId: c.unit[u.key], since: dataCivil(inicioDemo), createdBy: vera, createdAt: as(inicioDemo, 8) })) });
+  await db.notifyingUnitResponsible.createMany({
+    data: RESPONSAVEIS_NEGATIVA_DEMO.map((r) => ({ unitId: c.unit[r.unidade], userId: c.staff[r.pessoa]!, kind: r.tipo, since: dataCivil(inicioDemo), designatedBy: vera, designatedAt: as(inicioDemo, 10) })),
+  });
+  const lotacao = (pessoa: string, u: UnitKey) => db.userAssignment.findFirstOrThrow({ where: { userId: c.staff[pessoa]!, unitId: c.unit[u] }, select: { role: true, cbo: true } });
+
+  // ── Notificações do OmniSaúde (dengue e coqueluche) ──
+  const seqs = new Map<number, number>();
+  const proximoNumero = async (ano: number) => {
+    const ultimo = seqs.get(ano) ?? (await db.notification.findFirst({ where: { year: ano }, orderBy: { seq: 'desc' }, select: { seq: true } }))?.seq ?? 0;
+    seqs.set(ano, ultimo + 1);
+    return ultimo + 1;
+  };
+  const notificacoes: { spec: (typeof NOTIFICACOES_DEMO)[number]; id: string; sintomas: string; semanaSint: string; semanaNot: string; diaNot: string; notificadaEm: Date }[] = [];
+  for (const [i, n] of NOTIFICACOES_DEMO.entries()) {
+    const semana = deslocarSemana(sem.atual, n.semana);
+    const sintomas = diaDa(semana, n.sintomas);
+    const conhecidoEm = noPassado(as(diaDa(semana, n.conhecimento), 9 + (i % 3), (i * 10) % 60));
+    const notificadaEm = noPassado(new Date(conhecidoEm.getTime() + 2 * 3_600_000));
+    const diaNot = localDateString(notificadaEm, tz);
+    const vigente = versaoNaData(LNNC_NACIONAL, localDateString(conhecidoEm, tz))!.versao;
+    const condicao = await db.notifiableCondition.findFirstOrThrow({ where: { key: n.grupo, version: { nationalId: vigente.id } } });
+    const prazo = calcularPrazo(condicao, { atendimento: null, conhecimento: conhecidoEm, confirmacao: null });
+    const paciente = await db.patient.findUniqueOrThrow({ where: { id: c.patient[n.paciente]! }, include: { family: { include: { household: true } } } });
+    const casa = paciente.family?.household ?? null;
+    const autor = await db.user.findUniqueOrThrow({ where: { id: c.staff[n.notificador]! }, select: { name: true, socialName: true } });
+    const lot = await lotacao(n.notificador, n.unidade);
+    const idade = idadeSinan(paciente.birthDate, conhecidoEm);
+    const fertil = idade.unidade === 'A' && idade.valor >= 10 && idade.valor <= 49;
+    const geo = casa?.latitude != null && casa.longitude != null ? { lat: casa.latitude, lng: casa.longitude } : null;
+    // Retrato da Ficha Individual de Notificação do Sinan Net v5, como a API monta e confirma.
+    const ficha = {
+      formVersion: 'SINAN_NET_FIN_V5',
+      TP_NOT: '2',
+      ID_AGRAVO: { nome: condicao.name, cid: null, item: condicao.item, subitem: condicao.subitem },
+      DT_NOTIFIC: diaNot,
+      SG_UF_NOT: c.uf,
+      ID_MUNICIP: c.ibgeCode,
+      ID_UNIDADE: { cnes: unidade(n.unidade).cnes, nome: unidade(n.unidade).name },
+      DT_SIN_PRI: sintomas,
+      NM_PACIENT: paciente.name,
+      DT_NASC: paciente.birthDate.toISOString().slice(0, 10),
+      NU_IDADE_N: idade,
+      CS_SEXO: paciente.sex === 'M' || paciente.sex === 'F' ? paciente.sex : 'I',
+      CS_GESTANT: paciente.sex === 'F' && fertil ? '5' : '6',
+      CS_RACA: RACA_SINAN[paciente.racaCor] ?? '9',
+      CS_ESCOL_N: idade.unidade === 'A' && idade.valor >= 7 ? '9' : '10',
+      ID_CNS_SUS: paciente.cns,
+      NM_MAE_PAC: paciente.motherName,
+      SG_UF: c.uf,
+      ID_MN_RESI: paciente.ibgeCode,
+      ID_DISTRIT: null,
+      NM_BAIRRO: paciente.district,
+      NM_LOGRADO: paciente.street,
+      NU_NUMERO: paciente.number,
+      NM_COMPLEM: paciente.complement,
+      ID_GEO1: geo?.lat ?? null,
+      ID_GEO2: geo?.lng ?? null,
+      NM_REFEREN: null,
+      NU_CEP: paciente.cep,
+      NU_TELEFON: paciente.phone,
+      CS_ZONA: null,
+      ID_PAIS: null,
+      notificador: { nome: autor.socialName ?? autor.name, cbo: lot.cbo, funcao: lot.role },
+    };
+    const ano = Number(localDateString(conhecidoEm, tz).slice(0, 4));
+    const seq = await proximoNumero(ano);
+    const sistema = n.grupo === 'dengue' ? ('SINAN_ONLINE' as const) : ('SINAN_NET' as const);
+    const semanaNot = semanaDaData(diaNot).codigo;
+    // Imediata (coqueluche): ciência da vigilância municipal e repasse à SES por telefone, dentro das 24 h.
+    const imediata = prazo.tipo === 'IMEDIATA';
+    const ciencia = noPassado(new Date(notificadaEm.getTime() + 3_600_000));
+    const repasse = noPassado(new Date(notificadaEm.getTime() + 3 * 3_600_000));
+    const criada = await db.notification.create({
+      data: {
+        year: ano,
+        seq,
+        number: `${ano}/${String(seq).padStart(6, '0')}`,
+        status: 'NOTIFICADA',
+        origin: 'MANUAL',
+        conditionId: condicao.id,
+        conditionKey: condicao.key,
+        groupKey: condicao.groupKey,
+        basis: 'SUSPEITA',
+        patientId: paciente.id,
+        unitId: c.unit[n.unidade],
+        notifierId: c.staff[n.notificador]!,
+        notifierCbo: lot.cbo,
+        notifierRole: lot.role,
+        knownAt: conhecidoEm,
+        deadlineStart: prazo.marco,
+        deadlineKind: prazo.tipo,
+        targets: prazo.esferas,
+        deadlineStartAt: prazo.inicio,
+        dueAt: prazo.vence,
+        notifiedAt: notificadaEm,
+        symptomsOnset: dataCivil(sintomas),
+        epiWeekNotified: semanaNot,
+        epiWeekOnset: semanaDaData(sintomas).codigo,
+        sensitive: condicao.sensitive,
+        form: ficha,
+        residenceIbge: paciente.ibgeCode,
+        residenceLat: geo?.lat ?? null,
+        residenceLng: geo?.lng ?? null,
+        residencePrecision: geo ? (casa?.geoPrecision ?? null) : null,
+        outOfMunicipality: !!paciente.ibgeCode && paciente.ibgeCode !== c.ibgeCode,
+        officialSystem: sistema,
+        entryStatus: 'PENDENTE',
+        smsReceivedAt: imediata ? ciencia : null,
+        smsReceivedBy: imediata ? vera : null,
+        createdBy: c.staff[n.notificador]!,
+        createdAt: conhecidoEm,
+        events: {
+          create: [
+            { kind: 'CRIADA_MANUAL', at: conhecidoEm, userId: c.staff[n.notificador]!, data: { origem: 'MANUAL', codigo: null, mapeamento: null } },
+            { kind: 'CONFIRMADA', at: notificadaEm, userId: c.staff[n.notificador]!, data: { semana: semanaNot, sistema } },
+            ...(imediata
+              ? [
+                  { kind: 'CIENCIA_SMS', at: ciencia, userId: vera },
+                  { kind: 'COMUNICACAO', at: repasse, userId: vera, data: { esfera: 'SES', meio: 'TELEFONE' } },
+                ]
+              : []),
+          ],
+        },
+        communications: {
+          create: [
+            { target: 'SMS', channel: 'SISTEMA', communicatedAt: notificadaEm, counterpartName: 'Vigilância epidemiológica municipal (painel do OmniSaúde)', userId: c.staff[n.notificador]! },
+            ...(imediata && prazo.esferas.includes('SES')
+              ? [{ target: 'SES' as const, channel: 'TELEFONE' as const, communicatedAt: repasse, counterpartName: 'CIEVS estadual (plantão)', protocol: `DEMO-${ano}-${seq}`, userId: vera }]
+              : []),
+          ],
+        },
+      },
+    });
+    notificacoes.push({ spec: n, id: criada.id, sintomas, semanaSint: semanaDaData(sintomas).codigo, semanaNot, diaNot, notificadaEm });
+  }
+
+  // ── Fatos por semana e unidade (notificação, surto ou registro oficial): a negativa só cabe sem eles ──
+  const fatos = new Map<string, Set<UnitKey>>();
+  const marcar = (semana: string, u: UnitKey) => (fatos.get(semana) ?? fatos.set(semana, new Set()).get(semana)!).add(u);
+  for (const n of notificacoes) marcar(n.semanaNot, n.spec.unidade);
+  const semanaSurto = semanaK(1);
+  const diaSurto = diaDa(semanaSurto, SURTO_DEMO.diaConhecimento);
+  marcar(semanaDaData(diaSurto).codigo, 'ubs');
+
+  // ── Registros oficiais sintéticos (DENGON e CHIKON do Sinan Online) ──
+  const series = seriesDemo(sem);
+  // A notificação sem vínculo já conta na base consolidada: sai da contagem oficial da semana dos sintomas.
+  const semVinculo = new Map<string, number>();
+  for (const n of notificacoes) if (n.spec.grupo === 'dengue' && (n.spec.vinculo === 'SO_OMNISAUDE' || n.spec.vinculo === 'SUGESTAO')) semVinculo.set(n.semanaSint, (semVinculo.get(n.semanaSint) ?? 0) + 1);
+  const correspondentes = notificacoes.filter((n) => n.spec.vinculo === 'CASADA' || n.spec.vinculo === 'CASADA_DIVERGENTE' || n.spec.vinculo === 'SUGESTAO');
+  const provaveisAnalise = series.find((s) => s.grupo === 'dengue' && s.ano === sem.anoAnalise)!.provaveis.reduce((t, n, i) => (`${sem.anoAnalise}${doisDigitos(i + 1)}` <= sem.ultimaCompleta ? t + n : t), 0);
+  const graves = gravesDemo(provaveisAnalise);
+  const nomes = NOMES_SINTETICOS;
+  const registros: RegistroDemo[] = [];
+  let i = 0;
+  for (const serie of series) {
+    for (let s = 1; s <= 53; s++) {
+      const semana = `${serie.ano}${doisDigitos(s)}`;
+      const provaveis = Math.max(0, serie.provaveis[s - 1]! - (serie.grupo === 'dengue' ? (semVinculo.get(semana) ?? 0) : 0));
+      const total = provaveis + serie.descartados[s - 1]!;
+      for (let j = 0; j < total; j++, i++) {
+        const dow = semana === sem.atual ? j % (domingoDeHoje + 1) : (j * 3 + s) % 7;
+        const inicio = diaDa(semana, dow);
+        const notificadoEm = ate(somarDias(inicio, (j + s) % 4));
+        const sexo = i % 2 === 0 ? 'F' : 'M';
+        const anoNasc = Math.min(serie.ano - 1, 1940 + ((i * 37) % 80));
+        const r: RegistroDemo = {
+          grupo: serie.grupo,
+          inicio,
+          notificadoEm,
+          semanaNot: semanaDaData(notificadoEm).codigo,
+          classificacao: null,
+          criterio: null,
+          evolucao: null,
+          encerradoEm: null,
+          obitoEm: null,
+          unidade: null,
+          bairro: nomes.bairros[i % 50 < 4 ? 0 : i % 50 < 7 ? 1 : i % 50 < 10 ? 2 : i % 50 < 12 ? 3 : i % 50 < 13 ? 4 : 5 + (i % 5)]!,
+          nome: `${(sexo === 'F' ? nomes.femininos : nomes.masculinos)[(i >> 1) % 16]} ${nomes.sobrenomes[(i * 7) % 16]} ${nomes.sobrenomes[(i * 11 + 5) % 16]}`,
+          nascimento: `${anoNasc}-${doisDigitos(1 + (i % 12))}-${doisDigitos(1 + (i % 28))}`,
+          sexo,
+          mae: `${nomes.femininos[(i * 3 + 1) % 16]} ${nomes.sobrenomes[(i * 5 + 2) % 16]}`,
+          cns: null,
+        };
+        const confirmado = serie.grupo === 'dengue' ? '10' : '13';
+        if (j >= provaveis) {
+          // Descartado (CLASSI_FIN 5), encerrado em poucos dias.
+          Object.assign(r, { classificacao: '5', criterio: i % 2 ? '1' : '2', encerradoEm: ate(somarDias(notificadoEm, 5)) });
+        } else if (serie.ano < sem.anoAnalise) {
+          const encerrado = ate(somarDias(notificadoEm, 25));
+          if (serie.grupo === 'dengue' && i % 40 === 3) Object.assign(r, { classificacao: '8', encerradoEm: ate(somarDias(notificadoEm, 60)) });
+          else if (serie.grupo === 'dengue' && i % 311 === 11) {
+            // Dengue grave: metade evolui para óbito pelo agravo.
+            const obito = i % 2 === 1;
+            Object.assign(r, { classificacao: '12', criterio: '1', evolucao: obito ? '2' : '1', encerradoEm: encerrado, obitoEm: obito ? ate(somarDias(inicio, 6)) : null });
+          } else Object.assign(r, { classificacao: serie.grupo === 'dengue' && i % 83 === 7 ? '11' : confirmado, criterio: i % 5 < 2 ? '1' : '2', evolucao: '1', encerradoEm: encerrado });
+        } else if (somarDias(notificadoEm, 30) <= hoje) {
+          // Ano em análise: encerrados os notificados há mais de 30 dias; os graves e com sinais de alarme ficam abaixo de 1%.
+          let classe = confirmado;
+          if (serie.grupo === 'dengue' && semana <= sem.ultimaCompleta && s >= 8) {
+            if (graves.graves > 0) {
+              classe = '12';
+              graves.graves--;
+            } else if (graves.sinaisAlarme > 0) {
+              classe = '11';
+              graves.sinaisAlarme--;
+            }
+          }
+          Object.assign(r, { classificacao: classe, criterio: i % 5 < 2 ? '1' : '2', evolucao: '1', encerradoEm: ate(somarDias(notificadoEm, 30)) });
+        }
+        // Os registros que correspondem às notificações da demonstração: mesma pessoa, mesmas datas.
+        if (serie.grupo === 'dengue' && j === 0 && provaveis > 0) {
+          const n = correspondentes.find((x) => x.semanaSint === semana && !registros.some((y) => y.notificacao === x.spec.chave));
+          if (n) {
+            const p = PATIENTS.find((x) => x.key === n.spec.paciente)!;
+            Object.assign(r, {
+              notificacao: n.spec.chave,
+              inicio: n.sintomas,
+              notificadoEm: n.spec.vinculo === 'SUGESTAO' ? ate(somarDias(n.diaNot, 1)) : n.diaNot,
+              unidade: n.spec.unidade,
+              nome: p.name,
+              nascimento: p.birthDate,
+              sexo: p.sex,
+              mae: p.motherName,
+              // Sem CNS na sugestão: o vínculo fica para a vigilância (nome, nascimento e sexo).
+              cns: n.spec.vinculo === 'SUGESTAO' ? null : cnsFromBase(p.cnsBase),
+              ...(n.spec.vinculo === 'CASADA_DIVERGENTE'
+                ? { classificacao: '10', criterio: '1', evolucao: '1', encerradoEm: ate(somarDias(n.diaNot, 9)) }
+                : { classificacao: null, criterio: null, evolucao: null, encerradoEm: null }),
+            });
+            r.semanaNot = semanaDaData(r.notificadoEm).codigo;
+            marcar(r.semanaNot, n.spec.unidade);
+          }
+        }
+        registros.push(r);
+      }
+    }
+  }
+
+  // Unidade de cada registro: a UPA notifica toda semana; a UBS Jardim das Flores, até silenciar; as demais em rodízio,
+  // fora das semanas reservadas para a negativa.
+  const permitida = (u: UnitKey, k: number) => {
+    const s = NEGATIVA_DEMO.semRegistro[u];
+    return !(s === 'todas' || s?.includes(Math.max(1, k)));
+  };
+  const exigida = (u: UnitKey, k: number) => {
+    const e = NEGATIVA_DEMO.exigeRegistro[u];
+    return e === 'todas' || !!e?.includes(k);
+  };
+  const RODIZIO: UnitKey[] = ['upa', 'ubs', 'hosp', 'upa', 'ubs2', 'poli', 'upa', 'ubs'];
+  let vez = 0;
+  for (const r of [...registros].sort((a, b) => a.semanaNot.localeCompare(b.semanaNot))) {
+    if (r.unidade) continue;
+    const k = kDa(r.semanaNot);
+    if (k < 0) {
+      r.unidade = RODIZIO[vez++ % RODIZIO.length]!;
+      continue;
+    }
+    const ja = fatos.get(r.semanaNot) ?? new Set<UnitKey>();
+    let u = (['upa', 'ubs2'] as UnitKey[]).find((x) => exigida(x, k) && permitida(x, k) && !ja.has(x));
+    while (!u) {
+      const candidata = RODIZIO[vez++ % RODIZIO.length]!;
+      if (permitida(candidata, k)) u = candidata;
+    }
+    r.unidade = u;
+    marcar(r.semanaNot, u);
+  }
+
+  // ── Negativas: atesto quando a unidade com responsável não tem fato na semana; NNEGANET das já digitadas ──
+  const responsavel = (u: UnitKey, tipo: 'TITULAR' | 'SUBSTITUTO') => RESPONSAVEIS_NEGATIVA_DEMO.find((r) => r.unidade === u && r.tipo === tipo)?.pessoa ?? null;
+  const atestos: { u: UnitKey; k: number; semana: string; pessoa: string }[] = [];
+  const soNoSinan: { u: UnitKey; semana: string }[] = [];
+  for (const un of notificantes) {
+    for (let k = 1; k <= NEGATIVA_DEMO.semanas; k++) {
+      const semana = semanaK(k);
+      if (fatos.get(semana)?.has(un.key)) continue;
+      if (NEGATIVA_DEMO.soNoSinan[un.key]?.includes(k)) soNoSinan.push({ u: un.key, semana });
+      if (NEGATIVA_DEMO.semAtesto[un.key]?.includes(k)) continue;
+      const pessoa = NEGATIVA_DEMO.substituto[un.key]?.includes(k) ? responsavel(un.key, 'SUBSTITUTO') : responsavel(un.key, 'TITULAR');
+      if (pessoa) atestos.push({ u: un.key, k, semana, pessoa });
+    }
+  }
+  const negativasSinan = [...atestos.filter((a) => !NEGATIVA_DEMO.naoDigitadas.includes(a.k)).map((a) => ({ u: a.u, semana: a.semana })), ...soNoSinan];
+
+  // ── Importação APLICADA: arquivos por agravo e ano de notificação, mais as negativas do Sinan Net ──
+  const importadoEm = noPassado(new Date(c.now.getTime() - 50 * 60_000));
+  const arquivos = new Map<string, { tipo: 'DENGON' | 'CHIKON' | 'NNEGANET'; registros: number; de: string; ate: string }>();
+  const somar = (nome: string, tipo: 'DENGON' | 'CHIKON' | 'NNEGANET', dia: string) => {
+    const a = arquivos.get(nome) ?? arquivos.set(nome, { tipo, registros: 0, de: dia, ate: dia }).get(nome)!;
+    a.registros++;
+    if (dia < a.de) a.de = dia;
+    if (dia > a.ate) a.ate = dia;
+  };
+  for (const r of registros) somar(`${r.grupo === 'dengue' ? 'DENGON' : 'CHIKON'}${r.notificadoEm.slice(0, 4)}.DBF`, r.grupo === 'dengue' ? 'DENGON' : 'CHIKON', r.notificadoEm);
+  for (const n of negativasSinan) somar('NNEGANET.DBF', 'NNEGANET', intervaloDaSemana(Number(n.semana.slice(0, 4)), Number(n.semana.slice(4))).fim);
+  const files = [...arquivos.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([nome, a]) => ({
+      nome,
+      tipo: a.tipo,
+      sistema: a.tipo === 'NNEGANET' ? 'SINAN_NET' : 'SINAN_ONLINE',
+      tipoRegistro: a.tipo === 'NNEGANET' ? 'NEGATIVA' : 'INDIVIDUAL',
+      tamanhoBytes: 4_000 + a.registros * (a.tipo === 'NNEGANET' ? 120 : 1_180),
+      registros: a.registros,
+      codificacao: 'CP850',
+      origemCodificacao: 'CABECALHO',
+      agravos: a.tipo === 'DENGON' ? ['A90'] : a.tipo === 'CHIKON' ? ['A920'] : [],
+      periodo: { de: a.de, ate: a.ate },
+      identificado: a.tipo !== 'NNEGANET',
+      ignorado: false,
+      avisos: [],
+    }));
+  const lidos = registros.length + negativasSinan.length;
+  const imp = await db.officialImport.create({
+    data: {
+      system: 'SINAN_ONLINE',
+      status: 'APLICADA',
+      fileName: IMPORTACAO_DEMO,
+      sha256: sha256(`omnisaude:demonstracao:vig-1c:${sem.atual}`),
+      sizeBytes: files.reduce((t, f) => t + f.tamanhoBytes, 0),
+      files,
+      periodFrom: dataCivil(new Date(inicioAnoEpidemiologico(sem.anoAnalise - ANOS_HISTORICO_DEMO)).toISOString().slice(0, 10)),
+      periodTo: dataCivil(hoje),
+      declaredPeriod: true,
+      identified: true,
+      counts: { lidos, novos: lidos, alterados: 0, iguais: 0, recusados: 0, duplicadosNoArquivo: 0, ausentesPrevistos: 0, motivosRecusa: {}, porTipo: { INDIVIDUAL: registros.length, NEGATIVA: negativasSinan.length } },
+      warnings: ['Importação de demonstração: registros sintéticos, nenhum corresponde a pessoa real.'],
+      createdBy: vera,
+      createdAt: new Date(importadoEm.getTime() - 20 * 60_000),
+      appliedBy: vera,
+      appliedAt: importadoEm,
+    },
+  });
+
+  const numeros = new Map<string, number>();
+  const numeroOficial = (prefixo: number, ano: string) => {
+    const k = `${prefixo}|${ano}`;
+    const n = (numeros.get(k) ?? 0) + 1;
+    numeros.set(k, n);
+    return String(Number(ano.slice(2)) * 100_000 + prefixo + n);
+  };
+  const linhas = registros.map((r) => {
+    const agravo = r.grupo === 'dengue' ? 'A90' : 'A920';
+    const tipoArquivo = r.grupo === 'dengue' ? 'DENGON' : 'CHIKON';
+    const numero = numeroOficial(r.grupo === 'dengue' ? 0 : 90_000, r.notificadoEm.slice(0, 4));
+    r.numero = numero;
+    const u = unidade(r.unidade!);
+    const valores: Record<string, string | null> = {
+      numero,
+      notificadoEm: r.notificadoEm,
+      semanaNotificacao: r.semanaNot,
+      municipioNotificacao: municipio6,
+      cnes: u.cnes,
+      agravo,
+      grupo: r.grupo,
+      inicioSintomas: r.inicio,
+      semanaSintomas: semanaDaData(r.inicio).codigo,
+      municipioResidencia: municipio6,
+      bairroNome: r.bairro,
+      classificacao: r.classificacao,
+      criterio: r.criterio,
+      evolucao: r.evolucao,
+      encerradoEm: r.encerradoEm,
+      obitoEm: r.obitoEm,
+      nome: r.nome,
+      nascimento: r.nascimento,
+      sexo: r.sexo,
+      mae: normalizarNomePessoa(r.mae),
+      cns: r.cns,
+    };
+    return {
+      system: 'SINAN_ONLINE' as const,
+      type: 'INDIVIDUAL' as const,
+      naturalKey: chaveNatural({ sistema: 'SINAN_ONLINE', tipo: 'INDIVIDUAL', numero, notificadoEm: r.notificadoEm, municipio: municipio6, agravo, cnes: u.cnes }),
+      number: numero,
+      notifiedOn: dataCivil(r.notificadoEm),
+      epiWeekNotified: r.semanaNot,
+      municipalityIbge: municipio6,
+      unitCnes: u.cnes,
+      unitId: c.unit[r.unidade!],
+      agravo,
+      groupKey: r.grupo,
+      symptomsOnset: dataCivil(r.inicio),
+      epiWeekOnset: semanaDaData(r.inicio).codigo,
+      residenceIbge: municipio6,
+      neighborhoodName: r.bairro,
+      finalClass: r.classificacao,
+      criterion: r.criterio,
+      evolution: r.evolucao,
+      closedOn: r.encerradoEm ? dataCivil(r.encerradoEm) : null,
+      deathOn: r.obitoEm ? dataCivil(r.obitoEm) : null,
+      situation: situacaoOficial(agravo, r.classificacao, r.criterio),
+      severity: gravidadeOficial(agravo, r.classificacao),
+      patientName: r.nome,
+      patientNameNorm: normalizarNomePessoa(r.nome) || null,
+      birthDate: dataCivil(r.nascimento),
+      sex: r.sexo,
+      motherNameNorm: normalizarNomePessoa(r.mae) || null,
+      cns: r.cns,
+      data: { _fontes: Object.fromEntries(Object.entries(valores).flatMap(([k, v]) => (v ? [[k, tipoArquivo]] : []))) },
+      contentHash: sha256(JSON.stringify(['SINAN_ONLINE', 'INDIVIDUAL', valores])),
+      firstImportId: imp.id,
+      lastImportId: imp.id,
+      lastSeenAt: importadoEm,
+      createdAt: importadoEm,
+    };
+  });
+  const linhasSinan = negativasSinan.map((n) => {
+    const u = unidade(n.u);
+    const fim = intervaloDaSemana(Number(n.semana.slice(0, 4)), Number(n.semana.slice(4))).fim;
+    const numero = numeroOficial(80_000, fim.slice(0, 4));
+    const valores = { numero, notificadoEm: fim, semanaNotificacao: n.semana, municipioNotificacao: municipio6, cnes: u.cnes };
+    return {
+      system: 'SINAN_NET' as const,
+      type: 'NEGATIVA' as const,
+      naturalKey: chaveNatural({ sistema: 'SINAN_NET', tipo: 'NEGATIVA', numero, notificadoEm: fim, municipio: municipio6, agravo: null, cnes: u.cnes }),
+      number: numero,
+      notifiedOn: dataCivil(fim),
+      epiWeekNotified: n.semana,
+      municipalityIbge: municipio6,
+      unitCnes: u.cnes,
+      unitId: c.unit[n.u],
+      situation: situacaoOficial(null, null),
+      data: { _fontes: Object.fromEntries(Object.keys(valores).map((k) => [k, 'NNEGANET'])) },
+      contentHash: sha256(JSON.stringify(['SINAN_NET', 'NEGATIVA', valores])),
+      firstImportId: imp.id,
+      lastImportId: imp.id,
+      lastSeenAt: importadoEm,
+      createdAt: importadoEm,
+    };
+  });
+  for (let ini = 0; ini < linhas.length; ini += 1_000) await db.officialRecord.createMany({ data: linhas.slice(ini, ini + 1_000) });
+  await db.officialRecord.createMany({ data: linhasSinan });
+
+  // Pares casados pelo número oficial (o digitador informou o número na fila de digitação).
+  for (const n of notificacoes.filter((x) => x.spec.vinculo === 'CASADA' || x.spec.vinculo === 'CASADA_DIVERGENTE')) {
+    const r = registros.find((x) => x.notificacao === n.spec.chave);
+    if (!r) continue;
+    const linha = linhas[registros.indexOf(r)]!;
+    const registro = await db.officialRecord.findUniqueOrThrow({ where: { system_type_naturalKey: { system: 'SINAN_ONLINE', type: 'INDIVIDUAL', naturalKey: linha.naturalKey } } });
+    const digitadaEm = noPassado(new Date(n.notificadaEm.getTime() + DAY));
+    await db.notification.update({
+      where: { id: n.id },
+      data: {
+        entryStatus: 'DIGITADA',
+        officialNumber: r.numero,
+        enteredBy: vera,
+        enteredAt: digitadaEm,
+        events: { create: { kind: 'DIGITADA', at: digitadaEm, userId: vera, data: { sistema: 'SINAN_ONLINE', numero: r.numero!, lote: null } } },
+      },
+    });
+    // Divergências do par, como a conciliação grava: situação, evolução e encerramento.
+    const divergencias = [
+      ...(registro.situation !== 'EM_INVESTIGACAO' ? [{ campo: 'situacao', oficial: registro.situation, omnisaude: 'EM_INVESTIGACAO' }] : []),
+      ...(registro.evolution ? [{ campo: 'evolucao', oficial: registro.evolution, omnisaude: null }] : []),
+      ...(registro.closedOn ? [{ campo: 'encerramento', oficial: registro.closedOn.toISOString().slice(0, 10), omnisaude: null }] : []),
+    ];
+    await db.officialRecord.update({ where: { id: registro.id }, data: { notificationId: n.id, matchMethod: 'NUMERO_OFICIAL', matchedAt: importadoEm, divergences: divergencias } });
+  }
+
+  // ── Atestos da negativa, casados com a negativa digitada no Sinan Net quando há ──
+  const doSinan = new Map(
+    (await db.officialRecord.findMany({ where: { type: 'NEGATIVA', lastImportId: imp.id }, select: { id: true, unitCnes: true, epiWeekNotified: true } })).map((r) => [
+      `${porCnes.get(r.unitCnes ?? '')}|${r.epiWeekNotified}`,
+      r.id,
+    ]),
+  );
+  const nomesDe = new Map((await db.user.findMany({ where: { id: { in: atestos.map((a) => c.staff[a.pessoa]!) } }, select: { id: true, name: true, socialName: true } })).map((u) => [u.id, u.socialName ?? u.name]));
+  const linhasAtesto = [];
+  for (const a of atestos) {
+    const lot = await lotacao(a.pessoa, a.u);
+    const { inicio, fim } = intervaloDaSemana(Number(a.semana.slice(0, 4)), Number(a.semana.slice(4)));
+    const seguinte = semanaK(a.k - 1);
+    const atrasado = NEGATIVA_DEMO.atrasado[a.u]?.includes(a.k) ?? false;
+    const em = noPassado(atrasado ? as(diaDa(seguinte, 2), 10, 20) : as(diaDa(seguinte, 1), 9, 10 + a.k));
+    const nome = nomesDe.get(c.staff[a.pessoa]!)!;
+    linhasAtesto.push({
+      unitId: c.unit[a.u],
+      epiWeek: a.semana,
+      status: 'ATESTADA' as const,
+      attestedBy: c.staff[a.pessoa]!,
+      attestedAt: em,
+      attesterName: nome,
+      attesterRole: ROLE_LABELS[lot.role as Role] ?? lot.role,
+      attesterCbo: /^\d{6}$/.test(lot.cbo) ? lot.cbo : null,
+      declaration: textoDoAtesto({ unidade: unidade(a.u).name, cnes: unidade(a.u).cnes, semana: a.semana, inicio, fim, nome, funcao: `${ROLE_LABELS[lot.role as Role] ?? lot.role}, CBO ${lot.cbo}` }),
+      late: em.getTime() > prazoDaNegativa(a.semana, cfg.negativa, tz).getTime(),
+      officialRecordId: doSinan.get(`${a.u}|${a.semana}`) ?? null,
+      createdAt: em,
+    });
+  }
+  await db.negativeReport.createMany({ data: linhasAtesto });
+
+  // ── Plano de contingência modelo do MS (2025) em vigor, com o acionamento NORMALIDADE desde o início do ano ──
+  const definicao = JSON.parse(JSON.stringify(PLANO_MODELO_MS_2025)) as typeof PLANO_MODELO_MS_2025;
+  const plano = await db.contingencyPlan.create({
+    data: {
+      scope: 'ARBOVIROSES',
+      name: 'Plano de contingência das arboviroses (modelo do MS, 2025)',
+      version: 1,
+      status: 'VIGENTE',
+      validFrom: dataCivil(inicioAno),
+      source: 'Plano de Contingência Nacional para Dengue, Chikungunya e Zika (MS, 2025), Apêndice B (orientação para os planos municipais)',
+      definition: definicao as object,
+      createdBy: vera,
+      createdAt: as(inicioAno, 9),
+      updatedBy: vera,
+    },
+  });
+  const acionamento = await db.contingencyActivation.create({
+    data: {
+      planId: plano.id,
+      level: 'MUNICIPIO',
+      stage: 'NORMALIDADE',
+      startedOn: dataCivil(inicioAno),
+      startedWeek: `${sem.anoAnalise}01`,
+      justification: 'Início do ano epidemiológico: o município fica na normalidade (preparação) até os indicadores pedirem outro estágio.',
+      indicators: [],
+      decidedBy: vera,
+      decidedAt: as(inicioAno, 10),
+    },
+  });
+  const situacaoDaAcao = (descricao: string) =>
+    /diagrama de controle|revisar o plano/.test(descricao)
+      ? { status: 'FEITA', responsible: 'Vera Lúcia (vigilância epidemiológica)' }
+      : /boletim semanal/.test(descricao)
+        ? { status: 'EM_ANDAMENTO', responsible: 'Vera Lúcia (vigilância epidemiológica)', note: 'Boletim publicado toda segunda-feira no portal da prefeitura.' }
+        : { status: 'PENDENTE' };
+  await db.contingencyActionItem.createMany({
+    data: definicao.acoes
+      .filter((a) => a.estagio === 'NORMALIDADE')
+      .map((a) => ({ activationId: acionamento.id, stage: a.estagio, axis: a.eixo, description: a.descricao, ...situacaoDaAcao(a.descricao), updatedBy: vera })),
+  });
+  // Critérios manuais respondidos na semana de referência (a última completa).
+  const respondidoEm = noPassado(as(diaDa(semanaK(1), 2), 16));
+  await db.contingencyInput.createMany({
+    data: [
+      {
+        planId: plano.id,
+        level: 'MUNICIPIO',
+        epiWeek: sem.ultimaCompleta,
+        criterionId: 'mob-rtpcr',
+        met: false,
+        note: 'Positividade do RT-PCR em 12% nas últimas 4 SE (LACEN; dado sintético).',
+        answeredBy: vera,
+        answeredAt: respondidoEm,
+      },
+      { planId: plano.id, level: 'MUNICIPIO', epiWeek: sem.ultimaCompleta, criterionId: 'mob-sorotipo', met: false, note: 'Sem sorotipo novo no município.', answeredBy: vera, answeredAt: respondidoEm },
+    ],
+  });
+
+  // ── Surto de DTA aberto na escola, registrado pela vigilância municipal, com a planilha de acompanhamento ──
+  const conhecidoSurto = noPassado(as(diaSurto, 8, 30));
+  const anoSurto = Number(diaSurto.slice(0, 4));
+  const seqSurto = ((await db.outbreak.findFirst({ where: { year: anoSurto }, orderBy: { seq: 'desc' }, select: { seq: true } }))?.seq ?? 0) + 1;
+  const investigado = diaDa(semanaSurto, SURTO_DEMO.diaInvestigacao);
+  const investigadoEm = noPassado(as(investigado, 15));
+  const primeiro = diaDa(semanaSurto, SURTO_DEMO.diaSintomas);
+  await db.outbreak.create({
+    data: {
+      year: anoSurto,
+      seq: seqSurto,
+      number: `${anoSurto}/${String(seqSurto).padStart(4, '0')}`,
+      status: 'ABERTO',
+      category: 'DTA',
+      cid: SURTO_DEMO.cid,
+      notifiedOn: dataCivil(diaSurto),
+      knownAt: conhecidoSurto,
+      dueAt: new Date(conhecidoSurto.getTime() + 24 * 3_600_000),
+      esp: false,
+      unitId: c.unit.ubs,
+      notifierId: vera,
+      firstSymptomsOn: dataCivil(primeiro),
+      casesCount: SURTO_DEMO.casos,
+      initialPlace: SURTO_DEMO.localInicial,
+      occurrenceIbge: c.ibgeCode,
+      localityId: sede?.id ?? null,
+      neighborhoodId: centro?.id ?? null,
+      address: SURTO_DEMO.endereco,
+      reference: SURTO_DEMO.referencia,
+      zone: '1',
+      lat: SURTO_DEMO.lat,
+      lng: SURTO_DEMO.lng,
+      investigatedOn: investigado <= hoje ? dataCivil(investigado) : null,
+      transmission: '2',
+      vehicle: '1',
+      observations: SURTO_DEMO.observacoes,
+      investigatorName: 'Vera Lúcia Vigilância Epidemiológica',
+      investigatorRole: 'Enfermeira da vigilância epidemiológica',
+      dta: { ...SURTO_DEMO.dta },
+      createdBy: vera,
+      createdAt: conhecidoSurto,
+      cases: {
+        create: SURTO_DEMO.planilha.map((p, n) => ({
+          caseNumber: n + 1,
+          initials: p.iniciais,
+          sex: p.sexo,
+          ageText: p.idade,
+          residenceIbge: c.ibgeCode,
+          neighborhoodId: centro?.id ?? null,
+          onsetOn: dataCivil(diaDa(semanaSurto, p.dia)),
+          hospitalized: p.hospitalizado,
+          died: false,
+          createdBy: vera,
+          createdAt: conhecidoSurto,
+        })),
+      },
+      events: {
+        create: [
+          { kind: 'CRIADO', payload: { papel: 'VIGILANCIA_EPIDEMIOLOGICA', categoria: 'DTA', casos: SURTO_DEMO.casos, assinatura: null }, byUser: vera, at: conhecidoSurto },
+          ...SURTO_DEMO.planilha.map((_, n) => ({ kind: 'CASO_VINCULADO', payload: { caso: n + 1, manual: true }, byUser: vera, at: conhecidoSurto })),
+          {
+            kind: 'COMUNICADO',
+            payload: {
+              alvo: 'SES',
+              canal: 'TELEFONE',
+              contraparte: 'CIEVS estadual (plantão)',
+              protocolo: `DEMO-SURTO-${anoSurto}-${seqSurto}`,
+              nota: 'Repasse do surto em escola (DTA).',
+              em: noPassado(new Date(conhecidoSurto.getTime() + 2 * 3_600_000)).toISOString(),
+            },
+            byUser: vera,
+            at: noPassado(new Date(conhecidoSurto.getTime() + 2 * 3_600_000)),
+          },
+          ...(investigado <= hoje
+            ? [{ kind: 'INVESTIGADO', payload: { campos: ['investigadoEm', 'modoTransmissao', 'veiculo', 'observacoes', 'dta'], investigadoEm: investigado }, byUser: vera, at: investigadoEm }]
+            : []),
+        ],
+      },
+    },
+  });
 }
 
 export async function seedDemo(opts: SeedOptions) {
@@ -1089,6 +1939,9 @@ export async function seedDemo(opts: SeedOptions) {
         },
       });
     }
+
+    // ── Consolidação e detecção de surto (VIG-1c): depende da malha para o bairro e a localidade ──
+    if (opts.consolidacaoDemo ?? opts.territorioDemo) await consolidacaoDemo(db, { now, timeZone: DEMO_TENANT.timeZone, ibgeCode: DEMO_TENANT.ibgeCode, uf: DEMO_TENANT.uf, unit, staff, patient });
 
     return { tenantId, dbName, skipped: false };
   } finally {

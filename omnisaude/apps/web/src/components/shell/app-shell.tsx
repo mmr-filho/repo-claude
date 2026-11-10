@@ -51,11 +51,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (session.loading || !session.me) return <Spinner className="min-h-dvh" />;
   const me = session.me;
   const items = NAV.filter((n) => (provisional ? n.href === '/configuracoes' : n.any.length === 0 || n.any.some((p) => me.permissions.includes(p))));
+  // Só o item mais específico fica ativo (/vigilancia/consolidacao não acende também /vigilancia).
+  const ativo = items.filter((i) => pathname === i.href || pathname.startsWith(`${i.href}/`)).sort((a, b) => b.href.length - a.href.length)[0]?.href;
 
   const nav = (
     <nav className="flex flex-col gap-0.5 p-3" aria-label="Menu principal">
       {items.map((item) => {
-        const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+        const active = item.href === ativo;
         return (
           <Link
             key={item.href}

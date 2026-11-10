@@ -1,4 +1,5 @@
 import { HttpStatus, Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { tenantSettings, type MasterClient, type TenantClient, type VigilanciaSettings } from '@omnisaude/database';
 import { buildSurveillanceAlertTemplate, normalizeBrazilPhone } from '@omnisaude/messaging';
 import {
@@ -59,6 +60,7 @@ import { PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
 import { MessagingService, type SystemContext } from '../integrations/messaging.service';
 import { CatalogoVigilanciaService, type CondicaoNoRetrato } from './catalogo.service';
 import { CAMPOS_EDITAVEIS, montarFicha, semanasDaFicha, validarFicha, type Ficha } from './ficha';
+import { NegativaService } from './negativa.service';
 
 const DIA = 86_400_000;
 const RESTRITO = 'Agravo de acesso restrito';
@@ -136,6 +138,8 @@ export class NotificacaoService implements OnModuleInit {
     private readonly jobs: JobsService,
     @Inject(MASTER_DB) private readonly master: MasterClient,
     private readonly tenants: TenantsService,
+    /** Serviços da consolidação (VIG-1c) pela referência do módulo: sem ciclo de injeção nem de importação. */
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   onModuleInit() {
@@ -1219,6 +1223,13 @@ export class NotificacaoService implements OnModuleInit {
       await this.audit.record(ctx, tx, { action: 'notificacao.confirmar', entityType: 'Notification', entityId: id, payload: { numero: n.number, agravo: n.conditionKey } });
     });
     await this.avisar(ctx, n, { ouvintes: false });
+    // Notificação negativa (RQ003): a semana da unidade passou a ter notificação e o atesto dela, se houver, cai. A falha
+    // não desfaz a confirmação: fica no registro de erros e o job 'vigilancia' reconcilia depois.
+    try {
+      if (semanas.SEM_NOT) await this.moduleRef.get(NegativaService, { strict: false }).reconciliar(ctx.db, { unitIds: [n.unitId], semanas: [semanas.SEM_NOT] });
+    } catch (err) {
+      this.logger.error(`Negativa da unidade na semana ${semanas.SEM_NOT} (notificação ${n.number}): ${(err as Error).message}`);
+    }
     return this.detalhe(ctx, id);
   }
 
@@ -1752,6 +1763,8 @@ export class NotificacaoService implements OnModuleInit {
     const t = await this.master.tenant.findUniqueOrThrow({ where: { id: ctx.tenant.id } });
     const atual = tenantSettings(t.settings);
     const vigilancia: VigilanciaSettings = {
+      // Mantém o que esta tela não edita (negativa, consolidação e surto, da semana 27).
+      ...atual.vigilancia,
       ackMinutes: input.ackMinutes ?? atual.vigilancia.ackMinutes,
       onCallPhones: telefones ? [...new Set(telefones as string[])] : atual.vigilancia.onCallPhones,
       whatsappAlerts: input.whatsappAlerts ?? atual.vigilancia.whatsappAlerts,
@@ -1789,7 +1802,7 @@ export class NotificacaoService implements OnModuleInit {
    * Tudo idempotente (execuções sobrepostas não duplicam rascunho, alerta nem evento).
    */
   async tarefa(sys: SystemContext, agora = new Date()) {
-    const resultado = { recuperadas: 0, escaladas: 0, vencidas: 0 };
+    const resultado = { recuperadas: 0, escaladas: 0, vencidas: 0, negativasCanceladas: 0, previasExpiradas: 0 };
     const desde = new Date(agora.getTime() - 2 * DIA);
     await this.catalogo.garantir(sys);
     const memo: Memo = { retratos: new Map() };
@@ -1905,6 +1918,22 @@ export class NotificacaoService implements OnModuleInit {
       await sys.db.notificationEvent.create({ data: { notificationId: n.id, kind: 'PRAZO_VENCIDO' } });
       await this.avisar(sys, n, { ouvintes: false });
       resultado.vencidas++;
+    }
+
+    // 4. Notificação negativa (RQ003, VIG-1c): atestos de semanas que passaram a ter notificação, surto ou registro oficial.
+    try {
+      resultado.negativasCanceladas = await this.moduleRef.get(NegativaService, { strict: false }).reconciliar(sys.db);
+    } catch (err) {
+      this.logger.error(`Reconciliação da notificação negativa: ${(err as Error).message}`);
+    }
+
+    // 5. Prévias de importação vencidas (VIG-1c): viram descartadas e perdem o payload. A classe vem por import dinâmico:
+    // a importação depende da conciliação, que depende deste serviço (o import estático fecharia o ciclo).
+    try {
+      const { ImportacaoService } = await import('./importacao.service.js');
+      resultado.previasExpiradas = await this.moduleRef.get(ImportacaoService, { strict: false }).expirarPrevias(sys.db, agora, sys.tenant.settings.vigilancia.consolidacao.expiraPreviaHoras);
+    } catch (err) {
+      this.logger.error(`Expiração das prévias de importação: ${(err as Error).message}`);
     }
     return resultado;
   }

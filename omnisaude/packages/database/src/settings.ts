@@ -1,4 +1,4 @@
-import type { RiskColor, Role } from '@omnisaude/shared';
+import type { RegraSurto, RiskColor, Role } from '@omnisaude/shared';
 
 /** Preferências institucionais guardadas em tenants.settings (master_auth_db). */
 export interface TenantSettings {
@@ -62,6 +62,49 @@ export interface VigilanciaSettings {
   prazosEncerramento: Record<string, number>;
   /** Modelo da comunicação à autoridade policial (nulo = modelo padrão do sistema). */
   modeloPolicial: string | null;
+  /** Notificação negativa semanal das unidades notificantes (VIG-1c). */
+  negativa: NegativaSettings;
+  /** Consolidação das exportações oficiais e diagrama de controle (VIG-1c). */
+  consolidacao: ConsolidacaoSettings;
+  /** Sugestões de surto (VIG-1c). */
+  surto: SurtoSettings;
+}
+
+/**
+ * Prazo, meta e parâmetros da grade da notificação negativa. Não há prazo federal: a SES pactua (ex.: SESPA, segunda
+ * até 14h para a SE anterior). As semanas de "silenciosa" e "só negativas" são escolha local, a validar com a SES.
+ */
+export interface NegativaSettings {
+  /** Dia do prazo do atesto na semana seguinte à SE atestada: 0 = domingo … 6 = sábado. */
+  prazoDiaSemana: number;
+  /** Hora do prazo (HH:MM), no fuso da instituição. */
+  prazoHora: string;
+  /** O atesto fora do prazo conta como informação no percentual da semana. */
+  contaAtrasada: boolean;
+  /** Meta de unidades com informação por semana (%; referência da PFA: 80%). */
+  metaPercentual: number;
+  /** Semanas fechadas seguidas sem informação para a unidade ser silenciosa. */
+  semanasSilenciosa: number;
+  /** Semanas fechadas só com negativa para a unidade aparecer em "só negativas". */
+  semanasSoNegativa: number;
+  /** Semanas seguidas sem nenhuma informação no município (PRC GM/MS nº 6/2017, art. 454-E: 8). */
+  semanasRegularidadeMunicipal: number;
+  /** Quantas semanas fechadas o responsável ainda pode atestar. */
+  semanasAtesto: number;
+}
+
+export interface ConsolidacaoSettings {
+  /** As semanas mais recentes, contando a em curso, ficam como incompletas (atraso de notificação). */
+  semanasIncompletas: number;
+  /** Horas até a prévia não aplicada ser descartada (o payload é apagado). */
+  expiraPreviaHoras: number;
+}
+
+export interface SurtoSettings {
+  /** Regras de sugestão de surto; nulo = as regras padrão do sistema (REGRAS_SURTO_PADRAO). */
+  regras: RegraSurto[] | null;
+  /** Dias sem caso do agravo para o primeiro caso virar "evento inusitado". */
+  diasInusitado: number;
 }
 
 export const DEFAULT_TENANT_SETTINGS: TenantSettings = {
@@ -75,7 +118,17 @@ export const DEFAULT_TENANT_SETTINGS: TenantSettings = {
   assistantEnabled: false,
   assistantName: 'Assistente de saúde',
   assistantFaq: [],
-  vigilancia: { ackMinutes: 60, onCallPhones: [], whatsappAlerts: false, relEnabled: false, prazosEncerramento: {}, modeloPolicial: null },
+  vigilancia: {
+    ackMinutes: 60,
+    onCallPhones: [],
+    whatsappAlerts: false,
+    relEnabled: false,
+    prazosEncerramento: {},
+    modeloPolicial: null,
+    negativa: { prazoDiaSemana: 1, prazoHora: '14:00', contaAtrasada: true, metaPercentual: 80, semanasSilenciosa: 2, semanasSoNegativa: 12, semanasRegularidadeMunicipal: 8, semanasAtesto: 8 },
+    consolidacao: { semanasIncompletas: 2, expiraPreviaHoras: 24 },
+    surto: { regras: null, diasInusitado: 365 },
+  },
   territorio: { numeracaoQuarteirao: 'LOCALIDADE', raioBloqueioM: 150 },
   endemias: { bloqueioAutomatico: true, janelaAgrupamentoDias: 7, gruposBloqueio: ['dengue', 'chikungunya', 'zika'], alertaSemInicioDias: 3 },
 };
@@ -85,7 +138,14 @@ export function tenantSettings(raw: unknown): TenantSettings {
   return {
     ...DEFAULT_TENANT_SETTINGS,
     ...value,
-    vigilancia: { ...DEFAULT_TENANT_SETTINGS.vigilancia, ...(value.vigilancia ?? {}) },
+    vigilancia: {
+      ...DEFAULT_TENANT_SETTINGS.vigilancia,
+      ...(value.vigilancia ?? {}),
+      // Objetos aninhados: o tenant antigo (ou gravado em parte) recebe os campos novos com o padrão.
+      negativa: { ...DEFAULT_TENANT_SETTINGS.vigilancia.negativa, ...(value.vigilancia?.negativa ?? {}) },
+      consolidacao: { ...DEFAULT_TENANT_SETTINGS.vigilancia.consolidacao, ...(value.vigilancia?.consolidacao ?? {}) },
+      surto: { ...DEFAULT_TENANT_SETTINGS.vigilancia.surto, ...(value.vigilancia?.surto ?? {}) },
+    },
     territorio: { ...DEFAULT_TENANT_SETTINGS.territorio, ...(value.territorio ?? {}) },
     endemias: { ...DEFAULT_TENANT_SETTINGS.endemias, ...(value.endemias ?? {}) },
   };

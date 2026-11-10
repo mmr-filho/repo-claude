@@ -68,6 +68,11 @@ model Unit {
   ombudsmanCases OmbudsmanCase[]
   surveys        SatisfactionSurvey[]
   notifications  Notification[]
+  officialRecords       OfficialRecord[]
+  outbreaks             Outbreak[]
+  notifyingPeriods      NotifyingUnit[]
+  notifyingResponsibles NotifyingUnitResponsible[]
+  negativeReports       NegativeReport[]
 }
 
 enum Role {
@@ -121,6 +126,8 @@ model User {
   certificates SigningCertificate[]
   signedDocuments SignedDocument[]
   esusBatches  EsusBatch[]
+  /// Unidades em que responde pela notificação negativa (VIG-1c).
+  negativeResponsibilities NotifyingUnitResponsible[]
 
   @@map("users")
 }
@@ -3064,6 +3071,10 @@ model Notification {
   relatedTo      Notification[]              @relation("NotificationRelated")
   events         NotificationEvent[]
   communications NotificationCommunication[]
+  /// Registro oficial casado (no máximo um: índice parcial official_records_notificacao, só no SQL).
+  officialRecords          OfficialRecord[]
+  officialRecordRejections OfficialRecordRejection[]
+  outbreakCases            OutbreakCase[]
 
   @@unique([year, seq])
   @@index([status, dueAt])
@@ -3448,4 +3459,547 @@ model BlockingOrderAssignee {
   @@id([orderId, userId])
   @@index([userId])
   @@map("blocking_order_assignees")
+}
+
+// ───────────── Vigilância: consolidação, diagrama de controle, contingência, surto e notificação negativa (VIG-1c) ─────────────
+
+enum OfficialImportStatus {
+  PREVIA
+  APLICADA
+  DESCARTADA
+}
+
+/// TP_NOT do Sinan: 2 individual, 1 negativa, 3 surto.
+enum OfficialRecordType {
+  INDIVIDUAL
+  NEGATIVA
+  SURTO
+}
+
+/// Como o registro oficial foi ligado à notificação do OmniSaúde.
+enum RecordMatchMethod {
+  NUMERO_OFICIAL
+  IDENTIDADE
+  MANUAL
+}
+
+enum TerritoryLevel {
+  MUNICIPIO
+  LOCALIDADE
+  BAIRRO
+}
+
+enum PopulationSource {
+  IBGE_DOU
+  RIPSA
+  CENSO_2022
+  MANUAL
+}
+
+enum ContingencyPlanStatus {
+  RASCUNHO
+  VIGENTE
+  ARQUIVADO
+}
+
+enum OutbreakStatus {
+  ABERTO
+  ENCERRADO
+  DESCARTADO
+}
+
+/// Por que o surto vai ao módulo de surto do Sinan (manual 3.1.1 e 5.3.1).
+enum OutbreakCategory {
+  SINDROMICO
+  FORA_DA_LISTA
+  DA_LISTA
+  DTA
+}
+
+enum NegativeReportStatus {
+  ATESTADA
+  CANCELADA
+  ANULADA
+}
+
+/// Envio de exportação oficial (arquivo solto ou zip). O mesmo SHA-256 não é aplicado duas vezes (índice único parcial
+/// official_imports_sha_aplicado, só no SQL).
+model OfficialImport {
+  id             String               @id @default(uuid(7)) @db.Uuid
+  /// Sistema predominante do envio.
+  system         OfficialSystem
+  status         OfficialImportStatus @default(PREVIA)
+  fileName       String               @map("file_name")
+  sha256         String               @db.Char(64)
+  sizeBytes      Int                  @map("size_bytes")
+  /// ArquivoDetectado[] (contratos em @omnisaude/shared).
+  files          Json                 @default("[]")
+  periodFrom     DateTime?            @map("period_from") @db.Date
+  periodTo       DateTime?            @map("period_to") @db.Date
+  declaredPeriod Boolean              @default(false) @map("declared_period")
+  /// O envio trouxe a identificação do paciente.
+  identified     Boolean              @default(false)
+  /// ContagensImportacao.
+  counts         Json                 @default("{}")
+  /// PreviaImportacao: amostras para a tela (até 200 por lista).
+  preview        Json?
+  /// Registros normalizados (JSON com gzip); nulo depois de aplicar, descartar ou expirar.
+  payload        Bytes?
+  /// string[]
+  warnings       Json                 @default("[]")
+  createdBy      String               @map("created_by") @db.Uuid
+  createdAt      DateTime             @default(now()) @map("created_at")
+  appliedBy      String?              @map("applied_by") @db.Uuid
+  appliedAt      DateTime?            @map("applied_at")
+  discardedBy    String?              @map("discarded_by") @db.Uuid
+  discardedAt    DateTime?            @map("discarded_at")
+
+  firstRecords OfficialRecord[] @relation("OfficialRecordFirstImport")
+  lastRecords  OfficialRecord[] @relation("OfficialRecordLastImport")
+
+  @@index([status, createdAt])
+  @@index([sha256])
+  @@map("official_imports")
+}
+
+/// Registro consolidado de um sistema oficial, único pela chave natural do sistema. Uma notificação do OmniSaúde casa
+/// com um registro só (índice único parcial official_records_notificacao, só no SQL).
+model OfficialRecord {
+  id               String             @id @default(uuid(7)) @db.Uuid
+  system           OfficialSystem
+  type             OfficialRecordType
+  naturalKey       String             @map("natural_key")
+  number           String             @db.VarChar(20)
+  notifiedOn       DateTime           @map("notified_on") @db.Date
+  epiWeekNotified  String?            @map("epi_week_notified") @db.Char(6)
+  municipalityIbge String?            @map("municipality_ibge") @db.VarChar(7)
+  unitCnes         String?            @map("unit_cnes") @db.VarChar(7)
+  unitId           String?            @map("unit_id") @db.Uuid
+  agravo           String?            @db.VarChar(8)
+  /// CS_SUSPEIT (B09: 1 sarampo, 2 rubéola; G03.9: 1 doença meningocócica, 2 outras).
+  suspectedType    String?            @map("suspected_type") @db.VarChar(2)
+  groupKey         String?            @map("group_key") @db.VarChar(40)
+  symptomsOnset    DateTime?          @map("symptoms_onset") @db.Date
+  epiWeekOnset     String?            @map("epi_week_onset") @db.Char(6)
+  residenceIbge    String?            @map("residence_ibge") @db.VarChar(7)
+  neighborhoodCode String?            @map("neighborhood_code") @db.VarChar(20)
+  neighborhoodName String?            @map("neighborhood_name")
+  finalClass       String?            @map("final_class") @db.VarChar(2)
+  criterion        String?            @db.VarChar(2)
+  evolution        String?            @db.VarChar(2)
+  closedOn         DateTime?          @map("closed_on") @db.Date
+  deathOn          DateTime?          @map("death_on") @db.Date
+  /// CONFIRMADO, DESCARTADO, INCONCLUSIVO ou EM_INVESTIGACAO.
+  situation        String             @db.VarChar(16)
+  /// SINAIS_ALARME, GRAVE ou nulo (dengue: CLASSI_FIN 11 e 12).
+  severity         String?            @db.VarChar(16)
+  /// Cancelado (e-SUS Notifica), excluída (e-SUS Sinan) ou NDUPLIC_N = 2.
+  excluded         Boolean            @default(false)
+  sensitive        Boolean            @default(false)
+  patientName      String?            @map("patient_name")
+  patientNameNorm  String?            @map("patient_name_norm")
+  birthDate        DateTime?          @map("birth_date") @db.Date
+  sex              String?            @db.Char(1)
+  motherNameNorm   String?            @map("mother_name_norm")
+  cns              String?            @db.VarChar(15)
+  cpf              String?            @db.VarChar(11)
+  /// Extras normalizados e "_fontes" (campo -> tipo de arquivo que o gravou).
+  data             Json               @default("{}")
+  contentHash      String             @map("content_hash") @db.Char(64)
+  firstImportId    String             @map("first_import_id") @db.Uuid
+  lastImportId     String             @map("last_import_id") @db.Uuid
+  lastSeenAt       DateTime           @map("last_seen_at")
+  /// O registro não veio na última exportação do mesmo sistema, tipo, agravos e período.
+  absentSince      DateTime?          @map("absent_since")
+  notificationId   String?            @map("notification_id") @db.Uuid
+  matchMethod      RecordMatchMethod? @map("match_method")
+  matchedBy        String?            @map("matched_by") @db.Uuid
+  matchedAt        DateTime?          @map("matched_at")
+  /// DivergenciaPar[] (situação, evolução, encerramento).
+  divergences      Json?
+  createdAt        DateTime           @default(now()) @map("created_at")
+  updatedAt        DateTime           @updatedAt @map("updated_at")
+
+  unit            Unit?                     @relation(fields: [unitId], references: [id])
+  firstImport     OfficialImport            @relation("OfficialRecordFirstImport", fields: [firstImportId], references: [id])
+  lastImport      OfficialImport            @relation("OfficialRecordLastImport", fields: [lastImportId], references: [id])
+  notification    Notification?             @relation(fields: [notificationId], references: [id])
+  rejections      OfficialRecordRejection[]
+  outbreakCases   OutbreakCase[]
+  negativeReports NegativeReport[]
+
+  @@unique([system, type, naturalKey])
+  @@index([groupKey, epiWeekOnset])
+  @@index([unitCnes, epiWeekNotified])
+  @@index([type, epiWeekNotified])
+  @@index([cns])
+  @@index([cpf])
+  @@index([patientNameNorm, birthDate])
+  @@map("official_records")
+}
+
+/// "Não é o mesmo caso": o par não é sugerido de novo na conciliação.
+model OfficialRecordRejection {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  recordId       String   @map("record_id") @db.Uuid
+  notificationId String   @map("notification_id") @db.Uuid
+  reason         String
+  rejectedBy     String   @map("rejected_by") @db.Uuid
+  rejectedAt     DateTime @default(now()) @map("rejected_at")
+
+  record       OfficialRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  notification Notification   @relation(fields: [notificationId], references: [id])
+
+  @@unique([recordId, notificationId])
+  @@map("official_record_rejections")
+}
+
+/// Estimativa de população por ano, território, fonte e versão. O município não tem território (territoryId nulo); a
+/// localidade e o bairro apontam para localities e neighborhoods. A chave única usa COALESCE no territoryId
+/// (population_estimates_chave) e fica só no SQL, com a verificação nível × território.
+model PopulationEstimate {
+  id          String           @id @default(uuid(7)) @db.Uuid
+  year        Int
+  level       TerritoryLevel
+  territoryId String?          @map("territory_id") @db.Uuid
+  population  Int
+  source      PopulationSource
+  version     String           @default("") @db.VarChar(20)
+  notes       String?
+  createdBy   String?          @map("created_by") @db.Uuid
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  @@map("population_estimates")
+}
+
+/// Receita do diagrama de controle por agravo (ReceitaCanal), anos excluídos e população usada.
+model DiagramSetting {
+  groupKey          String            @id @map("group_key") @db.VarChar(40)
+  recipe            Json
+  /// [{ano, motivo}]
+  excludedYears     Json              @default("[]") @map("excluded_years")
+  populationSource  PopulationSource? @map("population_source")
+  populationVersion String?           @map("population_version") @db.VarChar(20)
+  updatedBy         String?           @map("updated_by") @db.Uuid
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  @@map("diagram_settings")
+}
+
+/// Canal congelado por agravo, território e ano, com versão. Os índices únicos (control_channels_versao e o parcial
+/// control_channels_ativo, um ativo por vez) usam COALESCE no territoryId e ficam só no SQL.
+model ControlChannel {
+  id                String            @id @default(uuid(7)) @db.Uuid
+  groupKey          String            @map("group_key") @db.VarChar(40)
+  level             TerritoryLevel
+  territoryId       String?           @map("territory_id") @db.Uuid
+  year              Int
+  version           Int
+  active            Boolean           @default(true)
+  recipe            Json
+  populationSource  PopulationSource? @map("population_source")
+  populationVersion String?           @map("population_version") @db.VarChar(20)
+  referenceYears    Int[]             @map("reference_years")
+  /// SemanaCanal[] (52 posições).
+  weeks             Json
+  notes             String?
+  computedBy        String            @map("computed_by") @db.Uuid
+  computedAt        DateTime          @default(now()) @map("computed_at")
+
+  @@map("control_channels")
+}
+
+/// Plano de contingência (PlanoContingencia em definition). Um vigente por escopo (índice parcial
+/// contingency_plans_vigente, só no SQL).
+model ContingencyPlan {
+  id         String                @id @default(uuid(7)) @db.Uuid
+  scope      String                @default("ARBOVIROSES") @db.VarChar(40)
+  name       String
+  version    Int                   @default(1)
+  status     ContingencyPlanStatus @default(RASCUNHO)
+  validFrom  DateTime?             @map("valid_from") @db.Date
+  validTo    DateTime?             @map("valid_to") @db.Date
+  source     String?
+  definition Json
+  createdBy  String?               @map("created_by") @db.Uuid
+  createdAt  DateTime              @default(now()) @map("created_at")
+  updatedBy  String?               @map("updated_by") @db.Uuid
+  updatedAt  DateTime              @updatedAt @map("updated_at")
+
+  activations ContingencyActivation[]
+  inputs      ContingencyInput[]
+
+  @@map("contingency_plans")
+}
+
+/// Estágio acionado pela vigilância, com vigência (um aberto por plano e território: índice parcial
+/// contingency_activations_aberta, com COALESCE, só no SQL).
+model ContingencyActivation {
+  id            String         @id @default(uuid(7)) @db.Uuid
+  planId        String         @map("plan_id") @db.Uuid
+  level         TerritoryLevel @default(MUNICIPIO)
+  territoryId   String?        @map("territory_id") @db.Uuid
+  stage         String         @db.VarChar(30)
+  startedOn     DateTime       @map("started_on") @db.Date
+  startedWeek   String         @map("started_week") @db.Char(6)
+  endedOn       DateTime?      @map("ended_on") @db.Date
+  endedWeek     String?        @map("ended_week") @db.Char(6)
+  justification String
+  act           String?
+  /// Retrato dos indicadores (IndicadoresAgravo[]) no acionamento.
+  indicators    Json
+  decidedBy     String         @map("decided_by") @db.Uuid
+  decidedAt     DateTime       @default(now()) @map("decided_at")
+
+  plan        ContingencyPlan         @relation(fields: [planId], references: [id])
+  actionItems ContingencyActionItem[]
+
+  @@map("contingency_activations")
+}
+
+/// Critério manual respondido na semana (chave única com COALESCE, contingency_inputs_chave, só no SQL).
+model ContingencyInput {
+  id          String         @id @default(uuid(7)) @db.Uuid
+  planId      String         @map("plan_id") @db.Uuid
+  level       TerritoryLevel @default(MUNICIPIO)
+  territoryId String?        @map("territory_id") @db.Uuid
+  epiWeek     String         @map("epi_week") @db.Char(6)
+  criterionId String         @map("criterion_id") @db.VarChar(40)
+  met         Boolean
+  note        String?
+  answeredBy  String         @map("answered_by") @db.Uuid
+  answeredAt  DateTime       @default(now()) @map("answered_at")
+
+  plan ContingencyPlan @relation(fields: [planId], references: [id])
+
+  @@map("contingency_inputs")
+}
+
+/// Ação do checklist do acionamento.
+model ContingencyActionItem {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  activationId String   @map("activation_id") @db.Uuid
+  stage        String   @db.VarChar(30)
+  axis         String   @db.VarChar(30)
+  description  String
+  /// PENDENTE, EM_ANDAMENTO, FEITA ou NAO_SE_APLICA.
+  status       String   @default("PENDENTE") @db.VarChar(16)
+  responsible  String?
+  note         String?
+  updatedBy    String?  @map("updated_by") @db.Uuid
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  activation ContingencyActivation @relation(fields: [activationId], references: [id], onDelete: Cascade)
+
+  @@index([activationId])
+  @@map("contingency_action_items")
+}
+
+/// Notificação de surto (tipo 3 da ficha do Sinan Net), sem paciente. Numeração interna "AAAA/NNNN".
+model Outbreak {
+  id               String           @id @default(uuid(7)) @db.Uuid
+  year             Int
+  seq              Int
+  number           String           @unique @db.VarChar(12)
+  status           OutbreakStatus   @default(ABERTO)
+  category         OutbreakCategory
+  groupKey         String?          @map("group_key") @db.VarChar(40)
+  syndrome         String?          @db.VarChar(40)
+  cid              String?          @db.VarChar(6)
+  agentText        String?          @map("agent_text")
+  notifiedOn       DateTime         @map("notified_on") @db.Date
+  knownAt          DateTime         @map("known_at")
+  dueAt            DateTime         @map("due_at")
+  /// Emergência de saúde pública (item 22 da lista): também SES e MS em 24 h.
+  esp              Boolean          @default(false)
+  unitId           String           @map("unit_id") @db.Uuid
+  notifierId       String           @map("notifier_id") @db.Uuid
+  firstSymptomsOn  DateTime         @map("first_symptoms_on") @db.Date
+  casesCount       Int              @map("cases_count")
+  /// CS_LOCAL (1 a 11) e NM_LOCAL.
+  initialPlace     String           @map("initial_place") @db.VarChar(2)
+  initialPlaceText String?          @map("initial_place_text")
+  occurrenceIbge   String?          @map("occurrence_ibge") @db.VarChar(7)
+  localityId       String?          @map("locality_id") @db.Uuid
+  neighborhoodId   String?          @map("neighborhood_id") @db.Uuid
+  address          String?
+  reference        String?
+  zone             String?          @db.VarChar(1)
+  lat              Float?
+  lng              Float?
+  investigatedOn   DateTime?        @map("investigated_on") @db.Date
+  /// CS_TRANS.
+  transmission     String?          @db.VarChar(1)
+  /// TP_INDIRET (veículo codificado).
+  vehicle          String?          @db.VarChar(1)
+  /// CS_VEICULO (texto do "outro").
+  vehicleText      String?          @map("vehicle_text") @db.VarChar(50)
+  observations     String?
+  investigatorName String?          @map("investigator_name")
+  investigatorRole String?          @map("investigator_role")
+  /// Ficha de surto de DTA (campos 27 a 60).
+  dta              Json?
+  delimitation     String?          @db.VarChar(2)
+  delimitationText String?          @map("delimitation_text")
+  closedOn         DateTime?        @map("closed_on") @db.Date
+  closingNotes     String?          @map("closing_notes")
+  closedBy         String?          @map("closed_by") @db.Uuid
+  discardReason    String?          @map("discard_reason")
+  discardedBy      String?          @map("discarded_by") @db.Uuid
+  discardedAt      DateTime?        @map("discarded_at")
+  officialNumber   String?          @map("official_number") @db.VarChar(7)
+  enteredBy        String?          @map("entered_by") @db.Uuid
+  enteredAt        DateTime?        @map("entered_at")
+  /// Sugestão que originou o surto (assinatura, regra e casos).
+  signal           Json?
+  createdBy        String           @map("created_by") @db.Uuid
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  unit   Unit            @relation(fields: [unitId], references: [id])
+  cases  OutbreakCase[]
+  events OutbreakEvent[]
+
+  @@unique([year, seq])
+  @@index([status, notifiedOn])
+  @@index([unitId, notifiedOn])
+  @@map("outbreaks")
+}
+
+/// Linha da planilha de acompanhamento do surto. A mesma notificação entra uma vez em cada surto (índice parcial
+/// outbreak_cases_notificacao, só no SQL).
+model OutbreakCase {
+  id               String    @id @default(uuid(7)) @db.Uuid
+  outbreakId       String    @map("outbreak_id") @db.Uuid
+  caseNumber       Int       @map("case_number")
+  notificationId   String?   @map("notification_id") @db.Uuid
+  officialRecordId String?   @map("official_record_id") @db.Uuid
+  initials         String?   @db.VarChar(15)
+  sex              String?   @db.Char(1)
+  ageText          String?   @map("age_text") @db.VarChar(10)
+  residenceIbge    String?   @map("residence_ibge") @db.VarChar(7)
+  neighborhoodId   String?   @map("neighborhood_id") @db.Uuid
+  onsetOn          DateTime? @map("onset_on") @db.Date
+  hospitalized     Boolean?
+  died             Boolean?
+  finalClass       String?   @map("final_class") @db.VarChar(1)
+  criterion        String?   @db.VarChar(1)
+  finalCid         String?   @map("final_cid") @db.VarChar(6)
+  createdBy        String?   @map("created_by") @db.Uuid
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  outbreak       Outbreak        @relation(fields: [outbreakId], references: [id], onDelete: Cascade)
+  notification   Notification?   @relation(fields: [notificationId], references: [id])
+  officialRecord OfficialRecord? @relation(fields: [officialRecordId], references: [id])
+
+  @@unique([outbreakId, caseNumber])
+  @@map("outbreak_cases")
+}
+
+/// Linha do tempo do surto: CRIADO, EDITADO, COMUNICADO, CASO_VINCULADO, CASO_RETIRADO, INVESTIGADO, ENCERRADO,
+/// DESCARTADO, NUMERO_OFICIAL.
+model OutbreakEvent {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  outbreakId String   @map("outbreak_id") @db.Uuid
+  kind       String   @db.VarChar(30)
+  payload    Json     @default("{}")
+  byUser     String?  @map("by_user") @db.Uuid
+  at         DateTime @default(now())
+
+  outbreak Outbreak @relation(fields: [outbreakId], references: [id], onDelete: Cascade)
+
+  @@index([outbreakId, at])
+  @@map("outbreak_events")
+}
+
+/// Sugestão de surto dispensada: vale enquanto não aparecer caso conhecido depois de untilKnownAt.
+model OutbreakDismissal {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  signature    String
+  ruleId       String?  @map("rule_id") @db.VarChar(40)
+  groupKey     String?  @map("group_key") @db.VarChar(40)
+  linkKind     String?  @map("link_kind") @db.VarChar(20)
+  linkId       String?  @map("link_id")
+  untilKnownAt DateTime @map("until_known_at")
+  reason       String
+  dismissedBy  String   @map("dismissed_by") @db.Uuid
+  dismissedAt  DateTime @default(now()) @map("dismissed_at")
+
+  @@index([signature])
+  @@map("outbreak_dismissals")
+}
+
+/// Período em que a unidade é notificante (denominador da negativa e da grade). Um período aberto por unidade (índice
+/// parcial notifying_units_aberto, só no SQL).
+model NotifyingUnit {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  unitId    String    @map("unit_id") @db.Uuid
+  since     DateTime  @db.Date
+  until     DateTime? @db.Date
+  endReason String?   @map("end_reason")
+  createdBy String?   @map("created_by") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at")
+  endedBy   String?   @map("ended_by") @db.Uuid
+  endedAt   DateTime? @map("ended_at")
+
+  unit Unit @relation(fields: [unitId], references: [id])
+
+  @@index([unitId, since])
+  @@map("notifying_units")
+}
+
+/// Quem atesta a negativa da unidade (TITULAR ou SUBSTITUTO). Uma designação ativa por usuário e unidade (índice
+/// parcial notifying_unit_responsibles_ativo, só no SQL).
+model NotifyingUnitResponsible {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  unitId       String    @map("unit_id") @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  /// TITULAR ou SUBSTITUTO.
+  kind         String    @db.VarChar(12)
+  since        DateTime  @db.Date
+  until        DateTime? @db.Date
+  designatedBy String    @map("designated_by") @db.Uuid
+  designatedAt DateTime  @default(now()) @map("designated_at")
+  revokedBy    String?   @map("revoked_by") @db.Uuid
+  revokedAt    DateTime? @map("revoked_at")
+
+  unit Unit @relation(fields: [unitId], references: [id])
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("notifying_unit_responsibles")
+}
+
+/// Atesto da notificação negativa semanal. Um ATESTADA por unidade e semana (índice parcial negative_reports_atestada,
+/// só no SQL); cancelado quando aparece notificação, surto ou registro oficial da unidade na semana (RQ003).
+model NegativeReport {
+  id                  String               @id @default(uuid(7)) @db.Uuid
+  unitId              String               @map("unit_id") @db.Uuid
+  epiWeek             String               @map("epi_week") @db.Char(6)
+  status              NegativeReportStatus @default(ATESTADA)
+  attestedBy          String               @map("attested_by") @db.Uuid
+  attestedAt          DateTime             @map("attested_at")
+  attesterName        String               @map("attester_name")
+  attesterRole        String?              @map("attester_role")
+  attesterCbo         String?              @map("attester_cbo") @db.Char(6)
+  onBehalf            Boolean              @default(false) @map("on_behalf")
+  onBehalfReason      String?              @map("on_behalf_reason")
+  declaration         String
+  late                Boolean              @default(false)
+  cancelledAt         DateTime?            @map("cancelled_at")
+  cancelledBy         String?              @map("cancelled_by") @db.Uuid
+  cancelReason        String?              @map("cancel_reason")
+  causeNotificationId String?              @map("cause_notification_id") @db.Uuid
+  causeRecordId       String?              @map("cause_record_id") @db.Uuid
+  causeOutbreakId     String?              @map("cause_outbreak_id") @db.Uuid
+  /// Negativa do Sinan (NNEGANET) casada com o atesto.
+  officialRecordId    String?              @map("official_record_id") @db.Uuid
+  createdAt           DateTime             @default(now()) @map("created_at")
+
+  unit           Unit            @relation(fields: [unitId], references: [id])
+  officialRecord OfficialRecord? @relation(fields: [officialRecordId], references: [id])
+
+  @@index([epiWeek])
+  @@map("negative_reports")
 }

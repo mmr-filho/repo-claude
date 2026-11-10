@@ -74,6 +74,16 @@ export const PERMISSIONS = [
   'vigilancia.investigar',
   /** Exportação no layout do dicionário de dados do Sinan (lista nominal). */
   'vigilancia.exportar',
+  /** Importar as exportações oficiais (Sinan, e-SUS) e conciliar com as notificações: dados identificados (VIG-1c). */
+  'vigilancia.importar',
+  /** Receitas do diagrama, população, canal congelado, unidades notificantes e responsáveis, anular atesto e atestar em nome da unidade. */
+  'vigilancia.consolidacao',
+  /** Plano de contingência: critérios manuais, acionamento de estágio, edição e vigência do plano, checklist de ações. */
+  'vigilancia.contingencia',
+  /** Sugestões e notificações de surto (o núcleo só das unidades em que está lotado). */
+  'vigilancia.surto',
+  /** Tela do atesto da notificação negativa semanal (atestar exige ser responsável designado da unidade). */
+  'notificacao.negativa',
   'pulseira.emitir',
   'triagem.registrar',
   'prontuario.ler',
@@ -170,6 +180,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   ],
   ENFERMAGEM: [
     'notificacao.registrar',
+    'notificacao.negativa',
     'tfd.ler',
     'transporte.ler',
     'leitos_rede.ler',
@@ -196,6 +207,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   ],
   MEDICO: [
     'notificacao.registrar',
+    'notificacao.negativa',
     'leitos_rede.solicitar',
     'leitos_rede.ler',
     'aih.solicitar',
@@ -221,6 +233,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   ],
   MULTIPROFISSIONAL: [
     'notificacao.registrar',
+    'notificacao.negativa',
     'regulacao.solicitar',
     'regulacao.ler',
     'vacinas.ler',
@@ -236,6 +249,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   ],
   SERVICO_SOCIAL: [
     'notificacao.registrar',
+    'notificacao.negativa',
     'ouvidoria.ler',
     'ouvidoria.registrar',
     'ouvidoria.gerir',
@@ -257,6 +271,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   ],
   NIR: [
     'notificacao.registrar',
+    'notificacao.negativa',
     ...COMMON,
     'prontuario.ler',
     'leitos.ler',
@@ -278,6 +293,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   ],
   FARMACIA: [
     'notificacao.registrar',
+    'notificacao.negativa',
     'vacinas.ler',
     ...COMMON,
     'prontuario.ler',
@@ -292,6 +308,7 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   FATURAMENTO: ['aih.ler', 'aps.indicadores', ...COMMON, 'prontuario.ler', 'faturamento.ler', 'faturamento.criticar', 'faturamento.exportar', 'sigtap.sincronizar', 'auditoria.ler', 'esus.ler', 'esus.gerir'],
   GESTOR: [
     'vigilancia.resumo',
+    'notificacao.negativa',
     'endemias.ler',
     'assistente.ler',
     'assistente.responder',
@@ -351,6 +368,11 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vigilancia.investigar',
     'vigilancia.exportar',
     'vigilancia.mapa',
+    'vigilancia.importar',
+    'vigilancia.consolidacao',
+    'vigilancia.contingencia',
+    'vigilancia.surto',
+    'notificacao.negativa',
     'territorio.ler',
     'territorio.editar',
     'vacinas.ler',
@@ -365,6 +387,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
     'vigilancia.digitar',
     'vigilancia.investigar',
     'vigilancia.mapa',
+    'vigilancia.surto',
+    'notificacao.negativa',
     'territorio.ler',
     'vacinas.ler',
   ],

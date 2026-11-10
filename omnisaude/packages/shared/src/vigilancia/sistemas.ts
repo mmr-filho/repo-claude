@@ -14,8 +14,17 @@ export const SISTEMA_INFO: Record<SistemaOficial, { label: string; digitacao: bo
   SINAN_ONLINE: { label: 'Sinan Online (dengue e chikungunya)', digitacao: true, numero: { padrao: /^\d{1,12}$/, dica: 'número da notificação no Sinan Online (só dígitos)' } },
   /** Dicionário de dados da notificação do e-SUS Sinan: nu_notificacao Numérico(12), UFAANNNNNNNN, gerado pelo sistema. */
   ESUS_SINAN: { label: 'e-SUS Sinan', digitacao: true, numero: { padrao: /^[1-5]\d{11}$/, dica: '12 dígitos gerados pelo e-SUS Sinan: código IBGE da UF, ano com 2 dígitos e sequencial' } },
-  /** Gerado pelo sistema; o formato observado é de 12 dígitos (UF, ano e sequencial), por isso a validação é larga. */
-  ESUS_NOTIFICA: { label: 'e-SUS Notifica', digitacao: true, numero: { padrao: /^\d{8,15}$/, dica: 'número gerado pelo e-SUS Notifica (em geral 12 dígitos)' } },
+  /**
+   * Gerado pelo sistema. Formato documentado pelo DATASUS (dicionários da exportação, 11/2022, e da API, 12/2022): 12
+   * dígitos, UF + ano com 2 dígitos + 8 (UFAA + 8, desde 23/04/2020; nas notificações antigas, AAUF + 8); o ESAVI usa 14
+   * dígitos. Os "00" do modelo UFAA00NNNNNN não são fixos (o sequencial de SP passou de 999.999 por ano). A validação
+   * fica larga porque há fichas sem formato documentado.
+   */
+  ESUS_NOTIFICA: {
+    label: 'e-SUS Notifica',
+    digitacao: true,
+    numero: { padrao: /^\d{8,15}$/, dica: 'número gerado pelo e-SUS Notifica: 12 dígitos (UF, ano com 2 dígitos e sequencial de 8); no ESAVI, 14 dígitos' },
+  },
   /** NU_NOTIFIC do Sivep-Gripe: o 1º dígito é o tipo da ficha (3 = Srag hospitalizado); 12 dígitos até 2022, 14 nos dados de 2023 em diante. */
   SIVEP_GRIPE: { label: 'Sivep-Gripe', digitacao: true, numero: { padrao: /^(\d{12}|\d{14})$/, dica: 'número da ficha no Sivep-Gripe (12 ou 14 dígitos; na Srag hospitalizada começa com 3)' } },
   SINASC_SIM: { label: 'Declaração de nascido vivo (Sinasc) ou de óbito (SIM)', digitacao: false, numero: { padrao: /^\d{8,11}$/, dica: 'número da DNV ou da DO' } },
@@ -121,8 +130,9 @@ export function rotaDoAgravo<R extends { groupKey: string; conditionKey: string;
  * Agravo do Sinan Net para a chave do NU_NOTIFIC (número + data + município + agravo), como `base` ou
  * `base:variante`. Difere do grupo do OmniSaúde onde o Sinan tem outra divisão: as violências (interpessoal, sexual
  * e tentativa de suicídio) são uma ficha só; a sífilis tem três (adquirida, em gestante e congênita); tétano
- * (acidental e neonatal), toxoplasmose (gestacional e congênita) e sarampo/rubéola são agravos distintos. A variante
- * vem do CID, do subitem do catálogo ou, na sífilis, da gestação (campo 12); sem nada disso fica só a base
+ * (acidental e neonatal) e toxoplasmose (gestacional e congênita) são agravos distintos. Sarampo e rubéola são o
+ * MESMO agravo (ID_AGRAVO B09; o CS_SUSPEIT 1/2 não é campo-chave), como as meningites (G03.9, um grupo só). A
+ * variante vem do CID, do subitem do catálogo ou, na sífilis, da gestação (campo 12); sem nada disso fica só a base
  * (notificação manual sem CID), que casa com qualquer variante do mesmo grupo.
  */
 export function agravoSinanDaChave(groupKey: string, code: string | null | undefined, gestante = false, conditionKey?: string | null): string {
@@ -139,8 +149,6 @@ export function agravoSinanDaChave(groupKey: string, code: string | null | undef
       return com('tetano', c.startsWith('A33') || k.endsWith('neonatal') ? 'neonatal' : c || k.endsWith('acidental') ? 'acidental' : null);
     case 'toxoplasmose-gestacional-congenita':
       return com('toxoplasmose', c.startsWith('P371') ? 'congenita' : c ? 'gestacional' : null);
-    case 'sarampo-rubeola':
-      return com('sarampo-rubeola', c.startsWith('B06') ? 'rubeola' : c.startsWith('B05') ? 'sarampo' : null);
     default:
       return groupKey;
   }
@@ -301,12 +309,13 @@ export function numeracaoConclusao(grupo: string) {
 }
 
 /**
- * Prazos de encerramento oportuno de referência (Manual de Normas e Rotinas do Sinan, 2ª ed., 2007, item 4.5.3;
- * modelo de informação do e-SUS Sinan: Oropouche em 60 dias). Não vêm ligados: a vigilância aplica se quiser.
- * Tuberculose e hanseníase encerram com o fim do tratamento e ficam fora.
+ * Prazos de encerramento oportuno de referência (Manual de Normas e Rotinas do Sinan, 2ª ed., 2007, item 4.5.3, com a
+ * errata do GT-Sinan de 01/11/2007; modelo de informação do e-SUS Sinan: Oropouche em 60 dias). Não vêm ligados: a
+ * vigilância aplica se quiser. Tuberculose e hanseníase encerram com o fim do tratamento e ficam fora.
  */
 export const PRAZOS_ENCERRAMENTO_REFERENCIA: { grupos: string[]; dias: number; fonte: string }[] = [
-  { grupos: ['hepatites-virais', 'lta', 'leishmaniose-visceral'], dias: 180, fonte: 'Manual de Normas e Rotinas do Sinan (2007), item 4.5.3' },
+  { grupos: ['hepatites-virais', 'lta'], dias: 180, fonte: 'Manual de Normas e Rotinas do Sinan (2007), item 4.5.3' },
+  { grupos: ['leishmaniose-visceral'], dias: 60, fonte: 'Errata do Manual de Normas e Rotinas do Sinan (GT-Sinan, 01/11/2007), pp. 29 e 38' },
   { grupos: ['oropouche'], dias: 60, fonte: 'Modelo de informação do e-SUS Sinan v2.0.2 (prazo de oportunidade)' },
 ];
 /** Demais agravos agudos: 60 dias após a notificação (mesma fonte). */
