@@ -361,16 +361,29 @@ diagrama bate com a planilha; a unidade silenciosa aparece.
 
 Sem regra federal: o prazo da negativa (dia e hora), o número de semanas da "unidade silenciosa" e o formato do atesto.
 O padrão segue a NT SESPA nº 01/2025 (segunda-feira até 14h, para a SE anterior) e fica nas configurações da
-instituição (sem tela de edição nesta semana: ver *Pontos de atenção*).
+instituição, editáveis em *Notificação negativa > Prazos e parâmetros*.
 
 ### Importação e conciliação
 
-- **Envio** (zip, DBF ou CSV, até 95 MB; zip até 600 MB descompactado): o tipo de cada arquivo é **detectado pelo
-  conteúdo**, nunca pelo nome: NINDINET, DBF de agravo, NNEGANET, NSURTNET, DENGON, CHIKON, CSV do e-SUS Notifica,
-  CSV do e-SUS Sinan; tabelas do Sinan (MUNICNET, REGIONET...) ficam de fora com aviso.
+- **Envio** (zip, DBF ou CSV, até 95 MB): o tipo de cada arquivo é **detectado pelo conteúdo**, nunca pelo nome:
+  NINDINET, DBF de agravo, NNEGANET, NSURTNET, DENGON, CHIKON, CSV do e-SUS Notifica, CSV do e-SUS Sinan; tabelas do
+  Sinan (MUNICNET, REGIONET...) e a planilha de acompanhamento do surto (NU_CASO) ficam de fora com aviso.
+- **Leitura em fluxo**: o zip é aberto pelo diretório central e cada arquivo é descompactado em pedaços, com o tamanho
+  real e o CRC conferidos (o arquivo que descompacta mais do que o zip declara é recusado no primeiro pedaço). CSV e
+  DBF são lidos em pedaços, só nas colunas usadas, e os registros normalizados vão para um arquivo temporário. Tetos:
+  **150 MB descompactados e 400 mil registros por envio**; acima disso, a mensagem pede para exportar um ano por vez.
+  Arquivo do zip com senha ou compressão diferente de deflate fica de fora, com aviso. Uma prévia ou aplicação por vez
+  (a outra recebe "Outra importação está sendo processada agora").
 - **DBF**: código de página pelo byte 29 (0x25 e 0x02 CP850, 0x01 CP437, 0x24 CP860, CP1252); sem marca (0x00), vence
   a página que acerta mais letras portuguesas (empate: CP850). A tela mostra a codificação e permite trocar e refazer a
-  prévia. Datas vazias viram nulo; arquivo regravado pelo R (cabeçalho de 26/07/1995) recebe aviso.
+  prévia. Datas vazias viram nulo; arquivo regravado pelo R (cabeçalho de 26/07/1995) recebe aviso. Só é DBF o
+  cabeçalho coerente (versão, data, descritores de campo e terminador): um CSV nunca é lido como DBF.
+- **Dengue e chikungunya** (A90 e A92.0) são sempre do Sinan Online, venham do DENGON, do CHIKON, do NINDINET ou de um
+  DBF de investigação sem as marcas do Sinan Online: a mesma notificação não vira dois registros. O registro antigo
+  gravado no Sinan Net muda de sistema na aplicação (a prévia mostra a mudança).
+- **Mpox no e-SUS Sinan** segue a ficha de Mpox: evolução 1 óbito e 2 cura (comparada já traduzida); classificação
+  2 e 6 descartado, 3 (provável), 5 (perda de seguimento) e 8 inconclusivo, 4 (suspeito) em investigação; a data de
+  conclusão (DT_CONCLUSÃO) é o encerramento.
 - **CSV**: sem BOM; UTF-8 e, se inválido, Windows-1252 com aviso; separador `;` ou `,`; cabeçalho comparado sem
   acento e com sinônimos. Arquivo regravado pelo Excel (número em notação científica no número da notificação, CPF ou
   CNS) é recusado. Colunas de contato (telefone, e-mail, endereço, notificante) são descartadas na leitura.
@@ -378,19 +391,30 @@ instituição (sem tela de edição nesta semana: ver *Pontos de atenção*).
   SEM_PRI, nunca pelo NU_ANO), junta por chave dentro do envio (NINDINET + DBF do agravo viram um registro só) e compara
   com o banco: lidos, novos, alterados, iguais, recusados com o motivo, duplicados no arquivo e ausentes previstos. O
   mesmo arquivo (SHA-256) já aplicado não cria nada: a resposta aponta a importação anterior. A prévia expira em
-  24 horas (padrão das configurações).
+  24 horas (padrão das configurações). O período declarado no envio vale mais que o lido; data que não existe no
+  calendário ou período invertido são recusados. Num arquivo de um agravo só, o período lido vai da primeira à última
+  notificação daquele agravo: declare o período exportado, senão as semanas das pontas ficam fora do canal endêmico.
 - **Aplicar**: grava pela chave natural, **campo a campo**: valor preenchido sobrescreve; valor vazio só apaga o campo
   que o mesmo tipo de arquivo tinha gravado (o NINDINET não apaga a classificação que veio do DBF do agravo). Registro
   que não veio numa exportação do mesmo sistema, tipo, agravos e período fica **ausente** (nunca apagado) e volta se
-  reaparecer. Liga a unidade pelo CNES e roda a conciliação automática. Importar o mesmo DBF de novo não duplica.
+  reaparecer. No e-SUS Notifica, a ausência só vale dentro da mesma ficha (o CSV da síndrome gripal só cobre a
+  covid-19; arquivo sem ficha identificada não marca ausente) e, no e-SUS, um arquivo com um CNES só restringe os
+  ausentes a esse CNES. Liga a unidade pelo CNES e roda a conciliação automática, numa transação só: se cair no meio,
+  nada é gravado. Importar o mesmo DBF de novo não duplica.
 - **Conciliação** em degraus: (1) número oficial informado na fila de digitação, mesmo agravo do Sinan e data a até 7
   dias; (2) CNS ou CPF + mesmo agravo + data a até 7 dias; os dois só ligam sozinhos com candidato único dos dois
-  lados; (3) nome normalizado + nascimento + sexo: só sugestão; (4) sem identificação: só nas contagens. "Não é o mesmo
-  caso" fica gravado e não volta como sugestão. Vínculo manual e desvínculo pedem motivo e são auditados. Ao vincular,
-  a tela oferece preencher o número oficial da notificação (mesma regra da fila de digitação).
-- **Listas**: resumo, só no oficial, só no OmniSaúde (notificada ou encerrada, de sistema e período cobertos por
-  importação aplicada, sem vínculo), divergentes (situação, evolução e data de encerramento), sugestões e bairros sem
-  correspondência (com contagem; o apelido novo vai para o bairro do território e vale na próxima consulta).
+  lados; (3) nome normalizado + nascimento + sexo: só sugestão; (4) sem identificação: só nas contagens. O agravo
+  comparado é o do Sinan, não o grupo do catálogo (a violência sexual, T74.2, casa com a violência interpessoal, Y09).
+  "Não é o mesmo caso" fica gravado e não volta como sugestão. Vínculo manual e desvínculo pedem motivo e são
+  auditados. Ao vincular, a tela oferece preencher o número oficial da notificação (mesma regra da fila de digitação).
+  A tarefa `vigilancia` também liga sozinha o registro à notificação que ganhou o número depois da importação.
+- **Listas**: resumo, só no oficial, só no OmniSaúde, divergentes (situação, evolução e data de encerramento),
+  sugestões, **vinculados** (com o método e a data do vínculo; o par pode ser desvinculado com motivo) e bairros sem
+  correspondência (com contagem; o apelido novo vai para o bairro do território e vale na próxima consulta). Tudo é
+  contado e paginado no banco (50 por página), sem carregar a base. "Só no OmniSaúde" é a notificação notificada ou
+  encerrada, sem vínculo, dentro do que algum arquivo aplicado **cobre**: o DBF de um agravo cobre só aquele agravo,
+  o CSV do e-SUS Notifica cobre a ficha dele e só o NINDINET cobre o Sinan Net inteiro. A evolução das divergências é
+  comparada na numeração da ficha de notificação (a do Mpox é traduzida antes).
 - **Sigilo**: registro de grupo sigiloso (aids, HIV, sífilis, violências) sai sem identificação para quem não tem
   `notificacao.sensivel`; as listas identificadas são auditadas como a exportação CSV.
 
@@ -401,8 +425,10 @@ encerradas, não descartadas e **sem vínculo** com registro oficial: o par vinc
 oficial. A semana é a de início dos sintomas; sem ela, a da notificação (contada à parte, com aviso). Base de casos
 prováveis (situação diferente de descartado), notificados ou confirmados. Território: município pela residência;
 bairro e localidade pelo código ou pelo nome do bairro do registro (com os apelidos) e pelo quarteirão da residência
-da notificação. **Cobertura** do ano: há caso do agravo, uma importação aplicada cobre o ano ou o OmniSaúde já tinha
-notificações; ano sem cobertura fica fora do canal (nulo, diferente de zero).
+da notificação. **Cobertura** por SE: a semana sem caso só vale zero se estiver no período de uma importação aplicada
+que traz o agravo, se o OmniSaúde já estava em uso (da SE da primeira notificação em diante) ou se a semana tem caso.
+Fora disso, fica fora do canal (nula, diferente de zero). O ano coberto só em parte aparece como "coberto em parte",
+com as SE cobertas.
 
 ### Diagrama de controle e receitas
 
@@ -418,8 +444,13 @@ notificações; ano sem cobertura fica fora do canal (nulo, diferente de zero).
 - **Anos excluídos** com motivo (decisão da vigilância). O sistema só **sugere** anos epidêmicos pela regra do painel
   da SES-GO (anos com contagem de SE acima de média + 1 DP igual ou maior que o Q3 das contagens; interpretação
   documentada).
-- **Congelar**: o canal do ano é gravado com a receita, a fonte e a versão da população (nova versão ativa; a anterior
-  fica inativa). Sem canal congelado, a tela mostra a prévia calculada na hora.
+- **Congelar**: o canal do ano é gravado com a receita, a fonte e a versão da população e os avisos do cálculo (nova
+  versão ativa; a anterior fica inativa). Sem canal congelado, a tela mostra a prévia calculada na hora. Não se congela
+  com ano ainda incompleto na referência (o ano em curso, ou o recém-fechado enquanto tem SE incompletas): a tela diz a
+  SE a partir da qual se poderá congelar.
+- **Agravo sigiloso** (aids, HIV, HIV na gestação, sífilis e violências, pelo catálogo nacional ou pelo da
+  instituição): diagrama, CSV e anos epidêmicos só para a vigilância epidemiológica municipal, com cada leitura
+  auditada. O agravo sigiloso também fica fora do plano de contingência e das sugestões de surto pelo diagrama.
 - **Eixo** epidemiológico (SE 1 a 52/53) ou sazonal (SE 27 a 26 do ano seguinte, cada ponto com o canal do seu ano).
   As semanas incompletas (2 por padrão, contando a em curso) aparecem tracejadas.
 - **CSV** com `;`, vírgula decimal e BOM: uma coluna por ano de referência, os limites, o observado e, no cabeçalho, as
@@ -459,7 +490,11 @@ notificações; ano sem cobertura fica fora do canal (nulo, diferente de zero).
   vigilância responde a cada semana; sem resposta, o critério fica "não avaliado", nunca "atendido".
 - **Sugestão**: combinação "qualquer critério" (o "E/OU" do plano; o estágio de maior ordem com algum critério
   atendido) ou "dois ou mais" (regra da SES-MG). Descer de estágio só é sugerido depois de 4 SE completas seguidas com
-  a sugestão abaixo do estágio em vigor.
+  a sugestão abaixo do estágio em vigor, contadas desde o início do acionamento em vigor. Quando a curva volta ao canal
+  endêmico, o acumulado do ano (percentuais e letalidade) deixa de segurar o estágio (item 7.2.3), e o detalhe diz o
+  que segue acima do limiar; o acumulado que já estava atendido quando o estágio foi decidido não faz o estágio subir
+  de novo. Na virada do ano, as SE do ano anterior contam, cada uma no canal do próprio ano.
+- **Conferência do plano**: a mesma na API e na tela; agravo sigiloso não entra no plano.
 - **Acionamento** (tabela `contingency_activations`): estágio, justificativa (20 caracteres ou mais), ato, retrato dos
   indicadores; fecha o acionamento aberto na véspera e cria a lista de ações do estágio e dos anteriores ("manter e
   intensificar"), com situação, responsável e nota. Sem acionamento, vale a normalidade.
@@ -471,9 +506,14 @@ notificações; ano sem cobertura fica fora do canal (nulo, diferente de zero).
   ocorrência (campos 17 a 33); investigação (data, modo de transmissão, veículo, observações); bloco da ficha de surto
   de DTA (campos 27 a 60); encerramento com a delimitação; número do Sinan (NU_NOTIFIC, até 7 dígitos). Numeração
   interna `AAAA/NNNN`. Cada etapa é validada (manual 5.3.1).
-- **Planilha de acompanhamento** (uma linha por caso): de uma notificação, de um registro oficial ou digitada.
-  Caso de agravo da lista sem notificação individual gera aviso (o surto não substitui a notificação); na categoria
-  "doença da lista", aviso quando as individuais não chegam a 10% dos casos.
+- **Planilha de acompanhamento** (uma linha por caso): de uma notificação ou de um registro oficial, achados por
+  busca própria (agravo, período e texto: número, nome, CNS ou CPF; a busca por texto é auditada), ou digitada. A
+  mesma notificação ou o mesmo registro não entram duas vezes, nem em envios simultâneos. Caso de agravo da lista sem
+  notificação individual gera aviso (o surto não substitui a notificação); na categoria "doença da lista", aviso
+  quando as individuais não chegam a 10% dos casos. A linha de caso sigiloso aparece só com o número, na planilha, na
+  linha do tempo e no espelho, para quem não pode abrir a origem; quem pode vê-la tem a leitura auditada.
+- **Bloco de DTA** conferido na API e na tela (número inteiro, data válida e não futura, critério de 1 a 5); no
+  espelho, as datas saem em dd/mm/aaaa.
 - **Prazo**: 24 h do conhecimento para a SMS (cumprido no próprio registro quando a vigilância municipal registra) e,
   com evento de saúde pública, para a SES e o MS (comunicação registrada). Linha do tempo com cada evento.
 - **Espelho** com as variáveis do dicionário (TP_NOT = 3, ID_AGRAVO, DT_NOTIFIC, ID_UNIDADE, DT_SIN_PRI, QT_TOTAL_C,
@@ -482,9 +522,13 @@ notificações; ano sem cobertura fica fora do canal (nulo, diferente de zero).
   quarteirão ou no mesmo bairro em 7 dias (fora dengue, chikungunya e Zika, que aparecem pelo excesso no diagrama do
   bairro ou da localidade); varicela atendida em hospital (1 caso); síndrome gripal por covid-19 na mesma unidade
   (3 casos em 7 dias); evento inusitado (primeiro caso do agravo depois de 365 dias sem casos, ou nunca visto). As
-  regras padrão ficam nas configurações da instituição. Violências, agravos do trabalho e condições crônicas ou congênitas nunca viram sugestão.
-  A dispensada volta quando aparece caso conhecido depois dela.
-- O núcleo do estabelecimento só vê e cria surtos das unidades em que está lotado.
+  regras padrão ficam nas configurações da instituição. Violências, agravos do trabalho e condições crônicas ou
+  congênitas nunca viram sugestão. A dispensada volta quando aparece caso conhecido depois dela. Caso já ligado a um
+  surto (aberto, encerrado ou descartado) não volta como sugestão. No evento inusitado, a suspeita descartada não
+  conta como caso anterior; o caso já em surto e os casos de outras unidades contam. O caso sem início dos sintomas
+  entra no dia local da instituição.
+- O núcleo do estabelecimento só vê e cria surtos das unidades em que está lotado. A dispensa feita pelo núcleo só
+  vale na visão dele; a da vigilância municipal vale para todos.
 
 ### Notificação negativa e unidade silenciosa
 
@@ -492,8 +536,10 @@ notificações; ano sem cobertura fica fora do canal (nulo, diferente de zero).
   negativa. A migração abriu um período desde 01/01/2026 para cada unidade ativa, exceto farmácia central,
   almoxarifado e vigilância em saúde; unidade nova aparece "sem configuração" até a vigilância abrir o período.
 - **Responsáveis** (titular e substituto, tabela `notifying_unit_responsibles`): designados pela vigilância entre os
-  lotados na unidade. A palavra "atesto" não está nas normas: é o bloco "Notificante" da ficha (nome, função e
-  assinatura), que o Sinan Net não guarda. No OmniSaúde, o atesto é o registro identificado do responsável logado.
+  lotados na unidade num papel que atesta a negativa (ACS, recepção, faturamento e os papéis de endemias não atestam);
+  a busca dos lotados é pelo nome ou pelo CPF completo. A palavra "atesto" não está nas normas: é o bloco "Notificante"
+  da ficha (nome, função e assinatura), que o Sinan Net não guarda. No OmniSaúde, o atesto é o registro identificado
+  do responsável logado, que precisa continuar lotado na unidade num papel que atesta.
 - **Atesto** (tabela `negative_reports`, tela *Notificação negativa*): só semana terminada e dentro das últimas 8;
   texto da declaração à vista, com a citação do art. 2º, IX, do Anexo V da PRC nº 4/2017; grava nome, função, CBO,
   data e hora e se foi **fora do prazo** (padrão: segunda-feira 14h da semana seguinte). Recusado se a unidade tem na
@@ -505,9 +551,16 @@ notificações; ano sem cobertura fica fora do canal (nulo, diferente de zero).
   Sinan). Cartões: **unidades silenciosas** (2 semanas fechadas seguidas sem informação, padrão), **só negativas**
   (12 semanas só com negativa: pede busca ativa, como manda o manual do Sinan), percentual por semana com a meta de 80%
   e **regularidade do município** (8 SE seguidas sem nenhuma informação: PRC nº 6/2017, art. 454-E). Diferenças com o
-  Sinan Net: atestado e não digitado (sem NNEGANET) e digitado sem atesto.
-- A importação casa o atesto com a negativa do NNEGANET (mesma unidade pelo CNES e mesma SE). A tarefa `vigilancia`
-  (a cada 5 minutos) reconcilia os atestos e expira as prévias.
+  Sinan Net: atestado e não digitado (sem NNEGANET vigente) e digitado sem atesto.
+- A grade analisa uma janela maior que a exibida (até 60 SE), para que as contagens de silenciosa, só negativas e
+  regularidade não dependam do número de colunas pedido. A regularidade usa os fatos do **município inteiro**:
+  notificações de qualquer unidade (inclusive da vigilância), surtos, registros oficiais do município (pelo IBGE, pela
+  unidade ou pelo CNES, mesmo fora do cadastro) e atestos. Semana sem nenhuma unidade notificante encerra a contagem
+  ("A regularidade conta desde a SE..."). Epizootia e tracoma não são importados: a grade avisa para conferir no Sinan.
+- Unidade desativada com período de notificante aberto aparece com aviso na grade e na configuração.
+- A importação casa o atesto com a negativa do NNEGANET (mesma unidade pelo CNES e mesma SE); se a negativa sai do
+  Sinan, o atesto volta a "atestado e não digitado". A tarefa `vigilancia` (a cada 5 minutos) reconcilia os atestos,
+  expira as prévias e roda a conciliação automática.
 
 ### Perfis (semana 27)
 
@@ -518,17 +571,21 @@ notificações; ano sem cobertura fica fora do canal (nulo, diferente de zero).
 | `vigilancia.contingencia` (critérios manuais, plano, acionamento, ações) | vigilância municipal |
 | `vigilancia.surto` (sugestões e notificações de surto) | vigilância municipal; núcleo do estabelecimento, só das suas unidades |
 | `notificacao.negativa` (tela do atesto; a ação exige designação) | todo papel com `notificacao.registrar`, o gestor e as vigilâncias |
-| leitura do diagrama, da contingência e da grade | `vigilancia.resumo` (gestor) ou `vigilancia.painel` |
+| `vigilancia.catalogo` (prazos e parâmetros da negativa, da consolidação e do evento inusitado) | vigilância municipal |
+| leitura do diagrama, da contingência e da grade | `vigilancia.resumo` (gestor) ou `vigilancia.painel`; agravo sigiloso no diagrama, só a vigilância epidemiológica municipal |
 
 ### Telas (semana 27)
 
 - **Consolidação e surtos** (`/vigilancia/consolidacao`), com abas por permissão: *Importação* (envio, prévia,
-  codificação, aplicar, descartar, histórico), *Conciliação* (resumo, listas, vincular, rejeitar, apelidos de bairro),
-  *Diagrama de controle* (agravo, território, ano, eixo; gráfico com a faixa do canal, a mediana, o limite superior e a
-  curva observada; tabela com os mesmos números; receita, população, anos epidêmicos, congelar e CSV),
-  *Contingência* (estágio em vigor, sugestão com cada critério, respostas da semana, acionamento, plano e lista de
-  ações), *Surtos* (sugestões, lista, ficha, planilha, espelho) e *Notificação negativa* (grade, cartões e configuração
-  das unidades notificantes e dos responsáveis).
+  codificação, aplicar, descartar, histórico), *Conciliação* (resumo, listas, vinculados, vincular, desvincular,
+  rejeitar, apelidos de bairro), *Diagrama de controle* (agravo, território, ano, eixo; gráfico com a faixa do canal, a
+  mediana, o limite superior e a curva observada; tabela com os mesmos números; receita, população, anos epidêmicos,
+  congelar e CSV), *Contingência* (estágio em vigor, sugestão com cada critério, últimas semanas no canal com o texto
+  de cada selo, respostas da semana, acionamento, plano e lista de ações), *Surtos* (sugestões com a unidade do
+  excesso, lista, ficha, planilha com busca de notificação e de registro oficial, espelho) e *Notificação negativa*
+  (grade, cartões, configuração das unidades notificantes e dos responsáveis, e *Prazos e parâmetros*).
+- Os horários das telas da semana saem no fuso da instituição. O seletor de agravo esconde os sigilosos de quem não
+  pode vê-los. Cada lista de abas tem nome próprio para o leitor de tela.
 - **Notificação negativa** (`/notificacao-negativa`): as unidades do responsável, as semanas a atestar com o texto à
   vista, o botão *Atestar*, o histórico e o PDF.
 
@@ -536,15 +593,18 @@ notificações; ano sem cobertura fica fora do canal (nulo, diferente de zero).
 
 `/api/vigilancia/...`: `importacoes` (POST com o arquivo cru e `?nome=&de=&ate=&codificacao=`; GET),
 `importacoes/:id` (GET), `.../aplicar`, `.../descartar`; `conciliacao/resumo`, `/so-oficial`, `/so-omnisaude`,
-`/divergentes`, `/sugestoes`, `/bairros`, `/vincular`, `/desvincular`, `/rejeitar`, `/bairros/apelido`; `populacao`
+`/divergentes`, `/sugestoes`, `/vinculados`, `/bairros`, `/vincular`, `/desvincular`, `/rejeitar`,
+`/bairros/apelido`; `populacao`
 (GET, PUT), `populacao/:id` (DELETE); `diagrama`, `diagrama.csv`, `diagrama/congelar`, `diagrama/configuracao/:grupo`
 (GET, PUT), `diagrama/anos-epidemicos`; `contingencia`, `contingencia/planos` (GET, POST), `contingencia/planos/:id`
 (GET, PUT), `.../vigencia`, `contingencia/respostas`, `contingencia/acionar`, `contingencia/acoes/:id` (PATCH);
-`surtos` (GET, POST), `surtos/sugestoes`, `surtos/sugestoes/dispensar`, `surtos/:id` (GET, PATCH), `.../casos` (POST),
+`surtos` (GET, POST), `surtos/sugestoes`, `surtos/sugestoes/dispensar`, `surtos/candidatas`, `surtos/registros`,
+`surtos/:id` (GET, PATCH), `.../casos` (POST),
 `.../casos/:caseId` (DELETE), `.../comunicacoes`, `.../encerrar`, `.../descartar`, `.../numero-oficial`,
 `.../espelho`; `negativas` (POST), `negativas/minhas`, `negativas/grade?semanas=&ate=`, `negativas/:id/espelho.pdf`,
 `negativas/:id/anular`; `unidades-notificantes` (GET, POST), `unidades-notificantes/:unitId/encerrar`,
-`.../responsaveis`, `.../lotados?busca=`, `responsaveis/:id/revogar`.
+`.../responsaveis`, `.../lotados?busca=`, `responsaveis/:id/revogar`; `configuracoes` (PATCH, agora também com
+os blocos `negativa`, `consolidacao` e `surto.diasInusitado`, campo a campo).
 
 ### Demonstração
 
@@ -598,16 +658,23 @@ núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80;
 - **Sinais de surto por atendimento** (síndromes nos atendimentos sem notificação) ficam fora: as sugestões olham só
   as notificações e o diagrama.
 - **Consórcio com vários municípios**: o nível município usa o IBGE do tenant.
-- **Virada do ano**: nas primeiras semanas do ano epidemiológico, o critério de 4 SE seguidas só enxerga as semanas
-  do ano novo, então a sugestão automática fica na normalidade até haver 4 SE completas.
 - **População de bairro** pela proporção do Censo 2022 é inferência a validar; o Censo por bairro só existe para
   bairro legalmente instituído (no Tocantins, a soma por setor censitário).
 - **Unidade silenciosa** (2 semanas) e **só negativas** (12 semanas) são escolhas locais: não há definição federal.
-  Com 12 semanas, o cartão "só negativas" precisa de uma grade com mais de 12 colunas (a semana em curso não conta).
+- **Epizootia e tracoma** (art. 454-B, III e IV) não são importados: a regularidade do município não os lê, e a grade
+  avisa para conferir no Sinan. Semana sem nenhuma unidade notificante encerra a contagem da regularidade, mesmo que
+  uma importação cubra o período (regra conservadora).
+- **Evento inusitado**: os registros oficiais da janela não contam como caso anterior, só os anteriores a ela (o mesmo
+  caso digitado no Sinan e ainda não conciliado apagaria um inusitado verdadeiro).
+- **Período de uma importação já aplicada** não se corrige: o mesmo arquivo não é aplicado de novo. Declare o período
+  no envio do DBF de um agravo só.
+- **Memória do Prisma**: o cliente do Prisma 7 guarda os argumentos das últimas 100 chamadas internas, mesmo sem
+  `DEBUG`. A importação grava por SQL próprio para não reter as linhas; as outras cargas grandes (CNES, demonstração)
+  ainda serão medidas.
 - **Ocupação de leitos** não é critério de estágio no plano do MS (só aparece nas ações).
 - O código das síndromes do surto vem de fonte secundária: conferir no Sinan Net antes de digitar.
-- As configurações novas (prazo e semanas da negativa, semanas incompletas, expiração da prévia, regras de surto)
-  ainda não têm tela nem rota de edição: valem os padrões.
+- As **regras das sugestões de surto** (janelas e número de casos) não têm tela: valem os padrões das configurações.
+  Só os dias do evento inusitado são editáveis, em *Prazos e parâmetros*.
 
 ## Pendências e limites
 
