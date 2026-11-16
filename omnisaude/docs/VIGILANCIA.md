@@ -374,6 +374,12 @@ instituição, editáveis em *Notificação negativa > Prazos e parâmetros*.
   **150 MB descompactados e 400 mil registros por envio**; acima disso, a mensagem pede para exportar um ano por vez.
   Arquivo do zip com senha ou compressão diferente de deflate fica de fora, com aviso. Uma prévia ou aplicação por vez
   (a outra recebe "Outra importação está sendo processada agora").
+- **Trabalho longo em segundo plano**: a resposta espera até 20 s. Se a leitura ou a aplicação demorar mais (um envio
+  grande no container de produção, com 1/4 de vCPU), a API responde 202 e a tela acompanha o andamento ("Lendo o
+  arquivo…", "Aplicando…"); dá para sair da tela e voltar. Um sinal de vida a cada 15 s mostra que o trabalho segue.
+  Parado há mais de 2 minutos (o servidor reiniciou), a leitura vira "Falhou" (envie de novo) e a aplicação volta à
+  prévia, aplicável de novo (a transação desfez tudo). A falha depois do 202 fica no histórico com a mensagem; a que
+  acontece dentro da espera responde como antes, sem deixar linha.
 - **DBF**: código de página pelo byte 29 (0x25 e 0x02 CP850, 0x01 CP437, 0x24 CP860, CP1252); sem marca (0x00), vence
   a página que acerta mais letras portuguesas (empate: CP850). A tela mostra a codificação e permite trocar e refazer a
   prévia. Datas vazias viram nulo; arquivo regravado pelo R (cabeçalho de 26/07/1995) recebe aviso. Só é DBF o
@@ -496,8 +502,9 @@ com as SE cobertas.
   de novo. Na virada do ano, as SE do ano anterior contam, cada uma no canal do próprio ano.
 - **Conferência do plano**: a mesma na API e na tela; agravo sigiloso não entra no plano.
 - **Acionamento** (tabela `contingency_activations`): estágio, justificativa (20 caracteres ou mais), ato, retrato dos
-  indicadores; fecha o acionamento aberto na véspera e cria a lista de ações do estágio e dos anteriores ("manter e
-  intensificar"), com situação, responsável e nota. Sem acionamento, vale a normalidade.
+  indicadores; fecha o acionamento aberto na véspera (no próprio dia, se ele começou hoje) e cria a lista de ações do
+  estágio e dos anteriores ("manter e intensificar"), com situação, responsável e nota. Sem acionamento, vale a
+  normalidade.
 
 ### Notificação de surto
 
@@ -557,7 +564,10 @@ com as SE cobertas.
   notificações de qualquer unidade (inclusive da vigilância), surtos, registros oficiais do município (pelo IBGE, pela
   unidade ou pelo CNES, mesmo fora do cadastro) e atestos. Semana sem nenhuma unidade notificante encerra a contagem
   ("A regularidade conta desde a SE..."). Epizootia e tracoma não são importados: a grade avisa para conferir no Sinan.
-- Unidade desativada com período de notificante aberto aparece com aviso na grade e na configuração.
+- Desativar a unidade no cadastro encerra no mesmo dia o período de notificante e as designações de responsável: a SE
+  da desativação ainda conta, as seguintes ficam fora da grade e das silenciosas. Reativar não reabre: a vigilância
+  abre um novo período. Unidade inativa com período aberto (desativada antes desta versão) aparece com aviso na grade
+  e na configuração.
 - A importação casa o atesto com a negativa do NNEGANET (mesma unidade pelo CNES e mesma SE); se a negativa sai do
   Sinan, o atesto volta a "atestado e não digitado". A tarefa `vigilancia` (a cada 5 minutos) reconcilia os atestos,
   expira as prévias e roda a conciliação automática.
@@ -591,8 +601,8 @@ com as SE cobertas.
 
 ### API (semana 27)
 
-`/api/vigilancia/...`: `importacoes` (POST com o arquivo cru e `?nome=&de=&ate=&codificacao=`; GET),
-`importacoes/:id` (GET), `.../aplicar`, `.../descartar`; `conciliacao/resumo`, `/so-oficial`, `/so-omnisaude`,
+`/api/vigilancia/...`: `importacoes` (POST com o arquivo cru e `?nome=&de=&ate=&codificacao=`: 201 com a prévia ou
+202 enquanto lê; GET), `importacoes/:id` (GET), `.../aplicar` (200 ou 202 enquanto aplica), `.../descartar`; `conciliacao/resumo`, `/so-oficial`, `/so-omnisaude`,
 `/divergentes`, `/sugestoes`, `/vinculados`, `/bairros`, `/vincular`, `/desvincular`, `/rejeitar`,
 `/bairros/apelido`; `populacao`
 (GET, PUT), `populacao/:id` (DELETE); `diagrama`, `diagrama.csv`, `diagrama/congelar`, `diagrama/configuracao/:grupo`
