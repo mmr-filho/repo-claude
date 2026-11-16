@@ -185,6 +185,10 @@ configurar o banco; sem os segredos, só o login falha, com uma mensagem dizendo
 
 ## Atualizações e operação
 
+- **Demonstração:** a carga completa da instituição `demo` só roda quando ela está vazia. Nas partidas seguintes, a API
+  cria as unidades, os profissionais e as lotações da demonstração que faltarem (a tabela de acessos do README cresce ao
+  longo das semanas), sem mexer em nome, senha ou lotação de quem já existe. Os dados de demonstração das semanas novas
+  (território, endemias, vigilância) só aparecem numa instituição `demo` recriada.
 - **Nova versão:** commit no branch de produção. A Cloudflare refaz as telas e a imagem, troca o container e
   a API aplica as migrações pendentes ao subir. Se a migração de uma instituição falhar, as demais continuam
   no ar e o erro fica no log do container.

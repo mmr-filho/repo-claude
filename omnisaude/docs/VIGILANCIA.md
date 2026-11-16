@@ -582,7 +582,7 @@ núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80;
 - Regras compartilhadas (`packages/shared/test/vigilancia-*.test.ts`): tabela de agravos do Sinan, chaves naturais,
   funções do Excel e exemplos publicados do diagrama, avaliação do plano, regras de surto e grade da negativa.
 - API contra PostgreSQL real (`apps/api/test/vigilancia-importacao.test.ts`, `-diagrama`, `-contingencia`, `-surto`,
-  `-negativa` e `migracao-0030.test.ts`).
+  `-negativa` e `migracao-0031.test.ts`).
 - Demonstração: `packages/database/test/seed-consolidacao.test.ts` refaz a sugestão do plano só com as funções
   compartilhadas em seis datas de 2026 (mobilização; alerta com 2024 excluído) e
   `apps/api/test/demo-consolidacao.test.ts` semeia a demonstração num dia fixo e confere pela API a sugestão de

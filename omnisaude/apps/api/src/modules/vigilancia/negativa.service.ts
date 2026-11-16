@@ -53,7 +53,7 @@ const inicioDoDia = (iso: string, tz: string) => fromZonedParts({ year: Number(i
 const ddmmaaaa = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 const rotuloSemana = (s: string) => `${s.slice(4)}/${s.slice(0, 4)}`;
 const chave = (unitId: string, semana: string) => `${unitId}|${semana}`;
-/** Tipos de unidade que não atendem e ficam fora da negativa (os mesmos da semeadura da migração 0030). */
+/** Tipos de unidade que não atendem e ficam fora da negativa (os mesmos da semeadura da migração 0031). */
 const TIPOS_FORA_DA_NEGATIVA = ['FARMACIA_CENTRAL', 'ALMOXARIFADO', 'VIGILANCIA_SAUDE'] as const;
 const intervalo = (s: string) => intervaloDaSemana(Number(s.slice(0, 4)), Number(s.slice(4)));
 const listaNumeros = (refs: { numero: string }[]) => refs.map((r) => r.numero).join(', ');

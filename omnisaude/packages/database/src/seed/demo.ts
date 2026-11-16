@@ -192,7 +192,7 @@ const somarDias = (iso: string, n: number) => new Date(Date.parse(`${iso}T12:00:
 const doisDigitos = (n: number) => String(n).padStart(2, '0');
 /** Raça/cor do cadastro (e-SUS) → Sinan, como na ficha da API. */
 const RACA_SINAN: Record<string, string> = { '01': '1', '02': '2', '03': '4', '04': '3', '05': '5', '99': '9' };
-/** Unidades que não entram na notificação negativa (como na semeadura da migração 0030). */
+/** Unidades que não entram na notificação negativa (como na semeadura da migração 0031). */
 const FORA_DA_NEGATIVA = ['FARMACIA_CENTRAL', 'ALMOXARIFADO', 'VIGILANCIA_SAUDE'];
 
 interface ContextoConsolidacao {

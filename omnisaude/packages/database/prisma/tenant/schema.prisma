@@ -71,6 +71,7 @@ model Unit {
   officialRecords       OfficialRecord[]
   outbreaks             Outbreak[]
   notifyingPeriods      NotifyingUnit[]
+  outbreakDismissals    OutbreakDismissal[]
   notifyingResponsibles NotifyingUnitResponsible[]
   negativeReports       NegativeReport[]
 }
@@ -3703,6 +3704,8 @@ model ControlChannel {
   referenceYears    Int[]             @map("reference_years")
   /// SemanaCanal[] (52 posições).
   weeks             Json
+  /// Avisos do cálculo no congelamento (string[]).
+  warnings          Json              @default("[]")
   notes             String?
   computedBy        String            @map("computed_by") @db.Uuid
   computedAt        DateTime          @default(now()) @map("computed_at")
@@ -3893,6 +3896,8 @@ model OutbreakCase {
   notification   Notification?   @relation(fields: [notificationId], references: [id])
   officialRecord OfficialRecord? @relation(fields: [officialRecordId], references: [id])
 
+  // Índices únicos parciais só no SQL: outbreak_cases_notificacao (outbreak_id, notification_id) e
+  // outbreak_cases_registro (outbreak_id, official_record_id).
   @@unique([outbreakId, caseNumber])
   @@map("outbreak_cases")
 }
@@ -3913,10 +3918,12 @@ model OutbreakEvent {
   @@map("outbreak_events")
 }
 
-/// Sugestão de surto dispensada: vale enquanto não aparecer caso conhecido depois de untilKnownAt.
+/// Sugestão de surto dispensada: vale enquanto não aparecer caso conhecido depois de untilKnownAt. unitId é o escopo de
+/// quem dispensou: nulo para a vigilância municipal (vale para todos); a unidade do núcleo vale só na visão dele.
 model OutbreakDismissal {
   id           String   @id @default(uuid(7)) @db.Uuid
   signature    String
+  unitId       String?  @map("unit_id") @db.Uuid
   ruleId       String?  @map("rule_id") @db.VarChar(40)
   groupKey     String?  @map("group_key") @db.VarChar(40)
   linkKind     String?  @map("link_kind") @db.VarChar(20)
@@ -3925,6 +3932,8 @@ model OutbreakDismissal {
   reason       String
   dismissedBy  String   @map("dismissed_by") @db.Uuid
   dismissedAt  DateTime @default(now()) @map("dismissed_at")
+
+  unit Unit? @relation(fields: [unitId], references: [id])
 
   @@index([signature])
   @@map("outbreak_dismissals")

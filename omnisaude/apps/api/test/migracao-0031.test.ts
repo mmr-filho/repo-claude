@@ -5,18 +5,18 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { pgAvailable, TEST_PG } from './harness';
 
 /**
- * A migração 0030 (VIG-1c) cria as tabelas da consolidação, do diagrama, da contingência, do surto e da negativa, e
+ * A migração 0031 (VIG-1c) cria as tabelas da consolidação, do diagrama, da contingência, do surto e da negativa, e
  * semeia as unidades notificantes do município que já tem unidades: um período aberto desde 01/01/2026 para cada
  * unidade ativa, fora a central de abastecimento farmacêutico, o almoxarifado e a vigilância em saúde. Aplicada pelo
- * pacote de banco como num município que estava na 0029, com unidades de todos os tipos.
+ * pacote de banco como num município que estava na 0030, com unidades de todos os tipos.
  */
 const enabled = await pgAvailable();
 
-const MIGRACAO = '0030_consolidacao_surto_negativa';
+const MIGRACAO = '0031_consolidacao_surto_negativa';
 const SUFIXO = (process.env.OMNI_TEST_SUFFIX ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
-const BANCO = `omni_test_mig0030${SUFIXO}`;
+const BANCO = `omni_test_mig0031${SUFIXO}`;
 
-/** Unidades do município antes da 0030 (nome, tipo, ativa). */
+/** Unidades do município antes da 0031 (nome, tipo, ativa). */
 const UNIDADES: [string, string, boolean][] = [
   ['UBS Centro', 'UBS', true],
   ['UPA Norte', 'UPA', true],
@@ -32,7 +32,7 @@ const UNIDADES: [string, string, boolean][] = [
   ['UBS Desativada', 'UBS', false],
 ];
 
-describe.runIf(enabled)('Migração 0030: unidades notificantes semeadas e restrições das tabelas novas', () => {
+describe.runIf(enabled)('Migração 0031: unidades notificantes semeadas e restrições das tabelas novas', () => {
   const url = new URL(TEST_PG);
   const conexao = `postgresql://omni_app:omni_app@${url.hostname}:${url.port}/${BANCO}`;
   const ids = new Map<string, string>();
@@ -53,7 +53,7 @@ describe.runIf(enabled)('Migração 0030: unidades notificantes semeadas e restr
     await comoSuperusuario(`CREATE DATABASE ${BANCO} OWNER omni_app`);
     db = new Client({ connectionString: conexao });
     await db.connect();
-    // As migrações anteriores à 0030, com o mesmo registro do pacote de banco: o banco fica como um município na 0029.
+    // As migrações anteriores à 0031, com o mesmo registro do pacote de banco: o banco fica como um município na 0030.
     await db.query(`CREATE TABLE IF NOT EXISTS _omni_migrations (name text PRIMARY KEY, checksum char(64) NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`);
     for (const m of loadMigrations('tenant').filter((x) => x.name < MIGRACAO)) {
       await db.query('BEGIN');

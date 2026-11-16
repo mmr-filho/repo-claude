@@ -169,6 +169,8 @@ CREATE TABLE control_channels (
   reference_years integer[] NOT NULL,
   -- SemanaCanal[] (52 posições).
   weeks jsonb NOT NULL,
+  -- Avisos do cálculo no congelamento (curva epidêmica, SE sem quartil, ano fora): continuam valendo para o canal.
+  warnings jsonb NOT NULL DEFAULT '[]',
   notes text,
   computed_by uuid NOT NULL,
   computed_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -339,8 +341,9 @@ CREATE TABLE outbreak_cases (
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE UNIQUE INDEX outbreak_cases_outbreak_id_case_number_key ON outbreak_cases (outbreak_id, case_number);
--- A mesma notificação entra uma vez em cada surto.
+-- A mesma notificação, e o mesmo registro oficial, entram uma vez em cada surto.
 CREATE UNIQUE INDEX outbreak_cases_notificacao ON outbreak_cases (outbreak_id, notification_id) WHERE notification_id IS NOT NULL;
+CREATE UNIQUE INDEX outbreak_cases_registro ON outbreak_cases (outbreak_id, official_record_id) WHERE official_record_id IS NOT NULL;
 
 -- Linha do tempo do surto (CRIADO, EDITADO, COMUNICADO, CASO_VINCULADO, CASO_RETIRADO, INVESTIGADO, ENCERRADO,
 -- DESCARTADO, NUMERO_OFICIAL).
@@ -354,10 +357,12 @@ CREATE TABLE outbreak_events (
 );
 CREATE INDEX outbreak_events_outbreak_id_at_idx ON outbreak_events (outbreak_id, at);
 
--- Sugestão de surto dispensada: vale enquanto não aparecer caso conhecido depois de until_known_at.
+-- Sugestão de surto dispensada: vale enquanto não aparecer caso conhecido depois de until_known_at. unit_id é o escopo
+-- de quem dispensou: nulo para a vigilância municipal (vale para todos); a unidade do núcleo vale só na visão dele.
 CREATE TABLE outbreak_dismissals (
   id uuid PRIMARY KEY,
   signature text NOT NULL,
+  unit_id uuid REFERENCES units(id),
   rule_id varchar(40),
   group_key varchar(40),
   link_kind varchar(20),

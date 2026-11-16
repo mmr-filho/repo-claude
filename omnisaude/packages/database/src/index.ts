@@ -9,6 +9,7 @@ export * from './settings';
 export * from './tenancy';
 export * from './passwords';
 export { seedDemo } from './seed/demo';
+export { completarDemo, completarDemoNoBanco, type ComplementoDemo } from './seed/completar';
 export * as demoFixtures from './seed/fixtures';
 export * from './bootstrap';
 export * from './partida';
