@@ -2,11 +2,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  anosIncompletos,
   arredondar,
   calcularCanal,
   csvDoCanal,
   curvaObservada,
   desvioPadraoAmostral,
+  faixasDeSemanas,
   media,
   mediana,
   quartilExc,
@@ -227,6 +229,19 @@ describe('diagrama: cálculo do canal', () => {
     expect(statusDaSemana(3, { ...s, centro: null, li: null, ls: null })).toBe('SEM_CANAL');
     // Média e DP: sem limite inferior, nunca ABAIXO_LI.
     expect(statusDaSemana(0, { ...s, li: null })).toBe('ATE_CENTRO');
+  });
+
+  it('anos ainda incompletos: o ano em curso e, logo depois da virada, o que tem SE incompletas', () => {
+    // Na SE 45/2016 (última completa: 43/2016), 2016 e 2017 não fecharam; 2011 a 2015, sim.
+    expect(anosIncompletos([2011, 2012, 2013, 2014, 2015, 2016], '201643')).toEqual([2016]);
+    expect(anosIncompletos([2012, 2013, 2014, 2015, 2016, 2017], '201643')).toEqual([2016, 2017]);
+    // Na SE 1/2017 com 2 SE incompletas (última completa: 51/2016), a SE 52/2016 ainda não fechou.
+    expect(anosIncompletos([2016], '201651')).toEqual([2016]);
+    expect(anosIncompletos([2016], '201652')).toEqual([]);
+    // Ano de 53 semanas: só fecha com a SE 53.
+    expect(anosIncompletos([2020], '202052')).toEqual([2020]);
+    expect(anosIncompletos([2020, 2020], '202053')).toEqual([]);
+    expect(faixasDeSemanas([1, 2, 3, 13, 20, 21])).toBe('1 a 3, 13 e 20 a 21');
   });
 
   it('receitas publicadas', () => {

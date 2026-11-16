@@ -10,17 +10,18 @@ import { Select } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { SITUACAO, tempoAte } from '@/components/vigilancia/types';
-import { fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
-import { dataBr, TOM_STATUS_SURTO } from './surto-regras';
+import { useFuso } from './fuso';
+import { dataBr, tituloPrazoSurto, TOM_STATUS_SURTO } from './surto-regras';
 
 /** Prazos de comunicação do surto (SMS sempre; SES e MS com ESP), com o tempo que falta quando ainda pendente. */
 export function PrazosSurto({ prazos }: { prazos: SurtoResumo['prazos'] }) {
+  const fuso = useFuso();
   if (!prazos.length) return <span className="text-xs text-slate-500">—</span>;
   return (
     <span className="flex flex-wrap gap-1">
       {prazos.map((p) => (
-        <Badge key={p.esfera} tone={SITUACAO[p.situacao].tone} title={p.cumpridoEm ? `Cumprido em ${fmtDateTime(p.cumpridoEm)}` : `Vence em ${fmtDateTime(p.venceEm)}`}>
+        <Badge key={p.esfera} tone={SITUACAO[p.situacao].tone} title={tituloPrazoSurto(p, fuso)}>
           {p.esfera}: {SITUACAO[p.situacao].label}
           {p.situacao !== 'CUMPRIDO' && p.situacao !== 'SEM_PRAZO' && <span className="font-normal">({tempoAte(p.venceEm)})</span>}
         </Badge>

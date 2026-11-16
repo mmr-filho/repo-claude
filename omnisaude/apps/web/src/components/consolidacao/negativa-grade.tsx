@@ -13,12 +13,13 @@ import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage, saveBlob } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useSession } from '@/lib/session';
+import { useDataHora } from './fuso';
 import {
   CELULA,
   cartoesDaGrade,
+  descricaoDaCelula,
   DESCRICAO_SITUACAO,
   filtrarLinhas,
   LEGENDA_GRADE,
@@ -26,6 +27,7 @@ import {
   podeAtestarEmNome,
   rotuloColuna,
   rotuloSemana,
+  rotuloTipoUnidade,
   semanasParaSeletor,
   textoFontes,
   tituloCelula,
@@ -43,6 +45,7 @@ interface CelulaAberta {
 /** Detalhe da célula: as fontes e, para a vigilância, anular o atesto ou atestar em nome da unidade. */
 function CelulaDialog({ aberta, podeConfigurar, onFechar, onMudou }: { aberta: CelulaAberta; podeConfigurar: boolean; onFechar: () => void; onMudou: () => void }) {
   const toast = useToast();
+  const { fuso } = useDataHora();
   const { linha, celula, coluna } = aberta;
   const [motivo, setMotivo] = useState('');
   const [busy, setBusy] = useState<'anular' | 'atestar' | 'pdf' | null>(null);
@@ -50,7 +53,7 @@ function CelulaDialog({ aberta, podeConfigurar, onFechar, onMudou }: { aberta: C
   const atesto = celula.fontes.atesto;
   const emNome = podeConfigurar && podeAtestarEmNome(celula, coluna);
   const falta = Math.max(0, MINIMO_MOTIVO - motivo.trim().length);
-  const { titulo, periodo } = rotuloColuna(coluna);
+  const { titulo } = rotuloColuna(coluna);
 
   async function anular() {
     if (!atesto) return;
@@ -97,7 +100,7 @@ function CelulaDialog({ aberta, podeConfigurar, onFechar, onMudou }: { aberta: C
   }
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onFechar()} title={`${linha.unidade.nome} · ${titulo}`} description={`CNES ${linha.unidade.cnes} · de ${periodo} · prazo do atesto: ${fmtDateTime(coluna.prazo)}`}>
+    <Dialog open onOpenChange={(o) => !o && onFechar()} title={`${linha.unidade.nome} · ${titulo}`} description={descricaoDaCelula(linha, coluna, fuso)}>
       <div className="space-y-3 text-sm">
         <p className="flex flex-wrap items-center gap-2">
           <span className={cn('rounded px-2 py-0.5 text-xs', CELULA[celula.situacao].classe)}>{CELULA[celula.situacao].texto}</span>
@@ -307,9 +310,10 @@ export function NegativaGrade({ podeConfigurar }: { podeConfigurar: boolean }) {
                       <TD className="sticky left-0 z-10 bg-white">
                         <span className="block text-sm font-medium text-slate-900">{l.unidade.nome}</span>
                         <span className="block text-slate-500">
-                          CNES {l.unidade.cnes} · {l.tipoUnidade}
+                          CNES {l.unidade.cnes} · {rotuloTipoUnidade(l.tipoUnidade)}
                         </span>
                         <span className="mt-1 flex flex-wrap gap-1">
+                          {l.ativa === false && <Badge tone="slate">Inativa no cadastro</Badge>}
                           {silenciosas.has(l.unidade.id) && (
                             <Badge tone="red">
                               <AlertTriangle className="h-3 w-3" aria-hidden /> Silenciosa

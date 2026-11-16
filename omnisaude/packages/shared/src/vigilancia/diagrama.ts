@@ -302,7 +302,20 @@ function valoresDaJanela(ref: AnoReferencia, i: number, borda: ReceitaCanal['bor
   return out;
 }
 
-/** "1 a 5, 9 e 12": lista de SE compactada em faixas. */
+/** "1 a 5, 9 e 12": lista de SE (em ordem crescente) compactada em faixas. */
+export function faixasDeSemanas(semanas: number[]): string {
+  return faixas(semanas);
+}
+
+/**
+ * Anos ainda incompletos: os que têm a última SE depois da última semana completa (`ultimaCompleta`, AAAASS). É o ano
+ * epidemiológico em curso, o que ainda não começou e, logo depois da virada, o que acabou mas tem SE incompletas (atraso
+ * de notificação). Ano assim não entra em canal congelado.
+ */
+export function anosIncompletos(anos: number[], ultimaCompleta: string): number[] {
+  return [...new Set(anos)].filter((ano) => `${ano}${String(semanasNoAno(ano)).padStart(2, '0')}` > ultimaCompleta).sort((a, b) => a - b);
+}
+
 function faixas(semanas: number[]): string {
   const partes: string[] = [];
   for (let i = 0; i < semanas.length; ) {

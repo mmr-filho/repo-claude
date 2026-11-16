@@ -11,8 +11,9 @@ import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { api, ApiError, errorMessage } from '@/lib/api';
-import { fmtDate, fmtDateTime } from '@/lib/format';
+import { fmtDate } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
+import { useDataHora } from './fuso';
 import { ArquivosDetectados, DetalheDaImportacao } from './importacao-previa';
 import { conferirArquivo, conferirPeriodo, consultaDoEnvio, detalhesDoErroDeEnvio, fmtBytes, jaImportado, situacaoImportacao } from './importacao-regras';
 
@@ -47,6 +48,7 @@ function ComoExportar() {
 
 /** Lista das importações (a mais recente primeiro). */
 function Historico({ lista, aberta, onAbrir }: { lista: ReturnType<typeof useApi<ListaImportacoes>>; aberta: string | null; onAbrir: (id: string) => void }) {
+  const { dataHora } = useDataHora();
   return (
     <Card>
       <CardHeader title="Importações" description="As 200 mais recentes. A prévia expira se não for aplicada a tempo." />
@@ -79,7 +81,7 @@ function Historico({ lista, aberta, onAbrir }: { lista: ReturnType<typeof useApi
               return (
                 <TR key={r.id} className={aberta === r.id ? 'bg-brand-50' : undefined}>
                   <TD className="whitespace-nowrap text-sm">
-                    {fmtDateTime(r.criadoEm)}
+                    {dataHora(r.criadoEm)}
                     {r.criadoPor && <span className="block text-xs text-slate-500">{r.criadoPor}</span>}
                   </TD>
                   <TD className="text-sm">
@@ -116,6 +118,7 @@ function Historico({ lista, aberta, onAbrir }: { lista: ReturnType<typeof useApi
  */
 export function AbaImportacao() {
   const toast = useToast();
+  const { dataHora } = useDataHora();
   const lista = useApi<ListaImportacoes>('/vigilancia/importacoes');
   const entrada = useRef<HTMLInputElement>(null);
   const [arquivo, setArquivo] = useState<File | null>(null);
@@ -203,7 +206,7 @@ export function AbaImportacao() {
           </p>
           {ja && (
             <Alert tone="info" title="Este arquivo já foi importado">
-              O mesmo arquivo (mesmo conteúdo) foi aplicado em {fmtDateTime(ja.aplicadoEm)}. Nada foi criado.{' '}
+              O mesmo arquivo (mesmo conteúdo) foi aplicado em {dataHora(ja.aplicadoEm)}. Nada foi criado.{' '}
               <Button variant="link" size="sm" className="h-auto" onClick={() => setAberta({ id: ja.id, inicial: null })}>
                 Abrir a importação
               </Button>

@@ -1,7 +1,6 @@
 'use client';
 
 import {
-  ROTULO_GRAVIDADE,
   ROTULO_METODO_VINCULO,
   ROTULO_SITUACAO_CASO,
   ROTULO_TIPO_REGISTRO,
@@ -10,8 +9,10 @@ import {
   type ListaSoOficial,
   type ListaSoOmnisaude,
   type ListaSugestoesVinculo,
+  type ListaVinculados,
   type NotificacaoParaConciliar,
   type PaginaConciliacao,
+  type ParConciliado,
   type RegistroOficialResumo,
   type RespostaOk,
   type RespostaVincular,
@@ -30,12 +31,27 @@ import { api, errorMessage } from '@/lib/api';
 import { fmtDate } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useSession } from '@/lib/session';
-import { consultaConciliacao, MOTIVO_MAXIMO, MOTIVO_MINIMO, motivoValido, podePreencherNumero, rotuloSistema, temPaginaSeguinte, textoDaPagina, textoDivergencia, textoPaciente } from './conciliacao-regras';
+import {
+  consultaConciliacao,
+  MOTIVO_MAXIMO,
+  MOTIVO_MINIMO,
+  motivoValido,
+  podePreencherNumero,
+  rotuloSistema,
+  selosDoRegistro,
+  temPaginaSeguinte,
+  textoDaPagina,
+  textoDivergencia,
+  textoDoVinculo,
+  textoPaciente,
+} from './conciliacao-regras';
+import { useDataHora } from './fuso';
 
 // ─── Células ────────────────────────────────────────────────────────────────
 
 /** Registro oficial numa célula: número, sistema, agravo, data e situação. */
 function CelulaRegistro({ r }: { r: RegistroOficialResumo }) {
+  const { data } = useDataHora();
   return (
     <div className="space-y-0.5 text-sm">
       <p className="font-medium tabular-nums text-slate-900">
@@ -54,10 +70,11 @@ function CelulaRegistro({ r }: { r: RegistroOficialResumo }) {
       </p>
       <p className="text-xs text-slate-600">{textoPaciente(r.paciente, r.sigiloso)}</p>
       <p className="flex flex-wrap gap-1">
-        <Badge tone="slate">{ROTULO_SITUACAO_CASO[r.situacao]}</Badge>
-        {r.gravidade && <Badge tone="amber">{ROTULO_GRAVIDADE[r.gravidade]}</Badge>}
-        {r.sigiloso && <Badge tone="violet">Sigiloso</Badge>}
-        {r.ausenteDesde && <Badge tone="amber">Não veio na última exportação ({fmtDate(r.ausenteDesde)})</Badge>}
+        {selosDoRegistro(r, data).map((b) => (
+          <Badge key={b.texto} tone={b.tom}>
+            {b.texto}
+          </Badge>
+        ))}
       </p>
     </div>
   );
@@ -65,6 +82,7 @@ function CelulaRegistro({ r }: { r: RegistroOficialResumo }) {
 
 /** Notificação do OmniSaúde numa célula: número, agravo, data, unidade e o número oficial, se já tem. */
 function CelulaNotificacao({ n }: { n: NotificacaoParaConciliar }) {
+  const { data } = useDataHora();
   return (
     <div className="space-y-0.5 text-sm">
       <p className="font-medium tabular-nums text-slate-900">
@@ -73,7 +91,7 @@ function CelulaNotificacao({ n }: { n: NotificacaoParaConciliar }) {
       </p>
       <p className="text-slate-700">{n.agravo}</p>
       <p className="text-xs text-slate-500">
-        Notificada em {fmtDate(n.notificadaEm)}
+        Notificada em {data(n.notificadaEm)}
         {n.inicioSintomas ? ` · sintomas em ${fmtDate(n.inicioSintomas)}` : ''} · {n.unidade.nome}
       </p>
       <p className="text-xs text-slate-600">{textoPaciente(n.paciente, n.sigilosa)}</p>
@@ -239,7 +257,7 @@ export function DialogoVincular({ registro, notificacao, onFechar, onFeito }: { 
                 setFiltro({ ...filtro, busca: busca.trim() || undefined, pagina: undefined });
               }}
             >
-              <Field label={buscaNotificacao ? 'Buscar a notificação (número, nome ou CNS)' : 'Buscar o registro oficial (número, nome, CNS ou CPF)'} htmlFor="conc-vinc-busca" className="min-w-64 flex-1">
+              <Field label={buscaNotificacao ? 'Buscar a notificação (número, nome, CNS ou CPF)' : 'Buscar o registro oficial (número, nome, CNS ou CPF)'} htmlFor="conc-vinc-busca" className="min-w-64 flex-1">
                 <Input id="conc-vinc-busca" value={busca} maxLength={60} onChange={(e) => setBusca(e.target.value)} />
               </Field>
               <Button type="submit" variant="secondary">
@@ -312,9 +330,10 @@ export function DialogoVincular({ registro, notificacao, onFechar, onFeito }: { 
 
 // ─── Listas ─────────────────────────────────────────────────────────────────
 
-function useLista<T>(caminho: string, filtro: FiltroConciliacao) {
+/** Página de uma lista. O método do vínculo só vai na lista de vinculados (`comMetodo`). */
+function useLista<T>(caminho: string, filtro: FiltroConciliacao, comMetodo = false) {
   const [pagina, setPagina] = useState(1);
-  const lista = useApi<PaginaConciliacao<T>>(`${caminho}${consultaConciliacao({ ...filtro, pagina })}`);
+  const lista = useApi<PaginaConciliacao<T>>(`${caminho}${consultaConciliacao({ ...filtro, metodo: comMetodo ? filtro.metodo : undefined, pagina })}`);
   return { lista, setPagina };
 }
 
@@ -431,9 +450,107 @@ export function ListaSoNoOmnisaude({ filtro, onMudou }: { filtro: FiltroConcilia
   );
 }
 
+/** Diferenças do par em texto (situação, evolução, encerramento); "Sem diferença" quando batem. */
+function Diferencas({ p }: { p: ParConciliado }) {
+  if (!p.divergencias.length) return <p className="text-sm text-slate-500">Sem diferença</p>;
+  return (
+    <ul className="space-y-1 text-sm">
+      {p.divergencias.map((d) => {
+        const t = textoDivergencia(d);
+        return (
+          <li key={d.campo}>
+            <span className="font-medium">{t.campo}:</span> oficial {t.oficial} × OmniSaúde {t.omnisaude}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Desvincular o par (motivo obrigatório; o par não volta no vínculo automático). */
+function DialogoDesvincular({ registro, onFechar, onFeito }: { registro: RegistroOficialResumo | null; onFechar: () => void; onFeito: () => void }) {
+  const toast = useToast();
+  return (
+    <DialogoMotivo
+      key={registro?.id ?? 'nenhum'}
+      aberto={registro !== null}
+      titulo="Desvincular o par"
+      descricao="Os dois deixam de ser o mesmo caso e o par não volta no vínculo automático. Fica na auditoria."
+      botao="Desvincular"
+      onFechar={onFechar}
+      onConfirmar={async (motivo) => {
+        if (!registro) return;
+        await api.post<RespostaOk>('/vigilancia/conciliacao/desvincular', { recordId: registro.id, motivo });
+        toast.success('Par desvinculado.');
+        onFeito();
+      }}
+    />
+  );
+}
+
+/**
+ * Todos os pares vinculados (com ou sem diferença), do vínculo mais recente para o mais antigo: é daqui que se
+ * desvincula um par sem diferença ou com o registro já excluído no sistema oficial. Filtro opcional pelo método.
+ */
+export function ListaVinculadosConciliacao({ filtro, onMudou }: { filtro: FiltroConciliacao; onMudou: () => void }) {
+  const { lista, setPagina } = useLista<ListaVinculados['itens'][number]>('/vigilancia/conciliacao/vinculados', filtro, true);
+  const [desvincular, setDesvincular] = useState<RegistroOficialResumo | null>(null);
+  const { dataHora } = useDataHora();
+  return (
+    <>
+      {lista.data?.itens.length ? (
+        <>
+          <Table>
+            <THead>
+              <tr>
+                <TH>Registro oficial</TH>
+                <TH>Notificação do OmniSaúde</TH>
+                <TH>Diferenças</TH>
+                <TH className="w-36" />
+              </tr>
+            </THead>
+            <TBody>
+              {lista.data.itens.map((p) => (
+                <TR key={p.registro.id}>
+                  <TD>
+                    <CelulaRegistro r={p.registro} />
+                  </TD>
+                  <TD>
+                    <CelulaNotificacao n={p.notificacao} />
+                    <p className="mt-1 text-xs text-slate-500">Vínculo: {textoDoVinculo(p.registro.vinculo, dataHora)}</p>
+                  </TD>
+                  <TD>
+                    <Diferencas p={p} />
+                  </TD>
+                  <TD className="text-right">
+                    <Button size="sm" variant="ghost" onClick={() => setDesvincular(p.registro)}>
+                      <Link2Off className="h-4 w-4" /> Desvincular…
+                    </Button>
+                  </TD>
+                </TR>
+              ))}
+            </TBody>
+          </Table>
+          <Paginacao p={lista.data} onPagina={setPagina} />
+        </>
+      ) : (
+        <Estado lista={lista} vazio={filtro.metodo ? `Nenhum par vinculado por ${ROTULO_METODO_VINCULO[filtro.metodo].toLowerCase()}` : 'Nenhum par vinculado'} />
+      )}
+      <DialogoDesvincular
+        registro={desvincular}
+        onFechar={() => setDesvincular(null)}
+        onFeito={() => {
+          setDesvincular(null);
+          void lista.reload();
+          onMudou();
+        }}
+      />
+    </>
+  );
+}
+
 /** Pares vinculados com diferença de situação, evolução ou encerramento. */
 export function ListaDivergentesConciliacao({ filtro, onMudou }: { filtro: FiltroConciliacao; onMudou: () => void }) {
-  const toast = useToast();
   const { lista, setPagina } = useLista<ListaDivergentes['itens'][number]>('/vigilancia/conciliacao/divergentes', filtro);
   const [desvincular, setDesvincular] = useState<RegistroOficialResumo | null>(null);
   return (
@@ -460,16 +577,7 @@ export function ListaDivergentesConciliacao({ filtro, onMudou }: { filtro: Filtr
                     {p.registro.vinculo && <p className="mt-1 text-xs text-slate-500">Vínculo: {ROTULO_METODO_VINCULO[p.registro.vinculo.metodo]}</p>}
                   </TD>
                   <TD>
-                    <ul className="space-y-1 text-sm">
-                      {p.divergencias.map((d) => {
-                        const t = textoDivergencia(d);
-                        return (
-                          <li key={d.campo}>
-                            <span className="font-medium">{t.campo}:</span> oficial {t.oficial} × OmniSaúde {t.omnisaude}
-                          </li>
-                        );
-                      })}
-                    </ul>
+                    <Diferencas p={p} />
                   </TD>
                   <TD className="text-right">
                     <Button size="sm" variant="ghost" onClick={() => setDesvincular(p.registro)}>
@@ -485,17 +593,10 @@ export function ListaDivergentesConciliacao({ filtro, onMudou }: { filtro: Filtr
       ) : (
         <Estado lista={lista} vazio="Nenhum par com diferença" />
       )}
-      <DialogoMotivo
-        key={desvincular?.id ?? 'nenhum'}
-        aberto={desvincular !== null}
-        titulo="Desvincular o par"
-        descricao="Os dois deixam de ser o mesmo caso e o par não volta no vínculo automático. Fica na auditoria."
-        botao="Desvincular"
+      <DialogoDesvincular
+        registro={desvincular}
         onFechar={() => setDesvincular(null)}
-        onConfirmar={async (motivo) => {
-          if (!desvincular) return;
-          await api.post<RespostaOk>('/vigilancia/conciliacao/desvincular', { recordId: desvincular.id, motivo });
-          toast.success('Par desvinculado.');
+        onFeito={() => {
           setDesvincular(null);
           void lista.reload();
           onMudou();

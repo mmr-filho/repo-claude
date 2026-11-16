@@ -1,7 +1,17 @@
 'use client';
 
-import { CLASSIFICACAO_CASO_SURTO, CRITERIO_CASO_SURTO, localDateString, type CasoSurto, type DetalheSurto, type RespostaCasoSurto } from '@omnisaude/shared';
-import { Link2, Plus, Trash2 } from 'lucide-react';
+import {
+  CLASSIFICACAO_CASO_SURTO,
+  CRITERIO_CASO_SURTO,
+  localDateString,
+  ROTULO_SITUACAO_CASO,
+  type CasoSurto,
+  type DetalheSurto,
+  type RespostaCandidatasSurto,
+  type RespostaCasoSurto,
+  type RespostaRegistrosCandidatosSurto,
+} from '@omnisaude/shared';
+import { FileSearch, Link2, Plus, Search, Trash2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -11,16 +21,27 @@ import { Field, Input, Select } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
-import { STATUS, type PainelVigilancia } from '@/components/vigilancia/types';
+import { STATUS } from '@/components/vigilancia/types';
 import { api, errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
-import { useSession } from '@/lib/session';
 import { useTerritorios } from './diagrama-seletores';
-import { candidatasParaPlanilha, corpoLinhaCaso, dataBr, linhaVazia, origemDoCaso, pendenciasLinhaCaso, ROTULO_SEXO, simNao, textoCriterioCaso, type FormLinhaCaso } from './surto-regras';
-
-const normalizar = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+import { useDataHora, useFuso } from './fuso';
+import {
+  buscaDaPlanilhaValida,
+  candidatasParaPlanilha,
+  consultaCandidatas,
+  corpoLinhaCaso,
+  dataBr,
+  linhaVazia,
+  origemDoCaso,
+  pendenciasLinhaCaso,
+  ROTULO_SEXO,
+  rotuloSistemaOficial,
+  simNao,
+  textoCriterioCaso,
+  type FormLinhaCaso,
+} from './surto-regras';
 
 /** Mostra a resposta da inclusão: o caso e os avisos (agravo diferente, rascunho, caso em outro surto, sem notificação individual). */
 function avisar(toast: ReturnType<typeof useToast>, r: RespostaCasoSurto) {
@@ -28,26 +49,61 @@ function avisar(toast: ReturnType<typeof useToast>, r: RespostaCasoSurto) {
   for (const a of r.avisos) toast.info(a);
 }
 
-/** Inclui uma notificação individual (do agravo do surto, quando houver) na planilha. */
+/**
+ * Busca da inclusão: o texto (número, nome, CNS ou CPF; de 2 a 60 caracteres) vai à API ao buscar, não a cada letra
+ * (a busca fica na auditoria). Com o agravo do surto, a lista começa nele; "todos os agravos" tira o filtro.
+ */
+function BuscaDaPlanilha({ id, rotulo, grupo, todos, onTodos, onBuscar }: { id: string; rotulo: string; grupo: string | null; todos: boolean; onTodos: (v: boolean) => void; onBuscar: (texto: string) => void }) {
+  const [texto, setTexto] = useState('');
+  const valida = buscaDaPlanilhaValida(texto);
+  return (
+    <form
+      className="flex flex-wrap items-end gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (valida) onBuscar(texto.trim());
+      }}
+    >
+      <Field label={rotulo} htmlFor={id} className="min-w-64 flex-1" error={valida ? null : 'Digite de 2 a 60 caracteres.'}>
+        <Input id={id} value={texto} maxLength={60} onChange={(e) => setTexto(e.target.value)} placeholder="Número, nome, CNS ou CPF" autoComplete="off" />
+      </Field>
+      <Button type="submit" variant="secondary" disabled={!valida}>
+        <Search className="h-4 w-4" /> Buscar
+      </Button>
+      {grupo && (
+        <label className="flex items-center gap-2 pb-2 text-sm text-slate-700">
+          <input type="checkbox" checked={todos} onChange={(e) => onTodos(e.target.checked)} /> Todos os agravos
+        </label>
+      )}
+    </form>
+  );
+}
+
+/** Surtos abertos em que o caso já está (o caso pode entrar em mais de um; a API avisa). */
+function EmSurtos({ numeros }: { numeros: string[] }) {
+  if (!numeros.length) return null;
+  return <Badge tone="amber">Já no surto {numeros.join(', ')}</Badge>;
+}
+
+/** Inclui uma notificação individual (do agravo do surto, quando houver) na planilha (GET /vigilancia/surtos/candidatas). */
 function IncluirNotificacao({ d, onFechar, onFeito }: { d: DetalheSurto; onFechar: () => void; onFeito: () => void }) {
   const toast = useToast();
-  const painel = useApi<PainelVigilancia>(`/vigilancia/painel${d.grupo ? `?${new URLSearchParams({ grupo: d.grupo })}` : ''}`);
+  const { dataHora } = useDataHora();
+  const [todos, setTodos] = useState(!d.grupo);
   const [busca, setBusca] = useState('');
+  const candidatas = useApi<RespostaCandidatasSurto>(`/vigilancia/surtos/candidatas${consultaCandidatas({ grupo: todos ? undefined : (d.grupo ?? undefined), busca, surtoId: d.id })}`);
   const [sel, setSel] = useState('');
   const [busy, setBusy] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
-  const candidatas = useMemo(() => {
-    const lista = candidatasParaPlanilha(painel.data?.notificacoes ?? [], d.planilha).filter((n) => n.podeAbrir);
-    const t = normalizar(busca.trim());
-    return t ? lista.filter((n) => normalizar([n.numero, n.paciente ?? '', n.unidade ?? '', n.agravo].join(' ')).includes(t)) : lista;
-  }, [painel.data, d.planilha, busca]);
+  // A API já tira as da planilha (surtoId) e as descartadas; aqui, de novo, para a lista não mostrar a recém-incluída.
+  const lista = useMemo(() => candidatasParaPlanilha(candidatas.data?.itens ?? [], d.planilha), [candidatas.data, d.planilha]);
   return (
     <Dialog
       open
       size="lg"
       onOpenChange={(o) => !o && onFechar()}
       title="Incluir notificação na planilha"
-      description={`Notificações individuais ${d.grupo ? `de ${d.agravo} ` : ''}ainda fora da planilha (as mais recentes, sem as descartadas). O surto não substitui a notificação individual.`}
+      description={`Notificações individuais ${d.grupo && !todos ? `de ${d.agravo} ` : ''}fora da planilha, da conhecida mais recentemente para a mais antiga (até 100). O surto não substitui a notificação individual.`}
       footer={
         <Button
           disabled={!sel}
@@ -71,22 +127,38 @@ function IncluirNotificacao({ d, onFechar, onFeito }: { d: DetalheSurto; onFecha
       }
     >
       <div className="space-y-3">
-        <Field label="Buscar" htmlFor="sp-busca">
-          <Input id="sp-busca" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Número, paciente ou unidade" autoComplete="off" />
-        </Field>
-        {painel.error && <Alert tone="error">{painel.error}</Alert>}
-        {painel.loading && !painel.data && <Spinner />}
-        {painel.data && candidatas.length === 0 && <p className="text-sm text-slate-600">Nenhuma notificação para incluir.</p>}
-        {candidatas.length > 0 && (
+        <BuscaDaPlanilha
+          id="sp-busca"
+          rotulo="Buscar a notificação"
+          grupo={d.grupo}
+          todos={todos}
+          onTodos={(v) => {
+            setTodos(v);
+            setSel('');
+          }}
+          onBuscar={(t) => {
+            setBusca(t);
+            setSel('');
+          }}
+        />
+        {candidatas.error && <Alert tone="error">{candidatas.error}</Alert>}
+        {candidatas.loading && !candidatas.data && <Spinner />}
+        {candidatas.data && lista.length === 0 && <p className="text-sm text-slate-600">Nenhuma notificação para incluir{busca ? ' com essa busca' : ''}.</p>}
+        {lista.length > 0 && (
           <fieldset className="max-h-80 space-y-1 overflow-y-auto rounded-lg border border-slate-200 p-2">
             <legend className="sr-only">Notificações</legend>
-            {candidatas.slice(0, 100).map((n) => (
+            {lista.map((n) => (
               <label key={n.id} className={cn('flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-50', sel === n.id && 'bg-brand-50')}>
                 <input type="radio" name="sp-notificacao" className="mt-1" checked={sel === n.id} onChange={() => setSel(n.id)} />
                 <span className="flex-1">
                   <span className="font-medium tabular-nums">{n.numero}</span> · {n.agravo}
                   <span className="block text-xs text-slate-600">
-                    {n.paciente ?? 'paciente sob sigilo'} · {n.unidade ?? '—'} · {fmtDateTime(n.criadaEm)}
+                    {n.paciente} · {n.unidade.nome} · conhecida em {dataHora(n.conhecidoEm)}
+                    {n.inicioSintomas ? ` · sintomas em ${dataBr(n.inicioSintomas)}` : ''}
+                  </span>
+                  <span className="mt-0.5 flex flex-wrap gap-1">
+                    {n.sigilosa && <Badge tone="violet">Sigilosa</Badge>}
+                    <EmSurtos numeros={n.emSurtos} />
                   </span>
                 </span>
                 <Badge tone={STATUS[n.status]?.tone ?? 'slate'}>{STATUS[n.status]?.label ?? n.status}</Badge>
@@ -94,7 +166,103 @@ function IncluirNotificacao({ d, onFechar, onFeito }: { d: DetalheSurto; onFecha
             ))}
           </fieldset>
         )}
-        {candidatas.length > 100 && <p className="text-xs text-slate-500">Mostrando 100 de {candidatas.length}: refine a busca.</p>}
+        {candidatas.data?.limitado && <p className="text-xs text-slate-500">Há mais notificações do que as mostradas: refine a busca.</p>}
+        {erro && <Alert tone="error">{erro}</Alert>}
+      </div>
+    </Dialog>
+  );
+}
+
+/** Paciente do registro oficial na lista: nome, ou o motivo de não aparecer. */
+const pacienteDoRegistro = (r: RespostaRegistrosCandidatosSurto['itens'][number]) => r.paciente?.nome ?? (r.sigiloso ? 'paciente sob sigilo' : 'sem identificação no arquivo');
+
+/**
+ * Inclui um registro oficial individual (importado do Sinan ou do e-SUS) na planilha (GET /vigilancia/surtos/registros):
+ * para o caso que chegou pelo sistema oficial sem notificação no OmniSaúde.
+ */
+function IncluirRegistro({ d, onFechar, onFeito }: { d: DetalheSurto; onFechar: () => void; onFeito: () => void }) {
+  const toast = useToast();
+  const { data } = useDataHora();
+  const [todos, setTodos] = useState(!d.grupo);
+  const [busca, setBusca] = useState('');
+  const registros = useApi<RespostaRegistrosCandidatosSurto>(`/vigilancia/surtos/registros${consultaCandidatas({ grupo: todos ? undefined : (d.grupo ?? undefined), busca, surtoId: d.id })}`);
+  const [sel, setSel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const ja = useMemo(() => new Set(d.planilha.map((c) => c.officialRecordId).filter(Boolean)), [d.planilha]);
+  const lista = (registros.data?.itens ?? []).filter((r) => !ja.has(r.id));
+  return (
+    <Dialog
+      open
+      size="lg"
+      onOpenChange={(o) => !o && onFechar()}
+      title="Incluir registro oficial na planilha"
+      description={`Registros individuais das exportações oficiais ${d.grupo && !todos ? `de ${d.agravo} ` : ''}fora da planilha, do notificado mais recentemente para o mais antigo (até 100). A lista fica na auditoria.`}
+      footer={
+        <Button
+          disabled={!sel}
+          loading={busy}
+          onClick={async () => {
+            setBusy(true);
+            setErro(null);
+            try {
+              const r = await api.post<RespostaCasoSurto>(`/vigilancia/surtos/${d.id}/casos`, { officialRecordId: sel });
+              avisar(toast, r);
+              onFeito();
+            } catch (err) {
+              setErro(errorMessage(err));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <Link2 className="h-4 w-4" /> Incluir
+        </Button>
+      }
+    >
+      <div className="space-y-3">
+        <BuscaDaPlanilha
+          id="sp-reg-busca"
+          rotulo="Buscar o registro oficial"
+          grupo={d.grupo}
+          todos={todos}
+          onTodos={(v) => {
+            setTodos(v);
+            setSel('');
+          }}
+          onBuscar={(t) => {
+            setBusca(t);
+            setSel('');
+          }}
+        />
+        {registros.error && <Alert tone="error">{registros.error}</Alert>}
+        {registros.loading && !registros.data && <Spinner />}
+        {registros.data && lista.length === 0 && <p className="text-sm text-slate-600">Nenhum registro oficial para incluir{busca ? ' com essa busca' : ''}.</p>}
+        {lista.length > 0 && (
+          <fieldset className="max-h-80 space-y-1 overflow-y-auto rounded-lg border border-slate-200 p-2">
+            <legend className="sr-only">Registros oficiais</legend>
+            {lista.map((r) => (
+              <label key={r.id} className={cn('flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-50', sel === r.id && 'bg-brand-50')}>
+                <input type="radio" name="sp-registro" className="mt-1" checked={sel === r.id} onChange={() => setSel(r.id)} />
+                <span className="flex-1">
+                  <span className="font-medium tabular-nums">{r.numero}</span>
+                  <span className="ml-1.5 text-xs text-slate-500">{rotuloSistemaOficial(r.sistema)}</span> · {r.agravoNome ?? r.grupo ?? r.agravo ?? 'agravo não identificado'}
+                  <span className="block text-xs text-slate-600">
+                    {pacienteDoRegistro(r)} · {r.unidade.nome ?? (r.unidade.cnes ? `CNES ${r.unidade.cnes}` : 'unidade não informada')} · notificado em {dataBr(r.notificadoEm)}
+                    {r.inicioSintomas ? ` · sintomas em ${dataBr(r.inicioSintomas)}` : ''}
+                  </span>
+                  <span className="mt-0.5 flex flex-wrap gap-1">
+                    <Badge tone="slate">{ROTULO_SITUACAO_CASO[r.situacao] ?? r.situacao}</Badge>
+                    {r.sigiloso && <Badge tone="violet">Sigiloso</Badge>}
+                    {r.ausenteDesde && <Badge tone="amber">Não veio na última exportação ({data(r.ausenteDesde)})</Badge>}
+                    <EmSurtos numeros={r.emSurtos} />
+                  </span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+        )}
+        {registros.data?.limitado && <p className="text-xs text-slate-500">Há mais registros do que os mostrados: refine a busca.</p>}
         {erro && <Alert tone="error">{erro}</Alert>}
       </div>
     </Dialog>
@@ -107,8 +275,7 @@ const VAZIA = 'Preencha ao menos um campo da linha.';
 /** Linha manual da planilha (caso sem notificação no OmniSaúde). */
 function LinhaManual({ d, onFechar, onFeito }: { d: DetalheSurto; onFechar: () => void; onFeito: () => void }) {
   const toast = useToast();
-  const session = useSession();
-  const hoje = localDateString(new Date(), session.me?.tenant.timeZone ?? 'America/Sao_Paulo');
+  const hoje = localDateString(new Date(), useFuso());
   const t = useTerritorios('BAIRRO');
   const [f, setF] = useState<FormLinhaCaso>(linhaVazia());
   const [busy, setBusy] = useState(false);
@@ -276,12 +443,13 @@ function Retirar({ d, c, onFechar, onFeito }: { d: DetalheSurto; c: CasoSurto; o
   );
 }
 
-/** Planilha de acompanhamento do surto: uma linha por caso (notificação, registro oficial ou linha manual). */
+/**
+ * Planilha de acompanhamento do surto: uma linha por caso (notificação, registro oficial ou linha manual). A linha de
+ * origem sigilosa que quem lê não pode abrir vem só com o número do caso.
+ */
 export function SurtoPlanilha({ d, onMudou }: { d: DetalheSurto; onMudou: () => void }) {
-  const session = useSession();
   const editavel = d.permissoes.editar;
-  const podeBuscar = session.can('vigilancia.painel');
-  const [acao, setAcao] = useState<{ tipo: 'notificacao' | 'manual' } | { tipo: 'retirar'; c: CasoSurto } | null>(null);
+  const [acao, setAcao] = useState<{ tipo: 'notificacao' | 'registro' | 'manual' } | { tipo: 'retirar'; c: CasoSurto } | null>(null);
   const feito = () => {
     setAcao(null);
     onMudou();
@@ -294,11 +462,12 @@ export function SurtoPlanilha({ d, onMudou }: { d: DetalheSurto; onMudou: () => 
         actions={
           editavel ? (
             <>
-              {podeBuscar && (
-                <Button size="sm" onClick={() => setAcao({ tipo: 'notificacao' })}>
-                  <Link2 className="h-4 w-4" /> Incluir notificação
-                </Button>
-              )}
+              <Button size="sm" onClick={() => setAcao({ tipo: 'notificacao' })}>
+                <Link2 className="h-4 w-4" /> Incluir notificação
+              </Button>
+              <Button size="sm" variant="secondary" onClick={() => setAcao({ tipo: 'registro' })}>
+                <FileSearch className="h-4 w-4" /> Incluir registro oficial
+              </Button>
               <Button size="sm" variant="secondary" onClick={() => setAcao({ tipo: 'manual' })}>
                 <Plus className="h-4 w-4" /> Linha manual
               </Button>
@@ -328,43 +497,71 @@ export function SurtoPlanilha({ d, onMudou }: { d: DetalheSurto; onMudou: () => 
             </tr>
           </THead>
           <TBody>
-            {d.planilha.map((c) => (
-              <TR key={c.id}>
-                <TD className="font-medium tabular-nums">{c.numero}</TD>
-                <TD>{c.iniciais ?? '—'}</TD>
-                <TD>{c.sexo ? (ROTULO_SEXO[c.sexo] ?? c.sexo) : '—'}</TD>
-                <TD className="whitespace-nowrap">{c.idade ?? '—'}</TD>
-                <TD>
-                  {c.bairroNome ?? '—'}
-                  {c.municipioResidencia && <span className="block text-slate-500">IBGE {c.municipioResidencia}</span>}
-                </TD>
-                <TD className="tabular-nums">{dataBr(c.inicioSintomas)}</TD>
-                <TD>{simNao(c.hospitalizado)}</TD>
-                <TD>{simNao(c.obito)}</TD>
-                <TD>{c.classificacao ? `${c.classificacao} - ${CLASSIFICACAO_CASO_SURTO[c.classificacao] ?? '?'}` : '—'}</TD>
-                <TD>{textoCriterioCaso(c.criterio)}</TD>
-                <TD>{c.cidFinal ?? '—'}</TD>
-                <TD>
-                  {origemDoCaso(c)}
-                  {c.semNotificacaoIndividual && (
-                    <Badge tone="amber" className="mt-0.5">
-                      Sem notificação individual
-                    </Badge>
-                  )}
-                </TD>
-                {editavel && (
-                  <TD className="text-right">
-                    <Button size="icon" variant="ghost" className="h-8 w-8 text-red-700" aria-label={`Retirar o caso ${c.numero}`} onClick={() => setAcao({ tipo: 'retirar', c })}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
+            {d.planilha.map((c) =>
+              c.restrito ? (
+                <TR key={c.id}>
+                  <TD className="font-medium tabular-nums">{c.numero}</TD>
+                  <TD colSpan={10} className="text-slate-500">
+                    Dados sob sigilo: só quem pode abrir {c.notificationId ? 'a notificação' : 'o registro oficial'} vê a linha.
                   </TD>
-                )}
-              </TR>
-            ))}
+                  <TD>
+                    {origemDoCaso(c)}
+                    <Badge tone="violet" className="mt-0.5">
+                      Sob sigilo
+                    </Badge>
+                    {c.semNotificacaoIndividual && (
+                      <Badge tone="amber" className="mt-0.5">
+                        Sem notificação individual
+                      </Badge>
+                    )}
+                  </TD>
+                  {editavel && (
+                    <TD className="text-right">
+                      <Button size="icon" variant="ghost" className="h-8 w-8 text-red-700" aria-label={`Retirar o caso ${c.numero}`} onClick={() => setAcao({ tipo: 'retirar', c })}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </TD>
+                  )}
+                </TR>
+              ) : (
+                <TR key={c.id}>
+                  <TD className="font-medium tabular-nums">{c.numero}</TD>
+                  <TD>{c.iniciais ?? '—'}</TD>
+                  <TD>{c.sexo ? (ROTULO_SEXO[c.sexo] ?? c.sexo) : '—'}</TD>
+                  <TD className="whitespace-nowrap">{c.idade ?? '—'}</TD>
+                  <TD>
+                    {c.bairroNome ?? '—'}
+                    {c.municipioResidencia && <span className="block text-slate-500">IBGE {c.municipioResidencia}</span>}
+                  </TD>
+                  <TD className="tabular-nums">{dataBr(c.inicioSintomas)}</TD>
+                  <TD>{simNao(c.hospitalizado)}</TD>
+                  <TD>{simNao(c.obito)}</TD>
+                  <TD>{c.classificacao ? `${c.classificacao} - ${CLASSIFICACAO_CASO_SURTO[c.classificacao] ?? '?'}` : '—'}</TD>
+                  <TD>{textoCriterioCaso(c.criterio)}</TD>
+                  <TD>{c.cidFinal ?? '—'}</TD>
+                  <TD>
+                    {origemDoCaso(c)}
+                    {c.semNotificacaoIndividual && (
+                      <Badge tone="amber" className="mt-0.5">
+                        Sem notificação individual
+                      </Badge>
+                    )}
+                  </TD>
+                  {editavel && (
+                    <TD className="text-right">
+                      <Button size="icon" variant="ghost" className="h-8 w-8 text-red-700" aria-label={`Retirar o caso ${c.numero}`} onClick={() => setAcao({ tipo: 'retirar', c })}>
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </TD>
+                  )}
+                </TR>
+              ),
+            )}
           </TBody>
         </Table>
       )}
       {acao?.tipo === 'notificacao' && <IncluirNotificacao d={d} onFechar={() => setAcao(null)} onFeito={feito} />}
+      {acao?.tipo === 'registro' && <IncluirRegistro d={d} onFechar={() => setAcao(null)} onFeito={feito} />}
       {acao?.tipo === 'manual' && <LinhaManual d={d} onFechar={() => setAcao(null)} onFeito={feito} />}
       {acao?.tipo === 'retirar' && <Retirar d={d} c={acao.c} onFechar={() => setAcao(null)} onFeito={feito} />}
     </Card>

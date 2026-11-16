@@ -23,8 +23,12 @@ const DICA_CATEGORIA: Record<CategoriaSurto, string> = {
 
 type CamposDeAgravo = Pick<FormSurto, 'categoria' | 'grupo' | 'sindrome' | 'cid' | 'agente'>;
 
-/** Categoria e agravo do surto (catálogo, síndrome ou CID, conforme a categoria) e o agente etiológico. */
+/**
+ * Categoria e agravo do surto (catálogo, síndrome ou CID, conforme a categoria) e o agente etiológico. Os agravos
+ * sigilosos só aparecem para quem tem `notificacao.sensivel`.
+ */
 export function CamposAgravo({ prefixo, f, set, opcoes, disabled }: { prefixo: string; f: CamposDeAgravo; set: (patch: Partial<CamposDeAgravo>) => void; opcoes: OpcaoAgravo[]; disabled?: boolean }) {
+  const sigilosos = useSession().can('notificacao.sensivel');
   return (
     <div className="grid gap-3 md:grid-cols-2">
       <Field label="Categoria" htmlFor={`${prefixo}-categoria`} hint={DICA_CATEGORIA[f.categoria]}>
@@ -42,7 +46,15 @@ export function CamposAgravo({ prefixo, f, set, opcoes, disabled }: { prefixo: s
             <Input id={`${prefixo}-grupo`} disabled value={opcoes.find((o) => o.grupo === f.grupo)?.nome ?? f.grupo} />
           </Field>
         ) : (
-          <SeletorAgravo id={`${prefixo}-grupo`} rotulo="Agravo (catálogo)" valor={f.grupo} opcoes={opcoes} vazio={f.categoria === 'DTA' ? 'Nenhum: só o CID' : 'Escolha o agravo'} onChange={(grupo) => set({ grupo })} />
+          <SeletorAgravo
+            id={`${prefixo}-grupo`}
+            rotulo="Agravo (catálogo)"
+            valor={f.grupo}
+            opcoes={opcoes}
+            sigilosos={sigilosos}
+            vazio={f.categoria === 'DTA' ? 'Nenhum: só o CID' : 'Escolha o agravo'}
+            onChange={(grupo) => set({ grupo })}
+          />
         ))}
       {usaSindrome(f.categoria) && (
         <Field label="Síndrome" htmlFor={`${prefixo}-sindrome`} hint="Código da síndrome de fonte secundária: confira no Sinan Net.">

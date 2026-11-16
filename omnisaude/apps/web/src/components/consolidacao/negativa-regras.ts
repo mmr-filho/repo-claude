@@ -1,6 +1,7 @@
 import {
   arredondar,
   ROTULO_SITUACAO_UNIDADE_SEMANA,
+  UNIT_TYPE_LABELS,
   type AtestoNegativa,
   type CelulaGrade,
   type ColunaGrade,
@@ -10,11 +11,15 @@ import {
   type ResponsavelNegativa,
   type RespostaGradeNegativa,
   type RespostaMinhasNegativas,
+  type SemanaParaAtestar,
   type SituacaoUnidadeSemana,
   type StatusAtesto,
   type UnidadeNotificante,
   type UnidadeRef,
+  type UnitType,
+  type UsuarioLotado,
 } from '@omnisaude/shared';
+import { fmtDateTimeTz } from '@/lib/format';
 
 /*
  * Regras da notificação negativa sem React (testadas em apps/web/test/negativa-regras.test.ts): cores e textos da
@@ -65,6 +70,24 @@ export const TOM_SITUACAO: Record<SituacaoUnidadeSemana, Tom> = {
 };
 
 export const TOM_STATUS_ATESTO: Record<StatusAtesto, Tom> = { ATESTADA: 'green', CANCELADA: 'amber', ANULADA: 'red' };
+
+/** Tipo do estabelecimento pelo nome ("Policlínica / especialidades"), não pelo código do cadastro. */
+export const rotuloTipoUnidade = (tipo: string | null | undefined) => (tipo ? (UNIT_TYPE_LABELS[tipo as UnitType] ?? tipo) : '—');
+
+/**
+ * Linha da semana na tela do responsável: quando foi atestada, o prazo vencido ou o prazo. Os instantes saem no fuso da
+ * instituição (`tz`), o mesmo em que a API calcula o prazo e o PDF do atesto o mostra.
+ */
+export function textoDaSemanaDoResponsavel(s: Pick<SemanaParaAtestar, 'atesto' | 'prazo' | 'prazoPassou' | 'podeAtestar'>, tz: string): string {
+  if (s.atesto) return `Atestada em ${fmtDateTimeTz(s.atesto.atestadoEm, tz)} por ${s.atesto.atestadoPor}${s.atesto.atrasado ? ', fora do prazo' : ', no prazo'}${s.atesto.emNome ? ' (registrada pela vigilância)' : ''}.`;
+  if (s.prazoPassou) return `Prazo vencido em ${fmtDateTimeTz(s.prazo, tz)}${s.podeAtestar ? ': o atesto ainda é aceito e fica marcado como fora do prazo.' : '.'}`;
+  return `Prazo: ${fmtDateTimeTz(s.prazo, tz)}.`;
+}
+
+/** Subtítulo do detalhe da célula da grade: CNES, período da semana e o prazo do atesto no fuso da instituição. */
+export function descricaoDaCelula(linha: Pick<LinhaGradeNegativa, 'unidade'>, coluna: Pick<ColunaGrade, 'semana' | 'inicio' | 'fim' | 'prazo'>, tz: string): string {
+  return `CNES ${linha.unidade.cnes} · de ${rotuloColuna(coluna).periodo} · prazo do atesto: ${fmtDateTimeTz(coluna.prazo, tz)}`;
+}
 
 /** Cabeçalho da coluna: "SE 44/2026" e o período "dd/mm a dd/mm". */
 export function rotuloColuna(c: Pick<ColunaGrade, 'semana' | 'inicio' | 'fim'>): { titulo: string; periodo: string } {
@@ -241,10 +264,20 @@ export function pendenciasEncerrarPeriodo(u: UnidadeNotificante, ate: string, mo
   return erros;
 }
 
-export function pendenciasDesignacao(u: UnidadeNotificante, f: { userId: string; tipo: 'TITULAR' | 'SUBSTITUTO'; desde: string }, nomeDoUsuario?: string | null): string[] {
+/** Por que o lotado não pode ser designado (nenhum papel dele na unidade atesta a negativa); null quando pode. */
+export const motivoNaoAtesta = (l: Pick<UsuarioLotado, 'podeAtestar'>) => (l.podeAtestar ? null : 'Papel sem a negativa nesta unidade: não pode ser designado.');
+
+export function pendenciasDesignacao(
+  u: UnidadeNotificante,
+  f: { userId: string; tipo: 'TITULAR' | 'SUBSTITUTO'; desde: string },
+  nomeDoUsuario?: string | null,
+  escolhido?: Pick<UsuarioLotado, 'podeAtestar'> | null,
+): string[] {
   const erros: string[] = [];
   if (!periodoAberto(u)) erros.push('A unidade não é notificante: abra o período antes de designar responsáveis.');
   if (!f.userId) erros.push('Escolha um usuário lotado na unidade.');
+  // A API recusa (422 PAPEL_SEM_NEGATIVA): a designação de quem não atesta deixaria a unidade sem ninguém para atestar.
+  if (f.userId && escolhido && !escolhido.podeAtestar) erros.push(`${nomeDoUsuario ?? 'O usuário'} não tem, nesta unidade, papel que atesta a negativa. Escolha quem tem lotação em papel que atesta.`);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(f.desde)) erros.push('Informe o início da designação.');
   const ativos = responsaveisAtivos(u);
   const ja = ativos.find((r) => r.userId === f.userId);

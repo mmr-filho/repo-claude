@@ -27,6 +27,7 @@ export function AbaSurtos() {
   return (
     <div className="space-y-4">
       <Tabs
+        aria-label="Seções dos surtos"
         value={secao}
         onValueChange={(v) => {
           setSecao(v);

@@ -35,6 +35,7 @@ export function AbaContingencia({ podeAgir }: { podeAgir: boolean }) {
   return (
     <div className="space-y-4">
       <Tabs
+        aria-label="Seções da contingência"
         value={secao}
         onValueChange={setSecao}
         tabs={[

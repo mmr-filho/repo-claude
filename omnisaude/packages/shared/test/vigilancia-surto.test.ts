@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CAMPOS_DTA,
   CRITERIO_CASO_SURTO,
   DELIMITACAO_SURTO,
   detectarAglomerados,
+  errosDta,
   GRUPOS_SEM_SUGESTAO_DE_SURTO,
+  idadeValida,
   LOCAL_INICIAL_SURTO,
   MODO_TRANSMISSAO,
+  normalizarIdade,
   REGRAS_SURTO_PADRAO,
   SINDROMES_SURTO,
+  UNIDADES_IDADE_CASO,
   validarSurto,
   VEICULO_TRANSMISSAO,
   type CasoParaSurto,
@@ -33,7 +38,8 @@ function caso(grupo: string, inicioSintomas: string | null, extra: Partial<CasoP
     ...extra,
   };
 }
-const OPCOES: OpcoesDeteccaoSurto = { hoje: '2026-11-10', dispensas: [], diasInusitado: 365, historicoPorGrupo: {} };
+// O fuso entrou nas opções (sur-9): o dia em que o caso sem início dos sintomas foi conhecido é o dia local.
+const OPCOES: OpcoesDeteccaoSurto = { hoje: '2026-11-10', fuso: 'America/Sao_Paulo', dispensas: [], diasInusitado: 365, historicoPorGrupo: {} };
 const detecta = (casos: CasoParaSurto[], opcoes: Partial<OpcoesDeteccaoSurto> = {}) => detectarAglomerados(casos, REGRAS_SURTO_PADRAO, { ...OPCOES, ...opcoes });
 const doQuarteirao = (extra: Partial<CasoParaSurto> = {}) => ({ blockId: 'q1', neighborhoodId: 'b1', ...extra });
 
@@ -149,6 +155,98 @@ describe('surto: sugestões de aglomerado', () => {
     const v = caso('varicela', '2026-11-08', { unitId: 'hospital', unidadeHospitalar: true });
     const h = [caso('hepatites-virais', '2026-11-01', doQuarteirao({ neighborhoodId: null })), caso('hepatites-virais', '2026-11-03', doQuarteirao({ neighborhoodId: null }))];
     expect(detecta([...h, v]).map((s) => s.regra)).toEqual(['varicela-hospitalar', 'quarteirao-7d']);
+  });
+});
+
+describe('surto: correções da revisão (sur-1, sur-4, sur-9)', () => {
+  it('sur-9: o caso sem início dos sintomas conhecido à noite (horário de Brasília) conta no dia local, não no dia UTC', () => {
+    const manha = caso('leptospirose', null, { ...doQuarteirao(), conhecidoEm: '2026-11-10T12:00:00.000Z' });
+    // 21h30 de 10/11 em Brasília = 00h30 de 11/11 em UTC: antes, ficava "depois de hoje" e saía das regras.
+    const noite = caso('leptospirose', null, { ...doQuarteirao(), conhecidoEm: '2026-11-11T00:30:00.000Z' });
+    const s = detecta([manha, noite]);
+    expect(s.map((x) => x.assinatura)).toEqual(['bairro-7d|BAIRRO:b1|leptospirose', 'quarteirao-7d|QUARTEIRAO:q1|leptospirose']);
+    expect(s[1]!.casos).toEqual([manha.id, noite.id]);
+    // Em outro fuso (Manaus, UTC-4), 00h30 UTC de 11/11 também é 10/11; em UTC, seria 11/11 e ficaria de fora.
+    expect(detecta([manha, noite], { fuso: 'America/Manaus' })).toHaveLength(2);
+    expect(detecta([manha, noite], { fuso: 'UTC' })).toEqual([]);
+    // A janela também usa o dia local: 7 dias de 03/11 (local) a 10/11 (local, 21h30).
+    const antigo = caso('leptospirose', null, { ...doQuarteirao({ neighborhoodId: null }), conhecidoEm: '2026-11-03T15:00:00.000Z' });
+    const ultimo = caso('leptospirose', null, { ...doQuarteirao({ neighborhoodId: null }), conhecidoEm: '2026-11-11T00:30:00.000Z' });
+    expect(detecta([antigo, ultimo]).map((x) => x.casos)).toEqual([[antigo.id, ultimo.id]]);
+  });
+
+  it('sur-4: o caso já ligado a surto é caso anterior no evento inusitado; o seguinte não vira "primeiro caso"', () => {
+    const c1 = caso('colera', '2026-11-04', { jaEmSurto: true });
+    const c2 = caso('colera', '2026-11-10');
+    // Antes: o c1 sumia das duas listas e o c2 virava "Primeiro caso do agravo registrado no município".
+    expect(detecta([c1, c2], { historicoPorGrupo: { colera: null } })).toEqual([]);
+    // Sem o c1 no surto, os dois formam a sugestão; o já ligado nunca entra na lista de casos da sugestão.
+    expect(detecta([{ ...c1, jaEmSurto: false }, c2], { historicoPorGrupo: { colera: null } })).toMatchObject([{ regra: 'inusitado', casos: [c1.id, c2.id] }]);
+    const depois = caso('colera', '2026-11-08', { jaEmSurto: true });
+    expect(detecta([c2, { ...depois, inicioSintomas: '2026-11-03' }], { historicoPorGrupo: { colera: null } })).toEqual([]);
+    expect(detecta([caso('colera', '2026-11-02'), depois], { historicoPorGrupo: { colera: null } })).toMatchObject([{ regra: 'inusitado', descricao: expect.stringContaining('Primeiro caso do agravo registrado') }]);
+    // Caso que quem lê não vê (de outra unidade, na visão do núcleo) também é caso anterior.
+    expect(detecta([c2], { historicoPorGrupo: { colera: null }, outrosCasosPorGrupo: { colera: ['2026-11-05'] } })).toEqual([]);
+    expect(detecta([c2], { historicoPorGrupo: { colera: null }, outrosCasosPorGrupo: { colera: ['2026-11-12'] } })).toHaveLength(1);
+    // Histórico antigo com outro caso depois dele, ainda há muito tempo: continua inusitado, com a frase do intervalo.
+    expect(detecta([c2], { historicoPorGrupo: { colera: '2024-01-10' }, outrosCasosPorGrupo: { colera: ['2025-01-10'] } })).toMatchObject([
+      { regra: 'inusitado', descricao: 'Primeiro caso do agravo depois de 365 dias sem casos: evento inusitado' },
+    ]);
+  });
+
+  it('sur-1: a dispensa do núcleo só esconde sugestão com todos os casos da unidade dele; a municipal vale para todos', () => {
+    const h1 = caso('hepatites-virais', '2026-11-02', doQuarteirao({ neighborhoodId: null, unitId: 'hospital' }));
+    const u1 = caso('hepatites-virais', '2026-11-03', doQuarteirao({ neighborhoodId: null, unitId: 'ubs' }));
+    const h2 = caso('hepatites-virais', '2026-11-04', doQuarteirao({ neighborhoodId: null, unitId: 'hospital' }));
+    const assinatura = 'quarteirao-7d|QUARTEIRAO:q1|hepatites-virais';
+    const ate = '2026-11-05T00:00:00.000Z';
+    // Visão municipal com a dispensa do núcleo do hospital: o caso da UBS mantém a sugestão (antes, sumia).
+    expect(detecta([h1, u1, h2], { dispensas: [{ assinatura, ateConhecimento: ate, unitId: 'hospital' }] })).toMatchObject([{ assinatura, casos: [h1.id, u1.id, h2.id] }]);
+    // Na visão do núcleo (só os casos dele), a dispensa dele vale.
+    expect(detecta([h1, h2], { dispensas: [{ assinatura, ateConhecimento: ate, unitId: 'hospital' }] })).toEqual([]);
+    // A de outra unidade não vale; a municipal (unidade nula) vale para todos.
+    expect(detecta([h1, h2], { dispensas: [{ assinatura, ateConhecimento: ate, unitId: 'ubs' }] })).toHaveLength(1);
+    expect(detecta([h1, u1, h2], { dispensas: [{ assinatura, ateConhecimento: ate, unitId: null }] })).toEqual([]);
+    expect(detecta([h1, h2], { dispensas: [{ assinatura, ateConhecimento: ate }] })).toEqual([]);
+  });
+});
+
+describe('surto: regras da planilha e do bloco DTA no shared (K8)', () => {
+  it('idade: número e unidade do Sinan, dentro do máximo da unidade (a regra da API e da tela)', () => {
+    for (const [texto, canon] of [
+      ['34', '34A'],
+      ['34 anos', '34A'],
+      ['34A', '34A'],
+      ['1 ano', '1A'],
+      ['5 meses', '5M'],
+      ['5m', '5M'],
+      ['11 mês', '11M'],
+      ['10 dias', '10D'],
+      ['12 horas', '12H'],
+      ['12h', '12H'],
+    ])
+      expect([texto, normalizarIdade(texto!)]).toEqual([texto, canon]);
+    for (const ruim of ['', 'abc', '13 meses', '32 dias', '24 horas', '131', '3 semanas', 'sete anos']) {
+      expect(normalizarIdade(ruim), ruim).toBeNull();
+      expect(idadeValida(ruim), ruim).toBe(false);
+    }
+    expect(idadeValida('5 meses')).toBe(true);
+    expect(Object.fromEntries(Object.entries(UNIDADES_IDADE_CASO).map(([k, v]) => [k, v.codigo]))).toEqual({ H: '1', D: '2', M: '3', A: '4' });
+  });
+
+  it('bloco DTA: as 11 variáveis conhecidas e a conferência de número, data e critério', () => {
+    expect(CAMPOS_DTA.map((c) => c.variavel)).toEqual(['NU_ENTR', 'NU_ENT_DOE', 'NU_TOT', 'NU_TOT_HOS', 'NU_OBITO', 'TP_PRO_PRE', 'ST_ALIMEN', 'DS_ETIOLOG', 'DS_ALICAUS', 'CRITERIO', 'DT_ENCERRA']);
+    expect(CAMPOS_DTA.find((c) => c.variavel === 'DT_ENCERRA')).toMatchObject({ tipo: 'data', rotulo: 'Data de encerramento (DTA)' });
+    const hoje = '2026-11-10';
+    expect(errosDta({ NU_ENTR: 40, NU_ENT_DOE: '12', DS_ALICAUS: 'Salada de maionese', CRITERIO: '4', DT_ENCERRA: '2026-11-10', OUTRA_VAR: 'livre', NU_TOT: null, NU_OBITO: '' }, hoje)).toEqual([]);
+    expect(errosDta({ NU_ENTR: 'quarenta', NU_TOT: 2.5, NU_OBITO: -1, NU_TOT_HOS: '12a' }, hoje)).toEqual([
+      'DTA, Nº de entrevistados: número inteiro.',
+      'DTA, Total de doentes: número inteiro.',
+      'DTA, Nº de hospitalizados: número inteiro.',
+      'DTA, Nº de óbitos: número inteiro.',
+    ]);
+    for (const data of ['2026-11-11', '2026-02-30', '10/11/2026', '2026-13-01']) expect(errosDta({ DT_ENCERRA: data }, hoje), data).toEqual(['DTA, Data de encerramento (DTA): data válida e não futura.']);
+    expect(errosDta({ CRITERIO: '9' }, hoje)).toEqual(['DTA, Critério de confirmação: código de 1 a 5.']);
   });
 });
 

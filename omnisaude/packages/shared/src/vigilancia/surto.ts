@@ -4,6 +4,7 @@
  * Surto v5), regras de sugestão de aglomerado (o sistema sugere, a vigilância confirma) e a validação de cada etapa
  * pelo Manual de Normas e Rotinas do Sinan (2007), item 5.3.1. Ver contingencia-surto-negativa.md, A13 a A26.
  */
+import { localDateString } from '../dates';
 
 /** Campo 19 da ficha (CS_LOCAL): local inicial de ocorrência. */
 export const LOCAL_INICIAL_SURTO: Record<string, string> = {
@@ -65,6 +66,81 @@ export const CRITERIO_CASO_SURTO: Record<string, string> = {
   '4': 'Laboratorial clínico-bromatológico',
   '5': 'Inconclusivo',
 };
+
+/** Unidade da idade na planilha (NU_IDADE_N do Sinan: 1 hora, 2 dia, 3 mês, 4 ano) e o máximo aceito em cada uma. */
+export const UNIDADES_IDADE_CASO: Record<'H' | 'D' | 'M' | 'A', { codigo: string; um: string; varios: string; max: number }> = {
+  H: { codigo: '1', um: 'hora', varios: 'horas', max: 23 },
+  D: { codigo: '2', um: 'dia', varios: 'dias', max: 31 },
+  M: { codigo: '3', um: 'mês', varios: 'meses', max: 11 },
+  A: { codigo: '4', um: 'ano', varios: 'anos', max: 130 },
+};
+
+/**
+ * Idade da linha da planilha como número + unidade do Sinan (H, D, M, A): "34", "34 anos", "34A" → "34A"; "5 meses",
+ * "5m" → "5M"; "10 dias" → "10D"; "12 horas" → "12H". Nulo quando o texto não é idade ou passa do máximo da unidade.
+ */
+export function normalizarIdade(texto: string): string | null {
+  const t = texto.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const m = /^(\d{1,3})\s*([a-z]*)\.?$/.exec(t);
+  if (!m) return null;
+  const n = Number(m[1]);
+  const u = ['', 'a', 'ano', 'anos'].includes(m[2]!) ? 'A' : ['m', 'mes', 'meses'].includes(m[2]!) ? 'M' : ['d', 'dia', 'dias'].includes(m[2]!) ? 'D' : ['h', 'hora', 'horas'].includes(m[2]!) ? 'H' : null;
+  if (!u || n > UNIDADES_IDADE_CASO[u].max) return null;
+  return `${n}${u}`;
+}
+
+/** A idade digitada na linha manual é aceita (a mesma regra da API: número e unidade, dentro do máximo da unidade). */
+export function idadeValida(texto: string): boolean {
+  return normalizarIdade(texto) !== null;
+}
+
+/** Tipo do campo do bloco DTA: inteiro, texto livre, data (AAAA-MM-DD) ou critério (código do dicionário). */
+export type TipoCampoDta = 'numero' | 'texto' | 'data' | 'criterio';
+
+/**
+ * Bloco da ficha de surto de DTA, resumido (campos 27 a 60): as variáveis do dicionário que o sistema conhece
+ * (DIC_DADOS_Surto_DTA_v5). Gravadas com datas em AAAA-MM-DD e o critério com os códigos do dicionário; o espelho
+ * mostra as datas em dd/mm/aaaa. Outras variáveis podem ser gravadas, sem conferência de tipo.
+ */
+export const CAMPOS_DTA: { variavel: string; rotulo: string; tipo: TipoCampoDta }[] = [
+  { variavel: 'NU_ENTR', rotulo: 'Nº de entrevistados', tipo: 'numero' },
+  { variavel: 'NU_ENT_DOE', rotulo: 'Nº de doentes entrevistados', tipo: 'numero' },
+  { variavel: 'NU_TOT', rotulo: 'Total de doentes', tipo: 'numero' },
+  { variavel: 'NU_TOT_HOS', rotulo: 'Nº de hospitalizados', tipo: 'numero' },
+  { variavel: 'NU_OBITO', rotulo: 'Nº de óbitos', tipo: 'numero' },
+  { variavel: 'TP_PRO_PRE', rotulo: 'Local de produção/preparação', tipo: 'texto' },
+  { variavel: 'ST_ALIMEN', rotulo: 'Local de ingestão', tipo: 'texto' },
+  { variavel: 'DS_ETIOLOG', rotulo: 'Agente etiológico', tipo: 'texto' },
+  { variavel: 'DS_ALICAUS', rotulo: 'Alimento causador', tipo: 'texto' },
+  { variavel: 'CRITERIO', rotulo: 'Critério de confirmação', tipo: 'criterio' },
+  { variavel: 'DT_ENCERRA', rotulo: 'Data de encerramento (DTA)', tipo: 'data' },
+];
+
+/** Data civil AAAA-MM-DD que existe no calendário (31/02 não). */
+function dataCivilValida(v: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (!m) return false;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.toISOString().slice(0, 10) === v;
+}
+
+/**
+ * Erros do bloco DTA nas variáveis conhecidas (`CAMPOS_DTA`): número inteiro de 0 a 9.999.999, data AAAA-MM-DD válida
+ * e não futura (`hoje` no fuso da instituição) e critério do dicionário (1 a 5). Valor vazio ou nulo não é conferido.
+ */
+export function errosDta(dta: Record<string, string | number | null>, hoje: string): string[] {
+  const erros: string[] = [];
+  for (const campo of CAMPOS_DTA) {
+    const bruto = dta[campo.variavel];
+    if (bruto === null || bruto === undefined) continue;
+    const v = typeof bruto === 'number' ? bruto : bruto.trim();
+    if (v === '') continue;
+    if (campo.tipo === 'numero' && !(typeof v === 'number' ? Number.isInteger(v) && v >= 0 && v <= 9_999_999 : /^\d{1,7}$/.test(v))) erros.push(`DTA, ${campo.rotulo}: número inteiro.`);
+    if (campo.tipo === 'data' && (typeof v !== 'string' || !dataCivilValida(v) || v > hoje)) erros.push(`DTA, ${campo.rotulo}: data válida e não futura.`);
+    if (campo.tipo === 'criterio' && !CRITERIO_CASO_SURTO[String(v)]) erros.push(`DTA, ${campo.rotulo}: código de 1 a 5.`);
+  }
+  return erros;
+}
 
 /** Por que o surto vai ao módulo de surto do Sinan (manual 3.1.1 e 5.3.1). */
 export type CategoriaSurto = 'SINDROMICO' | 'FORA_DA_LISTA' | 'DA_LISTA' | 'DTA';
@@ -208,19 +284,39 @@ export interface CasoParaSurto {
   neighborhoodId: string | null;
   unitId: string;
   unidadeHospitalar: boolean;
-  /** Já ligado a surto aberto: não entra. */
+  /**
+   * Já ligado a surto (aberto, encerrado ou descartado): não entra nas sugestões, mas conta como caso anterior do
+   * grupo no evento inusitado.
+   */
   jaEmSurto: boolean;
 }
 
+/**
+ * Sugestão dispensada: vale enquanto todos os casos foram conhecidos até `ateConhecimento` (ISO). `unitId` é o escopo
+ * de quem dispensou: nulo (ou ausente) para a vigilância municipal, que vale para todos; com a unidade do núcleo, só
+ * esconde a sugestão cujos casos sejam todos daquela unidade (quem chama passa só as dispensas da visão de quem lê).
+ */
+export interface DispensaSurto {
+  assinatura: string;
+  ateConhecimento: string;
+  unitId?: string | null;
+}
+
 export interface OpcoesDeteccaoSurto {
-  /** AAAA-MM-DD. */
+  /** AAAA-MM-DD, no fuso da instituição. */
   hoje: string;
-  /** Sugestões dispensadas: valem enquanto todos os casos foram conhecidos até `ateConhecimento` (ISO). */
-  dispensas: { assinatura: string; ateConhecimento: string }[];
+  /** Fuso da instituição (IANA): o dia em que o caso sem início dos sintomas foi conhecido é o dia local. */
+  fuso: string;
+  dispensas: DispensaSurto[];
   /** Dias sem caso do grupo para o primeiro caso virar "evento inusitado". */
   diasInusitado: number;
   /** Último caso de cada grupo antes da janela (AAAA-MM-DD; null = nunca visto). */
   historicoPorGrupo: Record<string, string | null>;
+  /**
+   * Datas (AAAA-MM-DD) dos outros casos do grupo na janela que não entram nas sugestões de quem lê (de outra unidade,
+   * na visão do núcleo, ou sob sigilo): contam só como caso anterior no evento inusitado.
+   */
+  outrosCasosPorGrupo?: Record<string, string[]>;
 }
 
 /** Sugestão de surto. Assinatura = `${regra}|${vinculo}:${id}|${grupo}`. O evento inusitado usa o vínculo MUNICIPIO. */
@@ -239,25 +335,23 @@ export interface SugestaoSurto {
 
 const DIA = 86_400_000;
 const dia = (iso: string) => Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10)));
-/** Data do caso para a janela: início dos sintomas; sem ele, a data (UTC) em que o caso foi conhecido. */
-const dataDoCaso = (c: CasoParaSurto) => dia(c.inicioSintomas ?? c.conhecidoEm.slice(0, 10));
 
 /**
  * Aglomerado mais recente: casos em cadeia (cada um a até `janelaDias` do anterior) com pelo menos `minimo` deles
  * dentro de uma mesma janela de `janelaDias`. A cadeia inteira entra na sugestão (o surto em curso passa da janela).
  */
-function aglomeradoMaisRecente(casos: CasoParaSurto[], minimo: number, janelaDias: number): CasoParaSurto[] | null {
-  const ordenados = [...casos].sort((a, b) => dataDoCaso(a) - dataDoCaso(b) || Date.parse(a.conhecidoEm) - Date.parse(b.conhecidoEm));
+function aglomeradoMaisRecente(casos: CasoParaSurto[], minimo: number, janelaDias: number, data: (c: CasoParaSurto) => number): CasoParaSurto[] | null {
+  const ordenados = [...casos].sort((a, b) => data(a) - data(b) || Date.parse(a.conhecidoEm) - Date.parse(b.conhecidoEm));
   const cadeias: CasoParaSurto[][] = [];
   for (const c of ordenados) {
     const ultima = cadeias[cadeias.length - 1];
-    if (ultima && dataDoCaso(c) - dataDoCaso(ultima[ultima.length - 1]!) <= janelaDias * DIA) ultima.push(c);
+    if (ultima && data(c) - data(ultima[ultima.length - 1]!) <= janelaDias * DIA) ultima.push(c);
     else cadeias.push([c]);
   }
   for (let i = cadeias.length - 1; i >= 0; i--) {
     const cadeia = cadeias[i]!;
     for (let fim = 0, ini = 0; fim < cadeia.length; fim++) {
-      while (dataDoCaso(cadeia[fim]!) - dataDoCaso(cadeia[ini]!) > janelaDias * DIA) ini++;
+      while (data(cadeia[fim]!) - data(cadeia[ini]!) > janelaDias * DIA) ini++;
       if (fim - ini + 1 >= Math.max(1, minimo)) return cadeia;
     }
   }
@@ -280,15 +374,20 @@ function sugestao(regra: string, descricao: string, fonte: string, grupo: string
 }
 
 /**
- * Sugestões de surto (o sistema sugere, a vigilância confirma). Casos já ligados a surto aberto não entram; uma
- * sugestão por (regra, vínculo, grupo), com o aglomerado mais recente; a dispensada volta quando aparece caso
- * conhecido depois do `ateConhecimento`. Evento inusitado: o primeiro caso de um grupo depois de `diasInusitado` dias
- * sem casos (ou nunca visto) vira sugestão própria; grupo fora de `historicoPorGrupo` não é avaliado. Casos com data
- * depois de `hoje` (erro de digitação) ficam de fora.
+ * Sugestões de surto (o sistema sugere, a vigilância confirma). Casos já ligados a surto (de qualquer situação) não
+ * entram; uma sugestão por (regra, vínculo, grupo), com o aglomerado mais recente; a dispensada volta quando aparece
+ * caso conhecido depois do `ateConhecimento`, e a do núcleo só esconde sugestão com todos os casos da unidade dele.
+ * Evento inusitado: o primeiro caso de um grupo depois de `diasInusitado` dias sem casos (ou nunca visto) vira sugestão
+ * própria; caso anterior é o do histórico, o já ligado a surto e o de `outrosCasosPorGrupo`; grupo fora de
+ * `historicoPorGrupo` não é avaliado. A data do caso é o início dos sintomas ou, sem ele, o dia (no `fuso`) em que foi
+ * conhecido; caso com data depois de `hoje` (erro de digitação) fica de fora.
  */
 export function detectarAglomerados(casos: CasoParaSurto[], regras: RegraSurto[], opcoes: OpcoesDeteccaoSurto): SugestaoSurto[] {
   const hoje = dia(opcoes.hoje);
-  const validos = casos.filter((c) => !c.jaEmSurto && dataDoCaso(c) <= hoje);
+  const datas = new Map(casos.map((c) => [c.id, dia(c.inicioSintomas ?? localDateString(new Date(c.conhecidoEm), opcoes.fuso))]));
+  const data = (c: CasoParaSurto) => datas.get(c.id)!;
+  const datados = casos.filter((c) => data(c) <= hoje);
+  const validos = datados.filter((c) => !c.jaEmSurto);
   const porId = new Map(validos.map((c) => [c.id, c]));
   const sugestoes: SugestaoSurto[] = [];
   for (const regra of regras) {
@@ -304,17 +403,22 @@ export function detectarAglomerados(casos: CasoParaSurto[], regras: RegraSurto[]
       grupos.set(chave, g);
     }
     for (const g of grupos.values()) {
-      const aglomerado = aglomeradoMaisRecente(g.casos, regra.minimo, regra.janelaDias);
+      const aglomerado = aglomeradoMaisRecente(g.casos, regra.minimo, regra.janelaDias, data);
       if (aglomerado) sugestoes.push(sugestao(regra.id, regra.descricao, regra.fonte, g.grupo, { tipo: regra.vinculo, id: g.id }, aglomerado));
     }
   }
+  // Evento inusitado: o caso já ligado a surto não vira sugestão, mas é caso anterior (o caso seguinte não é o "primeiro").
   const porGrupo = new Map<string, CasoParaSurto[]>();
-  for (const c of validos) if (!GRUPOS_SEM_SUGESTAO_DE_SURTO.includes(c.grupo)) porGrupo.set(c.grupo, [...(porGrupo.get(c.grupo) ?? []), c]);
+  for (const c of datados) if (!GRUPOS_SEM_SUGESTAO_DE_SURTO.includes(c.grupo)) porGrupo.set(c.grupo, [...(porGrupo.get(c.grupo) ?? []), c]);
   for (const [grupo, lista] of porGrupo) {
     if (!(grupo in opcoes.historicoPorGrupo)) continue;
-    const ultimo = opcoes.historicoPorGrupo[grupo] ?? null;
-    const ordenados = [...lista].sort((a, b) => dataDoCaso(a) - dataDoCaso(b));
-    const intervalo = ultimo === null ? Infinity : (dataDoCaso(ordenados[0]!) - dia(ultimo)) / DIA;
+    const candidatos = lista.filter((c) => !c.jaEmSurto).sort((a, b) => data(a) - data(b) || Date.parse(a.conhecidoEm) - Date.parse(b.conhecidoEm));
+    if (!candidatos.length) continue;
+    const primeiro = data(candidatos[0]!);
+    const historico = opcoes.historicoPorGrupo[grupo];
+    const anteriores = [...(historico ? [dia(historico)] : []), ...lista.filter((c) => c.jaEmSurto && data(c) <= primeiro).map(data), ...(opcoes.outrosCasosPorGrupo?.[grupo] ?? []).map(dia).filter((d) => d <= primeiro)];
+    const ultimo = anteriores.length ? Math.max(...anteriores) : null;
+    const intervalo = ultimo === null ? Infinity : (primeiro - ultimo) / DIA;
     if (intervalo > opcoes.diasInusitado)
       sugestoes.push(
         sugestao(
@@ -323,11 +427,19 @@ export function detectarAglomerados(casos: CasoParaSurto[], regras: RegraSurto[]
           'Manual de Normas e Rotinas do Sinan (2007), Anexo A, p. 55: um só caso de doença transmissível ausente há muito tempo, ou nova na região, pede notificação imediata e investigação',
           grupo,
           { tipo: 'MUNICIPIO', id: 'municipio' },
-          ordenados,
+          candidatos,
         ),
       );
   }
-  const dispensada = (s: SugestaoSurto) => opcoes.dispensas.some((d) => d.assinatura === s.assinatura && s.casos.every((id) => Date.parse(porId.get(id)!.conhecidoEm) <= Date.parse(d.ateConhecimento)));
+  const dispensada = (s: SugestaoSurto) =>
+    opcoes.dispensas.some(
+      (d) =>
+        d.assinatura === s.assinatura &&
+        s.casos.every((id) => {
+          const c = porId.get(id)!;
+          return Date.parse(c.conhecidoEm) <= Date.parse(d.ateConhecimento) && (!d.unitId || c.unitId === d.unitId);
+        }),
+    );
   return sugestoes.filter((s) => !dispensada(s)).sort((a, b) => Date.parse(b.ultimoConhecimento) - Date.parse(a.ultimoConhecimento) || a.assinatura.localeCompare(b.assinatura));
 }
 

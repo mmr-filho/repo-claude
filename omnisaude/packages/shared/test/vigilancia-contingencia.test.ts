@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { avaliarPlano, deslocarSemana, PLANO_MODELO_MS_2025, ROTULO_EIXO_ACAO, semanasCompletas, type CriterioPlano, type IndicadoresAgravo, type PlanoContingencia, type StatusSemana } from '@omnisaude/shared';
+import {
+  avaliarPlano,
+  deslocarSemana,
+  PLANO_MODELO_MS_2025,
+  ROTULO_EIXO_ACAO,
+  semanasCompletas,
+  validarPlano,
+  type CriterioPlano,
+  type IndicadoresAgravo,
+  type PlanoContingencia,
+  type StatusSemana,
+} from '@omnisaude/shared';
 
 /** Plano de contingência (VIG-1c, §3.3 do desenho): modelo do Apêndice B do MS 2025 e o motor que sugere o estágio. */
 const E = 'ENTRE_CENTRO_E_LS' as const;
@@ -78,8 +89,17 @@ describe('contingência: motor do estágio', () => {
     expect(r.porEstagio).toEqual({ NORMALIDADE: 0, MOBILIZACAO: 1, ALERTA: 0, EPIDEMIA: 0 });
     // Só 3 SE seguidas: não basta.
     expect(avalia([ind('dengue', [C, C, E, E, E])]).sugerido).toBe('NORMALIDADE');
-    // Começo do ano com menos de 4 SE completas.
-    expect(item(avalia([ind('dengue', [E, E, E])]), 'mob-canal', 'dengue')).toMatchObject({ atendido: false, detalhe: 'Só 3 SE completa(s) no ano; o critério pede 4' });
+    // Série com menos de 4 SE completas (as do ano anterior também contam: ver a virada do ano abaixo).
+    expect(item(avalia([ind('dengue', [E, E, E])]), 'mob-canal', 'dengue')).toMatchObject({ atendido: false, detalhe: 'Só 3 SE completa(s); o critério pede 4' });
+  });
+
+  it('virada do ano: as N SE seguidas atravessam a SE 1 (as SE do ano anterior vêm nos indicadores)', () => {
+    // 4 SE acima do LS: 50, 51 e 52/2016 e 01/2017.
+    const virada: IndicadoresAgravo = { ...ind('dengue', []), semanas: ['201649', '201650', '201651', '201652', '201701'].map((semana, i) => ({ semana, status: i ? A : C, completa: true })) };
+    const r = avalia([virada]);
+    expect(item(r, 'ale-canal', 'dengue')).toMatchObject({ atendido: true, valor: 4 });
+    expect(item(r, 'ale-canal', 'dengue').detalhe).toContain('SE 50/2016 a 01/2017');
+    expect(r.sugerido).toBe('ALERTA');
   });
 
   it('semanas incompletas não contam', () => {
@@ -227,11 +247,108 @@ describe('contingência: motor do estágio', () => {
     expect(avalia([ind('dengue', [C])], [], 'NIVEL_3').sugerido).toBe('NORMALIDADE');
   });
 
+  it('desmobilização só conta as SE completas desde o início do acionamento em vigor (K2)', () => {
+    // Curva acima do LS nas SE 1 a 6/2026 e de volta ao canal nas SE 7 a 10.
+    const curva = ind('dengue', [A, A, A, A, A, A, C, C, C, C]);
+    // Sem a data do acionamento, as 4 SE abaixo bastam.
+    expect(avalia([curva], [], 'ALERTA').desmobilizacao.sugerida).toBe(true);
+    // Alerta acionado na SE 9: só a 9 e a 10 contam; mantém.
+    const r = avaliarPlano(PLANO_MODELO_MS_2025, [curva], [], 'ALERTA', { semanaInicio: '202609' });
+    expect(r.sugerido).toBe('ALERTA');
+    expect(r.desmobilizacao).toEqual({
+      sugerida: false,
+      detalhe: 'Sugestão abaixo de Alerta há 2 de 4 SE completas seguidas: manter Alerta até completar 4. Só contam as SE completas desde o acionamento em vigor (SE 09/2026).',
+    });
+    // Acionado na semana em curso (incompleta): nenhuma SE conta ainda.
+    const hoje = avaliarPlano(PLANO_MODELO_MS_2025, [ind('dengue', [A, A, A, A, A, A, C, C, C, C, C], {}, 1)], [], 'ALERTA', { semanaInicio: '202611' });
+    expect(hoje.sugerido).toBe('ALERTA');
+    expect(hoje.desmobilizacao.detalhe).toContain('há 0 de 4 SE completas seguidas');
+    // Quatro SE completas desde o acionamento: pode descer.
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [curva], [], 'ALERTA', { semanaInicio: '202607' })).toMatchObject({ sugerido: 'NORMALIDADE', desmobilizacao: { sugerida: true } });
+    // Subir não espera o acionamento.
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [ind('dengue', [A, A, A, A])], [], 'MOBILIZACAO', { semanaInicio: '202604' }).sugerido).toBe('ALERTA');
+  });
+
+  it('a curva de volta ao canal endêmico desmobiliza mesmo com o acumulado do ano acima do limiar (item 7.2.3)', () => {
+    // Epidemia em vigor; SE 1 a 10 acima do LS e SE 11 a 30 de volta ao canal; 3 óbitos em 2.000 prováveis (0,15% > 0,07%).
+    const curva = [...Array<StatusSemana>(10).fill(A), ...Array<StatusSemana>(20).fill(C)];
+    const r = avalia([ind('dengue', curva, { provaveis: 2000, obitosAgravo: 3 })], [], 'EPIDEMIA');
+    expect(item(r, 'epi-letalidade', 'dengue')).toMatchObject({ atendido: true, valor: 0.15 });
+    expect(r.sugerido).toBe('NORMALIDADE');
+    expect(r.desmobilizacao.sugerida).toBe(true);
+    expect(r.desmobilizacao.detalhe).toContain('pode desmobilizar para Normalidade');
+    expect(r.desmobilizacao.detalhe).toContain('No acumulado do ano, segue acima do limiar: letalidade de dengue em 0,15%.');
+    // A mesma curva sem óbitos: a mesma descida, sem a nota do acumulado.
+    const semObitos = avalia([ind('dengue', curva, { provaveis: 2000 })], [], 'EPIDEMIA');
+    expect(semObitos).toMatchObject({ sugerido: 'NORMALIDADE', desmobilizacao: { sugerida: true } });
+    expect(semObitos.desmobilizacao.detalhe).not.toContain('acumulado');
+    // Curva ainda acima do LS numa das últimas 4 SE: o acumulado segura a epidemia (não desce para o alerta da curva).
+    const naoVoltou = avalia([ind('dengue', [...Array<StatusSemana>(10).fill(A), C, C, C], { provaveis: 2000, obitosAgravo: 3 })], [], 'EPIDEMIA');
+    expect(naoVoltou).toMatchObject({ sugerido: 'EPIDEMIA', desmobilizacao: { sugerida: false, detalhe: '' } });
+    const emAlta = avalia([ind('dengue', Array<StatusSemana>(12).fill(A), { provaveis: 2000, obitosAgravo: 3 })], [], 'EPIDEMIA');
+    expect(emAlta.sugerido).toBe('EPIDEMIA');
+    // De volta ao canal, mas o acionamento é recente: mantém, já citando o acumulado.
+    const recente = avaliarPlano(PLANO_MODELO_MS_2025, [ind('dengue', curva, { provaveis: 2000, obitosAgravo: 3 })], [], 'EPIDEMIA', { semanaInicio: '202629' });
+    expect(recente.sugerido).toBe('EPIDEMIA');
+    expect(recente.desmobilizacao.detalhe).toContain('há 2 de 4');
+    expect(recente.desmobilizacao.detalhe).toContain('letalidade de dengue em 0,15%');
+  });
+
+  it('o acumulado do ano já atendido no acionamento em vigor não faz o estágio subir de novo; o que passou do limiar depois, faz', () => {
+    const curva = [...Array<StatusSemana>(10).fill(A), ...Array<StatusSemana>(20).fill(C)];
+    const agora = ind('dengue', curva, { provaveis: 2000, obitosAgravo: 3 });
+    // Retrato do acionamento da normalidade (SE 29), feito depois da descida: os mesmos 3 óbitos.
+    const retrato = ind('dengue', curva.slice(0, 28), { provaveis: 1990, obitosAgravo: 3 });
+    const r = avaliarPlano(PLANO_MODELO_MS_2025, [agora], [], 'NORMALIDADE', { semanaInicio: '202629', indicadores: [retrato] });
+    expect(r.sugerido).toBe('NORMALIDADE');
+    expect(item(r, 'epi-letalidade', 'dengue').atendido).toBe(true);
+    expect(item(r, 'epi-letalidade', 'dengue').detalhe).toContain('Já atendido quando o estágio em vigor foi decidido');
+    // Sem o retrato, o mesmo acumulado faria sugerir a epidemia logo depois da descida.
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [agora], [], 'NORMALIDADE', { semanaInicio: '202629' }).sugerido).toBe('EPIDEMIA');
+    // No retrato, só 1 óbito em 2.000 (0,05%, que não passa de nenhum limiar): os 3 de agora passaram depois; sobe.
+    const antes = ind('dengue', curva.slice(0, 28), { provaveis: 2000, obitosAgravo: 1 });
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [agora], [], 'NORMALIDADE', { semanaInicio: '202629', indicadores: [antes] }).sugerido).toBe('EPIDEMIA');
+    // Retrato de outro ano: o acumulado recomeçou e não vale.
+    const doAnoPassado: IndicadoresAgravo = { ...retrato, semanas: retrato.semanas.map((s) => ({ ...s, semana: `2025${s.semana.slice(4)}` })) };
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [agora], [], 'NORMALIDADE', { semanaInicio: '202550', indicadores: [doAnoPassado] }).sugerido).toBe('EPIDEMIA');
+  });
+
   it('semanas completas: as incompletas contam a semana em curso', () => {
     expect(semanasCompletas('202610', 2)).toEqual({ incompletas: ['202609', '202610'], ultimaCompleta: '202608' });
     expect(semanasCompletas('202602', 2)).toEqual({ incompletas: ['202601', '202602'], ultimaCompleta: '202553' });
     expect(semanasCompletas('202601', 3)).toEqual({ incompletas: ['202552', '202553', '202601'], ultimaCompleta: '202551' });
     // A semana em curso nunca é completa.
     expect(semanasCompletas('202610', 0)).toEqual({ incompletas: ['202610'], ultimaCompleta: '202609' });
+  });
+});
+
+describe('contingência: conferência da definição do plano (a mesma na API e na tela)', () => {
+  const base = PLANO_MODELO_MS_2025;
+  const com = (patch: Partial<PlanoContingencia>) => validarPlano({ ...base, ...patch });
+
+  it('o modelo do MS passa', () => {
+    expect(validarPlano(base)).toEqual([]);
+  });
+
+  it('estágios, critérios, agravos, limiares, ações e desmobilização', () => {
+    expect(com({ estagios: [...base.estagios, { chave: 'ALERTA', nome: 'Repetido', ordem: 9 }] })).toContain('Há estágios com a mesma chave.');
+    expect(com({ estagios: base.estagios.map((e) => ({ ...e, ordem: e.ordem + 1 })) })).toContain('O primeiro estágio (normalidade) tem ordem 0.');
+    expect(com({ estagios: [base.estagios[0]!] })).toContain('O plano tem de 2 a 10 estágios.');
+    expect(com({ criterios: [...base.criterios, { ...base.criterios[0]!, id: 'nor-1', estagio: 'NORMALIDADE' }] })).toContain('Critério nor-1: a normalidade não tem critério (é o estado padrão).');
+    expect(com({ criterios: [{ ...base.criterios[0]!, estagio: 'INEXISTENTE' }] })).toContain('Critério mob-canal: estágio INEXISTENTE não existe no plano.');
+    expect(com({ criterios: [...base.criterios, base.criterios[0]!] })).toContain('Critério mob-canal: identificador repetido.');
+    expect(com({ criterios: [{ ...base.criterios[0]!, modo: 'K_DE_N', k: 6, n: 5 }] })).toContain('Critério mob-canal: k não pode ser maior que n.');
+    const { semanas: _semanas, ...semSemanas } = base.criterios[0]!;
+    expect(com({ criterios: [semSemanas] })).toContain('Critério mob-canal: informe quantas semanas seguidas o critério pede.');
+    expect(com({ criterios: [{ ...base.criterios[0]!, agravos: ['febre-amarela'] }] })).toContain('Critério mob-canal: agravo(s) fora do plano (febre-amarela).');
+    const graves = base.criterios.find((c) => c.id === 'ale-graves')!;
+    expect(com({ criterios: [{ ...graves, limiar: 120 }] })).toContain('Critério ale-graves: o limiar é um percentual (até 100).');
+    expect(com({ criterios: [{ ...graves, limiar: undefined }] })).toEqual(['Critério ale-graves: informe o limiar.']);
+    expect(com({ criterios: [{ ...graves, limiar: -1 }] })).toContain('Critério ale-graves: o limiar não pode ser negativo.');
+    expect(com({ criterios: [{ ...base.criterios[0]!, descricao: 'abc' }] })).toContain('Critério mob-canal: a descrição tem de 5 a 500 caracteres.');
+    expect(com({ agravos: ['dengue', 'dengue'] })).toContain('Há agravos repetidos no plano.');
+    expect(com({ acoes: [{ estagio: 'NIVEL_9', eixo: 'APS', descricao: 'Ação de outro plano' }] })).toContain('Ação "Ação de outro plano": estágio NIVEL_9 não existe no plano.');
+    expect(com({ desmobilizacao: { semanas: 0, descricao: 'ok ok' } })).toContain('Desmobilização: semanas inteiras de 1 a 52.');
+    expect(com({ desmobilizacao: { semanas: 4, descricao: ' ' } })).toContain('Desmobilização: a descrição tem de 3 a 1.000 caracteres.');
   });
 });

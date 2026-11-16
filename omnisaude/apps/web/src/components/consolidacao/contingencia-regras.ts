@@ -1,6 +1,7 @@
 import {
   arredondar,
   ROTULO_EIXO_ACAO,
+  ROTULO_STATUS_SEMANA,
   type AcaoChecklist,
   type AcaoPlano,
   type AvaliacaoCriterio,
@@ -180,6 +181,26 @@ export function ultimasSemanas(ind: IndicadoresAgravo, n = 8): { semana: string;
   return ind.semanas.slice(-Math.max(1, n)).map((s) => ({ ...s, rotulo: rotuloSemana(s.semana) }));
 }
 
+/** Situação da semana no canal em texto curto, escrito no selo junto da cor (a cor não fala sozinha). */
+export const ROTULO_CURTO_STATUS: Record<StatusSemana, string> = {
+  ABAIXO_LI: 'abaixo do LI',
+  ATE_CENTRO: 'até o centro',
+  ENTRE_CENTRO_E_LS: 'centro a LS',
+  ACIMA_LS: 'acima do LS',
+  SEM_CANAL: 'sem canal',
+};
+
+/** Ordem da legenda das semanas no canal. */
+export const LEGENDA_STATUS_SEMANA: StatusSemana[] = ['ABAIXO_LI', 'ATE_CENTRO', 'ENTRE_CENTRO_E_LS', 'ACIMA_LS', 'SEM_CANAL'];
+
+/** Selo de uma das últimas semanas: a SE e a situação escritas (visíveis), e o título completo. */
+export function seloDaSemana(w: { rotulo: string; status: StatusSemana; completa: boolean }): { texto: string; titulo: string } {
+  return {
+    texto: `${w.rotulo.slice(0, 2)} · ${ROTULO_CURTO_STATUS[w.status]}${w.completa ? '' : ' (incompleta)'}`,
+    titulo: `SE ${w.rotulo}: ${ROTULO_STATUS_SEMANA[w.status]}${w.completa ? '' : ' (incompleta)'}`,
+  };
+}
+
 // ───────────── Acionamento ─────────────
 
 export const MINIMO_JUSTIFICATIVA = 20;
@@ -315,70 +336,12 @@ export function acoesPorEstagio(d: PlanoContingencia): { estagio: EstagioPlano; 
   }));
 }
 
-const ID_CRITERIO = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
-const CHAVE_ESTAGIO = /^[A-Z][A-Z0-9_]{1,29}$/;
-const GRUPO = /^[a-z0-9-]{2,40}$/;
-const inteiroEntre = (v: number | undefined, min: number, max: number) => v === undefined || (Number.isInteger(v) && v >= min && v <= max);
-
 /**
- * Conferência da definição antes de gravar: as regras de `validarDefinicao` da API (estágios e critérios únicos,
- * normalidade sem critério, agravos dentro do plano, semanas nos critérios de canal, limiar nos numéricos, ações de
- * estágios que existem) e os limites do formato.
+ * Conferência da definição antes de gravar: a mesma `validarPlano` do pacote compartilhado que a API usa (estágios e
+ * critérios únicos, normalidade sem critério, agravos dentro do plano, semanas nos critérios de canal, limiar nos
+ * numéricos, ações de estágios que existem e os limites do formato). A API ainda recusa agravo sigiloso no plano.
  */
-export function validarPlano(d: PlanoContingencia): string[] {
-  const erros: string[] = [];
-  if (d.estagios.length < 2 || d.estagios.length > 10) erros.push('O plano tem de 2 a 10 estágios.');
-  const chaves = d.estagios.map((e) => e.chave);
-  if (new Set(chaves).size !== chaves.length) erros.push('Há estágios com a mesma chave.');
-  if (new Set(d.estagios.map((e) => e.ordem)).size !== d.estagios.length) erros.push('Há estágios com a mesma ordem.');
-  if (d.estagios.length && Math.min(...d.estagios.map((e) => e.ordem)) !== 0) erros.push('O primeiro estágio (normalidade) tem ordem 0.');
-  for (const e of d.estagios) {
-    if (!CHAVE_ESTAGIO.test(e.chave)) erros.push(`Estágio ${e.chave}: chave inválida.`);
-    if (e.nome.trim().length < 2 || e.nome.trim().length > 60) erros.push(`Estágio ${e.chave}: o nome tem de 2 a 60 caracteres.`);
-  }
-  if (!d.agravos.length) erros.push('O plano precisa de pelo menos um agravo.');
-  if (new Set(d.agravos).size !== d.agravos.length) erros.push('Há agravos repetidos no plano.');
-  for (const a of d.agravos) if (!GRUPO.test(a)) erros.push(`Agravo ${a}: identificador inválido.`);
-  const ordem = new Map(d.estagios.map((e) => [e.chave, e.ordem]));
-  if (d.criterios.length > 200) erros.push('O plano tem no máximo 200 critérios.');
-  const ids = new Set<string>();
-  for (const c of d.criterios) {
-    const onde = `Critério ${c.id}`;
-    if (!ID_CRITERIO.test(c.id)) erros.push(`${onde}: identificador inválido.`);
-    if (ids.has(c.id)) erros.push(`${onde}: identificador repetido.`);
-    ids.add(c.id);
-    if (!ordem.has(c.estagio)) erros.push(`${onde}: estágio ${c.estagio} não existe no plano.`);
-    else if (ordem.get(c.estagio) === 0) erros.push(`${onde}: a normalidade não tem critério (é o estado padrão).`);
-    const fora = c.agravos.filter((a) => !d.agravos.includes(a));
-    if (fora.length) erros.push(`${onde}: agravo(s) fora do plano (${fora.join(', ')}).`);
-    const descricao = c.descricao.trim().length;
-    if (descricao < 5 || descricao > 500) erros.push(`${onde}: a descrição tem de 5 a 500 caracteres.`);
-    if ((c.fonte ?? '').trim().length > 300) erros.push(`${onde}: a fonte tem até 300 caracteres.`);
-    if (CANAL.includes(c.tipo)) {
-      if (!inteiroEntre(c.semanas, 1, 52) || !inteiroEntre(c.k, 1, 52) || !inteiroEntre(c.n, 1, 52)) erros.push(`${onde}: semanas, k e n são inteiros de 1 a 52.`);
-      if (c.modo === 'K_DE_N') {
-        const n = c.n ?? c.semanas;
-        if (!c.k || !n) erros.push(`${onde}: informe k e n (pelo menos k das últimas n semanas).`);
-        else if (c.k > n) erros.push(`${onde}: k não pode ser maior que n.`);
-      } else if (!c.semanas) erros.push(`${onde}: informe quantas semanas seguidas o critério pede.`);
-    } else if (c.tipo !== 'MANUAL') {
-      if (c.limiar === undefined || c.limiar === null || !Number.isFinite(c.limiar)) erros.push(`${onde}: informe o limiar.`);
-      else if (c.limiar < 0) erros.push(`${onde}: o limiar não pode ser negativo.`);
-      else if (PERCENTUAIS.includes(c.tipo) && c.limiar > 100) erros.push(`${onde}: o limiar é um percentual (até 100).`);
-      else if (c.limiar > 1_000_000) erros.push(`${onde}: limiar grande demais.`);
-    }
-  }
-  if (d.acoes.length > 500) erros.push('O plano tem no máximo 500 ações.');
-  for (const a of d.acoes) {
-    if (!ordem.has(a.estagio)) erros.push(`Ação "${a.descricao}": estágio ${a.estagio} não existe no plano.`);
-    const n = a.descricao.trim().length;
-    if (n < 3 || n > 500) erros.push(`Ação "${a.descricao || '(vazia)'}": a descrição tem de 3 a 500 caracteres.`);
-  }
-  if (!inteiroEntre(d.desmobilizacao.semanas, 1, 52) || !d.desmobilizacao.semanas) erros.push('Desmobilização: semanas inteiras de 1 a 52.');
-  const desc = d.desmobilizacao.descricao.trim().length;
-  if (desc < 3 || desc > 1000) erros.push('Desmobilização: a descrição tem de 3 a 1.000 caracteres.');
-  return erros;
-}
+export { validarPlano } from '@omnisaude/shared';
 
 /** Definição pronta para gravar: textos aparados e, em cada critério, só os campos do tipo dele. */
 export function definicaoParaEnvio(d: PlanoContingencia): PlanoContingencia {

@@ -314,7 +314,10 @@ export const PLANO_MODELO_MS_2025: PlanoContingencia = {
 /** Indicadores de um agravo no ano epidemiológico em análise, até a semana de referência. */
 export interface IndicadoresAgravo {
   grupo: string;
-  /** Status de cada SE no canal (AAAASS), da mais antiga à mais recente. */
+  /**
+   * Status de cada SE no canal (AAAASS), da mais antiga à mais recente, cada uma no canal do próprio ano. Traz também
+   * as SE do ano anterior: as "N SE seguidas" não recomeçam na virada do ano.
+   */
   semanas: { semana: string; status: StatusSemana; completa: boolean }[];
   provaveis: number;
   graves: number;
@@ -349,6 +352,14 @@ export interface AvaliacaoPlano {
   desmobilizacao: { sugerida: boolean; detalhe: string };
 }
 
+/** Acionamento em vigor no território: de quando é e o que a vigilância viu ao decidir. */
+export interface AcionamentoEmVigor {
+  /** SE de início (AAAASS). A desmobilização só conta as SE completas desde ela. */
+  semanaInicio: string;
+  /** Retrato dos indicadores no acionamento. O acumulado do ano já atendido nele não faz o estágio subir de novo. */
+  indicadores?: IndicadoresAgravo[] | null;
+}
+
 // ───────────── Avaliação ─────────────
 
 type Resultado = Pick<AvaliacaoCriterio, 'atendido' | 'valor' | 'detalhe'>;
@@ -358,6 +369,10 @@ const STATUS_DO_CRITERIO: Partial<Record<TipoCriterio, StatusSemana[]>> = {
   CANAL_ENTRE_CENTRO_E_LS: ['ENTRE_CENTRO_E_LS'],
   CANAL_ACIMA_LS: ['ACIMA_LS'],
 };
+const CANAL: TipoCriterio[] = ['CANAL_ACIMA_CENTRO', 'CANAL_ENTRE_CENTRO_E_LS', 'CANAL_ACIMA_LS'];
+const PERCENTUAIS: TipoCriterio[] = ['PERCENTUAL_GRAVES', 'LETALIDADE', 'LETALIDADE_GRAVES', 'OBITOS_INVESTIGACAO_PERCENTUAL'];
+/** Critérios sobre o acumulado do ano: só sobem ao longo do ano, nunca refletem a volta da curva. */
+const ACUMULADOS: TipoCriterio[] = [...PERCENTUAIS, 'INCIDENCIA_ACUMULADA'];
 
 /** Número em português, com 2 casas (3 abaixo de 1). */
 const br = (x: number) => String(arredondar(x, Math.abs(x) < 1 ? 3 : 2)).replace('.', ',');
@@ -382,7 +397,7 @@ function avaliarCanal(c: CriterioPlano, ind: IndicadoresAgravo, recuo: number): 
   else atendido = sim + semCanal >= k && semCanal > 0 ? null : false;
   const detalhe =
     janela.length < (kDeN ? k : n) && atendido === false
-      ? `Só ${janela.length} SE completa(s) no ano; o critério pede ${kDeN ? `${k} de ${n}` : n}`
+      ? `Só ${janela.length} SE completa(s); o critério pede ${kDeN ? `${k} de ${n}` : n}`
       : `${sim} de ${janela.length} SE completas ${alvo}${periodo}${atendido === null ? `; ${semCanal} SE sem canal` : ''}; pede ${kDeN ? `${k} de ${n}` : `${n} seguidas`}`;
   return { atendido, valor: sim, detalhe };
 }
@@ -453,49 +468,200 @@ function estagioSugerido(plano: PlanoContingencia, avaliacoes: AvaliacaoCriterio
   return maior(sugestoes);
 }
 
+/** Ano do acumulado dos indicadores: o da última SE completa (null sem nenhuma). */
+function anoDoAcumulado(ind: IndicadoresAgravo): number | null {
+  const completas = (ind.semanas ?? []).filter((s) => s.completa);
+  const ultima = completas[completas.length - 1];
+  return ultima ? Number(ultima.semana.slice(0, 4)) : null;
+}
+
+/**
+ * Critérios do acumulado do ano (critério|agravo) já atendidos no retrato do acionamento em vigor, no mesmo ano do
+ * acumulado de agora. Vira o ano, o acumulado recomeça e o retrato não vale mais.
+ */
+function acumuladosDoAcionamento(plano: PlanoContingencia, acionamento: AcionamentoEmVigor | null, atuais: Map<string, IndicadoresAgravo>): Set<string> {
+  const conhecidos = new Set<string>();
+  const retrato = acionamento?.indicadores;
+  if (!Array.isArray(retrato) || !retrato.length) return conhecidos;
+  const antes = new Map(retrato.map((i) => [i.grupo, i]));
+  for (const c of plano.criterios) {
+    if (!ACUMULADOS.includes(c.tipo)) continue;
+    for (const agravo of c.agravos.length ? c.agravos : plano.agravos) {
+      const a = antes.get(agravo);
+      const b = atuais.get(agravo);
+      if (!a || !b || anoDoAcumulado(a) === null || anoDoAcumulado(a) !== anoDoAcumulado(b)) continue;
+      if (avaliarNumero(c, a).atendido === true) conhecidos.add(`${c.id}|${agravo}`);
+    }
+  }
+  return conhecidos;
+}
+
+/** "letalidade de dengue em 0,15%": critérios do acumulado do ano atendidos agora, um por tipo e agravo. */
+function acumuladosAltos(plano: PlanoContingencia, criterios: AvaliacaoCriterio[]): string[] {
+  const tipo = new Map(plano.criterios.map((c) => [c.id, c.tipo]));
+  const vistos = new Map<string, string>();
+  for (const a of criterios) {
+    const t = tipo.get(a.id);
+    if (a.atendido !== true || !t || !ACUMULADOS.includes(t) || a.valor === null || a.valor === undefined) continue;
+    const k = `${t}|${a.agravo ?? ''}`;
+    if (!vistos.has(k)) vistos.set(k, `${ROTULO_TIPO_CRITERIO[t].toLowerCase()}${a.agravo ? ` de ${a.agravo}` : ''} em ${br(a.valor)}${t === 'INCIDENCIA_ACUMULADA' ? ' por 100 mil' : '%'}`);
+  }
+  return [...vistos.values()];
+}
+
 /**
  * Estágio sugerido pelos critérios. Só semanas completas contam; critério MANUAL sem resposta fica null (nunca
- * "atendido"); descer de estágio só depois de `desmobilizacao.semanas` semanas completas seguidas com a sugestão abaixo
- * do estágio atual (senão, manter). Nas semanas passadas, só os critérios de canal são refeitos (as semanas de cada
- * agravo); os percentuais, acumulados no ano, e as respostas manuais da semana valem como estão.
+ * "atendido").
+ *
+ * Subir não espera. O acumulado do ano (percentuais, letalidade, incidência acumulada) já atendido quando o estágio em
+ * vigor foi decidido (retrato do `acionamento`) não faz subir de novo: a vigilância já decidiu com ele.
+ *
+ * Descer só depois de `desmobilizacao.semanas` (N) SE completas seguidas com a sugestão abaixo do estágio em vigor,
+ * contadas desde o início do acionamento em vigor. O acumulado do ano quase nunca volta a cair no mesmo ano: o do
+ * agravo cuja curva voltou ao canal endêmico (nenhuma das últimas N SE completas acima do limite superior) deixa de
+ * segurar o estágio, como manda o Plano 2025 (item 7.2.3), e o detalhe o cita. Com a curva ainda acima do limite, ele
+ * segura. Nas semanas passadas, só os critérios de canal são refeitos; as respostas manuais da semana valem como estão.
  */
-export function avaliarPlano(plano: PlanoContingencia, indicadores: IndicadoresAgravo[], respostas: RespostaCriterio[], estagioAtual: string | null): AvaliacaoPlano {
+export function avaliarPlano(plano: PlanoContingencia, indicadores: IndicadoresAgravo[], respostas: RespostaCriterio[], estagioAtual: string | null, acionamento: AcionamentoEmVigor | null = null): AvaliacaoPlano {
   const porGrupo = new Map(indicadores.map((i) => [i.grupo, i]));
   const resp = new Map(respostas.map((r) => [r.criterio, r.atendido]));
   const nomes = new Map(plano.estagios.map((e) => [e.chave, e.nome]));
   const ordem = new Map(plano.estagios.map((e) => [e.chave, e.ordem]));
-  const criterios = avaliarCriterios(plano, porGrupo, resp, 0);
+  const ord = (chave: string) => ordem.get(chave) ?? -1;
+  const avaliadas = avaliarCriterios(plano, porGrupo, resp, 0);
   const porEstagio: Record<string, number> = Object.fromEntries(plano.estagios.map((e) => [e.chave, 0]));
-  for (const id of new Set(criterios.filter((a) => a.atendido === true).map((a) => a.id))) {
+  for (const id of new Set(avaliadas.filter((a) => a.atendido === true).map((a) => a.id))) {
     const c = plano.criterios.find((x) => x.id === id)!;
     porEstagio[c.estagio] = (porEstagio[c.estagio] ?? 0) + 1;
   }
-  const bruto = estagioSugerido(plano, criterios);
   const atual = estagioAtual !== null && ordem.has(estagioAtual) ? estagioAtual : null;
-  if (atual === null || ordem.get(bruto)! >= ordem.get(atual)!) return { sugerido: bruto, criterios, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
+  if (atual === null) return { sugerido: estagioSugerido(plano, avaliadas), criterios: avaliadas, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
 
-  // A sugestão caiu abaixo do estágio atual: só desce depois de N semanas completas seguidas abaixo dele.
+  const tipo = new Map(plano.criterios.map((c) => [c.id, c.tipo]));
+  const acumulado = (a: AvaliacaoCriterio) => ACUMULADOS.includes(tipo.get(a.id)!);
+  const conhecidos = acumuladosDoAcionamento(plano, acionamento, porGrupo);
+  const conhecido = (a: AvaliacaoCriterio) => a.atendido === true && acumulado(a) && conhecidos.has(`${a.id}|${a.agravo ?? ''}`);
+  const criterios = avaliadas.map((a) => (conhecido(a) ? { ...a, detalhe: `${a.detalhe}. Já atendido quando o estágio em vigor foi decidido: não faz subir` } : a));
+  const sem = (avs: AvaliacaoCriterio[], tirar: (a: AvaliacaoCriterio) => boolean) => avs.map((a) => (a.atendido === true && tirar(a) ? { ...a, atendido: false } : a));
+
+  const bruto = estagioSugerido(plano, sem(avaliadas, conhecido));
+  if (ord(bruto) > ord(atual)) return { sugerido: bruto, criterios, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
+
+  // Manter ou descer: o acumulado do agravo cuja curva voltou ao canal endêmico não segura o estágio.
   const n = Math.max(1, Math.trunc(plano.desmobilizacao.semanas));
-  const disponiveis = Math.max(0, ...indicadores.map((i) => i.semanas.filter((s) => s.completa).length));
-  const anteriores: string[] = [bruto];
-  for (let recuo = 1; recuo < n && recuo < disponiveis; recuo++) anteriores.push(estagioSugerido(plano, avaliarCriterios(plano, porGrupo, resp, recuo)));
-  const seguidas = anteriores.findIndex((s) => ordem.get(s)! >= ordem.get(atual)!);
+  const completas = (i: IndicadoresAgravo) => i.semanas.filter((s) => s.completa);
+  const noCanal = new Set(
+    indicadores
+      .filter((i) => {
+        const ultimas = completas(i).slice(-n);
+        return ultimas.length >= n && !ultimas.some((s) => s.status === 'ACIMA_LS');
+      })
+      .map((i) => i.grupo),
+  );
+  const solto = (a: AvaliacaoCriterio) => acumulado(a) && noCanal.has(a.agravo ?? '');
+  const sugestaoNa = (recuo: number) => estagioSugerido(plano, sem(recuo === 0 ? avaliadas : avaliarCriterios(plano, porGrupo, resp, recuo), solto));
+  const agora = sugestaoNa(0);
+  if (ord(agora) >= ord(atual)) return { sugerido: atual, criterios, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
+
+  const disponiveis = Math.max(0, ...indicadores.map((i) => completas(i).length));
+  const inicio = acionamento?.semanaInicio ?? null;
+  // SE completas desde o início do acionamento (sem indicadores não há como contar: vale a semana de referência).
+  const desdeInicio = inicio === null || disponiveis === 0 ? Infinity : Math.max(0, ...indicadores.map((i) => completas(i).filter((s) => s.semana >= inicio).length));
+  const limite = Math.min(n, Math.max(1, disponiveis), desdeInicio);
+  const anteriores: string[] = [];
+  for (let recuo = 0; recuo < limite; recuo++) anteriores.push(recuo === 0 ? agora : sugestaoNa(recuo));
+  const seguidas = anteriores.findIndex((s) => ord(s) >= ord(atual));
   const abaixo = seguidas === -1 ? anteriores.length : seguidas;
+  const altos = acumuladosAltos(plano, avaliadas);
+  const notaAcumulado = altos.length ? ` No acumulado do ano, segue acima do limiar: ${altos.join('; ')}.` : '';
   if (abaixo >= n) {
-    const destino = anteriores.reduce((m, s) => (ordem.get(s)! > ordem.get(m)! ? s : m));
+    const destino = anteriores.reduce((m, s) => (ord(s) > ord(m) ? s : m));
     return {
       sugerido: destino,
       criterios,
       porEstagio,
-      desmobilizacao: { sugerida: true, detalhe: `Sugestão abaixo de ${nomes.get(atual)} nas últimas ${n} SE completas: pode desmobilizar para ${nomes.get(destino)}. ${plano.desmobilizacao.descricao}.` },
+      desmobilizacao: {
+        sugerida: true,
+        detalhe: `Sugestão abaixo de ${nomes.get(atual)} nas últimas ${n} SE completas: pode desmobilizar para ${nomes.get(destino)}. ${plano.desmobilizacao.descricao}.${notaAcumulado}`,
+      },
     };
   }
+  // A contagem parou no início do acionamento: as SE de antes dele não contam.
+  const notaInicio = inicio !== null && seguidas === -1 && desdeInicio < n && desdeInicio < disponiveis ? ` Só contam as SE completas desde o acionamento em vigor (SE ${ss(inicio)}).` : '';
   return {
     sugerido: atual,
     criterios,
     porEstagio,
-    desmobilizacao: { sugerida: false, detalhe: `Sugestão abaixo de ${nomes.get(atual)} há ${abaixo} de ${n} SE completas seguidas: manter ${nomes.get(atual)} até completar ${n}.` },
+    desmobilizacao: { sugerida: false, detalhe: `Sugestão abaixo de ${nomes.get(atual)} há ${abaixo} de ${n} SE completas seguidas: manter ${nomes.get(atual)} até completar ${n}.${notaInicio}${notaAcumulado}` },
   };
+}
+
+// ───────────── Conferência da definição ─────────────
+
+const ID_CRITERIO = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
+const CHAVE_ESTAGIO = /^[A-Z][A-Z0-9_]{1,29}$/;
+const GRUPO_AGRAVO = /^[a-z0-9-]{2,40}$/;
+const inteiroEntre = (v: number | undefined, min: number, max: number) => v === undefined || (Number.isInteger(v) && v >= min && v <= max);
+
+/**
+ * Conferência da definição do plano, a mesma na API (antes de gravar e de pôr em vigor) e na tela: estágios e critérios
+ * únicos, normalidade sem critério e com ordem 0, agravos do critério dentro dos do plano, semanas (ou k e n) nos
+ * critérios de canal, limiar nos numéricos (percentual até 100), ações de estágios que existem e os limites do formato.
+ * Devolve as mensagens; vazio = definição válida.
+ */
+export function validarPlano(d: PlanoContingencia): string[] {
+  const erros: string[] = [];
+  if (d.estagios.length < 2 || d.estagios.length > 10) erros.push('O plano tem de 2 a 10 estágios.');
+  const chaves = d.estagios.map((e) => e.chave);
+  if (new Set(chaves).size !== chaves.length) erros.push('Há estágios com a mesma chave.');
+  if (new Set(d.estagios.map((e) => e.ordem)).size !== d.estagios.length) erros.push('Há estágios com a mesma ordem.');
+  if (d.estagios.length && Math.min(...d.estagios.map((e) => e.ordem)) !== 0) erros.push('O primeiro estágio (normalidade) tem ordem 0.');
+  for (const e of d.estagios) {
+    if (!CHAVE_ESTAGIO.test(e.chave)) erros.push(`Estágio ${e.chave}: chave inválida.`);
+    if (e.nome.trim().length < 2 || e.nome.trim().length > 60) erros.push(`Estágio ${e.chave}: o nome tem de 2 a 60 caracteres.`);
+  }
+  if (!d.agravos.length) erros.push('O plano precisa de pelo menos um agravo.');
+  if (new Set(d.agravos).size !== d.agravos.length) erros.push('Há agravos repetidos no plano.');
+  for (const a of d.agravos) if (!GRUPO_AGRAVO.test(a)) erros.push(`Agravo ${a}: identificador inválido.`);
+  const ordem = new Map(d.estagios.map((e) => [e.chave, e.ordem]));
+  if (d.criterios.length > 200) erros.push('O plano tem no máximo 200 critérios.');
+  const ids = new Set<string>();
+  for (const c of d.criterios) {
+    const onde = `Critério ${c.id}`;
+    if (!ID_CRITERIO.test(c.id)) erros.push(`${onde}: identificador inválido.`);
+    if (ids.has(c.id)) erros.push(`${onde}: identificador repetido.`);
+    ids.add(c.id);
+    if (!ordem.has(c.estagio)) erros.push(`${onde}: estágio ${c.estagio} não existe no plano.`);
+    else if (ordem.get(c.estagio) === 0) erros.push(`${onde}: a normalidade não tem critério (é o estado padrão).`);
+    const fora = c.agravos.filter((a) => !d.agravos.includes(a));
+    if (fora.length) erros.push(`${onde}: agravo(s) fora do plano (${fora.join(', ')}).`);
+    const descricao = c.descricao.trim().length;
+    if (descricao < 5 || descricao > 500) erros.push(`${onde}: a descrição tem de 5 a 500 caracteres.`);
+    if ((c.fonte ?? '').trim().length > 300) erros.push(`${onde}: a fonte tem até 300 caracteres.`);
+    if (CANAL.includes(c.tipo)) {
+      if (!inteiroEntre(c.semanas, 1, 52) || !inteiroEntre(c.k, 1, 52) || !inteiroEntre(c.n, 1, 52)) erros.push(`${onde}: semanas, k e n são inteiros de 1 a 52.`);
+      if (c.modo === 'K_DE_N') {
+        const n = c.n ?? c.semanas;
+        if (!c.k || !n) erros.push(`${onde}: informe k e n (pelo menos k das últimas n semanas).`);
+        else if (c.k > n) erros.push(`${onde}: k não pode ser maior que n.`);
+      } else if (!c.semanas) erros.push(`${onde}: informe quantas semanas seguidas o critério pede.`);
+    } else if (c.tipo !== 'MANUAL') {
+      if (c.limiar === undefined || c.limiar === null || !Number.isFinite(c.limiar)) erros.push(`${onde}: informe o limiar.`);
+      else if (c.limiar < 0) erros.push(`${onde}: o limiar não pode ser negativo.`);
+      else if (PERCENTUAIS.includes(c.tipo) && c.limiar > 100) erros.push(`${onde}: o limiar é um percentual (até 100).`);
+      else if (c.limiar > 1_000_000) erros.push(`${onde}: limiar grande demais.`);
+    }
+  }
+  if (d.acoes.length > 500) erros.push('O plano tem no máximo 500 ações.');
+  for (const a of d.acoes) {
+    if (!ordem.has(a.estagio)) erros.push(`Ação "${a.descricao}": estágio ${a.estagio} não existe no plano.`);
+    const n = a.descricao.trim().length;
+    if (n < 3 || n > 500) erros.push(`Ação "${a.descricao || '(vazia)'}": a descrição tem de 3 a 500 caracteres.`);
+  }
+  if (!inteiroEntre(d.desmobilizacao.semanas, 1, 52) || !d.desmobilizacao.semanas) erros.push('Desmobilização: semanas inteiras de 1 a 52.');
+  const desc = d.desmobilizacao.descricao.trim().length;
+  if (desc < 3 || desc > 1000) erros.push('Desmobilização: a descrição tem de 3 a 1.000 caracteres.');
+  return erros;
 }
 
 /** Semanas incompletas (as `semanasIncompletas` mais recentes, contando a semana em curso) e a última completa. */

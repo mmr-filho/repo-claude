@@ -1,10 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { MasterClient } from '@omnisaude/database';
+import type { MasterClient, TenantPrisma } from '@omnisaude/database';
 import {
+  faixasDeSemanas,
   infoAgravoSinan,
   inicioAnoEpidemiologico,
+  intervaloDaSemana,
   normalizarNome,
-  ROTAS_PADRAO,
   semanaDaData,
   semanaEpidemiologica,
   semanasNoAno,
@@ -19,6 +20,7 @@ import {
 import { MASTER_DB } from '../../core/database';
 import type { SystemContext } from '../integrations/messaging.service';
 import { LocalizadorService, PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
+import { arquivoCobre } from './cobertura-importacao';
 import { MapaCasosService } from './mapa.service';
 
 /** Consulta da base consolidada. */
@@ -76,6 +78,8 @@ export interface BaseConsolidada {
   anos: number[];
   linhas: LinhaCasos[];
   cobertura: CoberturaAno[];
+  /** SE cobertas de cada ano (índice 0 = SE 1 … 52 = SE 53). SE sem cobertura fica null, diferente de 0. */
+  semanasCobertas: Map<number, boolean[]>;
   /** As linhas trazem bairro e localidade (consulta por território). */
   territorial: boolean;
 }
@@ -88,8 +92,11 @@ export interface FiltroAgregacao {
 }
 
 type Territorio = { bairroId: string | null; localidadeId: string | null; semCorrespondencia: string | null };
+type Db = TenantPrisma.TransactionClient;
 
 const semZeros = (s: string | null | undefined) => (s ?? '').trim().replace(/^0+(?=\d)/, '');
+const pad = (n: number) => String(n).padStart(2, '0');
+const ss = (codigo: string) => `${codigo.slice(4)}/${codigo.slice(0, 4)}`;
 /** Código de classificação ou evolução sem espaço nem zero à esquerda ('02' e ' 2' viram '2'). */
 const codigo = (v: string | null | undefined) => {
   const t = (v ?? '').trim();
@@ -117,21 +124,6 @@ function obitoOficial(agravo: string | null, evolucao: string | null): LinhaCaso
   if ((info?.obitoAgravo ?? ['2']).includes(e)) return 'AGRAVO';
   if ((info?.obitoInvestigacao ?? []).includes(e)) return 'INVESTIGACAO';
   return null;
-}
-
-/** Sistema padrão do agravo (o que não tem rota conferida vai para o Sinan Net). */
-const sistemaPadrao = (grupo: string) => ROTAS_PADRAO.find((r) => r.grupo === grupo)?.sistema ?? 'SINAN_NET';
-
-/**
- * O arquivo de uma importação aplicada cobre o agravo: trouxe o agravo, é o DBF do Sinan Online do agravo (DENGON,
- * CHIKON) ou é o NINDINET (todas as notificações individuais do Sinan Net) de agravo que vai para o Sinan Net.
- */
-function arquivoCobre(a: ArquivoDetectado, grupo: string): boolean {
-  if (a.ignorado || a.tipoRegistro !== 'INDIVIDUAL') return false;
-  if ((a.agravos ?? []).some((c) => infoAgravoSinan(c)?.grupo === grupo)) return true;
-  if (a.tipo === 'DENGON') return grupo === 'dengue';
-  if (a.tipo === 'CHIKON') return grupo === 'chikungunya';
-  return a.tipo === 'NINDINET' && sistemaPadrao(grupo) === 'SINAN_NET';
 }
 
 /**
@@ -196,15 +188,15 @@ export class ConsolidadoService {
     return true;
   }
 
-  /** Casos por semana do território e da base pedida, nos anos pedidos (ano sem cobertura: tudo null). */
+  /** Casos por semana do território e da base pedida, nos anos pedidos (SE sem cobertura: null; coberta sem caso: 0). */
   agregar(base: BaseConsolidada, filtro: FiltroAgregacao): CasosPorSemana {
-    const cobertos = new Set(base.cobertura.filter((c) => c.coberto).map((c) => c.ano));
     const porAno = new Map<number, (number | null)[]>();
     for (const ano of new Set(filtro.anos)) {
       const total = semanasNoAno(ano);
+      const cobertas = base.semanasCobertas.get(ano);
       porAno.set(
         ano,
-        Array.from({ length: 53 }, (_, i) => (cobertos.has(ano) && i < total ? 0 : null)),
+        Array.from({ length: 53 }, (_, i) => (i < total && cobertas?.[i] ? 0 : null)),
       );
     }
     let semSemanaSintomas = 0;
@@ -250,13 +242,21 @@ export class ConsolidadoService {
    */
   async carregar(sys: SystemContext, grupo: string, anos: number[], territorial: boolean): Promise<BaseConsolidada> {
     const lista = [...new Set(anos)].sort((a, b) => a - b);
-    if (!lista.length) return { grupo, anos: [], linhas: [], cobertura: [], territorial };
+    if (!lista.length) return { grupo, anos: [], linhas: [], cobertura: [], semanasCobertas: new Map(), territorial };
     const de = `${lista[0]}01`;
     const ate = `${lista[lista.length - 1]}53`;
     const municipio = await this.municipio(sys);
     const resolver = territorial ? await this.resolvedorDeBairro(sys) : null;
     const linhas = [...(await this.oficiais(sys, grupo, de, ate, lista, municipio, resolver)), ...(await this.doOmniSaude(sys, grupo, de, ate, lista, resolver))].filter((l) => lista.includes(l.ano));
-    return { grupo, anos: lista, linhas, cobertura: await this.cobertura(sys, grupo, lista, linhas), territorial };
+    const { cobertura, semanas } = await this.cobertura(sys, grupo, lista, linhas);
+    return { grupo, anos: lista, linhas, cobertura, semanasCobertas: semanas, territorial };
+  }
+
+  /** Aviso do ano coberto só em parte (para o canal que usa o ano na referência); null quando o ano está todo coberto ou sem cobertura. */
+  avisoCoberturaParcial(base: BaseConsolidada, ano: number): string | null {
+    const marcas = base.semanasCobertas.get(ano);
+    if (!marcas || !base.cobertura.find((c) => c.ano === ano)?.parcial) return null;
+    return `Ano ${ano} coberto só nas SE ${faixasDeSemanas(marcas.flatMap((m, i) => (m ? [i + 1] : [])))}: as SE sem base importada nem OmniSaúde em uso ficam fora do canal.`;
   }
 
   /** Registros oficiais agrupados no banco (o volume do Sinan pede agregação: dengue passa de dezenas de milhares). */
@@ -459,31 +459,76 @@ export class ConsolidadoService {
     };
   }
 
+  /** Grupos dos registros que cada importação do e-SUS Notifica gravou (para o arquivo sem `grupos`, de envios anteriores). */
+  private async gruposGravados(db: Db, importacoes: string[]): Promise<Map<string, string[]>> {
+    if (!importacoes.length) return new Map();
+    const linhas = await db.$queryRaw<{ imp: string; grupos: string[] }[]>`
+      SELECT imp, array_agg(DISTINCT g ORDER BY g) AS grupos FROM (
+        SELECT first_import_id AS imp, group_key AS g FROM official_records
+        WHERE system = 'ESUS_NOTIFICA' AND type = 'INDIVIDUAL' AND group_key IS NOT NULL AND first_import_id = ANY(${importacoes}::uuid[])
+        UNION ALL
+        SELECT last_import_id AS imp, group_key AS g FROM official_records
+        WHERE system = 'ESUS_NOTIFICA' AND type = 'INDIVIDUAL' AND group_key IS NOT NULL AND last_import_id = ANY(${importacoes}::uuid[])
+      ) x GROUP BY imp`;
+    return new Map(linhas.map((l) => [l.imp, l.grupos]));
+  }
+
   /**
-   * Cobertura do ano: há caso do agravo no ano, uma importação aplicada trouxe o agravo para um período do ano, ou o
-   * OmniSaúde já tinha notificações no ano. Sem cobertura, o ano fica fora do canal (null), diferente de 0.
+   * Cobertura por SE (a pesquisa: "ano ou período sem base importada é nulo e fica fora do conjunto"). A SE está coberta
+   * quando cai no período de um arquivo de importação aplicada que cobre o agravo (`arquivoCobre`, o mesmo da
+   * conciliação; o período declarado no envio vale mais que o lido no arquivo), quando o OmniSaúde já estava em uso (da
+   * SE da primeira notificação em diante, de qualquer agravo) ou quando tem caso do agravo (o caso nunca se perde). O
+   * período lido no arquivo é a menor e a maior data de notificação: num DBF de agravo raro ele pode ser menor que o
+   * exportado, e as SE das pontas ficam fora (o envio com período declarado resolve).
    */
-  private async cobertura(sys: SystemContext, grupo: string, anos: number[], linhas: LinhaCasos[]): Promise<CoberturaAno[]> {
-    const [importacoes, anosOmni] = await Promise.all([
-      sys.db.officialImport.findMany({ where: { status: 'APLICADA' }, select: { fileName: true, periodFrom: true, periodTo: true, declaredPeriod: true, files: true } }),
-      sys.db.$queryRaw<{ ano: number }[]>`SELECT DISTINCT year AS ano FROM notifications WHERE status IN ('NOTIFICADA', 'ENCERRADA')`,
+  private async cobertura(sys: SystemContext, grupo: string, anos: number[], linhas: LinhaCasos[]): Promise<{ cobertura: CoberturaAno[]; semanas: Map<number, boolean[]> }> {
+    const [importacoes, primeira] = await Promise.all([
+      sys.db.officialImport.findMany({ where: { status: 'APLICADA' }, select: { id: true, fileName: true, periodFrom: true, periodTo: true, declaredPeriod: true, files: true } }),
+      sys.db.notification.findFirst({ where: { status: { in: ['NOTIFICADA', 'ENCERRADA'] } }, orderBy: { knownAt: 'asc' }, select: { knownAt: true } }),
     ]);
-    const comCaso = new Set(linhas.map((l) => l.ano));
-    const omni = new Set(anosOmni.map((a) => Number(a.ano)));
-    return anos.map((ano) => {
-      if (comCaso.has(ano)) return { ano, coberto: true, motivo: 'Há casos do agravo no ano' };
-      const ini = inicioDoAno(ano);
-      const fim = fimDoAno(ano);
-      for (const imp of importacoes) {
-        const arquivos = Array.isArray(imp.files) ? (imp.files as unknown as ArquivoDetectado[]) : [];
-        for (const a of arquivos) {
-          if (!arquivoCobre(a, grupo)) continue;
-          const periodo = imp.declaredPeriod && imp.periodFrom && imp.periodTo ? { de: dia(imp.periodFrom), ate: dia(imp.periodTo) } : a.periodo;
-          if (periodo && periodo.de <= fim && periodo.ate >= ini) return { ano, coberto: true, motivo: `Importação aplicada (${imp.fileName}) cobre o ano, sem casos do agravo` };
-        }
+    const arquivos = (imp: (typeof importacoes)[number]) => (Array.isArray(imp.files) ? (imp.files as unknown as ArquivoDetectado[]) : []);
+    const gravados = await this.gruposGravados(
+      sys.db,
+      importacoes.filter((i) => arquivos(i).some((a) => a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos)).map((i) => i.id),
+    );
+    const periodos: { de: string; ate: string; nome: string }[] = [];
+    for (const imp of importacoes)
+      for (const a of arquivos(imp)) {
+        if (!arquivoCobre(a, grupo, gravados.get(imp.id))) continue;
+        const p = imp.declaredPeriod && imp.periodFrom && imp.periodTo ? { de: dia(imp.periodFrom), ate: dia(imp.periodTo) } : a.periodo;
+        if (p) periodos.push({ de: p.de, ate: p.ate, nome: imp.fileName });
       }
-      if (omni.has(ano)) return { ano, coberto: true, motivo: 'O OmniSaúde já tinha notificações no ano, sem casos do agravo' };
-      return { ano, coberto: false, motivo: 'Nenhuma base cobre o ano: fica fora do canal' };
+    const omniDesde = primeira ? semanaEpidemiologica(primeira.knownAt, sys.tenant.timeZone).codigo : null;
+    const comCaso = new Set(linhas.map((l) => `${l.ano}${pad(l.semana)}`));
+    const semanas = new Map<number, boolean[]>();
+    const cobertura = anos.map((ano): CoberturaAno => {
+      const total = semanasNoAno(ano);
+      const marcas = Array.from({ length: 53 }, () => false);
+      const arquivosDoAno = new Set<string>();
+      let porOmni = false;
+      let soPorCaso = false;
+      for (let se = 1; se <= total; se++) {
+        const codigo = `${ano}${pad(se)}`;
+        const { inicio, fim } = intervaloDaSemana(ano, se);
+        const imps = periodos.filter((p) => p.de <= fim && p.ate >= inicio);
+        const omni = omniDesde !== null && codigo >= omniDesde;
+        for (const p of imps) arquivosDoAno.add(p.nome);
+        if (omni) porOmni = true;
+        if (!imps.length && !omni && comCaso.has(codigo)) soPorCaso = true;
+        marcas[se - 1] = imps.length > 0 || omni || comCaso.has(codigo);
+      }
+      semanas.set(ano, marcas);
+      const cobertas = marcas.filter(Boolean).length;
+      if (!cobertas) return { ano, coberto: false, parcial: false, semanasCobertas: 0, motivo: 'Nenhuma base cobre o ano: fica fora do canal' };
+      const fontes = [
+        ...(arquivosDoAno.size ? [`importação aplicada: ${[...arquivosDoAno].join(', ')}`] : []),
+        ...(porOmni ? [omniDesde! > `${ano}01` ? `OmniSaúde em uso desde a SE ${ss(omniDesde!)}` : 'OmniSaúde em uso'] : []),
+        ...(soPorCaso ? ['SE com caso do agravo'] : []),
+      ].join('; ');
+      if (cobertas === total) return { ano, coberto: true, parcial: false, semanasCobertas: cobertas, motivo: `Coberto o ano todo (${fontes})` };
+      const lista = marcas.flatMap((m, i) => (m ? [i + 1] : []));
+      return { ano, coberto: true, parcial: true, semanasCobertas: cobertas, motivo: `Coberto só nas SE ${faixasDeSemanas(lista)} (${fontes}); as demais SE ficam fora do canal` };
     });
+    return { cobertura, semanas };
   }
 }

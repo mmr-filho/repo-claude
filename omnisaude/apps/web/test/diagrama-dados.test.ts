@@ -124,6 +124,12 @@ describe('números como a planilha', () => {
     expect(fmtValor(2.675, 'INCIDENCIA')).toBe('2,68');
     expect(fmtValor(11.6075, 'INCIDENCIA')).toBe('11,61');
     expect(fmtValor(1234.5, 'INCIDENCIA')).toBe('1.234,50');
+    // O caso que separa o ARRED do formato comum (desenho §3.2): o quartil interpolado 0,49499999999999994 é 0,495 na
+    // planilha e o Excel mostra 0,50; o Intl sozinho arredonda o decimal mais curto e daria 0,49.
+    expect((0.49499999999999994).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })).toBe('0,49');
+    expect(fmtValor(0.49499999999999994, 'INCIDENCIA')).toBe('0,50');
+    expect(fmtValor(0.4950000000000001, 'INCIDENCIA')).toBe('0,50');
+    expect(fmtValor(0.49499999999999994, 'CASOS')).toBe('0,5');
   });
 
   it('casos sem casas quando inteiros; mediana e quartis com até 2 casas', () => {

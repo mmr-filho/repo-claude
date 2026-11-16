@@ -9,8 +9,9 @@ import { Field, Input, Select, Textarea } from '@/components/ui/input';
 import { Alert } from '@/components/ui/misc';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
-import { useSession } from '@/lib/session';
+import { useFuso } from './fuso';
 import {
+  aEsfera,
   corpoComunicacao,
   corpoEncerramento,
   ESFERAS_SURTO,
@@ -29,11 +30,6 @@ interface PropsAcao {
   d: DetalheSurto;
   onFechar: () => void;
   onFeito: (novo: DetalheSurto) => void;
-}
-
-function useFuso() {
-  const session = useSession();
-  return session.me?.tenant.timeZone ?? 'America/Sao_Paulo';
 }
 
 function Pendencias({ itens }: { itens: string[] }) {
@@ -236,7 +232,7 @@ export function ComunicarSurto({ d, municipal, onFechar, onFeito }: PropsAcao & 
             setErro(null);
             try {
               const novo = await api.post<DetalheSurto>(`/vigilancia/surtos/${d.id}/comunicacoes`, { ...corpoComunicacao(f, tz) });
-              toast.success(`Comunicação à ${f.alvo} registrada.`);
+              toast.success(`Comunicação ${aEsfera(f.alvo)} registrada.`);
               onFeito(novo);
             } catch (err) {
               setErro(errorMessage(err));

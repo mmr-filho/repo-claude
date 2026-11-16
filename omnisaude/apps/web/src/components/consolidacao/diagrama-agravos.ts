@@ -1,4 +1,4 @@
-import { AGRAVOS_SINAN } from '@omnisaude/shared';
+import { AGRAVOS_SINAN, LNNC_NACIONAL, type Permission, type Role } from '@omnisaude/shared';
 
 /*
  * Agravos dos seletores do diagrama de controle e da conciliação, sem React (testados em
@@ -9,6 +9,8 @@ import { AGRAVOS_SINAN } from '@omnisaude/shared';
 export interface OpcaoAgravo {
   grupo: string;
   nome: string;
+  /** Agravo sigiloso (HIV, aids, sífilis, violências; Lei 14.289/2022): só aparece no seletor de quem pode vê-lo. */
+  sigiloso?: true;
 }
 
 /** Linha do catálogo vigente (GET /vigilancia/catalogo/vigente) que o seletor usa. */
@@ -17,7 +19,21 @@ export interface CondicaoDoCatalogo {
   groupKey: string;
   name: string;
   context: string;
+  /** Linha sigilosa no catálogo do tenant. */
+  sensitive?: boolean;
 }
+
+/** Grupos sigilosos do catálogo nacional: valem mesmo que o catálogo do tenant os desmarque (a mesma regra da API). */
+export const GRUPOS_SIGILOSOS_NACIONAIS: ReadonlySet<string> = new Set(LNNC_NACIONAL.flatMap((v) => v.conditions.filter((c) => c.sensitive).map((c) => c.group)));
+
+/**
+ * O diagrama, o CSV e os anos epidêmicos de agravo sigiloso só saem para a vigilância municipal com acesso ao sigilo
+ * (a API responde 403 AGRAVO_SIGILOSO aos demais, inclusive ao gestor e ao núcleo da unidade).
+ */
+export const podeVerDiagramaSigiloso = (papel: Role | null | undefined, permissoes: readonly Permission[]) => papel === 'VIGILANCIA_EPIDEMIOLOGICA' && permissoes.includes('notificacao.sensivel');
+
+/** As opções que o seletor mostra: sem as sigilosas para quem não pode vê-las (a escolhida continua, para não sumir). */
+export const opcoesVisiveis = (opcoes: OpcaoAgravo[], sigilosos: boolean, escolhido?: string | null) => (sigilosos ? opcoes : opcoes.filter((o) => !o.sigiloso || o.grupo === escolhido));
 
 /** Grupo que a API aceita nas consultas (diagrama e conciliação). */
 const GRUPO_VALIDO = /^[a-z0-9-]{2,40}$/;
@@ -40,10 +56,14 @@ function ordenar(opcoes: OpcaoAgravo[]): OpcaoAgravo[] {
   return opcoes.filter((o) => GRUPO_VALIDO.test(o.grupo)).sort((a, b) => primeiro(a.grupo) - primeiro(b.grupo) || a.nome.localeCompare(b.nome, 'pt-BR'));
 }
 
+/** A opção com a marca de sigilo só quando sigilosa (as demais ficam só com grupo e nome). */
+const opcao = (grupo: string, nome: string, sigiloso: boolean): OpcaoAgravo => (sigiloso ? { grupo, nome, sigiloso: true } : { grupo, nome });
+
 /**
  * Agravos do seletor. Com o catálogo vigente do tenant, um por grupo, com o nome que a API dá ao diagrama (a linha
  * do próprio grupo, senão a de casos, sem o " - Casos"). Sem acesso ao catálogo (o gestor só tem o resumo), os grupos
- * da tabela de agravos do Sinan. Dengue, chikungunya e zika primeiro; os demais em ordem alfabética.
+ * da tabela de agravos do Sinan. Dengue, chikungunya e zika primeiro; os demais em ordem alfabética. O grupo é
+ * sigiloso quando alguma linha dele é sigilosa no catálogo do tenant ou no nacional.
  */
 export function opcoesDeAgravo(condicoes?: CondicaoDoCatalogo[] | null): OpcaoAgravo[] {
   if (condicoes?.length) {
@@ -52,13 +72,13 @@ export function opcoesDeAgravo(condicoes?: CondicaoDoCatalogo[] | null): OpcaoAg
     return ordenar(
       [...porGrupo].map(([grupo, linhas]) => {
         const l = linhas.find((x) => x.key === grupo) ?? linhas.find((x) => x.context === 'CASO') ?? linhas[0]!;
-        return { grupo, nome: l.name.replace(/\s+-\s+Casos$/i, '') };
+        return opcao(grupo, l.name.replace(/\s+-\s+Casos$/i, ''), GRUPOS_SIGILOSOS_NACIONAIS.has(grupo) || linhas.some((x) => x.sensitive === true));
       }),
     );
   }
   const vistos = new Map<string, string>();
   for (const info of Object.values(AGRAVOS_SINAN)) if (info.grupo && !vistos.has(info.grupo)) vistos.set(info.grupo, NOME_DO_GRUPO_SINAN[info.grupo] ?? info.nome);
-  return ordenar([...vistos].map(([grupo, nome]) => ({ grupo, nome })));
+  return ordenar([...vistos].map(([grupo, nome]) => opcao(grupo, nome, GRUPOS_SIGILOSOS_NACIONAIS.has(grupo))));
 }
 
 /** Nome do agravo para a tela; o grupo quando não está na lista. */

@@ -9,10 +9,10 @@ import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { TabPanel, Tabs } from '@/components/ui/tabs';
-import { fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useSession } from '@/lib/session';
 import type { OpcaoAgravo } from './diagrama-agravos';
+import { useDataHora } from './fuso';
 import { ComunicarSurto, DescartarSurto, EncerrarSurto, NumeroSinanSurto } from './surto-acoes';
 import { SurtoFicha } from './surto-ficha';
 import { PrazosSurto } from './surto-lista';
@@ -34,6 +34,7 @@ function Dado({ rotulo, children }: { rotulo: string; children: React.ReactNode 
 }
 
 function Comunicacoes({ d, podeComunicar, onComunicar }: { d: DetalheSurto; podeComunicar: boolean; onComunicar: () => void }) {
+  const { dataHora } = useDataHora();
   const lista = comunicacoesDoSurto(d.eventos);
   return (
     <Card>
@@ -68,7 +69,7 @@ function Comunicacoes({ d, podeComunicar, onComunicar }: { d: DetalheSurto; pode
             <TBody>
               {lista.map((c) => (
                 <TR key={c.id}>
-                  <TD className="whitespace-nowrap tabular-nums">{fmtDateTime(c.em)}</TD>
+                  <TD className="whitespace-nowrap tabular-nums">{dataHora(c.em)}</TD>
                   <TD>
                     <Badge tone="blue">{c.alvo}</Badge>
                   </TD>
@@ -78,7 +79,7 @@ function Comunicacoes({ d, podeComunicar, onComunicar }: { d: DetalheSurto; pode
                   <TD className="text-xs">{c.nota ?? '—'}</TD>
                   <TD className="text-xs">
                     {c.por ?? '—'}
-                    <span className="block text-slate-500">{fmtDateTime(c.registradoEm)}</span>
+                    <span className="block text-slate-500">{dataHora(c.registradoEm)}</span>
                   </TD>
                 </TR>
               ))}
@@ -91,6 +92,7 @@ function Comunicacoes({ d, podeComunicar, onComunicar }: { d: DetalheSurto; pode
 }
 
 function LinhaDoTempo({ d }: { d: DetalheSurto }) {
+  const { dataHora } = useDataHora();
   const eventos = [...d.eventos].reverse();
   return (
     <Card>
@@ -98,7 +100,7 @@ function LinhaDoTempo({ d }: { d: DetalheSurto }) {
       <ol className="divide-y divide-slate-100">
         {eventos.map((e) => (
           <li key={e.id} className="flex flex-wrap items-start gap-3 px-5 py-3 text-sm">
-            <span className="w-36 shrink-0 text-xs tabular-nums text-slate-600">{fmtDateTime(e.em)}</span>
+            <span className="w-36 shrink-0 text-xs tabular-nums text-slate-600">{dataHora(e.em)}</span>
             <Badge tone="slate" className="shrink-0">
               {ROTULO_EVENTO_SURTO[e.tipo]}
             </Badge>
@@ -207,6 +209,7 @@ function Espelho({ d }: { d: DetalheSurto }) {
 /** Notificação de surto aberta: dados, prazos, pendências e avisos, ficha, planilha, comunicações, linha do tempo e espelho. */
 export function SurtoDetalhe({ id, opcoes, onVoltar, onMudou }: { id: string; opcoes: OpcaoAgravo[]; onVoltar: () => void; onMudou: () => void }) {
   const session = useSession();
+  const { dataHora } = useDataHora();
   // A vigilância municipal (papel com `vigilancia.consolidacao`) comunica também à SES e ao MS; a API confere o papel.
   const municipal = session.can('vigilancia.consolidacao');
   const r = useApi<DetalheSurto>(`/vigilancia/surtos/${id}`);
@@ -266,7 +269,7 @@ export function SurtoDetalhe({ id, opcoes, onVoltar, onMudou }: { id: string; op
             <CardBody className="space-y-4 pt-4">
               <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
                 <Dado rotulo="Notificado em">{dataBr(d.notificadoEm)}</Dado>
-                <Dado rotulo="A vigilância soube em">{fmtDateTime(d.conhecidoEm)}</Dado>
+                <Dado rotulo="A vigilância soube em">{dataHora(d.conhecidoEm)}</Dado>
                 <Dado rotulo="Primeiros sintomas do 1º caso">{dataBr(d.primeirosSintomasEm)}</Dado>
                 <Dado rotulo="Casos (informados / na planilha)">
                   {d.casos} / {d.planilha.length}
@@ -287,7 +290,7 @@ export function SurtoDetalhe({ id, opcoes, onVoltar, onMudou }: { id: string; op
                 )}
                 {d.descarte && (
                   <Dado rotulo="Descarte">
-                    {fmtDateTime(d.descarte.em)}
+                    {dataHora(d.descarte.em)}
                     {d.descarte.por ? ` por ${d.descarte.por}` : ''}
                     <span className="block text-xs text-slate-600">{d.descarte.motivo}</span>
                   </Dado>
@@ -318,6 +321,7 @@ export function SurtoDetalhe({ id, opcoes, onVoltar, onMudou }: { id: string; op
             </CardBody>
           </Card>
           <Tabs
+            aria-label="Seções do surto"
             value={secao}
             onValueChange={setSecao}
             tabs={[

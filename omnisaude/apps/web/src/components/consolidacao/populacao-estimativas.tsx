@@ -11,8 +11,8 @@ import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
-import { fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
+import { useDataHora } from './fuso';
 import { corpoDaPopulacao, errosDoLote, gruposDePopulacao, lerPopulacaoColada, NOTA_MAXIMA, VERSAO_MAXIMA } from './populacao-colar';
 
 const FONTES = Object.keys(ROTULO_FONTE_POPULACAO) as FontePopulacao[];
@@ -122,6 +122,7 @@ export function PopulacaoEstimativas({
   onMudou: () => void;
 }) {
   const toast = useToast();
+  const { dataHora } = useDataHora();
   const pronto = nivel === 'MUNICIPIO' || !!territorio;
   const caminho = pronto ? `/vigilancia/populacao?nivel=${nivel}${nivel !== 'MUNICIPIO' && territorio ? `&territorio=${territorio}` : ''}` : null;
   const lista = useApi<ListaPopulacao>(caminho);
@@ -177,7 +178,7 @@ export function PopulacaoEstimativas({
                         <TD className="tabular-nums">{e.ano}</TD>
                         <TD className="text-right tabular-nums">{e.populacao.toLocaleString('pt-BR')}</TD>
                         <TD className="text-xs text-slate-600">{e.nota ?? ''}</TD>
-                        <TD className="text-xs text-slate-600">{fmtDateTime(e.atualizadoEm)}</TD>
+                        <TD className="text-xs text-slate-600">{dataHora(e.atualizadoEm)}</TD>
                         {podeConfigurar && (
                           <TD className="text-right">
                             <Button variant="ghost" size="sm" aria-label={`Remover a população de ${e.ano}`} onClick={() => setRemover(e)}>

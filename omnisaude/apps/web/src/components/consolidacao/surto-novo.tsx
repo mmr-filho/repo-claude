@@ -9,11 +9,11 @@ import { Field, Input } from '@/components/ui/input';
 import { Alert } from '@/components/ui/misc';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
-import { fmtDateTime } from '@/lib/format';
+import { fmtDateTimeTz } from '@/lib/format';
 import { useSession } from '@/lib/session';
 import type { OpcaoAgravo } from './diagrama-agravos';
 import { CampoUnidade, CamposAgravo, CamposLocal, CamposNotificacao, useUnidadesDoSurto } from './surto-campos';
-import { corpoNovoSurto, formDaSugestao, formNovoSurto, isoParaLocal, pendenciasNovoSurto, ROTULO_VINCULO, type FormSurto } from './surto-regras';
+import { corpoNovoSurto, formDaSugestao, formNovoSurto, isoParaLocal, pendenciasNovoSurto, ROTULO_VINCULO, textoSurtoNotificado, type FormSurto } from './surto-regras';
 
 /**
  * Notificação de surto (tipo 3 da ficha do Sinan Net, sem paciente): manual ou a partir de uma sugestão, que já traz o
@@ -48,7 +48,7 @@ export function SurtoNovo({ sugestao, opcoes, onFechar, onCriado }: { sugestao: 
     setErro(null);
     try {
       const d = await api.post<DetalheSurto>('/vigilancia/surtos', { ...corpoNovoSurto(f, tz, sugestao) });
-      toast.success(`Surto ${d.numero} notificado. Prazo da comunicação à SMS: ${fmtDateTime(d.venceEm)}.`);
+      toast.success(textoSurtoNotificado(d, tz));
       for (const a of d.avisos) toast.info(a);
       onCriado(d);
     } catch (err) {
@@ -75,7 +75,7 @@ export function SurtoNovo({ sugestao, opcoes, onFechar, onCriado }: { sugestao: 
         {sugestao && (
           <Alert tone="info" title={sugestao.descricao}>
             {ROTULO_VINCULO[sugestao.vinculo.tipo]}: {sugestao.vinculoNome}. As {sugestao.casos.length} notificação(ões) da sugestão ({sugestao.casosDetalhe.map((c) => c.numero).join(', ')}) entram na planilha de casos.
-            O último caso foi conhecido em {fmtDateTime(sugestao.ultimoConhecimento)}.
+            O último caso foi conhecido em {fmtDateTimeTz(sugestao.ultimoConhecimento, tz)}.
           </Alert>
         )}
         <section className="space-y-3" aria-label="Agravo">

@@ -133,6 +133,28 @@ export const DEFAULT_TENANT_SETTINGS: TenantSettings = {
   endemias: { bloqueioAutomatico: true, janelaAgrupamentoDias: 7, gruposBloqueio: ['dengue', 'chikungunya', 'zika'], alertaSemInicioDias: 3 },
 };
 
+/**
+ * Mudança das configurações da vigilância (PATCH /vigilancia/configuracoes): tudo opcional; nos blocos da semana 27,
+ * campo a campo (o que não vier fica como está). Do surto, só `diasInusitado` (as regras não se editam por aqui).
+ */
+export type MudancaVigilancia = Partial<Omit<VigilanciaSettings, 'negativa' | 'consolidacao' | 'surto'>> & {
+  negativa?: Partial<NegativaSettings>;
+  consolidacao?: Partial<ConsolidacaoSettings>;
+  surto?: Partial<Pick<SurtoSettings, 'diasInusitado'>>;
+};
+
+/** Só as chaves com valor: `undefined` não apaga o que está gravado. */
+const comValor = <T extends object>(o: T | undefined): Partial<T> => Object.fromEntries(Object.entries(o ?? {}).filter(([, v]) => v !== undefined)) as Partial<T>;
+
+/** Os blocos da semana 27 (negativa, consolidação e surto) com a mudança aplicada; as regras do surto ficam como estão. */
+export function mesclarBlocosVigilancia(atual: VigilanciaSettings, mudanca: MudancaVigilancia): Pick<VigilanciaSettings, 'negativa' | 'consolidacao' | 'surto'> {
+  return {
+    negativa: { ...atual.negativa, ...comValor(mudanca.negativa) },
+    consolidacao: { ...atual.consolidacao, ...comValor(mudanca.consolidacao) },
+    surto: { ...atual.surto, ...(mudanca.surto?.diasInusitado !== undefined ? { diasInusitado: mudanca.surto.diasInusitado } : {}) },
+  };
+}
+
 export function tenantSettings(raw: unknown): TenantSettings {
   const value = raw && typeof raw === 'object' ? (raw as Partial<TenantSettings>) : {};
   return {

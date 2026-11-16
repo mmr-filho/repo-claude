@@ -1,14 +1,18 @@
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { cnsFromBase, completeCpf, localDateString, ROLE_PERMISSIONS, semanaDaData, type Permission } from '@omnisaude/shared';
 import { zipSync } from 'fflate';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { RequestContext } from '../src/core/context';
 import { TenantsService } from '../src/core/database';
 import { AiService } from '../src/modules/integrations/ai.service';
 import { decodificar, escolherCodificacao } from '../src/modules/vigilancia/importacao/codepages';
 import { lerCsvOficial, normalizarCabecalho } from '../src/modules/vigilancia/importacao/csv-oficial';
 import { ErroArquivo, lerDbf } from '../src/modules/vigilancia/importacao/dbf';
 import { ConciliacaoService } from '../src/modules/vigilancia/conciliacao.service';
-import { detectarTipo, extrairArquivos } from '../src/modules/vigilancia/importacao/detectar';
-import { lerEnvio } from '../src/modules/vigilancia/importacao/leitura';
+import { ImportacaoService } from '../src/modules/vigilancia/importacao.service';
+import { detectarTipo } from '../src/modules/vigilancia/importacao/detectar';
+import { abrirEnvio } from '../src/modules/vigilancia/importacao/entrada';
+import { lerEnvio, type OpcoesLeitura, type RegistroDoEnvio } from '../src/modules/vigilancia/importacao/leitura';
 import { aplicarParte, colunasDoEstado, estadoDoBanco, estadoVazio, hashDoEstado } from '../src/modules/vigilancia/importacao/mescla';
 import { lerData } from '../src/modules/vigilancia/importacao/normalizar';
 import { CAMPOS_NINDINET, escreverDbf, type CampoEscrita, type ValorEscrita } from './helpers/dbf-escrita';
@@ -22,6 +26,17 @@ import { startMocks } from './mocks';
  */
 
 const hex = (h: string) => Uint8Array.from(Buffer.from(h, 'hex'));
+/** O envio lido por inteiro (a leitura entrega os registros em lotes, do arquivo temporário). */
+async function lerTudo(nome: string, bytes: Uint8Array, opcoes: OpcoesLeitura) {
+  const l = await lerEnvio(nome, bytes, opcoes);
+  try {
+    const registros: RegistroDoEnvio[] = [];
+    for await (const lote of l.registros(7)) registros.push(...lote);
+    return { arquivos: l.arquivos, motivosRecusa: l.motivosRecusa, duplicadosNoArquivo: l.duplicadosNoArquivo, registros };
+  } finally {
+    l.fechar();
+  }
+}
 const PY = {
   cp850: {
     'JOÃO DA CONCEIÇÃO': '4a4fc74f20444120434f4e43454980c74f',
@@ -137,9 +152,9 @@ describe('Importação oficial: leitura dos arquivos (sem banco)', () => {
     expect(lerData('')).toEqual({ data: null, invalida: false, duvidosa: false });
   });
 
-  it('zip: só .dbf e .csv entram; DBC e planilha do Excel ficam de fora; teto de 600 MB descompactados (zip bomb)', () => {
+  it('zip: só .dbf e .csv entram; DBC e planilha do Excel ficam de fora; teto de 150 MB descompactados (zip bomb)', () => {
     const csv = new TextEncoder().encode('a;b\r\n1;2\r\n');
-    const arquivos = extrairArquivos('envio.zip', zipSync({ 'x/NINDINET.DBF': new Uint8Array([3]), 'x/ZIKABR21.dbc': new Uint8Array([3]), 'x/notas.txt': csv, 'y/esus.CSV': csv }));
+    const arquivos = abrirEnvio('envio.zip', zipSync({ 'x/NINDINET.DBF': new Uint8Array([3]), 'x/ZIKABR21.dbc': new Uint8Array([3]), 'x/notas.txt': csv, 'y/esus.CSV': csv }));
     expect(arquivos.map((a) => [a.nome, a.ignorado ?? null])).toEqual([
       ['x/NINDINET.DBF', null],
       ['y/esus.CSV', null],
@@ -147,14 +162,14 @@ describe('Importação oficial: leitura dos arquivos (sem banco)', () => {
       ['x/notas.txt', 'não é .dbf nem .csv'],
     ]);
     // Planilha do Excel: o .xlsx é um zip com [Content_Types].xml.
-    expect(() => extrairArquivos('planilha.xlsx', zipSync({ '[Content_Types].xml': csv, 'xl/workbook.xml': csv }))).toThrow(/Excel/);
+    expect(() => abrirEnvio('planilha.xlsx', zipSync({ '[Content_Types].xml': csv, 'xl/workbook.xml': csv }))).toThrow(/Excel/);
     // O diretório central declara 700 MB descompactados: recusado antes de descompactar.
     const bomba = Buffer.from(zipSync({ 'grande.csv': csv }));
     bomba.writeUInt32LE(700 * 1024 * 1024, bomba.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02])) + 24);
-    expect(() => extrairArquivos('bomba.zip', bomba)).toThrow(/600 MB/);
+    expect(() => abrirEnvio('bomba.zip', bomba)).toThrow(/150 MB/);
   });
 
-  it('NNEGANET, NSURTNET e CSV do e-SUS Sinan: tipo, chave natural, "Excluída" e piso de 2022', () => {
+  it('NNEGANET, NSURTNET e CSV do e-SUS Sinan: tipo, chave natural, "Excluída" e piso de 2022', async () => {
     const negativa = escreverDbf(
       [
         { nome: 'NU_NOTIFIC', tipo: 'C', tamanho: 7 },
@@ -188,7 +203,7 @@ describe('Importação oficial: leitura dos arquivos (sem banco)', () => {
       '352500000102;B42;16/03/2025;355030;9000011;Excluída;Bia Esporo;\r\n' +
       '352100000103;B42;16/03/2021;355030;9000011;Encerrada;Caio Antigo;\r\n';
     const zip = zipSync({ 'NNEGANET.DBF': negativa, 'NSURTNET.DBF': surto, 'esus-sinan.csv': new TextEncoder().encode(esusSinan) });
-    const l = lerEnvio('envio.zip', zip, { hoje: '2026-11-10', municipio: '3550308' });
+    const l = await lerTudo('envio.zip', zip, { hoje: '2026-11-10', municipio: '3550308' });
     expect(l.arquivos.map((a) => a.tipo).sort()).toEqual(['ESUS_SINAN_CSV', 'NNEGANET', 'NSURTNET']);
     const por = (n: string) => l.registros.find((r) => r.partes[0]!.numero === n)!;
     expect(por('0000010')).toMatchObject({ sistema: 'SINAN_NET', tipo: 'NEGATIVA', chave: '10|2025-03-08|355030|9000028' });
@@ -200,7 +215,7 @@ describe('Importação oficial: leitura dos arquivos (sem banco)', () => {
     expect(l.motivosRecusa).toEqual({ 'Data da notificação anterior a 01/01/2022 (início do sistema)': 1 });
   });
 
-  it('o estado gravado no banco e relido tem o mesmo hash (sem "alterado" falso na reexportação)', () => {
+  it('o estado gravado no banco e relido tem o mesmo hash (sem "alterado" falso na reexportação)', async () => {
     const dengon: CampoEscrita[] = [
       { nome: 'NU_NOTIFIC', tipo: 'C', tamanho: 7 },
       { nome: 'ID_AGRAVO', tipo: 'C', tamanho: 4 },
@@ -218,7 +233,7 @@ describe('Importação oficial: leitura dos arquivos (sem banco)', () => {
       ]),
       'esus.csv': new TextEncoder().encode('Número da Notificação;Data da Notificação;CNES Notificação;Evolução Caso;Sintoma- Febre\r\n351234500001;10/01/2025;9000011;Cura;Sim\r\n'),
     };
-    const l = lerEnvio('envio.zip', zipSync(arquivos), { hoje: '2026-11-10', municipio: '3550308', sensiveis: new Set(['sifilis']) });
+    const l = await lerTudo('envio.zip', zipSync(arquivos), { hoje: '2026-11-10', municipio: '3550308', sensiveis: new Set(['sifilis']) });
     expect(l.registros).toHaveLength(2);
     for (const r of l.registros) {
       const estado = r.partes.reduce(aplicarParte, estadoVazio());
@@ -752,5 +767,189 @@ describe.runIf(enabled)('Vigilância: importação das exportações oficiais e 
     await db.officialImport.update({ where: { id: velha.id }, data: { createdAt: new Date(Date.now() - 25 * 3_600_000) } });
     await t.http().post(`/api/vigilancia/importacoes/${velha.id}/aplicar`).set(auth(vig)).expect(409);
     expect(await db.officialImport.findUniqueOrThrow({ where: { id: velha.id } })).toMatchObject({ status: 'DESCARTADA', payload: null, discardedBy: null });
+  });
+
+  // ───────────── correções da revisão da semana 27 (frente A1) ─────────────
+
+  it('período declarado com data que não existe: 400 no serviço (mês 13, 30/02), sem criar nada (imp-periodo-invalido)', async () => {
+    const servico = t.app.get(ImportacaoService);
+    // A validação vem antes de qualquer acesso ao banco: o contexto vazio basta.
+    const ctx = {} as RequestContext;
+    for (const [de, ate] of [
+      ['2025-13-01', '2025-13-31'],
+      ['2025-02-01', '2025-02-30'],
+      ['2025-02-29', '2025-03-10'],
+    ])
+      await expect(servico.enviar(ctx, Buffer.from('x'), { nome: 'p.dbf', de, ate })).rejects.toMatchObject({ status: 400, code: 'PERIODO_INVALIDO' });
+    const antes = await db.officialImport.count();
+    await enviar(escreverDbf(CAMPOS_NINDINET, [nindinet({ NU_NOTIFIC: '6600001', DT_NOTIFIC: '2025-02-10' })]), 'p.dbf', { de: '2025-02-01', ate: '2025-02-30' }, 400);
+    expect(await db.officialImport.count()).toBe(antes);
+  });
+
+  it('dengue: a mesma exportação com e sem a classificação 10 não duplica; o registro antigo no Sinan Net muda de sistema (imp-dengon-duplica)', async () => {
+    const dengon: CampoEscrita[] = [...CAMPOS_NINDINET, { nome: 'CLASSI_FIN', tipo: 'C', tamanho: 2 }, { nome: 'CRITERIO', tipo: 'C', tamanho: 1 }, { nome: 'FEBRE', tipo: 'C', tamanho: 1 }];
+    const caso = (n: string, dt: string, v: Record<string, ValorEscrita> = {}) => nindinet({ NU_NOTIFIC: n, DT_NOTIFIC: dt, ID_AGRAVO: 'A90', NM_PACIENT: `DENGUE ${n}`, FEBRE: '1', ...v });
+    const numeros = ['0000901', '0000902', '0000903'];
+    const doSistema = async () => (await db.officialRecord.findMany({ where: { number: { in: numeros } }, select: { system: true } })).map((r) => r.system).sort();
+    // Exportação 1: só casos em investigação e descartados, sem TP_SISTEMA nem CLINC_CHIK.
+    const d1 = (await enviar(escreverDbf(dengon, [caso('0000901', '2025-02-03'), caso('0000902', '2025-02-04', { CLASSI_FIN: '5' }), caso('0000903', '2025-02-05')]), 'DENGON-1.DBF')) as Detalhe;
+    expect(d1.arquivos[0]).toMatchObject({ tipo: 'DENGON' });
+    expect(d1.contagens).toMatchObject({ novos: 3 });
+    await aplicar(d1.id);
+    expect(await doSistema()).toEqual(['SINAN_ONLINE', 'SINAN_ONLINE', 'SINAN_ONLINE']);
+    // Exportação 2: os mesmos 3, um já confirmado (10).
+    const d2 = (await enviar(
+      escreverDbf(dengon, [caso('0000901', '2025-02-03', { CLASSI_FIN: '10', CRITERIO: '1' }), caso('0000902', '2025-02-04', { CLASSI_FIN: '5' }), caso('0000903', '2025-02-05')]),
+      'DENGON-2.DBF',
+    )) as Detalhe;
+    expect(d2.contagens).toMatchObject({ novos: 0, alterados: 1, iguais: 2 });
+    await aplicar(d2.id);
+    expect(await doSistema()).toEqual(['SINAN_ONLINE', 'SINAN_ONLINE', 'SINAN_ONLINE']);
+    expect(await registro('0000901')).toMatchObject({ situation: 'CONFIRMADO', system: 'SINAN_ONLINE' });
+
+    // Registro gravado antes da regra no Sinan Net, com a mesma chave natural: muda de sistema, sem cópia.
+    const base = await registro('0000901');
+    await db.officialRecord.create({
+      data: {
+        system: 'SINAN_NET',
+        type: 'INDIVIDUAL',
+        naturalKey: `904|2025-02-06|${MUN}|A90`,
+        number: '0000904',
+        notifiedOn: new Date('2025-02-06T00:00:00Z'),
+        agravo: 'A90',
+        groupKey: 'dengue',
+        situation: 'EM_INVESTIGACAO',
+        contentHash: '0'.repeat(64),
+        firstImportId: base.firstImportId,
+        lastImportId: base.lastImportId,
+        lastSeenAt: new Date(),
+      },
+    });
+    const d3 = (await enviar(escreverDbf(dengon, [caso('0000904', '2025-02-06')]), 'DENGON-3.DBF')) as Detalhe;
+    expect(d3.contagens).toMatchObject({ novos: 0, alterados: 1 });
+    expect(d3.previa!.alterados[0]!.campos).toEqual(expect.arrayContaining([{ campo: 'sistema', antes: 'SINAN_NET', depois: 'SINAN_ONLINE' }]));
+    await aplicar(d3.id);
+    expect(await db.officialRecord.findMany({ where: { number: '0000904' }, select: { system: true, naturalKey: true } })).toEqual([{ system: 'SINAN_ONLINE', naturalKey: `904|2025-02-06|${MUN}|A90` }]);
+  });
+
+  it('e-SUS Notifica: CSV de outra ficha não marca a SG como ausente; um CNES só restringe os ausentes a ele (imp-ausentes-esus)', async () => {
+    const csv = (cab: string[], linhas: string[][]) => new TextEncoder().encode([cab.join(';'), ...linhas.map((l) => l.join(';'))].join('\r\n'));
+    const SG = ['Número da Notificação', 'Data da Notificação', 'CNES Notificação', 'Município da Notificação', 'Sintoma- Febre'];
+    const agosto = { de: '2025-08-01', ate: '2025-08-31' };
+    const sg = await enviar(
+      csv(SG, [
+        ['351280000001', '10/08/2025', UBS, '3550308', 'Sim'],
+        ['351280000002', '12/08/2025', UBS, '3550308', 'Sim'],
+        ['351280000003', '13/08/2025', '9000028', '3550308', 'Sim'],
+      ]),
+      'sg-agosto.csv',
+      agosto,
+      201,
+      vig,
+      'text/csv',
+    );
+    await aplicar(sg.id);
+    const ausente = async (n: string) => (await registro(n)).absentSince;
+    // CSV sem as colunas da SG (outra ficha), no mesmo período: nenhum ausente.
+    const outra = (await enviar(
+      csv(
+        ['Número da Notificação', 'Data da Notificação', 'CNES Notificação', 'Município da Notificação', 'Vacina aplicada'],
+        [
+          ['351280000101', '09/08/2025', UBS, '3550308', 'X'],
+          ['351280000102', '14/08/2025', UBS, '3550308', 'Y'],
+        ],
+      ),
+      'esavi-agosto.csv',
+      agosto,
+      201,
+      vig,
+      'text/csv',
+    )) as Detalhe & { avisos: string[] };
+    expect(outra.contagens.ausentesPrevistos).toBe(0);
+    expect(outra.avisos.join(' ')).toContain('nenhum registro foi marcado como ausente');
+    expect((await aplicar(outra.id)).ausentesMarcados).toBe(0);
+    for (const n of ['351280000001', '351280000002', '351280000003']) expect(await ausente(n)).toBeNull();
+    // Exportação de um CNES só (autocadastro): só o que é desse CNES e não veio fica ausente.
+    const soUbs = (await enviar(csv(SG, [['351280000001', '10/08/2025', UBS, '3550308', 'Sim']]), 'sg-ubs.csv', agosto, 201, vig, 'text/csv')) as Detalhe;
+    expect(soUbs.contagens.ausentesPrevistos).toBe(1);
+    expect(soUbs.previa!.ausentes.map((a) => a.numero)).toEqual(['351280000002']);
+    expect((await aplicar(soUbs.id)).ausentesMarcados).toBe(1);
+    expect(await ausente('351280000002')).not.toBeNull();
+    expect(await ausente('351280000003')).toBeNull();
+  });
+
+  it('Mpox no e-SUS Sinan: classificação da ficha de Mpox e DT_CONCLUSÃO como encerramento (imp-mpox-codigos)', async () => {
+    const linhas = [
+      ['352600000801', '4'],
+      ['352600000802', '5'],
+      ['352600000803', '6'],
+      ['352600000804', '1'],
+    ];
+    const csv = `"nu_notific";"id_agravo";"dt_notific";"id_municip";"id_unidade";"nm_pacient";"classi_fin";"evolucao";"DT_CONCLUSÃO"\r\n${linhas.map(([n, c]) => `"${n}";"B04";"10/03/2026";"${MUN}";"${UBS}";"Paciente ${n}";"${c}";"2";20/03/2026`).join('\r\n')}\r\n`;
+    const d = (await enviar(new TextEncoder().encode(csv), 'mpox.csv', {}, 201, vig, 'text/csv')) as Detalhe;
+    expect(d.arquivos[0]!.tipo).toBe('ESUS_SINAN_CSV');
+    await aplicar(d.id);
+    const situacoes = await Promise.all(linhas.map(async ([n]) => (await registro(n!)).situation));
+    expect(situacoes).toEqual(['EM_INVESTIGACAO', 'INCONCLUSIVO', 'DESCARTADO', 'CONFIRMADO']);
+    expect((await registro('352600000804')).closedOn?.toISOString().slice(0, 10)).toBe('2026-03-20');
+  });
+
+  it('uma prévia ou aplicação por vez no processo: a outra recebe 409 com mensagem clara (imp-memoria)', async () => {
+    const servico = t.app.get(ImportacaoService) as unknown as { exclusivo<T>(fn: () => Promise<T>): Promise<T> };
+    const arquivo = escreverDbf(CAMPOS_NINDINET, [nindinet({ NU_NOTIFIC: '6700001', DT_NOTIFIC: '2025-04-20' })]);
+    let liberar = () => {};
+    let ocupado = servico.exclusivo(() => new Promise<void>((r) => (liberar = r)));
+    const recusa = await enviar(arquivo, 'ocupado.dbf', {}, 409);
+    expect(recusa).toMatchObject({ code: 'IMPORTACAO_OCUPADA', message: expect.stringContaining('Outra importação está sendo processada') });
+    liberar();
+    await ocupado;
+    const d = (await enviar(arquivo, 'ocupado.dbf')) as Detalhe;
+    ocupado = servico.exclusivo(() => new Promise<void>((r) => (liberar = r)));
+    await t.http().post(`/api/vigilancia/importacoes/${d.id}/aplicar`).set(auth(vig)).expect(409);
+    liberar();
+    await ocupado;
+    expect((await aplicar(d.id)).contagens).toMatchObject({ novos: 1 });
+  });
+
+  it('envio em lotes, com o payload em várias fatias no banco: sem pausa longa do laço de eventos; reimportar não duplica (imp-memoria)', async () => {
+    const original = ImportacaoService.fatiaPayload;
+    ImportacaoService.fatiaPayload = 4096;
+    const N = 2200;
+    const linhas = (alterar: Set<number>) =>
+      Array.from({ length: N }, (_, i) =>
+        nindinet({
+          NU_NOTIFIC: String(7000000 + i),
+          DT_NOTIFIC: `2024-10-${String(1 + (i % 28)).padStart(2, '0')}`,
+          NM_PACIENT: `PACIENTE ${i}`,
+          CS_SEXO: i % 2 ? 'F' : 'M',
+          NM_BAIRRO: alterar.has(i) ? 'BAIRRO NOVO' : 'CENTRO',
+        }),
+      );
+    const arquivo = zipSync({ 'NINDINET.DBF': escreverDbf(CAMPOS_NINDINET, linhas(new Set())) });
+    const atraso = monitorEventLoopDelay({ resolution: 10 });
+    atraso.enable();
+    try {
+      const d = (await enviar(arquivo, 'lote-grande.zip')) as Detalhe;
+      expect(d.contagens).toMatchObject({ lidos: N, novos: N, alterados: 0 });
+      const imp = await db.$queryRaw<{ n: number }[]>`SELECT octet_length(payload)::int AS n FROM official_imports WHERE id = ${d.id}::uuid`;
+      expect(imp[0]!.n).toBeGreaterThan(4 * 4096);
+      const r = await aplicar(d.id);
+      expect(r.contagens).toMatchObject({ novos: N, alterados: 0, iguais: 0 });
+      atraso.disable();
+      // Nenhuma fatia síncrona longa (o container da produção tem 1/4 de vCPU: aqui o alvo é bem menor que 1 s).
+      expect(atraso.max / 1e6).toBeLessThan(500);
+      expect(await db.officialRecord.count({ where: { number: { gte: '7000000', lt: '7002200' } } })).toBe(N);
+      // O mesmo arquivo: jaImportado, nada muda.
+      expect(await enviar(arquivo, 'lote-grande-copia.zip', {}, 200)).toEqual({ jaImportado: { id: d.id, aplicadoEm: expect.any(String) } });
+      // Arquivo alterado em 3 registros: só eles mudam.
+      const alterado = (await enviar(zipSync({ 'NINDINET.DBF': escreverDbf(CAMPOS_NINDINET, linhas(new Set([5, 1500, 2199]))) }), 'lote-grande-v2.zip')) as Detalhe;
+      expect(alterado.contagens).toMatchObject({ novos: 0, alterados: 3, iguais: N - 3 });
+      expect((await aplicar(alterado.id)).contagens).toMatchObject({ novos: 0, alterados: 3, iguais: N - 3 });
+      expect(await db.officialRecord.count({ where: { number: { gte: '7000000', lt: '7002200' } } })).toBe(N);
+      expect((await registro('7001500')).neighborhoodName).toBe('BAIRRO NOVO');
+    } finally {
+      atraso.disable();
+      ImportacaoService.fatiaPayload = original;
+    }
   });
 });

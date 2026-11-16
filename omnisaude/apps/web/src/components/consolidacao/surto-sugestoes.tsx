@@ -12,10 +12,10 @@ import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
-import { fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { nomeDoAgravo, type OpcaoAgravo } from './diagrama-agravos';
-import { dataBr, faltaNoMotivo, MINIMO_MOTIVO, numeroBr, ROTULO_VINCULO } from './surto-regras';
+import { useDataHora } from './fuso';
+import { dataBr, faltaNoMotivo, MINIMO_MOTIVO, ROTULO_VINCULO, textoValorExcesso } from './surto-regras';
 
 /** Dispensa a sugestão: volta só se aparecer caso conhecido depois do último caso dela. */
 function Dispensar({ s, onFechar, onFeito }: { s: SugestaoSurtoTela; onFechar: () => void; onFeito: () => void }) {
@@ -29,7 +29,7 @@ function Dispensar({ s, onFechar, onFeito }: { s: SugestaoSurtoTela; onFechar: (
       open
       onOpenChange={(o) => !o && onFechar()}
       title="Dispensar a sugestão"
-      description="A sugestão some até aparecer um caso novo do mesmo agravo e vínculo, conhecido depois do último desta sugestão. O motivo fica registrado."
+      description="A sugestão some até aparecer um caso novo do mesmo agravo e vínculo, conhecido depois do último desta sugestão. A dispensa da vigilância municipal vale para todos; a do núcleo, só na visão do núcleo. O motivo fica registrado."
       footer={
         <Button
           variant="secondary"
@@ -74,6 +74,7 @@ function Dispensar({ s, onFechar, onFeito }: { s: SugestaoSurtoTela; onFechar: (
 }
 
 function CartaoSugestao({ s, opcoes, onAbrir, onDispensar }: { s: SugestaoSurtoTela; opcoes: OpcaoAgravo[]; onAbrir: () => void; onDispensar: () => void }) {
+  const { dataHora } = useDataHora();
   return (
     <Card>
       <CardHeader
@@ -94,7 +95,7 @@ function CartaoSugestao({ s, opcoes, onAbrir, onDispensar }: { s: SugestaoSurtoT
         <p className="flex flex-wrap gap-2 text-xs">
           <Badge tone="amber">{s.casos.length} caso(s)</Badge>
           {s.primeiroSintoma && <Badge tone="slate">1º sintoma em {dataBr(s.primeiroSintoma)}</Badge>}
-          <Badge tone="slate">Último caso conhecido em {fmtDateTime(s.ultimoConhecimento)}</Badge>
+          <Badge tone="slate">Último caso conhecido em {dataHora(s.ultimoConhecimento)}</Badge>
         </p>
         <Table>
           <THead>
@@ -115,7 +116,7 @@ function CartaoSugestao({ s, opcoes, onAbrir, onDispensar }: { s: SugestaoSurtoT
                 <TD>{c.unidade || '—'}</TD>
                 <TD>{c.bairro ?? '—'}</TD>
                 <TD className="tabular-nums">{dataBr(c.inicioSintomas)}</TD>
-                <TD className="whitespace-nowrap tabular-nums">{fmtDateTime(c.conhecidoEm)}</TD>
+                <TD className="whitespace-nowrap tabular-nums">{dataHora(c.conhecidoEm)}</TD>
               </TR>
             ))}
           </TBody>
@@ -161,7 +162,7 @@ export function SurtoSugestoes({ opcoes, onAbrir }: { opcoes: OpcaoAgravo[]; onA
           <Card>
             <CardHeader
               title="Dengue, chikungunya e Zika acima do limite superior"
-              description="Na última semana completa, pelo canal do território (bairro ou localidade). O estágio do plano fica na aba Contingência; o canal, na aba Diagrama de controle."
+              description="Na última semana completa, pelo canal do território (bairro ou localidade), na unidade do canal: casos ou incidência por 100 mil habitantes. O estágio do plano fica na aba Contingência; o canal, na aba Diagrama de controle."
             />
             {r.data.excessos.length === 0 ? (
               <CardBody className="pt-3 text-sm text-slate-600">Nenhum território acima do limite superior.</CardBody>
@@ -189,8 +190,8 @@ export function SurtoSugestoes({ opcoes, onAbrir }: { opcoes: OpcaoAgravo[]; onA
                         SE {x.semana.slice(4)}/{x.semana.slice(0, 4)}
                       </TD>
                       <TD className="text-right tabular-nums">{x.casos.toLocaleString('pt-BR')}</TD>
-                      <TD className="text-right font-medium tabular-nums text-red-700">{numeroBr(x.valor)}</TD>
-                      <TD className="text-right tabular-nums">{numeroBr(x.ls)}</TD>
+                      <TD className="text-right font-medium tabular-nums text-red-700">{textoValorExcesso(x.valor, x.unidade)}</TD>
+                      <TD className="text-right tabular-nums">{textoValorExcesso(x.ls, x.unidade)}</TD>
                     </TR>
                   ))}
                 </TBody>

@@ -23,27 +23,27 @@ import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
-import { useSession } from '@/lib/session';
+import { useDataHora, useFuso } from './fuso';
 import {
   dataBr,
   filtrarUnidades,
   MINIMO_MOTIVO_FIM,
+  motivoNaoAtesta,
   pendenciasAbrirPeriodo,
   pendenciasDesignacao,
   pendenciasEncerrarPeriodo,
   periodoAberto,
   responsaveisAtivos,
   resumoUnidades,
+  rotuloTipoUnidade,
   situacaoDaUnidade,
   type FiltroUnidades,
 } from './negativa-regras';
 
 /** "Hoje" no fuso da instituição (valor inicial das datas). */
 function useHoje() {
-  const session = useSession();
-  return localDateString(new Date(), session.me?.tenant.timeZone ?? 'America/Sao_Paulo');
+  return localDateString(new Date(), useFuso());
 }
 
 type Acao = { tipo: 'abrir' | 'encerrar' | 'designar'; u: UnidadeNotificante } | { tipo: 'revogar'; u: UnidadeNotificante; r: ResponsavelNegativa };
@@ -179,14 +179,14 @@ function Designar({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: (
   }, [busca]);
   const lotados = useApi<ListaUsuariosLotados>(`/vigilancia/unidades-notificantes/${u.unidade.id}/lotados${termo ? `?${new URLSearchParams({ busca: termo })}` : ''}`);
   const escolhido = lotados.data?.find((l) => l.userId === userId) ?? null;
-  const pend = pendenciasDesignacao(u, { userId, tipo, desde }, escolhido?.nome);
+  const pend = pendenciasDesignacao(u, { userId, tipo, desde }, escolhido?.nome, escolhido);
   return (
     <Dialog
       open
       size="lg"
       onOpenChange={(o) => !o && onFechar()}
       title={`Responsável pela negativa: ${u.unidade.nome}`}
-      description="Só quem tem lotação ativa na unidade pode ser designado. Um titular por unidade; substitutos, quantos forem precisos."
+      description="Só quem tem lotação ativa na unidade, em papel que atesta a negativa, pode ser designado. Um titular por unidade; substitutos, quantos forem precisos."
       footer={
         <Button
           disabled={pend.length > 0}
@@ -210,31 +210,38 @@ function Designar({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: (
       }
     >
       <div className="space-y-3">
-        <Field label="Buscar usuário lotado na unidade" htmlFor="neg-designar-busca">
+        <Field label="Buscar usuário lotado na unidade" htmlFor="neg-designar-busca" hint="Pelo nome ou pelo CPF completo (11 dígitos).">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden />
-            <Input id="neg-designar-busca" className="pl-9" maxLength={60} value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Nome ou CPF" autoComplete="off" />
+            <Input id="neg-designar-busca" className="pl-9" maxLength={60} value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Nome ou CPF completo" autoComplete="off" />
           </div>
         </Field>
         {lotados.error && <Alert tone="error">{lotados.error}</Alert>}
         {lotados.loading && !lotados.data && <Spinner label="Buscando…" />}
-        {lotados.data && lotados.data.length === 0 && <p className="text-sm text-slate-600">Nenhum usuário ativo lotado na unidade{termo ? ' com esse nome ou CPF' : ''}.</p>}
+        {lotados.data && lotados.data.length === 0 && <p className="text-sm text-slate-600">Nenhum usuário ativo lotado na unidade{termo ? ' com esse nome ou CPF (o CPF só com os 11 dígitos)' : ''}.</p>}
         {!!lotados.data?.length && (
           <fieldset className="max-h-64 space-y-1 overflow-y-auto rounded-lg border border-slate-200 p-2">
             <legend className="sr-only">Usuários lotados</legend>
-            {lotados.data.map((l) => (
-              <label key={l.userId} className={cn('flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-slate-50', userId === l.userId && 'bg-brand-50')}>
-                <input type="radio" name="neg-designar-usuario" className="mt-1" checked={userId === l.userId} onChange={() => setUserId(l.userId)} />
-                <span className="flex-1">
-                  <span className="font-medium">{l.nome}</span>
-                  <span className="block text-xs text-slate-600">
-                    {l.papeis.map((p) => ROLE_LABELS[p as Role] ?? p).join(', ')}
-                    {l.cbo ? ` · CBO ${l.cbo}` : ''}
+            {lotados.data.map((l) => {
+              const naoAtesta = motivoNaoAtesta(l);
+              return (
+                <label
+                  key={l.userId}
+                  className={cn('flex items-start gap-2 rounded-md px-2 py-1.5 text-sm', naoAtesta ? 'cursor-not-allowed text-slate-500' : 'cursor-pointer hover:bg-slate-50', userId === l.userId && 'bg-brand-50')}
+                >
+                  <input type="radio" name="neg-designar-usuario" className="mt-1" checked={userId === l.userId} disabled={!!naoAtesta} onChange={() => setUserId(l.userId)} />
+                  <span className="flex-1">
+                    <span className="font-medium">{l.nome}</span>
+                    <span className="block text-xs text-slate-600">
+                      {l.papeis.map((p) => ROLE_LABELS[p as Role] ?? p).join(', ')}
+                      {l.cbo ? ` · CBO ${l.cbo}` : ''}
+                    </span>
+                    {naoAtesta && <span className="block text-xs text-amber-800">{naoAtesta}</span>}
                   </span>
-                </span>
-                {l.responsavel && <Badge tone="blue">Já é {ROTULO_TIPO_RESPONSAVEL[l.responsavel].toLowerCase()}</Badge>}
-              </label>
-            ))}
+                  {l.responsavel && <Badge tone="blue">Já é {ROTULO_TIPO_RESPONSAVEL[l.responsavel].toLowerCase()}</Badge>}
+                </label>
+              );
+            })}
           </fieldset>
         )}
         <div className="grid gap-3 sm:grid-cols-2">
@@ -297,6 +304,7 @@ function Revogar({ u, r, onFechar, onFeito }: { u: UnidadeNotificante; r: Respon
 /** Unidades notificantes (períodos) e responsáveis pela negativa (titular e substitutos). Permissão `vigilancia.consolidacao`. */
 export function NegativaUnidades() {
   const lista = useApi<ListaUnidadesNotificantes>('/vigilancia/unidades-notificantes');
+  const { dataHora } = useDataHora();
   const [filtro, setFiltro] = useState<FiltroUnidades>('TODAS');
   const [busca, setBusca] = useState('');
   const [acao, setAcao] = useState<Acao | null>(null);
@@ -362,9 +370,14 @@ export function NegativaUnidades() {
                     <TD>
                       <span className="block font-medium text-slate-900">{u.unidade.nome}</span>
                       <span className="block text-xs text-slate-500">
-                        CNES {u.unidade.cnes} · {u.tipoUnidade}
+                        CNES {u.unidade.cnes} · {rotuloTipoUnidade(u.tipoUnidade)}
                         {!u.ativa ? ' · inativa' : ''}
                       </span>
+                      {(u.avisos ?? []).map((a) => (
+                        <span key={a} className="mt-1 block text-xs text-amber-800">
+                          {a}
+                        </span>
+                      ))}
                     </TD>
                     <TD>
                       <Badge tone={sit.tom}>{sit.texto}</Badge>
@@ -397,7 +410,7 @@ export function NegativaUnidades() {
                           <ul className="mt-1 space-y-0.5">
                             {antigos.map((r) => (
                               <li key={r.id}>
-                                {r.nome} ({ROTULO_TIPO_RESPONSAVEL[r.tipo].toLowerCase()}), de {dataBr(r.desde)} a {dataBr(r.ate)}; designado(a) em {fmtDateTime(r.designadoEm)}
+                                {r.nome} ({ROTULO_TIPO_RESPONSAVEL[r.tipo].toLowerCase()}), de {dataBr(r.desde)} a {dataBr(r.ate)}; designado(a) em {dataHora(r.designadoEm)}
                                 {r.designadoPor ? ` por ${r.designadoPor}` : ''}
                               </li>
                             ))}

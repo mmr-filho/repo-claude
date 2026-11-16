@@ -125,6 +125,22 @@ describe.runIf(enabled)('Vigilância: base consolidada, população e diagrama d
     });
     return n.id;
   };
+  /** Arquivo DENGON de uma importação aplicada, com o período lido (a cobertura da base é por SE). */
+  const dengonArquivo = (nome: string, de: string, ate: string, registros: number) => ({
+    nome,
+    tipo: 'DENGON',
+    sistema: 'SINAN_ONLINE',
+    tipoRegistro: 'INDIVIDUAL',
+    tamanhoBytes: 1,
+    registros,
+    codificacao: null,
+    origemCodificacao: null,
+    agravos: ['A90'],
+    periodo: { de, ate },
+    identificado: false,
+    ignorado: false,
+    avisos: [],
+  });
   const diagrama = async (q: string, tk = vig) => (await t.http().get(`/api/vigilancia/diagrama?${q}`).set(auth(tk)).expect(200)).body as RespostaDiagrama;
   const semanaDoCanal = (r: RespostaDiagrama, se: number, canal = 0) => r.canais[canal]!.canal.semanas[se - 1]!;
   const valorDoAno = (r: RespostaDiagrama, se: number, ano: number) => semanaDoCanal(r, se).valores.find((v) => v.ano === ano);
@@ -187,8 +203,19 @@ describe.runIf(enabled)('Vigilância: base consolidada, população e diagrama d
       },
     });
 
-    // Importações aplicadas: a dos registros e um DENGON de 2011 sem nenhum caso (cobre o ano: semana sem caso = 0).
-    const imp = await db.officialImport.create({ data: { system: 'SINAN_ONLINE', status: 'APLICADA', fileName: 'f3-registros.zip', sha256: 'a'.repeat(64), sizeBytes: 1, createdBy: ids.notificador } });
+    // Importações aplicadas: a dos registros, com o período do arquivo (de 2013 a 2016, como a importação real grava:
+    // a cobertura é por SE), e um DENGON de 2011 sem nenhum caso (cobre o ano: semana sem caso = 0). 2012 fica sem base.
+    const imp = await db.officialImport.create({
+      data: {
+        system: 'SINAN_ONLINE',
+        status: 'APLICADA',
+        fileName: 'f3-registros.zip',
+        sha256: 'a'.repeat(64),
+        sizeBytes: 1,
+        createdBy: ids.notificador,
+        files: [dengonArquivo('DENGON.DBF', '2012-12-30', '2016-08-17', 30)],
+      },
+    });
     ids.importacao = imp.id;
     await db.officialImport.create({
       data: {
@@ -198,23 +225,7 @@ describe.runIf(enabled)('Vigilância: base consolidada, população e diagrama d
         sha256: 'b'.repeat(64),
         sizeBytes: 1,
         createdBy: ids.notificador,
-        files: [
-          {
-            nome: 'DENGON2011.DBF',
-            tipo: 'DENGON',
-            sistema: 'SINAN_ONLINE',
-            tipoRegistro: 'INDIVIDUAL',
-            tamanhoBytes: 1,
-            registros: 0,
-            codificacao: null,
-            origemCodificacao: null,
-            agravos: ['A90'],
-            periodo: { de: '2011-01-02', ate: '2011-12-31' },
-            identificado: false,
-            ignorado: false,
-            avisos: [],
-          },
-        ],
+        files: [dengonArquivo('DENGON2011.DBF', '2011-01-02', '2011-12-31', 0)],
       },
     });
 
@@ -450,10 +461,11 @@ describe.runIf(enabled)('Vigilância: base consolidada, população e diagrama d
   it('território acima do limite superior do próprio canal na última semana completa (para as sugestões de surto)', async () => {
     const excessos = await t.app.get(DiagramaService).excessos(sys, ['dengue', 'nao-existe'], '2016-08-17');
     expect(excessos).toHaveLength(2);
+    // O valor e o limite vêm na unidade do canal do território (K6): aqui, incidência por 100 mil.
     expect(excessos).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ grupo: 'dengue', nivel: 'BAIRRO', territorioId: ids.bairro, territorioNome: 'Bairro Diagrama F3', semana: '201631', casos: 1, ls: 0 }),
-        expect.objectContaining({ grupo: 'dengue', nivel: 'LOCALIDADE', territorioId: ids.localidade, semana: '201631', casos: 1 }),
+        expect.objectContaining({ grupo: 'dengue', nivel: 'BAIRRO', territorioId: ids.bairro, territorioNome: 'Bairro Diagrama F3', semana: '201631', casos: 1, ls: 0, unidade: 'INCIDENCIA', valor: 100_000 / 10_400 }),
+        expect.objectContaining({ grupo: 'dengue', nivel: 'LOCALIDADE', territorioId: ids.localidade, semana: '201631', casos: 1, unidade: 'INCIDENCIA' }),
       ]),
     );
   });
@@ -493,7 +505,14 @@ describe.runIf(enabled)('Vigilância: base consolidada, população e diagrama d
       [1, false],
       [2, true],
     ]);
-    expect(canais[1]).toMatchObject({ populationSource: 'MANUAL', populationVersion: 'F3', referenceYears: [2011, 2013, 2014, 2015], notes: 'Canal da temporada' });
+    // Os avisos do cálculo vão junto (dia-3).
+    expect(canais[1]).toMatchObject({
+      populationSource: 'MANUAL',
+      populationVersion: 'F3',
+      referenceYears: [2011, 2013, 2014, 2015],
+      notes: 'Canal da temporada',
+      warnings: ['Ano 2012 fora do canal: sem cobertura (nenhuma base cobre o ano).'],
+    });
     const antes = await diagrama('grupo=dengue&ano=2016');
     expect(antes.canais[0]!.congelado).toMatchObject({ id: v2.id, versao: 2, nota: 'Canal da temporada', calculadoPor: 'Vera Lúcia Vigilância Epidemiológica', fontePopulacao: 'MANUAL', versaoPopulacao: 'F3' });
     // Caso novo num ano de referência e população revista: a prévia mudaria, o congelado não (e avisa da população).
@@ -529,5 +548,105 @@ describe.runIf(enabled)('Vigilância: base consolidada, população e diagrama d
     expect(r).toMatchObject({ grupo: 'dengue', ano: 2016, excluidos: [] });
     expect(r.sugestao.anos.map((a: { ano: number }) => a.ano)).toEqual([2011, 2013, 2014, 2015]);
     expect(r.sugestao.nota).toContain('SES-GO');
+  });
+
+  it('o canal congelado guarda os avisos do cálculo (curva epidêmica) e a resposta traz a cobertura dos anos de referência (dia-3)', async () => {
+    // Chikungunya com 1 caso por ano de 2011 a 2015 (5 no total), receita em número de casos.
+    await db.officialImport.create({
+      data: {
+        system: 'SINAN_ONLINE',
+        status: 'APLICADA',
+        fileName: 'CHIKON.DBF',
+        sha256: 'c'.repeat(64),
+        sizeBytes: 1,
+        createdBy: ids.notificador,
+        files: [{ ...dengonArquivo('CHIKON.DBF', '2011-01-02', '2016-08-17', 5), tipo: 'CHIKON', agravos: ['A920'] }],
+      },
+    });
+    await db.officialRecord.createMany({ data: [2011, 2012, 2013, 2014, 2015].map((a) => ({ ...registro({ semana: `${a}20` }), agravo: 'A920', groupKey: 'chikungunya' })) });
+    await t
+      .http()
+      .put('/api/vigilancia/diagrama/configuracao/chikungunya')
+      .set(auth(vig))
+      .send({ modelo: 'MS_2025', receita: { unidade: 'CASOS' }, anosExcluidos: [], fontePopulacao: null, versaoPopulacao: null })
+      .expect(200);
+    const q = 'grupo=chikungunya&ano=2016';
+    const previa = await diagrama(q);
+    const aviso = 'Só 5 caso(s) no período de referência: com tão poucos casos, prefira a curva epidêmica (Plano de Contingência Nacional 2025, p. 23).';
+    expect(previa.canais[0]!.canal.avisos).toContain(aviso);
+    await t.http().post('/api/vigilancia/diagrama/congelar').set(auth(vig)).send({ grupo: 'chikungunya', nivel: 'MUNICIPIO', territorio: null, ano: 2016 }).expect(201);
+    const congelado = await diagrama(q);
+    expect(congelado.canais[0]!.congelado).not.toBeNull();
+    expect(congelado.canais[0]!.canal.avisos).toEqual(previa.canais[0]!.canal.avisos);
+    expect(congelado.avisos).toContain(aviso);
+    // Com o canal congelado, a base também carrega os anos de referência: a cobertura de cada um sai na resposta.
+    expect(congelado.cobertura.map((c) => c.ano)).toEqual([2011, 2012, 2013, 2014, 2015, 2016]);
+    expect((await db.controlChannel.findFirstOrThrow({ where: { groupKey: 'chikungunya', year: 2016, active: true } })).warnings).toEqual(previa.canais[0]!.canal.avisos);
+    // O CSV do canal congelado também traz o aviso.
+    const res = await t.http().get(`/api/vigilancia/diagrama.csv?${q}`).set(auth(vig)).buffer(true).expect(200);
+    expect((Buffer.isBuffer(res.body) ? res.body.toString('utf8') : res.text).split('\r\n')).toContain(`Aviso;${aviso}`);
+  });
+
+  it('ano ainda incompleto na referência: a prévia avisa e congelar é recusado (tel-2)', async () => {
+    // Em 17/08/2016, o canal de 2017 usaria 2016, ainda em curso.
+    const r = await diagrama('grupo=dengue&ano=2017');
+    expect(r.canais[0]!.referenciaIncompleta).toEqual([2016]);
+    expect(r.canais[0]!.canal.avisos.some((a) => a.startsWith('A referência inclui 2016, ano ainda incompleto'))).toBe(true);
+    expect((await diagrama('grupo=dengue&ano=2016')).canais[0]!.referenciaIncompleta).toEqual([]);
+    // No eixo sazonal, só o canal do ano seguinte tem o ano em curso na referência.
+    expect((await diagrama('grupo=dengue&ano=2016&eixo=SAZONAL')).canais.map((c) => c.referenciaIncompleta)).toEqual([[], [2016]]);
+    const congelar = (ano: number) => t.http().post('/api/vigilancia/diagrama/congelar').set(auth(vig)).send({ grupo: 'dengue', nivel: 'MUNICIPIO', territorio: null, ano });
+    const recusa = (await congelar(2017).expect(422)).body;
+    expect(recusa).toMatchObject({ code: 'REFERENCIA_INCOMPLETA', details: { anos: [2016] } });
+    expect(recusa.message).toContain('SE 52/2016');
+    const servico = t.app.get(DiagramaService);
+    try {
+      // Na SE 1/2017, com 2 SE incompletas, a SE 52/2016 ainda não fechou: recusa. Na SE 3/2017, congela.
+      servico.agora = () => new Date('2017-01-04T15:00:00Z');
+      expect((await congelar(2017).expect(422)).body.code).toBe('REFERENCIA_INCOMPLETA');
+      servico.agora = () => new Date('2017-01-18T15:00:00Z');
+      expect((await congelar(2017).expect(201)).body).toMatchObject({ ano: 2017, versao: 1 });
+    } finally {
+      servico.agora = () => AGORA;
+    }
+    expect(await db.controlChannel.count({ where: { groupKey: 'dengue', year: 2017 } })).toBe(1);
+  });
+
+  it('agravo sigiloso (HIV): diagrama, CSV e anos epidêmicos só para a vigilância municipal, com auditoria (tra-2)', async () => {
+    await db.officialRecord.create({ data: { ...registro({ semana: '201620', bairro: 'Bairro Diagrama F3' }), agravo: 'B24', groupKey: 'hiv' } });
+    const nucleo = await t.login('nucleo', 'Hospital Municipal São Lucas', 'NUCLEO_VIGILANCIA');
+    const porBairro = `diagrama?grupo=hiv&ano=2016&nivel=BAIRRO&territorio=${ids.bairro}`;
+    const rotas = ['diagrama?grupo=hiv&ano=2016', porBairro, 'diagrama.csv?grupo=hiv&ano=2016', 'diagrama/anos-epidemicos?grupo=hiv&ano=2016'];
+    const auditadas = () => db.auditEntry.count({ where: { action: 'vigilancia.diagrama_sigiloso' } });
+    // O gestor não abre o sigilo; o núcleo só o da própria unidade, e o diagrama é do município.
+    for (const tk of [gestora, nucleo]) for (const rota of rotas) expect((await t.http().get(`/api/vigilancia/${rota}`).set(auth(tk)).expect(403)).body.code).toBe('AGRAVO_SIGILOSO');
+    expect(await auditadas()).toBe(0);
+    // A vigilância municipal lê, e cada leitura fica na auditoria.
+    const r = await diagrama(porBairro.slice('diagrama?'.length));
+    expect(r.pontos.find((p) => p.semana === 20)!.casos).toBe(1);
+    for (const rota of rotas.slice(2)) await t.http().get(`/api/vigilancia/${rota}`).set(auth(vig)).expect(200);
+    expect(await auditadas()).toBe(3);
+    expect(await db.auditEntry.findFirst({ where: { action: 'vigilancia.diagrama_sigiloso' }, orderBy: { seq: 'asc' } })).toMatchObject({ entityType: 'Agravo', entityId: 'hiv' });
+    // Agravo comum: o gestor lê, e a leitura não entra na auditoria.
+    await t.http().get('/api/vigilancia/diagrama?grupo=dengue&ano=2016').set(auth(gestora)).expect(200);
+    expect(await auditadas()).toBe(3);
+
+    // As sugestões de surto (lidas também pelo núcleo) deixam de fora o agravo sigiloso, mesmo acima do limite superior.
+    await db.officialImport.create({
+      data: {
+        system: 'SINAN_NET',
+        status: 'APLICADA',
+        fileName: 'NINDINET.DBF',
+        sha256: 'd'.repeat(64),
+        sizeBytes: 1,
+        createdBy: ids.notificador,
+        files: [{ ...dengonArquivo('NINDINET.DBF', '2011-01-02', '2016-08-17', 2), tipo: 'NINDINET', sistema: 'SINAN_NET', agravos: [] }],
+      },
+    });
+    await db.officialRecord.create({ data: { ...registro({ semana: '201631', bairro: 'Bairro Diagrama F3' }), agravo: 'B24', groupKey: 'hiv' } });
+    expect((await diagrama(porBairro.slice('diagrama?'.length))).pontos.find((p) => p.semana === 31)!.status).toBe('ACIMA_LS');
+    const excessos = await t.app.get(DiagramaService).excessos(sys, ['hiv', 'dengue'], '2016-08-17');
+    expect(excessos.some((e) => e.grupo === 'dengue')).toBe(true);
+    expect(excessos.some((e) => e.grupo === 'hiv')).toBe(false);
   });
 });

@@ -130,18 +130,77 @@ export interface AnaliseGrade {
   regularidadeMunicipal: { semanasSemInformacao: number; irregular: boolean };
 }
 
+/**
+ * O município numa semana, para a regularidade do Sinan (PRC GM/MS nº 6/2017, arts. 454-B e 454-E). Vale o município
+ * inteiro, não só as unidades da grade.
+ */
+export interface SemanaDoMunicipio {
+  /**
+   * Alguma informação de qualquer unidade ou CNES do município: notificação confirmada, surto não descartado, registro
+   * oficial individual, de surto ou negativa, ou atesto da negativa.
+   */
+  comInformacao: boolean;
+  /** Semana em curso ou antes do prazo do atesto: não conta nem interrompe a sequência. */
+  aberta: boolean;
+  /** Alguma unidade era notificante. Sem nenhuma (antes da implantação), a semana fica sem dados e interrompe a sequência. */
+  comNotificante: boolean;
+}
+
+/** Contagem da regularidade, com a marca de que a sequência parou numa semana sem dados. */
+export interface ContagemRegularidade {
+  semanasSemInformacao: number;
+  irregular: boolean;
+  /** A sequência parou numa semana sem nenhuma unidade notificante: antes dela, não se sabe. */
+  semDados: boolean;
+  /** Índice da semana que encerrou a contagem (com informação ou sem dados); nulo quando a contagem chegou ao início. */
+  parada: number | null;
+}
+
+/**
+ * Regularidade do município (PRC GM/MS nº 6/2017, art. 454-E, parágrafo único, I): semanas fechadas seguidas, da
+ * mais recente para trás, sem nenhuma informação. A semana com informação encerra a contagem; a aberta é pulada; a
+ * semana sem nenhuma unidade notificante também encerra (sem dados, não conta como silêncio). Epizootia e tracoma
+ * (art. 454-B, III e IV) não entram: o OmniSaúde não importa EPIZONET nem NTRACOMA.
+ */
+export function regularidadeDoMunicipio(semanas: SemanaDoMunicipio[], limite: number): ContagemRegularidade {
+  let semanasSemInformacao = 0;
+  let parada: number | null = null;
+  for (let i = semanas.length - 1; i >= 0; i--) {
+    const s = semanas[i]!;
+    if (s.comInformacao || (!s.aberta && !s.comNotificante)) {
+      parada = i;
+      break;
+    }
+    if (!s.aberta) semanasSemInformacao++;
+  }
+  const semDados = parada !== null && !semanas[parada]!.comInformacao;
+  return { semanasSemInformacao, irregular: semanasSemInformacao >= Math.max(1, limite), semDados, parada };
+}
+
 const COM_INFORMACAO: SituacaoUnidadeSemana[] = ['POSITIVA', 'NEGATIVA', 'NEGATIVA_ATRASADA'];
 const NEGATIVAS: SituacaoUnidadeSemana[] = ['NEGATIVA', 'NEGATIVA_ATRASADA'];
 /** Semana ainda aberta para a unidade: em curso ou antes do prazo do atesto. */
 const aberta = (s: SituacaoUnidadeSemana) => s === 'EM_CURSO' || s === 'AGUARDANDO';
 
 /**
- * Análise da grade unidade × semana (colunas da mais antiga à mais recente). Semanas "fechadas" são as que já
- * passaram do prazo: as abertas no fim da linha (em curso ou aguardando) ficam de fora das sequências. A
- * regularidade municipal só enxerga as semanas da grade: para as 8 SE da PRC nº 6/2017 (art. 454-E), a grade precisa
- * ter pelo menos 8 semanas fechadas.
+ * O município em cada coluna, pelas linhas da grade (quando não se tem os fatos do município inteiro): informação de
+ * alguma linha, coluna aberta e alguma linha notificante.
  */
-export function analisarGrade(grade: LinhaGradeUnidade[], cfg: ParametrosGrade): AnaliseGrade {
+export function municipioPelaGrade(grade: LinhaGradeUnidade[]): SemanaDoMunicipio[] {
+  const colunas = Math.max(0, ...grade.map((l) => l.semanas.length));
+  return Array.from({ length: colunas }, (_, i) => {
+    const daColuna = grade.map((l) => l.semanas[i]).filter((s): s is SituacaoUnidadeSemana => s !== undefined);
+    return { comInformacao: daColuna.some((s) => COM_INFORMACAO.includes(s)), aberta: daColuna.some(aberta), comNotificante: daColuna.some((s) => s !== 'NAO_NOTIFICANTE') };
+  });
+}
+
+/**
+ * Análise da grade unidade × semana (colunas da mais antiga à mais recente). Semanas "fechadas" são as que já
+ * passaram do prazo: as abertas no fim da linha (em curso ou aguardando) ficam de fora das sequências. A regularidade
+ * usa `municipio` (uma entrada por coluna, com os fatos do município inteiro); sem ele, as linhas da grade. A grade
+ * precisa de colunas suficientes para as regras: a API analisa uma janela maior que a exibida.
+ */
+export function analisarGrade(grade: LinhaGradeUnidade[], cfg: ParametrosGrade, municipio?: SemanaDoMunicipio[]): AnaliseGrade {
   const fechadas = (semanas: SituacaoUnidadeSemana[]) => {
     let fim = semanas.length;
     while (fim > 0 && aberta(semanas[fim - 1]!)) fim--;
@@ -171,19 +230,7 @@ export function analisarGrade(grade: LinhaGradeUnidade[], cfg: ParametrosGrade):
     const notificantes = daColuna.length;
     return { semana: i, comInformacao, notificantes, percentual: notificantes ? (comInformacao * 100) / notificantes : null };
   });
-  // Regularidade (PRC nº 6/2017, art. 454-E): semanas fechadas seguidas, da mais recente para trás, sem nenhuma
-  // informação de nenhuma unidade (o atesto atrasado também é informação para o Sinan).
-  let semanasSemInformacao = 0;
-  for (let i = colunas - 1; i >= 0; i--) {
-    const daColuna = grade.map((l) => l.semanas[i]).filter((s): s is SituacaoUnidadeSemana => s !== undefined);
-    if (daColuna.some((s) => COM_INFORMACAO.includes(s))) break;
-    if (daColuna.some(aberta)) continue;
-    semanasSemInformacao++;
-  }
-  return {
-    silenciosas,
-    soNegativas,
-    percentualPorSemana,
-    regularidadeMunicipal: { semanasSemInformacao, irregular: semanasSemInformacao >= cfg.semanasRegularidadeMunicipal },
-  };
+  // Regularidade (PRC nº 6/2017, art. 454-E): o atesto atrasado também é informação para o Sinan.
+  const { semanasSemInformacao, irregular } = regularidadeDoMunicipio(municipio ?? municipioPelaGrade(grade), cfg.semanasRegularidadeMunicipal);
+  return { silenciosas, soNegativas, percentualPorSemana, regularidadeMunicipal: { semanasSemInformacao, irregular } };
 }

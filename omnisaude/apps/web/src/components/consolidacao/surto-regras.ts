@@ -1,15 +1,20 @@
 import {
   arredondar,
+  CAMPOS_DTA,
   CATEGORIA_SURTO,
   CRITERIO_CASO_SURTO,
   DELIMITACAO_SURTO,
+  errosDta,
   fromZonedParts,
+  idadeValida,
   localDateString,
+  SISTEMA_INFO,
   validarSurto,
   zonedParts,
   type BlocoDta,
   type CasoSurto,
   type CategoriaSurto,
+  type ConsultaCandidatasSurto,
   type CorpoComunicacaoSurto,
   type CorpoEditarSurto,
   type CorpoEncerrarSurto,
@@ -17,18 +22,26 @@ import {
   type DadosSurtoValidacao,
   type DetalheSurto,
   type EventoSurto,
+  type ExcessoTerritorio,
   type LinhaCasoSurto,
   type LocalSurto,
+  type PrazoSurto,
+  type SistemaOficial,
   type StatusSurto,
   type SugestaoSurtoTela,
   type TipoVinculoSurto,
 } from '@omnisaude/shared';
+import { fmtDateTimeTz } from '@/lib/format';
 
 /*
  * Regras da aba Surtos sem React (testadas em apps/web/test/surto-regras.test.ts): formulário da notificação de surto
  * (manual ou a partir de uma sugestão), só o que mudou para o PATCH, encerramento, comunicação, linha manual da
- * planilha, linha do tempo e comunicações. As pendências usam o `validarSurto` compartilhado, o mesmo da API.
+ * planilha, linha do tempo e comunicações. As pendências usam o `validarSurto` compartilhado, o mesmo da API; as
+ * variáveis do bloco DTA, a conferência dele (`errosDta`) e a idade da linha manual (`idadeValida`) também vêm do
+ * pacote compartilhado, com as mesmas mensagens da API.
  */
+
+export { CAMPOS_DTA, idadeValida };
 
 export type Tom = 'slate' | 'blue' | 'green' | 'amber' | 'red' | 'violet';
 
@@ -46,26 +59,14 @@ export const ROTULO_ZONA: Record<string, string> = { '1': 'Urbana', '2': 'Rural'
 export const ROTULO_SEXO: Record<string, string> = { M: 'Masculino', F: 'Feminino', I: 'Ignorado' };
 export const ESFERAS_SURTO = ['SMS', 'SES', 'MS'] as const;
 
+/** A esfera com o artigo certo: "à SMS", "à SES", "ao MS" (o Ministério da Saúde é masculino). */
+export function aEsfera(alvo: string): string {
+  if (alvo === 'MS') return 'ao MS';
+  return `à ${alvo}`;
+}
+
 /** Local inicial sugerido pelo vínculo do aglomerado: quarteirão e bairro → 8 (casos no bairro); unidade → 2; município → 9. */
 export const LOCAL_INICIAL_DO_VINCULO: Record<TipoVinculoSurto | 'MUNICIPIO', string> = { QUARTEIRAO: '8', BAIRRO: '8', UNIDADE: '2', MUNICIPIO: '9' };
-
-/**
- * Bloco da ficha de surto de DTA, resumido (campos 27 a 60): as variáveis do dicionário que a API conhece. Datas em
- * AAAA-MM-DD; o critério com os códigos do dicionário.
- */
-export const CAMPOS_DTA: { variavel: string; rotulo: string; tipo: 'numero' | 'texto' | 'data' | 'criterio' }[] = [
-  { variavel: 'NU_ENTR', rotulo: 'Nº de entrevistados', tipo: 'numero' },
-  { variavel: 'NU_ENT_DOE', rotulo: 'Nº de doentes entrevistados', tipo: 'numero' },
-  { variavel: 'NU_TOT', rotulo: 'Total de doentes', tipo: 'numero' },
-  { variavel: 'NU_TOT_HOS', rotulo: 'Nº de hospitalizados', tipo: 'numero' },
-  { variavel: 'NU_OBITO', rotulo: 'Nº de óbitos', tipo: 'numero' },
-  { variavel: 'TP_PRO_PRE', rotulo: 'Local de produção/preparação', tipo: 'texto' },
-  { variavel: 'ST_ALIMEN', rotulo: 'Local de ingestão', tipo: 'texto' },
-  { variavel: 'DS_ETIOLOG', rotulo: 'Agente etiológico', tipo: 'texto' },
-  { variavel: 'DS_ALICAUS', rotulo: 'Alimento causador', tipo: 'texto' },
-  { variavel: 'CRITERIO', rotulo: 'Critério de confirmação', tipo: 'criterio' },
-  { variavel: 'DT_ENCERRA', rotulo: 'Data de encerramento (DTA)', tipo: 'data' },
-];
 
 /** Data civil AAAA-MM-DD como dd/mm/aaaa. */
 export const dataBr = (iso: string | null | undefined) => (iso && /^\d{4}-\d{2}-\d{2}/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : '—');
@@ -430,13 +431,8 @@ export function pendenciasEdicao(d: DetalheSurto, f: FormEdicaoSurto, hoje: stri
   if (investigadoEm && investigadoEm > hoje) erros.push('A data da investigação não pode ser futura.');
   if (f.investigacao.veiculo === '6' && !texto(f.investigacao.veiculoTexto)) erros.push('Descreva o veículo de transmissão (Outro).');
   erros.push(...errosLocal(f.local));
-  if (aceitaDta(f.categoria, f.investigacao.veiculo))
-    for (const campo of CAMPOS_DTA) {
-      const v = f.dta[campo.variavel]?.trim();
-      if (!v) continue;
-      if (campo.tipo === 'numero' && !/^\d{1,7}$/.test(v)) erros.push(`DTA, ${campo.rotulo}: número inteiro.`);
-      if (campo.tipo === 'data' && (!DATA.test(v) || v > hoje)) erros.push(`DTA, ${campo.rotulo}: data válida e não futura.`);
-    }
+  // A conferência do bloco DTA da API (número inteiro, data que existe e não futura, critério de 1 a 5).
+  if (aceitaDta(f.categoria, f.investigacao.veiculo)) erros.push(...errosDta(f.dta, hoje));
   return unico(erros);
 }
 
@@ -563,17 +559,6 @@ export const linhaVazia = (): FormLinhaCaso => ({
   cidFinal: '',
 });
 
-const LIMITE_IDADE: Record<string, number> = { A: 130, M: 11, D: 31, H: 23 };
-
-/** Idade como a API aceita: número e unidade ("34", "34 anos", "34A", "5 meses", "10 dias", "12 horas"). */
-export function idadeValida(t: string): boolean {
-  const s = t.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-  const m = /^(\d{1,3})\s*([a-z]*)\.?$/.exec(s);
-  if (!m) return false;
-  const u = ['', 'a', 'ano', 'anos'].includes(m[2]!) ? 'A' : ['m', 'mes', 'meses'].includes(m[2]!) ? 'M' : ['d', 'dia', 'dias'].includes(m[2]!) ? 'D' : ['h', 'hora', 'horas'].includes(m[2]!) ? 'H' : null;
-  return !!u && Number(m[1]) <= LIMITE_IDADE[u]!;
-}
-
 export function pendenciasLinhaCaso(f: FormLinhaCaso, hoje: string): string[] {
   const erros: string[] = [];
   if (f.idade.trim() && !idadeValida(f.idade)) erros.push('Idade: número e unidade (ex.: 34 anos, 5 meses, 10 dias).');
@@ -603,12 +588,48 @@ export function corpoLinhaCaso(f: FormLinhaCaso): LinhaCasoSurto {
   };
 }
 
-/** De onde veio a linha da planilha. */
-export function origemDoCaso(c: Pick<CasoSurto, 'notificationId' | 'notificacaoNumero' | 'officialRecordId'>): string {
-  if (c.notificationId) return `Notificação ${c.notificacaoNumero ?? ''}`.trim();
-  if (c.officialRecordId) return 'Registro oficial';
+/** De onde veio a linha da planilha ("sob sigilo" quando quem lê não pode abrir a origem). */
+export function origemDoCaso(c: Pick<CasoSurto, 'notificationId' | 'notificacaoNumero' | 'officialRecordId'> & { restrito?: boolean }): string {
+  if (c.notificationId) return c.restrito ? 'Notificação sob sigilo' : `Notificação ${c.notificacaoNumero ?? ''}`.trim();
+  if (c.officialRecordId) return c.restrito ? 'Registro oficial sob sigilo' : 'Registro oficial';
   return 'Linha manual';
 }
+
+/** Busca da inclusão na planilha: de 2 a 60 caracteres (a API recusa fora disso); vazio = sem busca. */
+export const buscaDaPlanilhaValida = (busca: string) => {
+  const t = busca.trim();
+  return !t || (t.length >= 2 && t.length <= 60);
+};
+
+/**
+ * Consulta de GET /vigilancia/surtos/candidatas e /vigilancia/surtos/registros: o agravo, o período, a busca (2 a 60
+ * caracteres; fora disso fica de fora) e o surto (os casos que já estão na planilha dele não voltam).
+ */
+export function consultaCandidatas(c: ConsultaCandidatasSurto): string {
+  const q = new URLSearchParams();
+  if (c.grupo) q.set('grupo', c.grupo);
+  if (c.de) q.set('de', c.de);
+  if (c.ate) q.set('ate', c.ate);
+  const busca = c.busca?.trim();
+  if (busca && buscaDaPlanilhaValida(busca)) q.set('busca', busca);
+  if (c.surtoId) q.set('surtoId', c.surtoId);
+  const s = q.toString();
+  return s ? `?${s}` : '';
+}
+
+/** Rótulo do sistema oficial do registro. */
+export const rotuloSistemaOficial = (s: SistemaOficial | string | null | undefined) => (s ? (SISTEMA_INFO[s as SistemaOficial]?.label ?? s) : '—');
+
+/** Valor do território acima do limite superior, na unidade do canal: "12 casos" ou "35,4 por 100 mil". */
+export function textoValorExcesso(valor: number, unidade: ExcessoTerritorio['unidade']): string {
+  return unidade === 'INCIDENCIA' ? `${numeroBr(valor)} por 100 mil` : `${numeroBr(valor)} ${arredondar(valor, 2) === 1 ? 'caso' : 'casos'}`;
+}
+
+/** Título do prazo da comunicação: cumprido ou o vencimento, no fuso da instituição. */
+export const tituloPrazoSurto = (p: Pick<PrazoSurto, 'cumpridoEm' | 'venceEm'>, tz: string) => (p.cumpridoEm ? `Cumprido em ${fmtDateTimeTz(p.cumpridoEm, tz)}` : `Vence em ${fmtDateTimeTz(p.venceEm, tz)}`);
+
+/** Aviso de surto notificado: o número e o vencimento da comunicação à SMS, no fuso da instituição. */
+export const textoSurtoNotificado = (d: Pick<DetalheSurto, 'numero' | 'venceEm'>, tz: string) => `Surto ${d.numero} notificado. Prazo da comunicação à SMS: ${fmtDateTimeTz(d.venceEm, tz)}.`;
 
 /** Notificações que ainda podem entrar na planilha (não descartadas e fora dela). */
 export function candidatasParaPlanilha<T extends { id: string; status: string }>(lista: T[], planilha: Pick<CasoSurto, 'notificationId'>[]): T[] {
@@ -651,11 +672,11 @@ export function textoEvento(e: Pick<EventoSurto, 'tipo' | 'dados'>): string {
       return `${inv}${campos.length ? `Alterado: ${campos.join(', ')}.` : 'Ficha alterada.'}`.trim();
     }
     case 'COMUNICADO':
-      return `Comunicado à ${s('alvo')} por ${ROTULO_CANAL_COMUNICACAO[s('canal') as CorpoComunicacaoSurto['canal']]?.toLowerCase() ?? s('canal')}${s('contraparte') ? ` (${s('contraparte')})` : ''}${s('protocolo') ? `, protocolo ${s('protocolo')}` : ''}.`;
+      return `Comunicado ${aEsfera(s('alvo'))} por ${ROTULO_CANAL_COMUNICACAO[s('canal') as CorpoComunicacaoSurto['canal']]?.toLowerCase() ?? s('canal')}${s('contraparte') ? ` (${s('contraparte')})` : ''}${s('protocolo') ? `, protocolo ${s('protocolo')}` : ''}.`;
     case 'CASO_VINCULADO':
       return `Caso ${s('caso')} na planilha: ${s('notificacao') ? `notificação ${s('notificacao')}` : s('registro') ? `registro oficial ${s('registro')}` : 'linha manual'}.`;
     case 'CASO_RETIRADO':
-      return `Caso ${s('caso')} retirado da planilha${s('notificacao') ? ` (notificação ${s('notificacao')})` : ''}.`;
+      return `Caso ${s('caso')} retirado da planilha${s('notificacao') ? ` (notificação ${s('notificacao')})` : s('registro') ? ` (registro oficial ${s('registro')})` : ''}.`;
     case 'ENCERRADO':
       return `Encerrado em ${dataBr(s('data'))}${DELIMITACAO_SURTO[s('delimitacao')] ? `; delimitação: ${DELIMITACAO_SURTO[s('delimitacao')]}` : ''}.`;
     case 'DESCARTADO':

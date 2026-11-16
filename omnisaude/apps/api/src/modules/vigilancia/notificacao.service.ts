@@ -1,6 +1,6 @@
 import { HttpStatus, Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { tenantSettings, type MasterClient, type TenantClient, type VigilanciaSettings } from '@omnisaude/database';
+import { mesclarBlocosVigilancia, tenantSettings, type MasterClient, type MudancaVigilancia, type TenantClient, type VigilanciaSettings } from '@omnisaude/database';
 import { buildSurveillanceAlertTemplate, normalizeBrazilPhone } from '@omnisaude/messaging';
 import {
   agenteHepatite,
@@ -1756,15 +1756,19 @@ export class NotificacaoService implements OnModuleInit {
     return { ...ctx.tenant.settings.vigilancia, whatsappEnabled: ctx.tenant.settings.whatsappEnabled };
   }
 
-  /** Plantão e escalonamento: gravados nas configurações da instituição (banco mestre), como a política de MFA. */
-  async salvarConfiguracoes(ctx: RequestContext, input: Partial<VigilanciaSettings>) {
+  /**
+   * Plantão e escalonamento, e os parâmetros da semana 27 (negativa, consolidação e os dias do evento inusitado do
+   * surto, campo a campo): gravados nas configurações da instituição (banco mestre), como a política de MFA. As regras
+   * de sugestão de surto não se editam por aqui.
+   */
+  async salvarConfiguracoes(ctx: RequestContext, input: MudancaVigilancia) {
     const telefones = input.onCallPhones?.map((t) => normalizeBrazilPhone(t));
     if (telefones?.some((t) => !t)) throw new DomainError('TELEFONE_INVALIDO', 'Informe celulares com DDD', HttpStatus.BAD_REQUEST);
     const t = await this.master.tenant.findUniqueOrThrow({ where: { id: ctx.tenant.id } });
     const atual = tenantSettings(t.settings);
     const vigilancia: VigilanciaSettings = {
-      // Mantém o que esta tela não edita (negativa, consolidação e surto, da semana 27).
       ...atual.vigilancia,
+      ...mesclarBlocosVigilancia(atual.vigilancia, input),
       ackMinutes: input.ackMinutes ?? atual.vigilancia.ackMinutes,
       onCallPhones: telefones ? [...new Set(telefones as string[])] : atual.vigilancia.onCallPhones,
       whatsappAlerts: input.whatsappAlerts ?? atual.vigilancia.whatsappAlerts,
@@ -1782,7 +1786,16 @@ export class NotificacaoService implements OnModuleInit {
       action: 'vigilancia.configuracoes',
       entityType: 'Tenant',
       entityId: ctx.tenant.id,
-      payload: { ackMinutes: vigilancia.ackMinutes, telefones: vigilancia.onCallPhones.length, whatsappAlerts: vigilancia.whatsappAlerts, relEnabled: vigilancia.relEnabled, prazos: vigilancia.prazosEncerramento },
+      payload: {
+        ackMinutes: vigilancia.ackMinutes,
+        telefones: vigilancia.onCallPhones.length,
+        whatsappAlerts: vigilancia.whatsappAlerts,
+        relEnabled: vigilancia.relEnabled,
+        prazos: vigilancia.prazosEncerramento,
+        negativa: vigilancia.negativa,
+        consolidacao: vigilancia.consolidacao,
+        diasInusitado: vigilancia.surto.diasInusitado,
+      },
     });
     return { ...vigilancia, whatsappEnabled: atual.whatsappEnabled };
   }
@@ -1798,11 +1811,12 @@ export class NotificacaoService implements OnModuleInit {
   }
 
   /**
-   * A cada 5 minutos: recupera o que o gatilho deixou de abrir, escala ao plantão e marca prazos vencidos.
+   * A cada 5 minutos: recupera o que o gatilho deixou de abrir, escala ao plantão e marca prazos vencidos; da semana 27,
+   * reconcilia a negativa (RQ003), expira as prévias de importação e vincula os registros oficiais (conciliação).
    * Tudo idempotente (execuções sobrepostas não duplicam rascunho, alerta nem evento).
    */
   async tarefa(sys: SystemContext, agora = new Date()) {
-    const resultado = { recuperadas: 0, escaladas: 0, vencidas: 0, negativasCanceladas: 0, previasExpiradas: 0 };
+    const resultado = { recuperadas: 0, escaladas: 0, vencidas: 0, negativasCanceladas: 0, previasExpiradas: 0, vinculadosAutomaticamente: 0 };
     const desde = new Date(agora.getTime() - 2 * DIA);
     await this.catalogo.garantir(sys);
     const memo: Memo = { retratos: new Map() };
@@ -1934,6 +1948,29 @@ export class NotificacaoService implements OnModuleInit {
       resultado.previasExpiradas = await this.moduleRef.get(ImportacaoService, { strict: false }).expirarPrevias(sys.db, agora, sys.tenant.settings.vigilancia.consolidacao.expiraPreviaHoras);
     } catch (err) {
       this.logger.error(`Expiração das prévias de importação: ${(err as Error).message}`);
+    }
+
+    // 6. Vínculo automático da conciliação (VIG-1c, degraus 1 e 2) entre os registros oficiais e as notificações sem
+    // vínculo: a notificação confirmada, ou que ganhou o número oficial, depois da importação casa com o registro já
+    // importado sem esperar o próximo envio. Import dinâmico pelo mesmo motivo do passo 5. Só roda quando há registro e
+    // notificação sem vínculo; a trava da conciliação é tentada sem esperar (uma importação aplicando fica com a vez).
+    try {
+      const [pendente] = await sys.db.$queryRaw<{ ok: boolean }[]>`
+        SELECT EXISTS (SELECT 1 FROM official_records r WHERE r.type = 'INDIVIDUAL' AND NOT r.excluded AND r.notification_id IS NULL)
+           AND EXISTS (SELECT 1 FROM notifications n WHERE n.status IN ('NOTIFICADA', 'ENCERRADA') AND NOT EXISTS (SELECT 1 FROM official_records x WHERE x.notification_id = n.id)) AS ok`;
+      if (pendente?.ok) {
+        const { ConciliacaoService } = await import('./conciliacao.service.js');
+        const conciliacao = this.moduleRef.get(ConciliacaoService, { strict: false });
+        resultado.vinculadosAutomaticamente = await sys.db.$transaction(
+          async (tx) => {
+            const [trava] = await tx.$queryRaw<{ ok: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtext('vigilancia:conciliacao')) AS ok`;
+            return trava?.ok ? conciliacao.conciliarAutomatico(tx, { timeZone: sys.tenant.timeZone }) : 0;
+          },
+          { timeout: 120_000, maxWait: 10_000 },
+        );
+      }
+    } catch (err) {
+      this.logger.error(`Vínculo automático da conciliação: ${(err as Error).message}`);
     }
     return resultado;
   }

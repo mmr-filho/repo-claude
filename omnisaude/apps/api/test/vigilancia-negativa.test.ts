@@ -259,7 +259,7 @@ describe.runIf(enabled)('Vigilância: notificação negativa semanal (VIG-1c)', 
       ).body.code,
     ).toBe('NAO_NOTIFICANTE');
     const lotados = (await t.http().get(`/api/vigilancia/unidades-notificantes/${U.ubs!.id}/lotados?busca=almeida`).set(auth('vig')).expect(200)).body;
-    expect(lotados).toEqual([{ userId: usuario.enfermeiro, nome: 'Bruno Almeida Enfermeiro', papeis: ['ENFERMAGEM'], cbo: '223505', responsavel: 'TITULAR' }]);
+    expect(lotados).toEqual([{ userId: usuario.enfermeiro, nome: 'Bruno Almeida Enfermeiro', papeis: ['ENFERMAGEM'], cbo: '223505', podeAtestar: true, responsavel: 'TITULAR' }]);
     const porCpf = (
       await t
         .http()
@@ -269,6 +269,61 @@ describe.runIf(enabled)('Vigilância: notificação negativa semanal (VIG-1c)', 
     ).body;
     expect(porCpf).toMatchObject([{ nome: 'Carla Menezes Médica', responsavel: 'SUBSTITUTO' }]);
     await t.http().get(`/api/vigilancia/unidades-notificantes/${U.ubs!.id}/lotados`).set(auth('gestora')).expect(403);
+  });
+
+  it('busca de lotados (tra-6): pelo CPF só com os 11 dígitos e por igualdade; o prefixo não revela ninguém', async () => {
+    const busca = async (termo: string) => (await t.http().get(`/api/vigilancia/unidades-notificantes/${U.ubs!.id}/lotados`).query({ busca: termo }).set(auth('vig')).expect(200)).body as { nome: string }[];
+    const cpf = demoFixtures.STAFF.find((s) => s.key === 'recepcao')!.cpf;
+    // Os profissionais da demonstração têm CPF começando por 100: prefixo a prefixo daria o CPF (o login) de cada um.
+    for (const prefixo of ['100', '1000', cpf.slice(0, 10)]) expect(await busca(prefixo)).toEqual([]);
+    const formatado = `${cpf.slice(0, 3)}.${cpf.slice(3, 6)}.${cpf.slice(6, 9)}-${cpf.slice(9)}`;
+    expect((await busca(formatado)).map((u) => u.nome)).toEqual(['Ana Paula Recepção']);
+    expect((await busca(cpf)).map((u) => u.nome)).toEqual(['Ana Paula Recepção']);
+    // Pelo nome, como antes.
+    expect((await busca('ana paula')).map((u) => u.nome)).toEqual(['Ana Paula Recepção']);
+  });
+
+  it('designação só de quem atesta (sur-6, tra-5): papel sem notificacao.negativa é 422 e não trava a vaga de titular', async () => {
+    // Na UBS Jardim das Flores (sem titular): o faturista, o ACS e a técnica de enfermagem, lotados para o teste.
+    await db.userAssignment.createMany({
+      data: [
+        { userId: usuario.faturamento!, unitId: U.ubs2!.id, role: 'FATURAMENTO', cbo: '411010' },
+        { userId: usuario.acs!, unitId: U.ubs2!.id, role: 'ACS', cbo: '515105' },
+        { userId: usuario.tecnica!, unitId: U.ubs2!.id, role: 'ENFERMAGEM', cbo: '322205' },
+      ],
+    });
+    const designar = (userKey: string, tipo: string, status: number) =>
+      t.http().post(`/api/vigilancia/unidades-notificantes/${U.ubs2!.id}/responsaveis`).set(auth('vig')).send({ userId: usuario[userKey], tipo, desde: '2026-01-01' }).expect(status);
+    const e = (await designar('faturamento', 'TITULAR', 422)).body;
+    expect(e.code).toBe('PAPEL_SEM_NEGATIVA');
+    expect(e.message).toContain('Faturamento e Auditoria SUS');
+    expect((await designar('acs', 'SUBSTITUTO', 422)).body.code).toBe('PAPEL_SEM_NEGATIVA');
+    // A vaga de titular continua livre para quem atesta.
+    const r = (await designar('tecnica', 'TITULAR', 201)).body;
+    expect(r.responsaveis).toMatchObject([{ nome: 'Joana Lima Técnica de Enfermagem', tipo: 'TITULAR' }]);
+    // A busca marca quem pode atestar (a tela não oferece os outros).
+    const lotados = (await t.http().get(`/api/vigilancia/unidades-notificantes/${U.ubs2!.id}/lotados`).set(auth('vig')).expect(200)).body as { nome: string; podeAtestar: boolean; papeis: string[] }[];
+    expect(lotados.map((l) => [l.nome, l.papeis, l.podeAtestar])).toEqual([
+      ['Hugo Martins Faturista', ['FATURAMENTO'], false],
+      ['Joana Lima Técnica de Enfermagem', ['ENFERMAGEM'], true],
+      ['Joaquim Pereira Agente Comunitário', ['ACS'], false],
+    ]);
+  });
+
+  it('a designação de quem ficou só com papel que não atesta na unidade não vale: minhas explica e o atesto é 403', async () => {
+    relogio(QUARTA);
+    // A técnica, titular da UBS Jardim das Flores, passa a ser lotada lá só como ACS; entra pelo hospital (ENFERMAGEM).
+    await db.userAssignment.updateMany({ where: { userId: usuario.tecnica!, unitId: U.ubs2!.id, role: 'ENFERMAGEM' }, data: { active: false } });
+    await db.userAssignment.create({ data: { userId: usuario.tecnica!, unitId: U.ubs2!.id, role: 'ACS', cbo: '515105' } });
+    tk.tecnica = await t.login('tecnica', 'Hospital Municipal São Lucas', 'ENFERMAGEM');
+    const minhas = (await t.http().get('/api/vigilancia/negativas/minhas').set(auth('tecnica')).expect(200)).body as {
+      unidades: { unidade: { id: string }; semanas: { podeAtestar: boolean; motivo: string | null }[] }[];
+    };
+    const ubs2 = minhas.unidades.find((u) => u.unidade.id === U.ubs2!.id)!;
+    expect(ubs2.semanas.every((s) => !s.podeAtestar && s.motivo?.startsWith('Seu papel nesta unidade não atesta a negativa'))).toBe(true);
+    const e = (await atestar('tecnica', { unitId: U.ubs2!.id, semana: '202618' }, 403)).body;
+    expect(e.message).toContain('não atesta a negativa');
+    expect(await db.negativeReport.count({ where: { unitId: U.ubs2!.id, epiWeek: '202618' } })).toBe(0);
   });
 
   it('minhas: as semanas fechadas de cada unidade, com o prazo no fuso da instituição e o texto do atesto à vista', async () => {
@@ -461,6 +516,9 @@ describe.runIf(enabled)('Vigilância: notificação negativa semanal (VIG-1c)', 
     expect(g.colunas.map((c) => c.semana)).toEqual(['202619', '202620', '202621', '202622', '202623', '202624']);
     expect(g.colunas.map((c) => c.fechada)).toEqual([true, true, true, true, true, false]);
     expect(g.metaPercentual).toBe(80);
+    // K1: a resposta traz só as semanas pedidas (a análise olha uma janela maior).
+    expect(g.linhas.every((l) => l.celulas.length === 6)).toBe(true);
+    expect(g.analise.percentualPorSemana.map((p) => p.semana)).toEqual([0, 1, 2, 3, 4, 5]);
     const linha = (k: string) => g.linhas.find((l) => l.unidade.id === U[k]!.id)!.celulas.map((c) => c.situacao);
     expect(linha('ubs')).toEqual(['SEM_INFORMACAO', 'SEM_INFORMACAO', 'SEM_INFORMACAO', 'NEGATIVA_ATRASADA', 'NEGATIVA', 'EM_CURSO']);
     expect(linha('ubs2')).toEqual(['POSITIVA', 'POSITIVA', 'NEGATIVA_ATRASADA', 'NEGATIVA', 'SEM_INFORMACAO', 'EM_CURSO']);
@@ -473,10 +531,12 @@ describe.runIf(enabled)('Vigilância: notificação negativa semanal (VIG-1c)', 
     expect(celula(g, 'hosp', '202622').fontes).toMatchObject({ notificacoes: 1 });
     // O CAPS sem período não entra; farmácia, almoxarifado e vigilância também não.
     expect(g.linhas.map((l) => l.unidade.nome).sort()).toEqual(['CEO Sorriso', 'Hospital Municipal São Lucas', 'Policlínica Municipal', 'UBS Centro', 'UBS Jardim das Flores', 'UPA 24h Norte']);
+    // K1: a análise vê além das 6 colunas: o CEO está sem informação desde a SE 202612 (12 semanas fechadas na janela
+    // analisada) e a policlínica desde que virou notificante (SE 202617); antes, o teto era a grade (5 e 5).
     expect(g.analise.silenciosas.map((s) => [s.unitId, s.semanasSeguidas]).sort()).toEqual(
       [
-        [U.ceo!.id, 5],
-        [U.poli!.id, 5],
+        [U.ceo!.id, 12],
+        [U.poli!.id, 7],
       ].sort(),
     );
     // % por semana: positiva, negativa e atrasada (contaAtrasada) sobre as 6 notificantes; a semana em curso não conta.
@@ -485,21 +545,23 @@ describe.runIf(enabled)('Vigilância: notificação negativa semanal (VIG-1c)', 
     expect(g.analise.percentualPorSemana[3]).toMatchObject({ comInformacao: 4, notificantes: 6 });
     expect(g.analise.percentualPorSemana[5]).toMatchObject({ comInformacao: 0, notificantes: 0, percentual: null });
     expect(g.analise.regularidadeMunicipal).toEqual({ semanasSemInformacao: 0, irregular: false });
-    expect(g.analise.soNegativas).toEqual([]);
-    expect(g.avisos.some((a) => a.includes('regularidade do município'))).toBe(true);
-    // Só negativas nas últimas 12 semanas fechadas (grade de 14 semanas).
+    // K1: "só negativas" (12 semanas) já aparece na grade de 6; e não sai mais o aviso de grade curta para a regularidade.
+    expect(g.analise.soNegativas).toEqual([{ unitId: U.upa!.id, semanas: 12 }]);
+    expect(g.avisos.some((a) => a.includes('só se avalia com pelo menos'))).toBe(false);
     const g14 = await grade('semanas=14');
     expect(g14.analise.soNegativas).toEqual([{ unitId: U.upa!.id, semanas: 12 }]);
     // Antes do prazo da SE 202623 (segunda, 13h59), quem não atestou está "aguardando" e entra no denominador.
     relogio(SEGUNDA_1359);
     const gSeg = await grade('semanas=6');
     expect(celula(gSeg, 'ceo', '202623').situacao).toBe('AGUARDANDO');
-    expect(gSeg.analise.silenciosas.find((s) => s.unitId === U.ceo!.id)!.semanasSeguidas).toBe(4);
+    expect(gSeg.analise.silenciosas.find((s) => s.unitId === U.ceo!.id)!.semanasSeguidas).toBe(12);
     expect(gSeg.analise.percentualPorSemana[4]).toMatchObject({ notificantes: 6 });
-    // Regularidade: 10 semanas fechadas sem nenhuma informação no município (PRC nº 6/2017, art. 454-E: 8).
+    // Regularidade: semanas fechadas sem nenhuma informação no município (PRC nº 6/2017, art. 454-E: 8). As unidades
+    // são notificantes desde 01/01/2026 (SE 53/2025): 11 semanas, da SE 53/2025 à 10/2026.
     relogio(QUARTA);
     const antiga = await grade('semanas=10&ate=202610');
-    expect(antiga.analise.regularidadeMunicipal).toEqual({ semanasSemInformacao: 10, irregular: true });
+    expect(antiga.analise.regularidadeMunicipal).toEqual({ semanasSemInformacao: 11, irregular: true });
+    expect(antiga.avisos).toContain('A regularidade não lê as notificações de epizootia nem de tracoma (o OmniSaúde não importa EPIZONET nem NTRACOMA). Confira no Sinan.');
     expect(celula(antiga, 'ubs', '202610').situacao).toBe('SEM_INFORMACAO');
     // A policlínica não era notificante no período inteiro: fica fora da grade.
     expect(antiga.linhas.find((l) => l.unidade.id === U.poli!.id)).toBeUndefined();
@@ -561,5 +623,90 @@ describe.runIf(enabled)('Vigilância: notificação negativa semanal (VIG-1c)', 
     expect((await t.http().post(`/api/vigilancia/negativas/${atestos.ubs2_21!.id}/anular`).set(auth('vig')).send({ motivo: 'Segunda anulação do mesmo atesto.' }).expect(422)).body.code).toBe('NAO_ATESTADA');
     expect(celula(await grade('semanas=6'), 'ubs2', '202621').situacao).toBe('SEM_INFORMACAO');
     await atestar('vig', { unitId: U.ubs2!.id, semana: '202621', emNome: { motivo: 'Novo atesto depois da anulação, por telefone.' } }, 201);
+  });
+
+  it('regularidade com os fatos do município inteiro (sur-2): vigilância, CNES fora do cadastro e semana sem notificante', async () => {
+    relogio(QUARTA);
+    // Grade até a SE 02/2026: as semanas antes de 01/01/2026 não têm unidade notificante e não somam às sem informação.
+    const ate02 = await grade('semanas=10&ate=202602');
+    expect(ate02.analise.regularidadeMunicipal).toEqual({ semanasSemInformacao: 3, irregular: false });
+    expect(ate02.avisos).toContain('A regularidade conta desde a SE 53/2025: antes dela, nenhuma unidade era notificante.');
+    expect((await grade('semanas=10&ate=202610')).analise.regularidadeMunicipal).toEqual({ semanasSemInformacao: 11, irregular: true });
+    // A vigilância confirma uma notificação sem atendimento (a unidade dela não é notificante) na SE 07.
+    await novaNotificacao({ unitId: U.vig!.id, status: 'NOTIFICADA', epiWeekNotified: '202607', knownAt: new Date('2026-02-17T12:00:00Z'), notifiedAt: new Date('2026-02-17T12:00:00Z') });
+    // O Sinan traz notificação de um hospital particular (CNES fora do cadastro) do município na SE 05, e uma de
+    // outro município na SE 09 (fluxo de retorno: não é do município).
+    const deFora = (numero: string, semana: string, municipio: string, cnes: string) => {
+      const { fim } = intervaloDaSemana(Number(semana.slice(0, 4)), Number(semana.slice(4)));
+      return db.officialRecord.create({
+        data: {
+          system: 'SINAN_NET',
+          type: 'INDIVIDUAL',
+          naturalKey: `${numero}|${fim}|${municipio}|A379`,
+          number: numero,
+          notifiedOn: new Date(`${fim}T00:00:00Z`),
+          epiWeekNotified: semana,
+          municipalityIbge: municipio,
+          unitCnes: cnes,
+          agravo: 'A379',
+          groupKey: 'coqueluche',
+          situation: 'EM_INVESTIGACAO',
+          contentHash: 'f'.repeat(64),
+          firstImportId: importacaoId,
+          lastImportId: importacaoId,
+          lastSeenAt: new Date(),
+        },
+      });
+    };
+    await deFora('5550001', '202605', '355030', '7654321');
+    await deFora('5550002', '202609', '330455', '7654322');
+    const g = await grade('semanas=10&ate=202610');
+    expect(g.analise.regularidadeMunicipal).toEqual({ semanasSemInformacao: 3, irregular: false });
+    // A grade não ganha linha da vigilância nem do CNES de fora: a regularidade é do município, não das linhas.
+    expect(g.linhas.find((l) => l.unidade.id === U.vig!.id)).toBeUndefined();
+    // O surto da vigilância na SE 10 também é informação do município.
+    await surtoNoBanco('vig', '2026-03-10', '2026/9003');
+    const depois = await grade('semanas=10&ate=202610');
+    expect(depois.analise.regularidadeMunicipal).toEqual({ semanasSemInformacao: 0, irregular: false });
+    expect(depois.avisos.some((a) => a.includes('epizootia'))).toBe(false);
+  });
+
+  it('unidade desativada com período aberto (sur-7): aviso na grade e na lista de unidades notificantes', async () => {
+    relogio(QUARTA);
+    await db.unit.update({ where: { id: U.ceo!.id }, data: { active: false } });
+    try {
+      const g = await grade('semanas=6');
+      expect(g.linhas.find((l) => l.unidade.id === U.ceo!.id)).toMatchObject({ ativa: false });
+      expect(g.linhas.find((l) => l.unidade.id === U.ubs!.id)).toMatchObject({ ativa: true });
+      expect(g.avisos).toContain('CEO Sorriso está inativa e com período de notificante aberto: entra como silenciosa e no percentual. Encerre o período na data da desativação.');
+      const lista = (await t.http().get('/api/vigilancia/unidades-notificantes').set(auth('vig')).expect(200)).body as { unidade: { id: string }; ativa: boolean; avisos: string[] }[];
+      expect(lista.find((u) => u.unidade.id === U.ceo!.id)).toMatchObject({ ativa: false, avisos: ['Unidade inativa com período de notificante aberto. Encerre o período na data da desativação.'] });
+      expect(lista.find((u) => u.unidade.id === U.ubs!.id)!.avisos).toEqual([]);
+      // Encerrado o período, o aviso some.
+      await t.http().post(`/api/vigilancia/unidades-notificantes/${U.ceo!.id}/encerrar`).set(auth('vig')).send({ ate: '2026-06-10', motivo: 'Unidade desativada no CNES' }).expect(200);
+      expect((await grade('semanas=6')).avisos.some((a) => a.includes('CEO Sorriso está inativa'))).toBe(false);
+      const depois = (await t.http().get('/api/vigilancia/unidades-notificantes').set(auth('vig')).expect(200)).body as { unidade: { id: string }; avisos: string[] }[];
+      expect(depois.find((u) => u.unidade.id === U.ceo!.id)!.avisos).toEqual([]);
+    } finally {
+      await db.unit.update({ where: { id: U.ceo!.id }, data: { active: true } });
+    }
+  });
+
+  it('atesto casado com NNEGANET que saiu do Sinan (sur-8): volta a "atestado e não digitado" e a reconciliação desfaz o casamento', async () => {
+    relogio(QUARTA);
+    const neg = await db.officialRecord.findFirstOrThrow({ where: { type: 'NEGATIVA', number: '9000101' } });
+    expect((await db.negativeReport.findUniqueOrThrow({ where: { id: atestos.ubs23!.id } })).officialRecordId).toBe(neg.id);
+    // A exportação seguinte não traz mais a negativa (ausente).
+    await db.officialRecord.update({ where: { id: neg.id }, data: { absentSince: new Date() } });
+    const g = await grade('semanas=6');
+    expect(celula(g, 'ubs', '202623').fontes.negativaSinan).toBe(false);
+    expect(g.atestadoSemSinan).toContainEqual(expect.objectContaining({ semana: '202623', unidade: expect.objectContaining({ id: U.ubs!.id }), atestoId: atestos.ubs23!.id }));
+    await negativas.reconciliar(db);
+    expect((await db.negativeReport.findUniqueOrThrow({ where: { id: atestos.ubs23!.id } })).officialRecordId).toBeNull();
+    // Digitada de novo no Sinan (outro número): casa com a nova.
+    const nova = await registroOficial({ tipo: 'NEGATIVA', unidade: 'ubs', semana: '202623', numero: '9000109' });
+    await negativas.reconciliar(db, { unitIds: [U.ubs!.id], semanas: ['202623'] });
+    expect((await db.negativeReport.findUniqueOrThrow({ where: { id: atestos.ubs23!.id } })).officialRecordId).toBe(nova.id);
+    expect((await grade('semanas=6')).atestadoSemSinan.find((d) => d.unidade.id === U.ubs!.id && d.semana === '202623')).toBeUndefined();
   });
 });

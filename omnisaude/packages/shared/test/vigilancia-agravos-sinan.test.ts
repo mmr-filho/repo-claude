@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AGRAVOS_SINAN,
   agravoSinanDaChave,
+  evolucaoPadraoSinan,
   gravidadeOficial,
   infoAgravoSinan,
   LNNC_NACIONAL,
@@ -141,6 +142,20 @@ describe('agravos do Sinan: situação e gravidade pela classificação final', 
     // Óbitos: pelo agravo e em investigação.
     expect(AGRAVOS_SINAN.A90).toMatchObject({ obitoAgravo: ['2'], obitoInvestigacao: ['4'] });
     expect(AGRAVOS_SINAN.A169!.obitoAgravo).toEqual(['3']);
+  });
+
+  it('Mpox (e-SUS Sinan): a classificação e a evolução seguem a ficha de Mpox, não a de notificação/conclusão', () => {
+    // CLASSI_FIN 1 confirmado, 2 descartado, 3 provável, 4 suspeito, 5 perda de seguimento, 6 exclusão, 8 inconclusivo.
+    expect(['1', '2', '3', '4', '5', '6', '8'].map((c) => situacaoOficial('B04', c))).toEqual(['CONFIRMADO', 'DESCARTADO', 'INCONCLUSIVO', 'EM_INVESTIGACAO', 'INCONCLUSIVO', 'DESCARTADO', 'INCONCLUSIVO']);
+    // EVOLUÇÃO 1 = óbito por Mpox (2 = cura): o óbito pelo agravo é o 1.
+    expect(AGRAVOS_SINAN.B04).toMatchObject({ obitoAgravo: ['1'], obitoInvestigacao: [] });
+    // Na numeração da ficha de notificação/conclusão (a da notificação do OmniSaúde): 1 cura, 2 óbito pelo agravo.
+    expect(['1', '2', '3', '9', '0', '4'].map((e) => evolucaoPadraoSinan('B04', e))).toEqual(['2', '1', '3', '9', '0', '4']);
+    expect(evolucaoPadraoSinan('A279', '2')).toBe('2');
+    expect(evolucaoPadraoSinan('B04', ' 01 ')).toBe('2');
+    expect(evolucaoPadraoSinan('B04', null)).toBeNull();
+    // Os outros agravos do e-SUS Sinan seguem a ficha de notificação/conclusão.
+    expect(['2', '8'].map((c) => situacaoOficial('A930', c))).toEqual(['DESCARTADO', 'INCONCLUSIVO']);
   });
 
   it('situação da notificação do OmniSaúde', () => {

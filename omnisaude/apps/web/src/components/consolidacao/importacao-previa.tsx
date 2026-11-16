@@ -26,7 +26,8 @@ import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { TabPanel, Tabs } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
-import { fmtDate, fmtDateTime } from '@/lib/format';
+import { fmtDate } from '@/lib/format';
+import { useDataHora } from './fuso';
 import { codificacoesParaTrocar, fmtBytes, linhasDasContagens, motivosOrdenados, resumoDaAplicacao, ROTULO_ORIGEM_CODIFICACAO, situacaoImportacao, textoExpiracao, textoPorTipo } from './importacao-regras';
 
 const TOM_CONTAGEM = { default: 'text-slate-900', good: 'text-emerald-700', warn: 'text-amber-700', bad: 'text-red-700' } as const;
@@ -146,6 +147,7 @@ function Amostras({ d }: { d: DetalheImportacao }) {
       <CardHeader title="Amostras da prévia" description="Até 200 linhas por lista. A lista nominal fica registrada na auditoria." />
       <CardBody>
         <Tabs
+          aria-label="Amostras da prévia"
           value={aba}
           onValueChange={setAba}
           tabs={[
@@ -248,6 +250,7 @@ export function DetalheDaImportacao({
   onFechar: () => void;
 }) {
   const toast = useToast();
+  const { dataHora } = useDataHora();
   const [d, setD] = useState<DetalheImportacao | null>(inicial ?? null);
   const [erro, setErro] = useState<string | null>(null);
   const [confirmar, setConfirmar] = useState<'aplicar' | 'descartar' | null>(null);
@@ -305,7 +308,7 @@ export function DetalheDaImportacao({
       <Card>
         <CardHeader
           title={d.arquivo}
-          description={`${SISTEMA_INFO[d.sistema]?.label ?? d.sistema} · ${fmtBytes(d.tamanhoBytes)} · enviado em ${fmtDateTime(d.criadoEm)}${d.criadoPor ? ` por ${d.criadoPor}` : ''}`}
+          description={`${SISTEMA_INFO[d.sistema]?.label ?? d.sistema} · ${fmtBytes(d.tamanhoBytes)} · enviado em ${dataHora(d.criadoEm)}${d.criadoPor ? ` por ${d.criadoPor}` : ''}`}
           actions={
             <>
               {previa && (
@@ -339,13 +342,13 @@ export function DetalheDaImportacao({
           </div>
           {d.aplicadoEm && (
             <p className="text-sm text-slate-700">
-              Aplicada em {fmtDateTime(d.aplicadoEm)}
+              Aplicada em {dataHora(d.aplicadoEm)}
               {d.aplicadoPor ? ` por ${d.aplicadoPor}` : ''}.
             </p>
           )}
           {d.descartadoEm && (
             <p className="text-sm text-slate-700">
-              {d.expirada ? 'Prévia expirada' : 'Descartada'} em {fmtDateTime(d.descartadoEm)}
+              {d.expirada ? 'Prévia expirada' : 'Descartada'} em {dataHora(d.descartadoEm)}
               {d.descartadoPor ? ` por ${d.descartadoPor}` : ''}.
             </p>
           )}

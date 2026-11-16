@@ -12,7 +12,6 @@ import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { fmtDateTime } from '@/lib/format';
 import { ContingenciaAcionar } from './contingencia-acionar';
 import {
   checklistPorEixo,
@@ -20,12 +19,15 @@ import {
   criteriosPorEstagio,
   dataBr,
   exigenciaDoCriterio,
+  LEGENDA_STATUS_SEMANA,
   manuaisDaSemana,
   nomeDoEstagio,
   patchAcao,
   progressoChecklist,
   resumoIndicadores,
   rotuloSemana,
+  ROTULO_CURTO_STATUS,
+  seloDaSemana,
   situacaoDoCriterio,
   textoSugestao,
   textoValor,
@@ -33,8 +35,9 @@ import {
   ultimasSemanas,
   type TerritorioDaContingencia,
 } from './contingencia-regras';
-import { TOM_STATUS, textoSemanas } from './diagrama-dados';
 import { nomeDoAgravo, type OpcaoAgravo } from './diagrama-agravos';
+import { TOM_STATUS, textoSemanas } from './diagrama-dados';
+import { useDataHora } from './fuso';
 
 /** Selo do estágio com a cor da posição no plano e o nome escrito. */
 export function SeloEstagio({ plano, chave, nome, grande }: { plano: SituacaoContingencia['plano']; chave: string; nome?: string; grande?: boolean }) {
@@ -58,6 +61,7 @@ function RespostaManual({
   onMudou: () => void;
 }) {
   const toast = useToast();
+  const { dataHora } = useDataHora();
   const [nota, setNota] = useState(resposta?.nota ?? '');
   const [busy, setBusy] = useState<boolean | null>(null);
   async function responder(atendido: boolean) {
@@ -79,7 +83,7 @@ function RespostaManual({
           <>
             <Badge tone={resposta.atendido ? 'red' : 'green'}>{resposta.atendido ? 'Atendido' : 'Não atendido'}</Badge>
             <span>
-              {resposta.respondidoPor ?? 'Vigilância'}, {fmtDateTime(resposta.respondidoEm)}
+              {resposta.respondidoPor ?? 'Vigilância'}, {dataHora(resposta.respondidoEm)}
               {resposta.nota ? `. ${resposta.nota}` : ''}
             </span>
           </>
@@ -105,6 +109,7 @@ function RespostaManual({
 /** Uma ação do checklist: situação, responsável e nota. */
 function LinhaAcao({ a, podeAgir, planoDoEstagio, onSalvo }: { a: AcaoChecklist; podeAgir: boolean; planoDoEstagio: SituacaoContingencia['plano']; onSalvo: (nova: AcaoChecklist) => void }) {
   const toast = useToast();
+  const { dataHora } = useDataHora();
   const [status, setStatus] = useState<StatusAcao>(a.status);
   const [responsavel, setResponsavel] = useState(a.responsavel ?? '');
   const [nota, setNota] = useState(a.nota ?? '');
@@ -119,7 +124,7 @@ function LinhaAcao({ a, podeAgir, planoDoEstagio, onSalvo }: { a: AcaoChecklist;
         </span>
         {a.atualizadoPor && (
           <span className="mt-0.5 block text-[11px] text-slate-500">
-            Atualizada por {a.atualizadoPor} em {fmtDateTime(a.atualizadoEm)}
+            Atualizada por {a.atualizadoPor} em {dataHora(a.atualizadoEm)}
           </span>
         )}
       </TD>
@@ -219,6 +224,7 @@ function Checklist({ s, podeAgir }: { s: SituacaoContingencia; podeAgir: boolean
 }
 
 function Historico({ s, opcoes }: { s: SituacaoContingencia; opcoes: OpcaoAgravo[] }) {
+  const { dataHora } = useDataHora();
   if (!s.historico.length) return null;
   return (
     <Card>
@@ -248,7 +254,7 @@ function Historico({ s, opcoes }: { s: SituacaoContingencia; opcoes: OpcaoAgravo
               </TD>
               <TD className="text-xs">
                 {h.decididoPor ?? '—'}
-                <span className="block text-slate-500">{fmtDateTime(h.decididoEm)}</span>
+                <span className="block text-slate-500">{dataHora(h.decididoEm)}</span>
               </TD>
               <TD className="text-xs">
                 {h.indicadores.length ? (
@@ -445,28 +451,38 @@ export function ContingenciaSituacao({ s, podeAgir, territorio, opcoes, onMudou 
                 <div>
                   <p className="mb-1 text-[11px] text-slate-600">Últimas semanas no canal</p>
                   <ul className="flex flex-wrap gap-1">
-                    {ultimasSemanas(ind).map((w) => (
-                      <li key={w.semana}>
-                        <Badge
-                          tone={TOM_STATUS[w.status]}
-                          className={cn(!w.completa && 'border border-dashed border-slate-400')}
-                          title={`SE ${w.rotulo}: ${ROTULO_STATUS_SEMANA[w.status]}${w.completa ? '' : ' (incompleta)'}`}
-                        >
-                          {w.rotulo.slice(0, 2)}
-                          <span className="sr-only">
-                            : {ROTULO_STATUS_SEMANA[w.status]}
-                            {w.completa ? '' : ', incompleta'}
-                          </span>
-                        </Badge>
-                      </li>
-                    ))}
+                    {ultimasSemanas(ind).map((w) => {
+                      const selo = seloDaSemana(w);
+                      return (
+                        <li key={w.semana}>
+                          <Badge tone={TOM_STATUS[w.status]} className={cn(!w.completa && 'border border-dashed border-slate-400')} title={selo.titulo}>
+                            <span aria-hidden>{selo.texto}</span>
+                            <span className="sr-only">{selo.titulo}</span>
+                          </Badge>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               </div>
             ))}
           </CardBody>
           <CardBody className="border-t border-slate-100 py-3 text-[11px] text-slate-600">
-            Cores das semanas: {(['ABAIXO_LI', 'ATE_CENTRO', 'ENTRE_CENTRO_E_LS', 'ACIMA_LS', 'SEM_CANAL'] as const).map((st) => ROTULO_STATUS_SEMANA[st]).join(' · ')}. Borda tracejada: semana incompleta.
+            <p className="mb-1.5 font-medium text-slate-700">Legenda das semanas no canal</p>
+            <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {LEGENDA_STATUS_SEMANA.map((st) => (
+                <li key={st} className="flex items-center gap-1.5">
+                  <Badge tone={TOM_STATUS[st]}>{ROTULO_CURTO_STATUS[st]}</Badge>
+                  <span>{ROTULO_STATUS_SEMANA[st]}</span>
+                </li>
+              ))}
+              <li className="flex items-center gap-1.5">
+                <Badge tone="slate" className="border border-dashed border-slate-400">
+                  incompleta
+                </Badge>
+                <span>Semana incompleta (atraso de notificação)</span>
+              </li>
+            </ul>
           </CardBody>
         </Card>
       )}

@@ -7,7 +7,7 @@
 import type { SistemaOficial } from './sistemas';
 
 /** Tipo do arquivo oficial, detectado pelo conteúdo (colunas e amostra), nunca pelo nome. */
-export type TipoArquivoOficial = 'NINDINET' | 'AGRAVO_NET' | 'NNEGANET' | 'NSURTNET' | 'DENGON' | 'CHIKON' | 'ESUS_NOTIFICA_CSV' | 'ESUS_SINAN_CSV' | 'TABELA_SINAN' | 'DESCONHECIDO';
+export type TipoArquivoOficial = 'NINDINET' | 'AGRAVO_NET' | 'NNEGANET' | 'NSURTNET' | 'DENGON' | 'CHIKON' | 'ESUS_NOTIFICA_CSV' | 'ESUS_SINAN_CSV' | 'TABELA_SINAN' | 'PLANILHA_SURTO' | 'DESCONHECIDO';
 
 export const ROTULO_TIPO_ARQUIVO: Record<TipoArquivoOficial, string> = {
   NINDINET: 'Sinan Net: notificações individuais (NINDINET)',
@@ -19,6 +19,7 @@ export const ROTULO_TIPO_ARQUIVO: Record<TipoArquivoOficial, string> = {
   ESUS_NOTIFICA_CSV: 'e-SUS Notifica (CSV)',
   ESUS_SINAN_CSV: 'e-SUS Sinan (CSV)',
   TABELA_SINAN: 'Tabela auxiliar do Sinan (ignorada)',
+  PLANILHA_SURTO: 'Sinan Net: planilha de acompanhamento do surto (ignorada)',
   DESCONHECIDO: 'Arquivo não reconhecido',
 };
 
@@ -38,6 +39,7 @@ export const SISTEMA_DO_ARQUIVO: Record<TipoArquivoOficial, SistemaOficial | nul
   ESUS_NOTIFICA_CSV: 'ESUS_NOTIFICA',
   ESUS_SINAN_CSV: 'ESUS_SINAN',
   TABELA_SINAN: null,
+  PLANILHA_SURTO: null,
   DESCONHECIDO: null,
 };
 
@@ -52,6 +54,7 @@ export const TIPO_REGISTRO_DO_ARQUIVO: Record<TipoArquivoOficial, TipoRegistroOf
   ESUS_NOTIFICA_CSV: 'INDIVIDUAL',
   ESUS_SINAN_CSV: 'INDIVIDUAL',
   TABELA_SINAN: null,
+  PLANILHA_SURTO: null,
   DESCONHECIDO: null,
 };
 
@@ -74,12 +77,19 @@ export interface InfoAgravoSinan {
   descartado: string[];
   /** CLASSI_FIN de caso inconclusivo. */
   inconclusivo: string[];
+  /** CLASSI_FIN que mantêm o caso em investigação (ficha com "suspeito" entre as classificações). */
+  emInvestigacao?: string[];
   /** CLASSI_FIN de caso grave ou com sinais de alarme. */
   graves?: Record<string, GravidadeCaso>;
-  /** EVOLUCAO de óbito pelo agravo. */
+  /** EVOLUCAO de óbito pelo agravo (código da ficha do agravo, como vem no arquivo). */
   obitoAgravo: string[];
   /** EVOLUCAO de óbito em investigação. */
   obitoInvestigacao: string[];
+  /**
+   * EVOLUCAO da ficha do agravo → código da ficha de notificação/conclusão (1 cura, 2 óbito pelo agravo, 3 óbito por
+   * outras causas, 9 ignorado), quando a ficha numera diferente. Ausente = mesma numeração.
+   */
+  evolucaoPadrao?: Readonly<Record<string, string>>;
   fonte: string;
 }
 
@@ -205,7 +215,12 @@ export const AGRAVOS_SINAN: Record<string, InfoAgravoSinan> = {
   A369: linha('difteria', 'Difteria', `${NAO_CONFERIDO}; ${ANEXO_I}: EVOLUCAO 3 óbito por difteria`, { obitoAgravo: ['3'] }),
   B571: linha('chagas-aguda', 'Doença de Chagas aguda', `${NAO_CONFERIDO}; ${ANEXO_I}`),
   A810: linha('dcj', 'Doença de Creutzfeldt-Jakob', NAO_CONFERIDO),
-  B04: linha('mpox', 'Mpox', `${NAO_CONFERIDO}; notificado no e-SUS Sinan`),
+  B04: linha(
+    'mpox',
+    'Mpox',
+    'e-SUS Sinan, dicionário da investigação de Mpox: CLASSI_FIN 1 confirmado, 2 descartado, 3 provável (contado como inconclusivo), 4 suspeito (em investigação), 5 perda de seguimento (inconclusivo), 6 exclusão (descartado), 8 inconclusivo; EVOLUÇÃO 1 óbito por Mpox, 2 cura, 3 óbito por outra causa, 9 ignorado; conclusão em DT_CONCLUSÃO',
+    { descartado: ['2', '6'], inconclusivo: ['3', '5', '8'], emInvestigacao: ['4'], obitoAgravo: ['1'], evolucaoPadrao: { '1': '2', '2': '1', '3': '3', '9': '9' } },
+  ),
   B42: linha('esporotricose', 'Esporotricose humana', 'NT nº 20/2025-CGTM/DATHI/SVSA/MS: B42 no e-SUS Sinan; conclusão 1 confirmado, 2 descartado, 8 inconclusivo'),
   C80: linha('cancer-trabalho', 'Câncer relacionado ao trabalho', `${NAO_CONFERIDO}; ${ANEXO_I}: só 1 confirmado; EVOLUCAO 6 óbito pela doença`, { ...soConfirmado(), obitoAgravo: ['6'] }),
   L989: linha('dermatoses-ocupacionais', 'Dermatoses ocupacionais', `${NAO_CONFERIDO}; ${ANEXO_I}: só 1 confirmado; EVOLUCAO 6 óbito pela doença`, { ...soConfirmado(), obitoAgravo: ['6'] }),
@@ -264,7 +279,19 @@ export function situacaoOficial(agravo: string | null, classificacao: string | n
   const info = infoAgravoSinan(c) ?? PADRAO_SEM_TABELA;
   if (info.descartado.includes(classe)) return 'DESCARTADO';
   if (info.inconclusivo.includes(classe)) return 'INCONCLUSIVO';
+  if (info.emInvestigacao?.includes(classe)) return 'EM_INVESTIGACAO';
   return 'CONFIRMADO';
+}
+
+/**
+ * EVOLUCAO do registro oficial na numeração da ficha de notificação/conclusão (1 cura, 2 óbito pelo agravo, 3 óbito por
+ * outras causas, 9 ignorado), a mesma da notificação do OmniSaúde. A ficha de Mpox inverte o 1 e o 2. Código sem
+ * tradução na ficha (ex.: 0 e 4 nos dados abertos de Mpox) volta como veio.
+ */
+export function evolucaoPadraoSinan(agravo: string | null | undefined, evolucao: string | null | undefined): string | null {
+  const e = codigo(evolucao);
+  if (!e) return null;
+  return infoAgravoSinan(agravo)?.evolucaoPadrao?.[e] ?? e;
 }
 
 /** Gravidade do registro oficial pela classificação final (só os agravos com `graves` na tabela). */

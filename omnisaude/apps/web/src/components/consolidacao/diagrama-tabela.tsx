@@ -3,7 +3,7 @@
 import { ROTULO_STATUS_SEMANA, type CoberturaAno, type PopulacaoUsada } from '@omnisaude/shared';
 import { Badge } from '@/components/ui/badge';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
-import { fmtCasos, fmtValor, ROTULO_ORIGEM_POPULACAO, rotulosDoCanal, textoFonte, TOM_STATUS, type LinhaDiagrama, type MetodoCanal, type UnidadeCanal } from './diagrama-dados';
+import { fmtCasos, fmtValor, ROTULO_ORIGEM_POPULACAO, rotulosDoCanal, seloCobertura, textoFonte, TOM_STATUS, type LinhaDiagrama, type MetodoCanal, type UnidadeCanal } from './diagrama-dados';
 
 /** Tabela por semana com os mesmos números do gráfico (o caminho até o valor sem depender da dica nem da cor). */
 export function DiagramaTabelaSemanas({ linhas, unidade, metodo, k }: { linhas: LinhaDiagrama[]; unidade: UnidadeCanal; metodo: MetodoCanal; k: number }) {
@@ -73,7 +73,7 @@ export function DiagramaPopulacaoUsada({ populacao, cobertura, unidade }: { popu
           return (
             <TR key={ano}>
               <TD className="tabular-nums">{ano}</TD>
-              <TD className="text-xs">{c ? <Badge tone={c.coberto ? 'green' : 'slate'}>{c.coberto ? 'Coberto' : 'Sem cobertura'}</Badge> : '—'}</TD>
+              <TD className="text-xs">{c ? <Badge tone={seloCobertura(c).tom}>{seloCobertura(c).texto}</Badge> : '—'}</TD>
               {unidade === 'INCIDENCIA' && (
                 <>
                   <TD className="text-right tabular-nums">{p?.populacao != null ? p.populacao.toLocaleString('pt-BR') : '—'}</TD>

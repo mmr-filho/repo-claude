@@ -11,26 +11,41 @@ import { ImportacaoService } from './importacao.service';
 /** Teto do arquivo enviado (zip, DBF ou CSV), antes de descompactar. */
 const LIMITE_ENVIO_BYTES = 95 * 1024 * 1024;
 
-const dia = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data no formato AAAA-MM-DD');
+/** Data de calendário que existe (ida e volta pelo Date.UTC: 2025-13-01 e 2025-02-30 são recusadas com 400). */
+const dataExiste = (s: string) => {
+  const [a, m, d] = s.split('-').map(Number) as [number, number, number];
+  const t = new Date(Date.UTC(a, m - 1, d));
+  return a >= 1900 && t.getUTCFullYear() === a && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+};
+const dia = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Data no formato AAAA-MM-DD')
+  .refine(dataExiste, 'Data que não existe no calendário');
+const periodoEmOrdem = (p: { de?: string; ate?: string }) => !p.de || !p.ate || p.de <= p.ate;
 const sistema = z.enum(['SINAN_NET', 'SINAN_ONLINE', 'ESUS_SINAN', 'ESUS_NOTIFICA', 'SIVEP_GRIPE', 'SINASC_SIM']);
-const envioSchema = z.object({
-  nome: z.string().trim().min(1).max(255),
-  de: dia.optional(),
-  ate: dia.optional(),
-  codificacao: z.enum(['CP850', 'CP437', 'CP860', 'CP1252', 'UTF8']).optional(),
-});
-const filtroSchema = z.object({
-  sistema: sistema.optional(),
-  grupo: z
-    .string()
-    .trim()
-    .regex(/^[a-z0-9-]{2,40}$/)
-    .optional(),
-  de: dia.optional(),
-  ate: dia.optional(),
-  busca: z.string().trim().max(60).optional(),
-  pagina: z.coerce.number().int().min(1).max(100_000).optional(),
-});
+const envioSchema = z
+  .object({
+    nome: z.string().trim().min(1).max(255),
+    de: dia.optional(),
+    ate: dia.optional(),
+    codificacao: z.enum(['CP850', 'CP437', 'CP860', 'CP1252', 'UTF8']).optional(),
+  })
+  .refine(periodoEmOrdem, { message: 'O início do período não pode ser depois do fim', path: ['ate'] });
+const filtroSchema = z
+  .object({
+    sistema: sistema.optional(),
+    grupo: z
+      .string()
+      .trim()
+      .regex(/^[a-z0-9-]{2,40}$/)
+      .optional(),
+    de: dia.optional(),
+    ate: dia.optional(),
+    busca: z.string().trim().max(60).optional(),
+    metodo: z.enum(['NUMERO_OFICIAL', 'IDENTIDADE', 'MANUAL']).optional(),
+    pagina: z.coerce.number().int().min(1).max(100_000).optional(),
+  })
+  .refine(periodoEmOrdem, { message: 'O início do período não pode ser depois do fim', path: ['ate'] });
 const vincularSchema = z.object({
   recordId: z.string().uuid(),
   notificationId: z.string().uuid(),
@@ -123,6 +138,13 @@ export class ImportacaoController {
   @RequirePermission('vigilancia.importar')
   sugestoes(@Ctx() ctx: RequestContext, @Query(zv(filtroSchema)) q: z.infer<typeof filtroSchema>) {
     return this.conciliacao.sugestoes(ctx, q);
+  }
+
+  /** Pares vinculados (com ou sem diferença), de onde se desvincula; `?metodo=` filtra pelo método do vínculo. */
+  @Get('conciliacao/vinculados')
+  @RequirePermission('vigilancia.importar')
+  vinculados(@Ctx() ctx: RequestContext, @Query(zv(filtroSchema)) q: z.infer<typeof filtroSchema>) {
+    return this.conciliacao.vinculados(ctx, q);
   }
 
   @Get('conciliacao/bairros')

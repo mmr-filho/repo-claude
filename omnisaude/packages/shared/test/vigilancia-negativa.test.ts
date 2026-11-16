@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { analisarGrade, intervaloDaSemana, prazoDaNegativa, situacaoDaSemana, textoDoAtesto, type ParametrosGrade, type SituacaoUnidadeSemana } from '@omnisaude/shared';
+import {
+  analisarGrade,
+  intervaloDaSemana,
+  municipioPelaGrade,
+  prazoDaNegativa,
+  regularidadeDoMunicipio,
+  situacaoDaSemana,
+  textoDoAtesto,
+  type ParametrosGrade,
+  type SemanaDoMunicipio,
+  type SituacaoUnidadeSemana,
+} from '@omnisaude/shared';
 
 /** Notificação negativa semanal (VIG-1c, §3.4 do desenho): prazo, texto do atesto, situação da semana e grade. */
 const SEG_14H = { prazoDiaSemana: 1, prazoHora: '14:00' };
@@ -137,5 +148,48 @@ describe('negativa: grade unidade × semana', () => {
       ).regularidadeMunicipal,
     ).toEqual({ semanasSemInformacao: 0, irregular: false });
     expect(analisarGrade([], CFG)).toEqual({ silenciosas: [], soNegativas: [], percentualPorSemana: [], regularidadeMunicipal: { semanasSemInformacao: 0, irregular: false } });
+  });
+
+  it('regularidade com os fatos do município inteiro, não só as linhas da grade (sur-2)', () => {
+    // UBS Centro e UBS Jardim notificantes desde a SE 01, sem informação da SE 01 à 10. A vigilância confirmou uma
+    // notificação na SE 07 e o Sinan trouxe uma de CNES fora do cadastro na SE 05: nenhuma das duas está na grade.
+    const linhas = [
+      { unitId: 'ubs-centro', semanas: Array.from({ length: 10 }, () => S) },
+      { unitId: 'ubs-jardim', semanas: Array.from({ length: 10 }, () => S) },
+    ];
+    const municipio: SemanaDoMunicipio[] = Array.from({ length: 10 }, (_, i) => ({ comInformacao: i === 4 || i === 6, aberta: false, comNotificante: true }));
+    expect(analisarGrade(linhas, CFG).regularidadeMunicipal).toEqual({ semanasSemInformacao: 10, irregular: true });
+    expect(analisarGrade(linhas, CFG, municipio).regularidadeMunicipal).toEqual({ semanasSemInformacao: 3, irregular: false });
+    // As linhas continuam valendo para as silenciosas.
+    expect(analisarGrade(linhas, CFG, municipio).silenciosas).toHaveLength(2);
+  });
+
+  it('coluna sem nenhuma unidade notificante não conta como semana sem informação (sur-2)', () => {
+    // Grade até a SE 02: as 7 colunas antes do período (NAO_NOTIFICANTE) não somam às 3 sem informação.
+    const grade = [
+      { unitId: 'a', semanas: [X, X, X, X, X, X, X, S, S, S] },
+      { unitId: 'b', semanas: [X, X, X, X, X, X, X, S, S, S] },
+    ];
+    expect(analisarGrade(grade, CFG).regularidadeMunicipal).toEqual({ semanasSemInformacao: 3, irregular: false });
+    expect(regularidadeDoMunicipio(municipioPelaGrade(grade), 8)).toEqual({ semanasSemInformacao: 3, irregular: false, semDados: true, parada: 6 });
+    // Mesmo com um buraco no meio (nenhuma notificante), a contagem não atravessa a semana sem dados.
+    const buraco = [{ unitId: 'a', semanas: [S, S, S, S, S, X, S, S, S, S] }];
+    expect(analisarGrade(buraco, { ...CFG, semanasRegularidadeMunicipal: 4 }).regularidadeMunicipal).toEqual({ semanasSemInformacao: 4, irregular: true });
+  });
+
+  it('regularidade: a semana aberta não conta nem interrompe; a informação encerra a contagem', () => {
+    const semana = (o: Partial<SemanaDoMunicipio> = {}): SemanaDoMunicipio => ({ comInformacao: false, aberta: false, comNotificante: true, ...o });
+    // Em curso com notificação: o município já tem informação agora.
+    expect(regularidadeDoMunicipio([semana(), semana(), semana({ comInformacao: true, aberta: true })], 2)).toEqual({ semanasSemInformacao: 0, irregular: false, semDados: false, parada: 2 });
+    // Aguardando o prazo e em curso, sem nada: puladas.
+    expect(regularidadeDoMunicipio([semana({ comInformacao: true }), semana(), semana(), semana({ aberta: true }), semana({ aberta: true })], 2)).toEqual({
+      semanasSemInformacao: 2,
+      irregular: true,
+      semDados: false,
+      parada: 0,
+    });
+    // Aberta sem nenhuma unidade notificante também é pulada; chegar ao início não é "sem dados".
+    expect(regularidadeDoMunicipio([semana(), semana({ aberta: true, comNotificante: false })], 8)).toEqual({ semanasSemInformacao: 1, irregular: false, semDados: false, parada: null });
+    expect(regularidadeDoMunicipio([], 8)).toEqual({ semanasSemInformacao: 0, irregular: false, semDados: false, parada: null });
   });
 });

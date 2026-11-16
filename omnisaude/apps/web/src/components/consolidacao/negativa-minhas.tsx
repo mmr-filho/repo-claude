@@ -10,9 +10,9 @@ import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage, saveBlob } from '@/lib/api';
-import { fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
-import { dataBr, resumoMinhas, rotuloSemana, textoCancelamento, TOM_SITUACAO, TOM_STATUS_ATESTO } from './negativa-regras';
+import { useDataHora } from './fuso';
+import { dataBr, resumoMinhas, rotuloSemana, textoCancelamento, textoDaSemanaDoResponsavel, TOM_SITUACAO, TOM_STATUS_ATESTO } from './negativa-regras';
 
 /** Baixa o espelho em PDF do atesto. */
 function BotaoPdf({ atesto, rotulo = 'PDF' }: { atesto: Pick<AtestoNegativa, 'id' | 'cnes' | 'semana'>; rotulo?: string }) {
@@ -43,6 +43,7 @@ function BotaoPdf({ atesto, rotulo = 'PDF' }: { atesto: Pick<AtestoNegativa, 'id
 /** Uma semana fechada da unidade: situação, prazo, atesto e, quando pode, o texto e o botão de atestar. */
 function SemanaDaUnidade({ unidade, s, onAtestado }: { unidade: UnidadeRef; s: SemanaParaAtestar; onAtestado: () => void }) {
   const toast = useToast();
+  const { fuso } = useDataHora();
   const [confirmo, setConfirmo] = useState(false);
   const [busy, setBusy] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -57,13 +58,7 @@ function SemanaDaUnidade({ unidade, s, onAtestado }: { unidade: UnidadeRef; s: S
               ({dataBr(s.inicio)} a {dataBr(s.fim)})
             </span>
           </p>
-          <p className="text-xs text-slate-600">
-            {s.atesto
-              ? `Atestada em ${fmtDateTime(s.atesto.atestadoEm)} por ${s.atesto.atestadoPor}${s.atesto.atrasado ? ', fora do prazo' : ', no prazo'}${s.atesto.emNome ? ' (registrada pela vigilância)' : ''}.`
-              : s.prazoPassou
-                ? `Prazo vencido em ${fmtDateTime(s.prazo)}${s.podeAtestar ? ': o atesto ainda é aceito e fica marcado como fora do prazo.' : '.'}`
-                : `Prazo: ${fmtDateTime(s.prazo)}.`}
-          </p>
+          <p className="text-xs text-slate-600">{textoDaSemanaDoResponsavel(s, fuso)}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={TOM_SITUACAO[s.situacao]}>{ROTULO_SITUACAO_UNIDADE_SEMANA[s.situacao]}</Badge>
@@ -121,6 +116,7 @@ function SemanaDaUnidade({ unidade, s, onAtestado }: { unidade: UnidadeRef; s: S
  */
 export function NegativaMinhas() {
   const r = useApi<RespostaMinhasNegativas>('/vigilancia/negativas/minhas');
+  const { dataHora } = useDataHora();
   const resumo = r.data ? resumoMinhas(r.data) : null;
   return (
     <div className="space-y-4">
@@ -193,7 +189,7 @@ export function NegativaMinhas() {
                         </div>
                       </TD>
                       <TD className="text-sm">
-                        {fmtDateTime(a.atestadoEm)}
+                        {dataHora(a.atestadoEm)}
                         <span className="block text-xs text-slate-500">
                           {a.atestadoPor}
                           {a.funcao ? `, ${a.funcao}` : ''}

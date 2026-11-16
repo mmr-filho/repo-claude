@@ -1,6 +1,6 @@
 'use client';
 
-import { SISTEMA_INFO, type FiltroConciliacao, type ResumoConciliacao, type SistemaOficial } from '@omnisaude/shared';
+import { ROTULO_METODO_VINCULO, SISTEMA_INFO, type FiltroConciliacao, type MetodoVinculo, type ResumoConciliacao, type SistemaOficial } from '@omnisaude/shared';
 import { Search } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -9,19 +9,21 @@ import { Field, Input, Select } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { TabPanel, Tabs } from '@/components/ui/tabs';
-import { fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
+import { useSession } from '@/lib/session';
 import { ListaBairrosConciliacao } from './conciliacao-bairros';
-import { ListaDivergentesConciliacao, ListaSoNoOficial, ListaSoNoOmnisaude, ListaSugestoesConciliacao } from './conciliacao-listas';
-import { percentualVinculado, rotuloSistema, semPagina, textoCobertura } from './conciliacao-regras';
+import { ListaDivergentesConciliacao, ListaSoNoOficial, ListaSoNoOmnisaude, ListaSugestoesConciliacao, ListaVinculadosConciliacao } from './conciliacao-listas';
+import { erroDoPeriodo, METODOS_VINCULO, percentualVinculado, rotuloSistema, semPagina, textoCobertura } from './conciliacao-regras';
 import { SeletorAgravo, useOpcoesDeAgravo } from './diagrama-seletores';
+import { useDataHora } from './fuso';
 
-type ListaConciliacao = 'sugestoes' | 'so-oficial' | 'so-omnisaude' | 'divergentes' | 'bairros';
+type ListaConciliacao = 'sugestoes' | 'so-oficial' | 'so-omnisaude' | 'divergentes' | 'vinculados' | 'bairros';
 
 const n = (x: number) => x.toLocaleString('pt-BR');
 
 /** Números da conciliação, por sistema, e o que as importações aplicadas cobrem. */
 function ResumoDaConciliacao({ r }: { r: ResumoConciliacao }) {
+  const { dataHora } = useDataHora();
   const pct = percentualVinculado(r);
   return (
     <div className="space-y-4">
@@ -67,7 +69,7 @@ function ResumoDaConciliacao({ r }: { r: ResumoConciliacao }) {
         <Card>
           <CardHeader
             title="Cobertura das importações aplicadas"
-            description={r.ultimaImportacao ? `Última: ${rotuloSistema(r.ultimaImportacao.sistema)}, aplicada em ${fmtDateTime(r.ultimaImportacao.aplicadoEm)}.` : 'Nenhuma importação aplicada.'}
+            description={r.ultimaImportacao ? `Última: ${rotuloSistema(r.ultimaImportacao.sistema)}, aplicada em ${dataHora(r.ultimaImportacao.aplicadoEm)}.` : 'Nenhuma importação aplicada.'}
           />
           <CardBody>
             {r.cobertura.length ? (
@@ -86,16 +88,19 @@ function ResumoDaConciliacao({ r }: { r: ResumoConciliacao }) {
   );
 }
 
-/** Filtro das listas (uma linha acima delas; vale para todas, menos a de bairros). */
+/** Filtro das listas (uma linha acima delas; vale para todas, menos a de bairros; o método, só para os vinculados). */
 function FiltroDasListas({ filtro, onAplicar }: { filtro: FiltroConciliacao; onAplicar: (f: FiltroConciliacao) => void }) {
   const { opcoes } = useOpcoesDeAgravo();
+  const sigilosos = useSession().can('notificacao.sensivel');
   const [rascunho, setRascunho] = useState<FiltroConciliacao>(filtro);
   const sistemas = Object.keys(SISTEMA_INFO) as SistemaOficial[];
+  const periodo = erroDoPeriodo(rascunho);
   return (
     <form
-      className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[repeat(4,minmax(0,1fr))_minmax(0,1.5fr)_auto] lg:items-end"
+      className="grid gap-3 sm:grid-cols-2 lg:grid-cols-[repeat(5,minmax(0,1fr))_minmax(0,1.5fr)_auto] lg:items-end"
       onSubmit={(e) => {
         e.preventDefault();
+        if (periodo) return;
         onAplicar(semPagina({ ...rascunho, busca: rascunho.busca?.trim() || undefined }));
       }}
     >
@@ -109,17 +114,27 @@ function FiltroDasListas({ filtro, onAplicar }: { filtro: FiltroConciliacao; onA
           ))}
         </Select>
       </Field>
-      <SeletorAgravo id="conc-agravo" valor={rascunho.grupo ?? ''} opcoes={opcoes} vazio="Todos" onChange={(grupo) => setRascunho({ ...rascunho, grupo: grupo || undefined })} />
+      <SeletorAgravo id="conc-agravo" valor={rascunho.grupo ?? ''} opcoes={opcoes} sigilosos={sigilosos} vazio="Todos" onChange={(grupo) => setRascunho({ ...rascunho, grupo: grupo || undefined })} />
       <Field label="Notificados de" htmlFor="conc-de">
         <Input id="conc-de" type="date" value={rascunho.de ?? ''} onChange={(e) => setRascunho({ ...rascunho, de: e.target.value || undefined })} />
       </Field>
-      <Field label="até" htmlFor="conc-ate">
+      <Field label="até" htmlFor="conc-ate" error={periodo}>
         <Input id="conc-ate" type="date" value={rascunho.ate ?? ''} onChange={(e) => setRascunho({ ...rascunho, ate: e.target.value || undefined })} />
       </Field>
-      <Field label="Número, nome ou CNS" htmlFor="conc-busca">
+      <Field label="Método do vínculo" htmlFor="conc-metodo" hint="Só na lista de vinculados.">
+        <Select id="conc-metodo" value={rascunho.metodo ?? ''} onChange={(e) => setRascunho({ ...rascunho, metodo: (e.target.value || undefined) as MetodoVinculo | undefined })}>
+          <option value="">Todos</option>
+          {METODOS_VINCULO.map((m) => (
+            <option key={m} value={m}>
+              {ROTULO_METODO_VINCULO[m]}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="Número, nome, CNS ou CPF" htmlFor="conc-busca" hint="CNS com 15 dígitos; CPF com 11.">
         <Input id="conc-busca" value={rascunho.busca ?? ''} maxLength={60} onChange={(e) => setRascunho({ ...rascunho, busca: e.target.value })} />
       </Field>
-      <Button type="submit" variant="secondary">
+      <Button type="submit" variant="secondary" disabled={!!periodo}>
         <Search className="h-4 w-4" /> Filtrar
       </Button>
     </form>
@@ -128,8 +143,8 @@ function FiltroDasListas({ filtro, onAplicar }: { filtro: FiltroConciliacao; onA
 
 /**
  * Conciliação dos registros oficiais com as notificações do OmniSaúde: resumo, sugestões, só no oficial, só no
- * OmniSaúde, divergentes e bairros sem correspondência, com vincular, desvincular, "não é o mesmo caso", preencher o
- * número oficial e adicionar apelido ao bairro. As listas nominais ficam na auditoria a cada leitura.
+ * OmniSaúde, divergentes, vinculados e bairros sem correspondência, com vincular, desvincular, "não é o mesmo caso",
+ * preencher o número oficial e adicionar apelido ao bairro. As listas nominais ficam na auditoria a cada leitura.
  */
 export function AbaConciliacao({ podeEditarTerritorio }: { podeEditarTerritorio: boolean }) {
   const resumo = useApi<ResumoConciliacao>('/vigilancia/conciliacao/resumo');
@@ -147,11 +162,12 @@ export function AbaConciliacao({ podeEditarTerritorio }: { podeEditarTerritorio:
       <Card>
         <CardBody className="space-y-2">
           <FiltroDasListas filtro={filtro} onAplicar={setFiltro} />
-          <p className="text-xs text-slate-500">O filtro vale para as listas abaixo, menos a de bairros.</p>
+          <p className="text-xs text-slate-500">O filtro vale para as listas abaixo, menos a de bairros. O método do vínculo vale só para a lista de vinculados.</p>
         </CardBody>
       </Card>
 
       <Tabs
+        aria-label="Listas da conciliação"
         value={lista}
         onValueChange={(v) => setLista(v as ListaConciliacao)}
         tabs={[
@@ -159,6 +175,8 @@ export function AbaConciliacao({ podeEditarTerritorio }: { podeEditarTerritorio:
           { value: 'so-oficial', label: rotulo('Só no oficial', r?.soOficial) },
           { value: 'so-omnisaude', label: rotulo('Só no OmniSaúde', r?.soOmnisaude) },
           { value: 'divergentes', label: rotulo('Divergentes', r?.divergentes) },
+          // Sem a contagem do resumo: a lista também traz o par com o registro já excluído no sistema oficial.
+          { value: 'vinculados', label: 'Vinculados' },
           { value: 'bairros', label: rotulo('Bairros sem correspondência', r?.bairrosSemCorrespondencia) },
         ]}
       >
@@ -174,6 +192,9 @@ export function AbaConciliacao({ podeEditarTerritorio }: { podeEditarTerritorio:
           </TabPanel>
           <TabPanel value="divergentes">
             <ListaDivergentesConciliacao key={chave} filtro={filtro} onMudou={mudou} />
+          </TabPanel>
+          <TabPanel value="vinculados">
+            <ListaVinculadosConciliacao key={chave} filtro={filtro} onMudou={mudou} />
           </TabPanel>
           <TabPanel value="bairros">
             <ListaBairrosConciliacao podeEditarTerritorio={podeEditarTerritorio} onMudou={mudou} />

@@ -6,11 +6,12 @@ import type { Bairro, Localidade } from '@/components/territorio/types';
 import { Field, Select } from '@/components/ui/input';
 import { useApi } from '@/lib/hooks';
 import { useSession } from '@/lib/session';
-import { opcoesDeAgravo, type CondicaoDoCatalogo, type OpcaoAgravo } from './diagrama-agravos';
+import { opcoesDeAgravo, opcoesVisiveis, type CondicaoDoCatalogo, type OpcaoAgravo } from './diagrama-agravos';
 
 /**
  * Agravos dos seletores: do catálogo vigente do tenant para quem o lê (vigilância e quem notifica); para o gestor,
- * que só tem o resumo, os grupos da tabela de agravos do Sinan.
+ * que só tem o resumo, os grupos da tabela de agravos do Sinan. A lista traz todos (os nomes servem às telas); o
+ * seletor esconde os sigilosos de quem não pode vê-los.
  */
 export function useOpcoesDeAgravo(): { opcoes: OpcaoAgravo[]; carregando: boolean } {
   const session = useSession();
@@ -20,8 +21,28 @@ export function useOpcoesDeAgravo(): { opcoes: OpcaoAgravo[]; carregando: boolea
   return { opcoes, carregando: podeCatalogo && catalogo.loading && !catalogo.data };
 }
 
-/** Seletor de agravo (arboviroses no topo). `vazio` acrescenta a opção "Todos". */
-export function SeletorAgravo({ id, valor, onChange, opcoes, vazio, rotulo = 'Agravo' }: { id: string; valor: string; onChange: (grupo: string) => void; opcoes: OpcaoAgravo[]; vazio?: string; rotulo?: string }) {
+/**
+ * Seletor de agravo (arboviroses no topo). `vazio` acrescenta a opção "Todos". `sigilosos` mostra os agravos
+ * sigilosos (HIV, aids, sífilis, violências); sem ele, ficam de fora (o já escolhido continua, para não sumir).
+ */
+export function SeletorAgravo({
+  id,
+  valor,
+  onChange,
+  opcoes: todas,
+  vazio,
+  rotulo = 'Agravo',
+  sigilosos = false,
+}: {
+  id: string;
+  valor: string;
+  onChange: (grupo: string) => void;
+  opcoes: OpcaoAgravo[];
+  vazio?: string;
+  rotulo?: string;
+  sigilosos?: boolean;
+}) {
+  const opcoes = opcoesVisiveis(todas, sigilosos, valor);
   const arbo = opcoes.filter((o) => ['dengue', 'chikungunya', 'zika'].includes(o.grupo));
   const demais = opcoes.filter((o) => !arbo.includes(o));
   // O grupo escolhido antes de o catálogo carregar continua visível.

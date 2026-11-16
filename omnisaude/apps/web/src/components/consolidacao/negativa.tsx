@@ -4,30 +4,37 @@ import { useState } from 'react';
 import { TabPanel, Tabs } from '@/components/ui/tabs';
 import { NegativaGrade } from './negativa-grade';
 import { NegativaUnidades } from './negativa-unidades';
+import { ParametrosVigilancia } from './parametros-vigilancia';
 
 /**
  * Grade da notificação negativa (unidades × semanas: silenciosas, só negativas, % por semana com a meta e regularidade
  * do município) e, para a vigilância (`vigilancia.consolidacao`), anular atesto, atestar em nome da unidade e a
- * configuração das unidades notificantes e dos responsáveis.
+ * configuração das unidades notificantes e dos responsáveis. Com `vigilancia.catalogo` (`podeParametros`), os
+ * parâmetros da semana 27: prazo e meta da negativa, semanas incompletas, validade da prévia e evento inusitado.
  */
-export function AbaNegativa({ podeConfigurar }: { podeConfigurar: boolean }) {
+export function AbaNegativa({ podeConfigurar, podeParametros = false }: { podeConfigurar: boolean; podeParametros?: boolean }) {
   const [secao, setSecao] = useState('grade');
-  if (!podeConfigurar) return <NegativaGrade podeConfigurar={false} />;
+  if (!podeConfigurar && !podeParametros) return <NegativaGrade podeConfigurar={false} />;
+  const abas = [
+    { value: 'grade', label: 'Grade das unidades' },
+    ...(podeConfigurar ? [{ value: 'unidades', label: 'Unidades notificantes e responsáveis' }] : []),
+    ...(podeParametros ? [{ value: 'parametros', label: 'Prazos e parâmetros' }] : []),
+  ];
   return (
-    <Tabs
-      value={secao}
-      onValueChange={setSecao}
-      tabs={[
-        { value: 'grade', label: 'Grade das unidades' },
-        { value: 'unidades', label: 'Unidades notificantes e responsáveis' },
-      ]}
-    >
+    <Tabs aria-label="Seções da notificação negativa" value={secao} onValueChange={setSecao} tabs={abas}>
       <TabPanel value="grade">
-        <NegativaGrade podeConfigurar />
+        <NegativaGrade podeConfigurar={podeConfigurar} />
       </TabPanel>
-      <TabPanel value="unidades">
-        <NegativaUnidades />
-      </TabPanel>
+      {podeConfigurar && (
+        <TabPanel value="unidades">
+          <NegativaUnidades />
+        </TabPanel>
+      )}
+      {podeParametros && (
+        <TabPanel value="parametros">
+          <ParametrosVigilancia />
+        </TabPanel>
+      )}
     </Tabs>
   );
 }

@@ -1,5 +1,5 @@
-import { HttpStatus, Injectable, Logger } from '@nestjs/common';
-import type { TenantPrisma } from '@omnisaude/database';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
+import type { MasterClient, TenantPrisma } from '@omnisaude/database';
 import {
   analisarGrade,
   deslocarSemana,
@@ -7,6 +7,7 @@ import {
   intervaloDaSemana,
   localDateString,
   prazoDaNegativa,
+  regularidadeDoMunicipio,
   ROLE_LABELS,
   roleHasPermission,
   semanaDaData,
@@ -15,7 +16,9 @@ import {
   SISTEMA_INFO,
   situacaoDaSemana,
   textoDoAtesto,
+  type AnaliseGrade,
   type AtestoNegativa,
+  type CelulaGrade,
   type ColunaGrade,
   type ConsultaGradeNegativa,
   type CorpoAbrirPeriodoNotificante,
@@ -32,6 +35,7 @@ import {
   type RespostaMinhasNegativas,
   type RespostaOk,
   type Role,
+  type SemanaDoMunicipio,
   type SemanaParaAtestar,
   type SistemaOficial,
   type StatusAtesto,
@@ -41,8 +45,10 @@ import {
 } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
+import { MASTER_DB } from '../../core/database';
 import { conflict, DomainError, forbidden, notFound } from '../../core/errors';
 import { formatDateTime, renderDocument } from '../signatures/pdf';
+import { municipioDoTenant } from './importacao/apoio';
 
 type Db = TenantPrisma.TransactionClient;
 
@@ -57,6 +63,10 @@ const chave = (unitId: string, semana: string) => `${unitId}|${semana}`;
 const TIPOS_FORA_DA_NEGATIVA = ['FARMACIA_CENTRAL', 'ALMOXARIFADO', 'VIGILANCIA_SAUDE'] as const;
 const intervalo = (s: string) => intervaloDaSemana(Number(s.slice(0, 4)), Number(s.slice(4)));
 const listaNumeros = (refs: { numero: string }[]) => refs.map((r) => r.numero).join(', ');
+/** O papel atesta a negativa (abre a tela e passa no guarda do atesto). */
+const atestaNegativa = (role: string) => roleHasPermission(role as Role, 'notificacao.negativa');
+/** Nomes numa frase: "A", "A e B", "A, B e C". */
+const emFrase = (nomes: string[]) => (nomes.length <= 1 ? (nomes[0] ?? '') : `${nomes.slice(0, -1).join(', ')} e ${nomes[nomes.length - 1]}`);
 
 /** Semana AAAASS que existe no calendário epidemiológico. */
 function exigirSemana(semana: string) {
@@ -126,7 +136,10 @@ export class NegativaService {
   /** Relógio do serviço (os testes trocam por uma data fixa). */
   agora: () => Date = () => new Date();
 
-  constructor(private readonly audit: AuditService) {}
+  constructor(
+    private readonly audit: AuditService,
+    @Inject(MASTER_DB) private readonly master: MasterClient,
+  ) {}
 
   // ───────────────────────────── fatos da unidade na semana ─────────────────────────────
 
@@ -223,6 +236,20 @@ export class NegativaService {
     return l ? `${ROLE_LABELS[l.role as Role] ?? l.role}, CBO ${l.cbo}` : '';
   }
 
+  /**
+   * A lotação ativa na unidade que vale para o atesto: só papel com `notificacao.negativa` (a designação de quem perdeu
+   * esse papel na unidade não vale); a do papel da sessão primeiro.
+   */
+  private lotacaoQueAtesta<T extends { role: string }>(lotacoes: T[], papelDaSessao: string): T | null {
+    const validas = lotacoes.filter((l) => atestaNegativa(l.role));
+    return validas.find((l) => l.role === papelDaSessao) ?? validas[0] ?? null;
+  }
+
+  /** Por que a designação não vale (sem lotação ativa, ou lotação só com papel que não atesta). */
+  private semLotacaoQueAtesta(temLotacao: boolean) {
+    return temLotacao ? 'Seu papel nesta unidade não atesta a negativa: a designação só vale com lotação em papel que atesta' : 'Sem lotação ativa na unidade: a designação não vale até a lotação ser reativada';
+  }
+
   private atestoDto(r: LinhaAtesto): AtestoNegativa {
     return {
       id: r.id,
@@ -283,7 +310,8 @@ export class NegativaService {
     ]);
     const nome = usuario.socialName ?? usuario.name;
     const lista: UnidadeDoResponsavel[] = designacoes.map((d) => {
-      const lotacao = lotacoes.find((l) => l.unitId === d.unitId && l.role === ctx.session.role) ?? lotacoes.find((l) => l.unitId === d.unitId) ?? null;
+      const daUnidade = lotacoes.filter((l) => l.unitId === d.unitId);
+      const lotacao = this.lotacaoQueAtesta(daUnidade, ctx.session.role);
       const doPeriodo = periodos.filter((p) => p.unitId === d.unitId);
       const linhas: SemanaParaAtestar[] = semanas.map((s) => {
         const { inicio, fim } = intervalo(s);
@@ -294,13 +322,7 @@ export class NegativaService {
         const positivas = f.notificacoes.length + f.surtos.length + f.registros.length;
         const situacao = situacaoDaSemana({ notificante, positivas, negativa: f.atesto ? { atrasada: f.atesto.late } : f.negativasSinan.length ? { atrasada: false } : null, emCurso: false, prazoPassou });
         const impedimento = this.impedimento(f);
-        const motivo = !lotacao
-          ? 'Sem lotação ativa na unidade: a designação não vale até a lotação ser reativada'
-          : !notificante
-            ? 'A unidade não era notificante nesta semana'
-            : f.atesto
-              ? 'Semana já atestada'
-              : (impedimento?.mensagem ?? null);
+        const motivo = !lotacao ? this.semLotacaoQueAtesta(daUnidade.length > 0) : !notificante ? 'A unidade não era notificante nesta semana' : f.atesto ? 'Semana já atestada' : (impedimento?.mensagem ?? null);
         const doAtesto = atestos.filter((a) => a.unitId === d.unitId && a.epiWeek === s);
         const atesto = doAtesto.find((a) => a.status === 'ATESTADA') ?? doAtesto[0] ?? null;
         return {
@@ -323,7 +345,7 @@ export class NegativaService {
 
   /**
    * POST /vigilancia/negativas: só semana terminada e dentro de `semanasAtesto`; exige designação ativa (titular ou
-   * substituto, com lotação ativa na unidade) ou, em nome da unidade, `vigilancia.consolidacao` com motivo. RQ002:
+   * substituto, com lotação ativa na unidade em papel que atesta) ou, em nome da unidade, `vigilancia.consolidacao` com motivo. RQ002:
    * recusa a semana com notificação, rascunho, surto ou registro oficial da unidade. Atesto ATESTADA já existente: 409.
    */
   async atestar(ctx: RequestContext, corpo: CorpoAtestarNegativa): Promise<AtestoNegativa> {
@@ -345,8 +367,8 @@ export class NegativaService {
         ctx.db.userAssignment.findMany({ where: { userId: ctx.session.userId, unitId: unidade.id, active: true }, select: { role: true, cbo: true } }),
       ]);
       if (!designacao) throw forbidden('Você não é responsável designado pela notificação negativa desta unidade');
-      lotacao = lotacoes.find((l) => l.role === ctx.session.role) ?? lotacoes[0] ?? null;
-      if (!lotacao) throw forbidden('Sem lotação ativa na unidade: a designação não vale até a lotação ser reativada');
+      lotacao = this.lotacaoQueAtesta(lotacoes, ctx.session.role);
+      if (!lotacao) throw forbidden(this.semLotacaoQueAtesta(lotacoes.length > 0));
     }
     const semanaAtual = semanaEpidemiologica(agora, tz).codigo;
     if (corpo.semana >= semanaAtual) throw new DomainError('SEMANA_EM_CURSO', 'Só se atesta semana epidemiológica já terminada', HttpStatus.UNPROCESSABLE_ENTITY);
@@ -468,7 +490,8 @@ export class NegativaService {
   /**
    * RQ003: cancela o ATESTADA da unidade e semana que passou a ter notificação NOTIFICADA/ENCERRADA, surto ou registro
    * oficial individual ou de surto, gravando a causa; casa os atestos com as negativas importadas (NNEGANET, pelo CNES
-   * e SEM_NOT). Sem filtro, olha todos os atestos vigentes. Devolve quantos atestos foram cancelados. Chamado pela
+   * e SEM_NOT) e desfaz (ou troca) o casamento com a negativa que saiu do Sinan (ausente da última exportação ou
+   * excluída). Sem filtro, olha todos os atestos vigentes. Devolve quantos atestos foram cancelados. Chamado pela
    * importação, pelo surto, pela confirmação da notificação e pelo job 'vigilancia'.
    */
   async reconciliar(db: Db, filtro?: { unitIds?: string[]; semanas?: string[] }): Promise<number> {
@@ -503,8 +526,11 @@ export class NegativaService {
         canceladas += count;
         continue;
       }
-      const negativa = f.negativasSinan[0];
-      if (!a.officialRecordId && negativa) await db.negativeReport.updateMany({ where: { id: a.id, officialRecordId: null }, data: { officialRecordId: negativa.id } });
+      // A negativa vigente do Sinan (fatos() já deixa de fora a ausente e a excluída): mantém a casada se ainda vale;
+      // senão casa com outra da mesma unidade e semana, ou desfaz.
+      if (a.officialRecordId && f.negativasSinan.some((x) => x.id === a.officialRecordId)) continue;
+      const novo = f.negativasSinan[0]?.id ?? null;
+      if (novo !== a.officialRecordId) await db.negativeReport.updateMany({ where: { id: a.id, officialRecordId: a.officialRecordId }, data: { officialRecordId: novo } });
     }
     if (canceladas) this.logger.log(`Notificação negativa: ${canceladas} atesto(s) cancelado(s) pela RQ003`);
     return canceladas;
@@ -513,15 +539,55 @@ export class NegativaService {
   // ───────────────────────────── grade ─────────────────────────────
 
   /**
+   * Semanas com alguma informação no município inteiro, para a regularidade (PRC nº 6/2017, art. 454-B): notificação
+   * confirmada ou encerrada e surto não descartado de qualquer unidade (a da vigilância também), registro oficial
+   * individual, de surto ou negativa do município (pelo IBGE da notificação, ou pelo CNES de uma unidade do cadastro)
+   * com qualquer CNES, e atesto vigente. Uma consulta agrupada por tabela.
+   */
+  private async semanasComInformacao(db: Db, semanas: string[], ibge: string): Promise<Set<string>> {
+    const ordenadas = [...new Set(semanas)].sort();
+    const com = new Set<string>();
+    if (!ordenadas.length) return com;
+    const inicio = intervalo(ordenadas[0]!).inicio;
+    const fim = intervalo(ordenadas[ordenadas.length - 1]!).fim;
+    const cnes = (await db.unit.findMany({ select: { cnes: true } })).map((u) => u.cnes);
+    // Sem o IBGE de 6 dígitos, só o CNES do cadastro diz que o registro é do município ("" casaria com qualquer um).
+    const ibge6 = /^\d{6}/.test(ibge) ? ibge.slice(0, 6) : null;
+    const [notificacoes, surtos, registros, atestos] = await Promise.all([
+      db.notification.groupBy({ by: ['epiWeekNotified'], where: { status: { in: ['NOTIFICADA', 'ENCERRADA'] }, epiWeekNotified: { in: ordenadas } } }),
+      db.outbreak.groupBy({ by: ['notifiedOn'], where: { status: { not: 'DESCARTADO' }, notifiedOn: { gte: comoData(inicio), lte: comoData(fim) } } }),
+      db.officialRecord.groupBy({
+        by: ['epiWeekNotified'],
+        where: {
+          type: { in: ['INDIVIDUAL', 'SURTO', 'NEGATIVA'] },
+          excluded: false,
+          absentSince: null,
+          epiWeekNotified: { in: ordenadas },
+          OR: [...(ibge6 ? [{ municipalityIbge: { startsWith: ibge6 } }] : []), { unitId: { not: null } }, { unitCnes: { in: cnes } }],
+        },
+      }),
+      db.negativeReport.groupBy({ by: ['epiWeek'], where: { status: 'ATESTADA', epiWeek: { in: ordenadas } } }),
+    ]);
+    for (const n of notificacoes) if (n.epiWeekNotified) com.add(n.epiWeekNotified);
+    for (const o of surtos) com.add(semanaDaData(dataIso(o.notifiedOn)!).codigo);
+    for (const r of registros) if (r.epiWeekNotified) com.add(r.epiWeekNotified);
+    for (const a of atestos) com.add(a.epiWeek);
+    return com;
+  }
+
+  /**
    * GET /vigilancia/negativas/grade?semanas=12&ate=AAAASS: unidades notificantes × semanas com a situação e as fontes de
    * cada célula, a análise (silenciosas, só negativas, % por semana, regularidade municipal) e as diferenças com as
-   * negativas digitadas no Sinan.
+   * negativas digitadas no Sinan. A análise roda numa janela maior que a exibida (o maior entre as semanas pedidas e os
+   * parâmetros da análise, mais as semanas ainda abertas no fim); a resposta traz só as semanas pedidas. A
+   * regularidade usa os fatos do município inteiro, não só as linhas da grade.
    */
   async grade(ctx: RequestContext, consulta: ConsultaGradeNegativa): Promise<RespostaGradeNegativa> {
     const agora = this.agora();
     const tz = ctx.tenant.timeZone;
     const cfg = ctx.tenant.settings.vigilancia.negativa;
     const semanaAtual = semanaEpidemiologica(agora, tz).codigo;
+    const hoje = localDateString(agora, tz);
     const avisos: string[] = [];
     let ate = consulta.ate ?? semanaAtual;
     exigirSemana(ate);
@@ -530,63 +596,99 @@ export class NegativaService {
       ate = semanaAtual;
     }
     const n = Math.min(53, Math.max(1, Math.trunc(consulta.semanas ?? 12)));
-    const semanas = semanasEntre(deslocarSemana(ate, -(n - 1)), ate);
-    const colunas: ColunaGrade[] = semanas.map((s) => ({ semana: s, ...intervalo(s), fechada: s < semanaAtual, prazo: prazoDaNegativa(s, cfg, tz).toISOString() }));
-    const inicio = colunas[0]!.inicio;
-    const fim = colunas[colunas.length - 1]!.fim;
-    const periodos = await ctx.db.notifyingUnit.findMany({
-      where: { since: { lte: comoData(fim) }, OR: [{ until: null }, { until: { gte: comoData(inicio) } }] },
-      include: { unit: { select: { id: true, name: true, cnes: true, type: true } } },
-    });
+    const prazo = (s: string) => prazoDaNegativa(s, cfg, tz);
+    // Aberta: em curso ou antes do prazo do atesto. No fim da grade, no máximo a em curso e a anterior.
+    const aberta = (s: string) => s >= semanaAtual || agora.getTime() <= prazo(s).getTime();
+    let abertas = 0;
+    for (let s = ate; abertas < 3 && aberta(s); s = deslocarSemana(s, -1)) abertas++;
+    // Teto: os parâmetros vão até 52 semanas (PATCH /vigilancia/configuracoes); um valor gravado fora disso não estoura a consulta.
+    const total = Math.min(60, Math.max(n, cfg.semanasSoNegativa, cfg.semanasSilenciosa, cfg.semanasRegularidadeMunicipal) + abertas);
+    const todas: ColunaGrade[] = semanasEntre(deslocarSemana(ate, -(total - 1)), ate).map((s) => ({ semana: s, ...intervalo(s), fechada: s < semanaAtual, prazo: prazo(s).toISOString() }));
+    const desloc = todas.length - n;
+    const colunas = todas.slice(desloc);
+    const inicio = todas[0]!.inicio;
+    const fim = todas[todas.length - 1]!.fim;
+    const [periodos, municipio] = await Promise.all([
+      ctx.db.notifyingUnit.findMany({
+        where: { since: { lte: comoData(fim) }, OR: [{ until: null }, { until: { gte: comoData(inicio) } }] },
+        include: { unit: { select: { id: true, name: true, cnes: true, type: true, active: true } } },
+      }),
+      municipioDoTenant(this.master, ctx.tenant.id),
+    ]);
     const unidades = [...new Map(periodos.map((p) => [p.unitId, p.unit])).values()].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'));
-    const fatos = await this.fatos(ctx.db, unidades, semanas);
-    const atestadoSemSinan: DiferencaSinan[] = [];
-    const sinanSemAtesto: DiferencaSinan[] = [];
-    const linhas: LinhaGradeNegativa[] = unidades.map((u) => {
+    const semanas = todas.map((c) => c.semana);
+    const [fatos, comInformacao] = await Promise.all([this.fatos(ctx.db, unidades, semanas), this.semanasComInformacao(ctx.db, semanas, municipio.ibge)]);
+    // Todas as semanas da análise; as linhas exibidas são as das unidades notificantes em alguma semana pedida.
+    const todasAsLinhas = unidades.map((u) => {
       const doPeriodo = periodos.filter((p) => p.unitId === u.id);
-      const ref = { id: u.id, nome: u.name, cnes: u.cnes };
-      return {
-        unidade: ref,
-        tipoUnidade: u.type,
-        celulas: colunas.map((c) => {
-          const f = fatos.get(chave(u.id, c.semana)) ?? vazio();
-          const notificante = this.notificante(doPeriodo, c.semana);
-          const negativaSinan = f.negativasSinan.length > 0;
-          const situacao = situacaoDaSemana({
-            notificante,
+      const celulas: CelulaGrade[] = todas.map((c) => {
+        const f = fatos.get(chave(u.id, c.semana)) ?? vazio();
+        const negativaSinan = f.negativasSinan.length > 0;
+        return {
+          semana: c.semana,
+          situacao: situacaoDaSemana({
+            notificante: this.notificante(doPeriodo, c.semana),
             positivas: f.notificacoes.length + f.surtos.length + f.registros.length,
             negativa: f.atesto ? { atrasada: f.atesto.late } : negativaSinan ? { atrasada: false } : null,
             emCurso: c.semana >= semanaAtual,
             prazoPassou: agora.getTime() > Date.parse(c.prazo),
-          });
-          if (f.atesto && !f.atesto.officialRecordId && !negativaSinan) atestadoSemSinan.push({ unidade: ref, semana: c.semana, atestoId: f.atesto.id, registroOficialId: null });
-          if (negativaSinan && !f.atesto) sinanSemAtesto.push({ unidade: ref, semana: c.semana, atestoId: null, registroOficialId: f.negativasSinan[0]!.id });
-          return {
-            semana: c.semana,
-            situacao,
-            fontes: {
-              notificacoes: f.notificacoes.length,
-              surtos: f.surtos.length,
-              registrosOficiais: f.registros.length,
-              atesto: f.atesto ? { id: f.atesto.id, atrasado: f.atesto.late } : null,
-              negativaSinan,
-            },
-          };
-        }),
-      };
+          }),
+          fontes: {
+            notificacoes: f.notificacoes.length,
+            surtos: f.surtos.length,
+            registrosOficiais: f.registros.length,
+            atesto: f.atesto ? { id: f.atesto.id, atrasado: f.atesto.late } : null,
+            negativaSinan,
+          },
+        };
+      });
+      return { u, doPeriodo, celulas };
     });
-    const analise = analisarGrade(
-      linhas.map((l) => ({ unitId: l.unidade.id, semanas: l.celulas.map((c) => c.situacao) })),
+    const doMunicipio: SemanaDoMunicipio[] = todas.map((c) => ({
+      comInformacao: comInformacao.has(c.semana),
+      aberta: aberta(c.semana),
+      comNotificante: periodos.some((p) => this.notificante([p], c.semana)),
+    }));
+    const completa = analisarGrade(
+      todasAsLinhas.map((l) => ({ unitId: l.u.id, semanas: l.celulas.map((c) => c.situacao) })),
       cfg,
+      doMunicipio,
     );
-    if (!unidades.length) avisos.push('Nenhuma unidade notificante no período: configure as unidades notificantes.');
+    const exibidas = todasAsLinhas.filter((l) => l.celulas.slice(desloc).some((c) => c.situacao !== 'NAO_NOTIFICANTE'));
+    const ids = new Set(exibidas.map((l) => l.u.id));
+    const analise: AnaliseGrade = {
+      silenciosas: completa.silenciosas.filter((s) => ids.has(s.unitId)),
+      soNegativas: completa.soNegativas.filter((s) => ids.has(s.unitId)),
+      percentualPorSemana: completa.percentualPorSemana.slice(desloc).map((p, i) => ({ ...p, semana: i })),
+      regularidadeMunicipal: completa.regularidadeMunicipal,
+    };
+    // Diferenças com o Sinan, só nas semanas pedidas. O atesto sem negativa vigente no Sinan entra mesmo que já tenha
+    // casado com uma NNEGANET que depois saiu da exportação ou foi excluída.
+    const atestadoSemSinan: DiferencaSinan[] = [];
+    const sinanSemAtesto: DiferencaSinan[] = [];
+    const linhas: LinhaGradeNegativa[] = exibidas.map(({ u, celulas }) => {
+      const ref = { id: u.id, nome: u.name, cnes: u.cnes };
+      for (const c of colunas) {
+        const f = fatos.get(chave(u.id, c.semana)) ?? vazio();
+        if (f.atesto && !f.negativasSinan.length) atestadoSemSinan.push({ unidade: ref, semana: c.semana, atestoId: f.atesto.id, registroOficialId: null });
+        if (f.negativasSinan.length && !f.atesto) sinanSemAtesto.push({ unidade: ref, semana: c.semana, atestoId: null, registroOficialId: f.negativasSinan[0]!.id });
+      }
+      return { unidade: ref, tipoUnidade: u.type, ativa: u.active, celulas: celulas.slice(desloc) };
+    });
+    if (!linhas.length) avisos.push('Nenhuma unidade notificante no período: configure as unidades notificantes.');
     const semConfiguracao = await ctx.db.unit.count({ where: { active: true, type: { notIn: [...TIPOS_FORA_DA_NEGATIVA] }, notifyingPeriods: { none: {} } } });
     if (semConfiguracao) avisos.push(`${semConfiguracao} unidade(s) ativa(s) sem período de unidade notificante: confira a configuração.`);
-    const fechadas = colunas.filter((c) => c.fechada).length;
-    if (fechadas < cfg.semanasRegularidadeMunicipal)
-      avisos.push(
-        `A grade tem ${fechadas} semana(s) fechada(s): a regularidade do município (${cfg.semanasRegularidadeMunicipal} semanas seguidas sem informação) só se avalia com pelo menos ${cfg.semanasRegularidadeMunicipal}.`,
-      );
+    // Unidade desativada com o período ainda aberto: continua na grade (silenciosa e no denominador) até a vigilância
+    // encerrar o período na data da desativação.
+    const inativas = exibidas.filter((l) => !l.u.active && l.doPeriodo.some((p) => !p.until || dataIso(p.until)! > hoje)).map((l) => l.u.name);
+    if (inativas.length === 1) avisos.push(`${inativas[0]} está inativa e com período de notificante aberto: entra como silenciosa e no percentual. Encerre o período na data da desativação.`);
+    else if (inativas.length) avisos.push(`${emFrase(inativas)} estão inativas e com período de notificante aberto: entram como silenciosas e no percentual. Encerre o período na data da desativação.`);
+    const regularidade = regularidadeDoMunicipio(doMunicipio, cfg.semanasRegularidadeMunicipal);
+    if (regularidade.semanasSemInformacao > 0) {
+      avisos.push('A regularidade não lê as notificações de epizootia nem de tracoma (o OmniSaúde não importa EPIZONET nem NTRACOMA). Confira no Sinan.');
+      if (regularidade.semDados && regularidade.parada !== null)
+        avisos.push(`A regularidade conta desde a SE ${rotuloSemana(deslocarSemana(todas[regularidade.parada]!.semana, 1))}: antes dela, nenhuma unidade era notificante.`);
+    }
     return { colunas, linhas, analise, metaPercentual: cfg.metaPercentual, atestadoSemSinan, sinanSemAtesto, avisos };
   }
 
@@ -632,6 +734,9 @@ export class NegativaService {
           designadoEm: r.designatedAt.toISOString(),
           designadoPor: nomeDe.get(r.designatedBy) ?? null,
         }));
+      const avisos: string[] = [];
+      // A desativação no cadastro não fecha o período: a unidade seguiria silenciosa na grade e no percentual.
+      if (!u.active && periodos.some((p) => p.ate === null || p.ate > hoje)) avisos.push('Unidade inativa com período de notificante aberto. Encerre o período na data da desativação.');
       return {
         unidade: { id: u.id, nome: u.name, cnes: u.cnes },
         tipoUnidade: u.type,
@@ -640,6 +745,7 @@ export class NegativaService {
         periodos,
         responsaveis,
         semConfiguracao: u.active && periodos.length === 0 && !(TIPOS_FORA_DA_NEGATIVA as readonly string[]).includes(u.type),
+        avisos,
       };
     });
   }
@@ -697,46 +803,59 @@ export class NegativaService {
 
   /**
    * GET /vigilancia/unidades-notificantes/:unitId/lotados?busca=: usuários ativos com lotação ativa na unidade, para a
-   * busca da tela de designação (`vigilancia.consolidacao`). Busca por nome (sem diferenciar maiúsculas) ou CPF.
+   * busca da tela de designação (`vigilancia.consolidacao`), com a marca de quem pode atestar (papel com
+   * `notificacao.negativa` na unidade). Busca pelo nome (sem diferenciar maiúsculas); pelo CPF, só com os 11 dígitos
+   * e por igualdade: a vigilância não lê CPF de profissional, e o prefixo deixaria descobrir o CPF (o login) aos poucos.
    */
   async lotados(ctx: RequestContext, unitId: string, busca?: string): Promise<ListaUsuariosLotados> {
     const unidade = await ctx.db.unit.findUnique({ where: { id: unitId }, select: { id: true } });
     if (!unidade) throw notFound('Unidade');
     const termo = busca?.trim() ?? '';
     const digitos = termo.replace(/\D/g, '');
+    const porCpf = /^[\d.\-\s]+$/.test(termo) && digitos.length === 11;
     const usuarios = await ctx.db.user.findMany({
       where: {
         active: true,
         assignments: { some: { unitId, active: true } },
-        ...(termo
-          ? { OR: [{ name: { contains: termo, mode: 'insensitive' as const } }, { socialName: { contains: termo, mode: 'insensitive' as const } }, ...(digitos.length >= 3 ? [{ cpf: { startsWith: digitos } }] : [])] }
-          : {}),
+        ...(porCpf ? { cpf: digitos } : termo ? { OR: [{ name: { contains: termo, mode: 'insensitive' as const } }, { socialName: { contains: termo, mode: 'insensitive' as const } }] } : {}),
       },
       select: { id: true, name: true, socialName: true, assignments: { where: { unitId, active: true }, select: { role: true, cbo: true } } },
       orderBy: { name: 'asc' },
       take: 50,
     });
     const ativos = await ctx.db.notifyingUnitResponsible.findMany({ where: { unitId, until: null, userId: { in: usuarios.map((u) => u.id) } }, select: { userId: true, kind: true } });
-    return usuarios.map((u) => ({
-      userId: u.id,
-      nome: u.socialName ?? u.name,
-      papeis: [...new Set(u.assignments.map((a) => a.role))],
-      cbo: u.assignments[0]?.cbo ?? null,
-      responsavel: (ativos.find((a) => a.userId === u.id)?.kind as TipoResponsavelNegativa | undefined) ?? null,
-    }));
+    return usuarios.map((u) => {
+      const queAtesta = u.assignments.find((a) => atestaNegativa(a.role));
+      return {
+        userId: u.id,
+        nome: u.socialName ?? u.name,
+        papeis: [...new Set(u.assignments.map((a) => a.role))],
+        cbo: (queAtesta ?? u.assignments[0])?.cbo ?? null,
+        podeAtestar: !!queAtesta,
+        responsavel: (ativos.find((a) => a.userId === u.id)?.kind as TipoResponsavelNegativa | undefined) ?? null,
+      };
+    });
   }
 
   /**
-   * POST /vigilancia/unidades-notificantes/:unitId/responsaveis: o usuário precisa de lotação ativa na unidade e a
-   * unidade precisa ser notificante; um titular ativo por unidade (substitutos, quantos forem precisos).
+   * POST /vigilancia/unidades-notificantes/:unitId/responsaveis: o usuário precisa de lotação ativa na unidade, com
+   * papel que atesta a negativa (`notificacao.negativa`: quem não tem esse papel não abre a tela nem atesta, e
+   * travaria a vaga de titular), e a unidade precisa ser notificante; um titular ativo por unidade (substitutos,
+   * quantos forem precisos).
    */
   async designarResponsavel(ctx: RequestContext, unitId: string, corpo: CorpoDesignarResponsavel): Promise<UnidadeNotificante> {
     const unidade = await ctx.db.unit.findUnique({ where: { id: unitId }, select: { id: true, cnes: true } });
     if (!unidade) throw notFound('Unidade');
-    const usuario = await ctx.db.user.findUnique({ where: { id: corpo.userId }, select: { id: true, active: true, name: true } });
+    const usuario = await ctx.db.user.findUnique({ where: { id: corpo.userId }, select: { id: true, active: true, name: true, socialName: true } });
     if (!usuario || !usuario.active) throw notFound('Usuário');
-    const lotado = await ctx.db.userAssignment.count({ where: { userId: usuario.id, unitId, active: true } });
-    if (!lotado) throw new DomainError('SEM_LOTACAO', 'O usuário precisa ter lotação ativa na unidade', HttpStatus.UNPROCESSABLE_ENTITY);
+    const lotacoes = await ctx.db.userAssignment.findMany({ where: { userId: usuario.id, unitId, active: true }, select: { role: true } });
+    if (!lotacoes.length) throw new DomainError('SEM_LOTACAO', 'O usuário precisa ter lotação ativa na unidade', HttpStatus.UNPROCESSABLE_ENTITY);
+    if (!lotacoes.some((l) => atestaNegativa(l.role)))
+      throw new DomainError(
+        'PAPEL_SEM_NEGATIVA',
+        `O papel de ${usuario.socialName ?? usuario.name} nesta unidade (${emFrase([...new Set(lotacoes.map((l) => ROLE_LABELS[l.role as Role] ?? l.role))])}) não atesta a negativa. Escolha alguém com papel que atesta.`,
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
     const periodo = await ctx.db.notifyingUnit.count({ where: { unitId, until: null } });
     if (!periodo) throw new DomainError('NAO_NOTIFICANTE', 'A unidade não é notificante: abra o período antes de designar responsáveis', HttpStatus.UNPROCESSABLE_ENTITY);
     try {

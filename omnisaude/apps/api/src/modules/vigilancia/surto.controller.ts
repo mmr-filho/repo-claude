@@ -113,10 +113,15 @@ const descartarSchema = z.object({ motivo: z.string().trim().min(10).max(1000) }
 const numeroSchema = z.object({ numero: z.string().trim().min(1).max(20) });
 const dispensarSchema = z.object({ assinatura: z.string().trim().min(3).max(300), motivo: z.string().trim().min(10).max(1000) });
 const listarSchema = z.object({ status: z.enum(['ABERTO', 'ENCERRADO', 'DESCARTADO']).optional() });
+/** Busca das notificações e dos registros oficiais para a planilha: grupo, período, texto e o surto (para tirar os que já estão nele). */
+const candidatasSchema = z
+  .object({ grupo: grupo.optional(), de: dia.optional(), ate: dia.optional(), busca: z.string().trim().min(2).max(60).optional(), surtoId: uuid.optional() })
+  .refine((q) => !q.de || !q.ate || q.de <= q.ate, { message: 'O início do período não pode ser depois do fim', path: ['ate'] });
 
 /**
  * Surtos e sugestões de surto (VIG-1c, §4.3; frente F4). Permissão `vigilancia.surto` (o núcleo só alcança a unidade
- * em que está lotado). `surtos/sugestoes` vem antes de `surtos/:id` (com ParseUUIDPipe, a ordem inversa responde 400).
+ * em que está lotado). `surtos/sugestoes`, `surtos/candidatas` e `surtos/registros` vêm antes de `surtos/:id` (com
+ * ParseUUIDPipe, a ordem inversa responde 400).
  */
 @Controller('vigilancia')
 export class SurtoController {
@@ -145,6 +150,20 @@ export class SurtoController {
   @RequirePermission('vigilancia.surto')
   dispensar(@Ctx() ctx: RequestContext, @Body(zv(dispensarSchema)) body: z.infer<typeof dispensarSchema>) {
     return this.surtos.dispensarSugestao(ctx, body);
+  }
+
+  /** Notificações candidatas à planilha (além das mais recentes): grupo, período do conhecimento e texto. */
+  @Get('surtos/candidatas')
+  @RequirePermission('vigilancia.surto')
+  candidatas(@Ctx() ctx: RequestContext, @Query(zv(candidatasSchema)) q: z.infer<typeof candidatasSchema>) {
+    return this.surtos.notificacoesCandidatas(ctx, q);
+  }
+
+  /** Registros oficiais individuais candidatos à planilha: grupo, período da notificação e texto. */
+  @Get('surtos/registros')
+  @RequirePermission('vigilancia.surto')
+  registros(@Ctx() ctx: RequestContext, @Query(zv(candidatasSchema)) q: z.infer<typeof candidatasSchema>) {
+    return this.surtos.registrosCandidatos(ctx, q);
   }
 
   @Get('surtos/:id')

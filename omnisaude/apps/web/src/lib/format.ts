@@ -15,6 +15,38 @@ export function fmtDateTime(value: string | Date | null | undefined): string {
   return new Date(value).toLocaleString('pt-BR', { timeZone: tz, dateStyle: 'short', timeStyle: 'short' });
 }
 
+/** Fuso válido para o Intl; um fuso desconhecido (ou vazio) cai no de Brasília. */
+function fusoOuPadrao(timeZone: string | null | undefined): string {
+  if (!timeZone) return tz;
+  try {
+    new Intl.DateTimeFormat('pt-BR', { timeZone });
+    return timeZone;
+  } catch {
+    return tz;
+  }
+}
+
+/**
+ * Data e hora no fuso informado (o da instituição, `session.me.tenant.timeZone`), no mesmo formato do `fmtDateTime`.
+ * Para os instantes que a API calcula no fuso da instituição (prazo da negativa, prazos do surto), a tela tem de
+ * mostrar a mesma hora. Sem fuso, o de Brasília.
+ */
+export function fmtDateTimeTz(value: string | Date | null | undefined, timeZone: string | null | undefined): string {
+  if (!value) return '—';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleString('pt-BR', { timeZone: fusoOuPadrao(timeZone), dateStyle: 'short', timeStyle: 'short' });
+}
+
+/** Data de um instante no fuso informado (a data civil AAAA-MM-DD sai como está, sem fuso). */
+export function fmtDateTz(value: string | Date | null | undefined, timeZone: string | null | undefined): string {
+  if (!value) return '—';
+  const civil = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const d = civil ? new Date(`${value}T12:00:00Z`) : new Date(value);
+  if (Number.isNaN(d.getTime())) return '—';
+  return d.toLocaleDateString('pt-BR', { timeZone: civil ? 'UTC' : fusoOuPadrao(timeZone) });
+}
+
 export function fmtTime(value: string | Date | null | undefined): string {
   if (!value) return '—';
   return new Date(value).toLocaleTimeString('pt-BR', { timeZone: tz, hour: '2-digit', minute: '2-digit' });

@@ -1,4 +1,16 @@
-import { arredondar, ROTULO_FONTE_POPULACAO, type EixoDiagrama, type NivelTerritorio, type PopulacaoUsada, type ReceitaCanal, type RespostaDiagrama, type StatusSemana } from '@omnisaude/shared';
+import {
+  arredondar,
+  ROTULO_FONTE_POPULACAO,
+  semanasNoAno,
+  type CanalDoAno,
+  type CoberturaAno,
+  type EixoDiagrama,
+  type NivelTerritorio,
+  type PopulacaoUsada,
+  type ReceitaCanal,
+  type RespostaDiagrama,
+  type StatusSemana,
+} from '@omnisaude/shared';
 
 /*
  * Dados da aba Diagrama de controle, sem React (testados em apps/web/test/diagrama-dados.test.ts). O gráfico e a
@@ -187,6 +199,32 @@ export function consultaDiagrama(f: { grupo: string; nivel: NivelTerritorio; ter
   const q = new URLSearchParams({ grupo: f.grupo, nivel: f.nivel, ano: String(f.ano), eixo: f.eixo });
   if (f.nivel !== 'MUNICIPIO' && f.territorio) q.set('territorio', f.territorio);
   return `?${q.toString()}`;
+}
+
+/** "2025", "2025 e 2026", "2024, 2025 e 2026". */
+const listaDeAnos = (anos: number[]) => (anos.length > 1 ? `${anos.slice(0, -1).join(', ')} e ${anos[anos.length - 1]}` : String(anos[0] ?? ''));
+
+/**
+ * Pode congelar o canal do ano? Não quando a janela de referência da receita gravada inclui ano ainda incompleto (o
+ * ano epidemiológico em curso ou com semanas incompletas): as SE recentes, com atraso de notificação, puxam os
+ * quartis para baixo e as que ainda não chegaram ficam com um ano a menos. A API recusa (422 REFERENCIA_INCOMPLETA).
+ */
+export function congelamentoDoCanal(c: Pick<CanalDoAno, 'ano'> & { referenciaIncompleta?: number[] | null }): { pode: boolean; motivo: string | null } {
+  const anos = [...new Set(c.referenciaIncompleta ?? [])].sort((a, b) => a - b);
+  if (!anos.length) return { pode: true, motivo: null };
+  const ultimo = anos[anos.length - 1]!;
+  const plural = anos.length > 1;
+  return {
+    pode: false,
+    motivo: `O canal de ${c.ano} usaria ${listaDeAnos(anos)} na referência, ${plural ? 'anos ainda incompletos' : 'ano ainda incompleto'} (em curso ou com semanas incompletas). Congele depois que a SE ${String(semanasNoAno(ultimo)).padStart(2, '0')}/${ultimo} estiver completa.`,
+  };
+}
+
+/** Selo da cobertura do ano: o ano todo, só em parte (as demais SE ficam fora do canal) ou nenhuma. */
+export function seloCobertura(c: Pick<CoberturaAno, 'coberto' | 'parcial' | 'semanasCobertas'>): { texto: string; tom: 'green' | 'amber' | 'slate' } {
+  if (!c.coberto) return { texto: 'Sem cobertura', tom: 'slate' };
+  if (c.parcial) return { texto: `Coberto em parte (${c.semanasCobertas} SE)`, tom: 'amber' };
+  return { texto: 'Coberto', tom: 'green' };
 }
 
 /** Anos do seletor: do próximo ano (o eixo sazonal começa no meio do ano) até 2000, o piso da API. */

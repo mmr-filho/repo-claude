@@ -11,16 +11,16 @@ import { Field, Select, Textarea } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { TabPanel, Tabs } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
-import { api, errorMessage, saveBlob } from '@/lib/api';
-import { fmtDateTime } from '@/lib/format';
-import { useApi } from '@/lib/hooks';
+import { api, ApiError, errorMessage, saveBlob } from '@/lib/api';
 import { useSession } from '@/lib/session';
-import { nomeDoAgravo } from './diagrama-agravos';
-import { anosDoSeletor, consultaDiagrama, descricaoDoGrafico, linhasDoDiagrama, receitaDoGrafico, semanasAcimaDoLs, textoSemanas, TOM_STATUS, ultimaSemanaCompleta } from './diagrama-dados';
+import { recusaPorSigilo, useConsulta } from './consulta';
+import { nomeDoAgravo, podeVerDiagramaSigiloso } from './diagrama-agravos';
+import { anosDoSeletor, congelamentoDoCanal, consultaDiagrama, descricaoDoGrafico, linhasDoDiagrama, receitaDoGrafico, semanasAcimaDoLs, textoSemanas, TOM_STATUS, ultimaSemanaCompleta } from './diagrama-dados';
 import { DiagramaGrafico } from './diagrama-grafico';
 import { DiagramaReceita } from './diagrama-receita';
 import { nomeDoTerritorio, SeletorAgravo, SeletorTerritorio, useOpcoesDeAgravo, useTerritorios } from './diagrama-seletores';
 import { DiagramaPopulacaoUsada, DiagramaTabelaSemanas } from './diagrama-tabela';
+import { useDataHora } from './fuso';
 import { PopulacaoEstimativas } from './populacao-estimativas';
 
 interface FiltroDiagrama {
@@ -33,15 +33,22 @@ interface FiltroDiagrama {
 
 const ROTULO_EIXO: Record<EixoDiagrama, string> = { EPIDEMIOLOGICO: 'Ano epidemiológico (SE 1 a 52/53)', SAZONAL: 'Ano sazonal (SE 27 a SE 26)' };
 
-/** Congelar o canal: a versão calculada agora passa a valer para o ano (a anterior fica guardada, inativa). */
+/**
+ * Congelar o canal: a versão calculada agora passa a valer para o ano (a anterior fica guardada, inativa). Não se
+ * oferece quando a referência inclui ano ainda incompleto (a API recusa com 422 REFERENCIA_INCOMPLETA, e a recusa
+ * aparece aqui se vier).
+ */
 function CongelarCanal({ aberto, onFechar, filtro, d, onCongelado }: { aberto: boolean; onFechar: () => void; filtro: FiltroDiagrama; d: RespostaDiagrama; onCongelado: () => void }) {
   const toast = useToast();
+  const { dataHora } = useDataHora();
   const anos = d.canais.map((c) => c.ano);
-  const [ano, setAno] = useState(filtro.ano);
+  // Começa no primeiro ano que se pode congelar (no eixo sazonal, o do filtro pode estar com a referência incompleta).
+  const [ano, setAno] = useState(() => (congelamentoDoCanal(d.canais.find((c) => c.ano === filtro.ano) ?? { ano: filtro.ano }).pode ? filtro.ano : (d.canais.find((c) => congelamentoDoCanal(c).pode)?.ano ?? filtro.ano)));
   const [nota, setNota] = useState('');
   const [busy, setBusy] = useState(false);
-  const [erro, setErro] = useState<string | null>(null);
+  const [erro, setErro] = useState<{ texto: string; recusa: boolean } | null>(null);
   const canal = d.canais.find((c) => c.ano === ano);
+  const bloqueio = congelamentoDoCanal(canal ?? { ano });
   return (
     <Dialog
       open={aberto}
@@ -51,7 +58,9 @@ function CongelarCanal({ aberto, onFechar, filtro, d, onCongelado }: { aberto: b
       footer={
         <Button
           loading={busy}
+          disabled={!bloqueio.pode}
           onClick={async () => {
+            if (!bloqueio.pode) return;
             setBusy(true);
             setErro(null);
             try {
@@ -67,7 +76,8 @@ function CongelarCanal({ aberto, onFechar, filtro, d, onCongelado }: { aberto: b
               onFechar();
               onCongelado();
             } catch (err) {
-              setErro(errorMessage(err));
+              // A recusa da API (referência incompleta, sem referência, agravo sigiloso) é aviso, não falha.
+              setErro({ texto: errorMessage(err), recusa: err instanceof ApiError && (err.status === 422 || err.status === 403) });
             } finally {
               setBusy(false);
             }
@@ -80,10 +90,18 @@ function CongelarCanal({ aberto, onFechar, filtro, d, onCongelado }: { aberto: b
       <div className="space-y-3">
         {anos.length > 1 && (
           <Field label="Ano do canal" htmlFor="dg-congelar-ano">
-            <Select id="dg-congelar-ano" value={ano} onChange={(e) => setAno(Number(e.target.value))}>
+            <Select
+              id="dg-congelar-ano"
+              value={ano}
+              onChange={(e) => {
+                setAno(Number(e.target.value));
+                setErro(null);
+              }}
+            >
               {anos.map((a) => (
                 <option key={a} value={a}>
                   {a}
+                  {congelamentoDoCanal(d.canais.find((c) => c.ano === a) ?? { ano: a }).pode ? '' : ' (referência incompleta)'}
                 </option>
               ))}
             </Select>
@@ -91,14 +109,23 @@ function CongelarCanal({ aberto, onFechar, filtro, d, onCongelado }: { aberto: b
         )}
         {canal && (
           <p className="text-sm text-slate-700">
-            {canal.congelado ? `Hoje vale a versão ${canal.congelado.versao}, congelada em ${fmtDateTime(canal.congelado.calculadoEm)}.` : 'O canal deste ano ainda não foi congelado.'} A nova versão usa a receita gravada
-            do agravo: {descreverReceita(d.configuracao.receita)}.
+            {canal.congelado ? `Hoje vale a versão ${canal.congelado.versao}, congelada em ${dataHora(canal.congelado.calculadoEm)}.` : 'O canal deste ano ainda não foi congelado.'} A nova versão usa a receita gravada do
+            agravo: {descreverReceita(d.configuracao.receita)}.
           </p>
+        )}
+        {bloqueio.motivo && (
+          <Alert tone="warn" title="Ainda não dá para congelar">
+            {bloqueio.motivo} Até lá, o diagrama mostra a prévia calculada na hora.
+          </Alert>
         )}
         <Field label="Nota (opcional)" htmlFor="dg-congelar-nota" hint="Ex.: canal aprovado na reunião do comitê de 05/02/2026.">
           <Textarea id="dg-congelar-nota" rows={3} maxLength={1000} value={nota} onChange={(e) => setNota(e.target.value)} />
         </Field>
-        {erro && <Alert tone="error">{erro}</Alert>}
+        {erro && (
+          <Alert tone={erro.recusa ? 'warn' : 'error'} title={erro.recusa ? 'O congelamento foi recusado' : undefined}>
+            {erro.texto}
+          </Alert>
+        )}
       </div>
     </Dialog>
   );
@@ -107,6 +134,7 @@ function CongelarCanal({ aberto, onFechar, filtro, d, onCongelado }: { aberto: b
 /** O gráfico, os avisos, a tabela por semana e a população usada. */
 function PainelDoDiagrama({ d, filtro, podeConfigurar, recarregar }: { d: RespostaDiagrama; filtro: FiltroDiagrama; podeConfigurar: boolean; recarregar: () => void }) {
   const toast = useToast();
+  const { dataHora } = useDataHora();
   const linhas = useMemo(() => linhasDoDiagrama(d), [d]);
   const receita = receitaDoGrafico(d);
   const ultima = ultimaSemanaCompleta(linhas);
@@ -200,13 +228,14 @@ function PainelDoDiagrama({ d, filtro, podeConfigurar, recarregar }: { d: Respos
                   </p>
                   {c.congelado && (
                     <p className="text-xs text-slate-600">
-                      Congelado em {fmtDateTime(c.congelado.calculadoEm)}
+                      Congelado em {dataHora(c.congelado.calculadoEm)}
                       {c.congelado.calculadoPor ? ` por ${c.congelado.calculadoPor}` : ''}
                       {c.congelado.nota ? `. Nota: ${c.congelado.nota}` : ''}
                     </p>
                   )}
                   <p>Anos de referência: {c.canal.anosReferencia.length ? c.canal.anosReferencia.join(', ') : 'nenhum'}.</p>
                   <p className="text-xs text-slate-600">{descreverReceita(c.canal.receita)}.</p>
+                  {podeConfigurar && !congelamentoDoCanal(c).pode && <p className="text-xs text-amber-800">{congelamentoDoCanal(c).motivo}</p>}
                 </div>
               ))}
               {d.configuracao.anosExcluidos.length > 0 && <p className="text-xs text-slate-600">Anos excluídos da referência: {d.configuracao.anosExcluidos.map((a) => `${a.ano} (${a.motivo})`).join('; ')}.</p>}
@@ -236,10 +265,13 @@ export function AbaDiagrama({ podeConfigurar }: { podeConfigurar: boolean }) {
   const tz = session.me?.tenant.timeZone ?? 'America/Sao_Paulo';
   const anoAtual = useMemo(() => semanaEpidemiologica(new Date(), tz).ano, [tz]);
   const { opcoes } = useOpcoesDeAgravo();
+  // Agravo sigiloso (HIV, sífilis, violências): só a vigilância municipal com acesso ao sigilo vê o diagrama.
+  const sigilosos = podeVerDiagramaSigiloso(session.me?.context.role, session.me?.permissions ?? []);
   const [filtro, setFiltro] = useState<FiltroDiagrama>({ grupo: 'dengue', nivel: 'MUNICIPIO', territorio: null, ano: anoAtual, eixo: 'EPIDEMIOLOGICO' });
   const [secao, setSecao] = useState('diagrama');
-  const pronto = !!filtro.grupo && (filtro.nivel === 'MUNICIPIO' || !!filtro.territorio);
-  const d = useApi<RespostaDiagrama>(pronto ? `/vigilancia/diagrama${consultaDiagrama(filtro)}` : null);
+  const restrito = !sigilosos && !!opcoes.find((o) => o.grupo === filtro.grupo)?.sigiloso;
+  const pronto = !!filtro.grupo && (filtro.nivel === 'MUNICIPIO' || !!filtro.territorio) && !restrito;
+  const d = useConsulta<RespostaDiagrama>(pronto ? `/vigilancia/diagrama${consultaDiagrama(filtro)}` : null);
   const territorios = useTerritorios(filtro.nivel);
   const nomeTerritorio = nomeDoTerritorio(territorios, filtro.nivel, filtro.territorio);
   const atual = d.data && mesmoFiltro(d.data, filtro) ? d.data : null;
@@ -250,7 +282,7 @@ export function AbaDiagrama({ podeConfigurar }: { podeConfigurar: boolean }) {
     <div className="space-y-4">
       <Card>
         <CardBody className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-          <SeletorAgravo id="dg-agravo" valor={filtro.grupo} opcoes={opcoes} onChange={(grupo) => setFiltro({ ...filtro, grupo })} />
+          <SeletorAgravo id="dg-agravo" valor={filtro.grupo} opcoes={opcoes} sigilosos={sigilosos} onChange={(grupo) => setFiltro({ ...filtro, grupo })} />
           <SeletorTerritorio prefixo="dg" nivel={filtro.nivel} territorio={filtro.territorio} territorios={territorios} onChange={(t) => setFiltro({ ...filtro, ...t })} />
           <Field label="Ano" htmlFor="dg-ano">
             <Select id="dg-ano" value={filtro.ano} onChange={(e) => setFiltro({ ...filtro, ano: Number(e.target.value) })}>
@@ -274,6 +306,7 @@ export function AbaDiagrama({ podeConfigurar }: { podeConfigurar: boolean }) {
       </Card>
 
       <Tabs
+        aria-label="Seções do diagrama de controle"
         value={secao}
         onValueChange={setSecao}
         tabs={[
@@ -283,10 +316,15 @@ export function AbaDiagrama({ podeConfigurar }: { podeConfigurar: boolean }) {
         ]}
       >
         <TabPanel value="diagrama">
-          {!pronto ? (
+          {restrito || (recusaPorSigilo(d.erro) && !d.loading) ? (
+            <Alert tone="warn" title="Agravo de acesso restrito">
+              {recusaPorSigilo(d.erro) && !restrito ? `${d.erro!.mensagem} ` : 'O diagrama de agravo sigiloso (HIV, aids, sífilis, violências) só sai para a vigilância municipal. '}
+              Escolha outro agravo.
+            </Alert>
+          ) : !pronto ? (
             <Alert tone="info">Escolha {filtro.nivel === 'BAIRRO' ? 'o bairro' : 'a localidade'} para ver o diagrama.</Alert>
-          ) : d.error && !d.loading ? (
-            <Alert tone="error">{d.error}</Alert>
+          ) : d.erro && !d.loading ? (
+            <Alert tone="error">{d.erro.mensagem}</Alert>
           ) : !mostrado ? (
             d.loading ? (
               <Spinner label="Calculando o canal…" />

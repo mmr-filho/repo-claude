@@ -168,6 +168,12 @@ export function grupoDoAgravo(agravo: string | null, ctx: Pick<ContextoNormaliza
 
 // ───────────── Sinan Net, Sinan Online e e-SUS Sinan ─────────────
 
+/**
+ * Agravos do Sinan Online. A dengue e a chikungunya são sempre do Sinan Online, venham do DENGON/CHIKON ou de um
+ * NINDINET antigo: assim a mesma notificação nunca vira dois registros (um em cada sistema do Sinan).
+ */
+export const AGRAVOS_SINAN_ONLINE: ReadonlySet<string> = new Set(['A90', 'A920']);
+
 /** Variáveis do Sinan guardadas em `extras` (o resto da ficha de investigação fica de fora). */
 const EXTRAS_SINAN = [
   'tp_not',
@@ -217,8 +223,8 @@ const UNIDADE_IDADE: Record<string, string> = { '1': 'hora', '2': 'dia', '3': 'm
 
 function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoNormalizacao {
   const tipoArq = ctx.tipo;
-  const sistema = SISTEMA_DO_ARQUIVO[tipoArq]!;
   const tipo = TIPO_REGISTRO_DO_ARQUIVO[tipoArq]!;
+  const sinanDbf = tipoArq !== 'ESUS_SINAN_CSV';
   const avisos: string[] = [];
   const colunas: string[] = [];
   const c = (campo: string, ...origens: string[]) => {
@@ -228,13 +234,17 @@ function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoN
   const numero = (texto(l, 'nu_notific') ?? '').replace(/\s+/g, '');
   if (!numero) return { recusado: 'Sem número da notificação (NU_NOTIFIC)' };
   if (numero.length > 20) return { recusado: 'Número da notificação com mais de 20 caracteres' };
+
+  let agravo = tipo === 'NEGATIVA' ? null : normalizarAgravo(texto(l, 'id_agravo'), tipoArq);
+  // Dengue não tem subcategoria no Sinan: 'A90.0' e 'A900' são o A90, em qualquer DBF.
+  if (sinanDbf && agravo && /^A90\d$/.test(agravo)) agravo = 'A90';
+  // Sistema: no DBF individual do Sinan, pelo agravo (dengue e chikungunya, Sinan Online; o resto, Sinan Net).
+  const sistema: SistemaOficial = sinanDbf && tipo === 'INDIVIDUAL' ? (agravo && AGRAVOS_SINAN_ONLINE.has(agravo) ? 'SINAN_ONLINE' : 'SINAN_NET') : SISTEMA_DO_ARQUIVO[tipoArq]!;
   const dn = lerData(texto(l, 'dt_notific'));
   if (!dn.data) return { recusado: dn.invalida ? 'Data da notificação inválida' : 'Sem data da notificação (DT_NOTIFIC)' };
   if (dn.data > ctx.hoje) return { recusado: 'Data da notificação no futuro' };
   const piso = PISO_NOTIFICACAO[sistema];
   if (piso && dn.data < piso) return { recusado: `Data da notificação anterior a ${dataBr(piso)} (início do sistema)` };
-
-  const agravo = tipo === 'NEGATIVA' ? null : normalizarAgravo(texto(l, 'id_agravo'), tipoArq);
   if (tipo === 'INDIVIDUAL' && !agravo) return { recusado: 'Sem agravo (ID_AGRAVO)' };
   if (agravo && !/^[A-Z0-9]{2,8}$/.test(agravo)) return { recusado: 'Código do agravo inválido (ID_AGRAVO)' };
   const municipioNotificacao = ibge(texto(l, 'id_municip'));
@@ -247,7 +257,8 @@ function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoN
   if (ds.invalida) avisos.push('Data dos primeiros sintomas inválida');
   const inicioSintomas = ds.data;
   const semanaSintomas = semanaValida(texto(l, 'sem_pri')) ?? (inicioSintomas ? semanaDaData(inicioSintomas).codigo : null);
-  const de = lerData(texto(l, 'dt_encerra') ?? texto(l, 'dt_conclu'));
+  // Conclusão: DT_ENCERRA (Sinan), DT_CONCLU (ficha de notificação/conclusão do e-SUS Sinan), DT_CONCLUSÃO (ficha de Mpox).
+  const de = lerData(texto(l, 'dt_encerra') ?? texto(l, 'dt_conclu') ?? texto(l, 'dt_conclusao'));
   if (de.invalida) avisos.push('Data do encerramento inválida');
   const dob = lerData(texto(l, 'dt_obito'));
   if (dob.invalida) avisos.push('Data do óbito inválida');
@@ -279,12 +290,15 @@ function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoN
     c('criterio', 'criterio');
     c('evolucao', 'evolucao');
   }
-  c('encerradoEm', 'dt_encerra', 'dt_conclu');
+  c('encerradoEm', 'dt_encerra', 'dt_conclu', 'dt_conclusao');
   c('obitoEm', 'dt_obito');
   c('excluido', 'nduplic_n', 'status');
 
+  // O surto não tem paciente: sexo, idade e iniciais de uma linha por caso (planilha de acompanhamento junto do
+  // NSURTNET) não descrevem o surto.
+  const surto = tipo === 'SURTO';
   let identificacao: IdentificacaoRegistro | null = null;
-  if (IDENTIFICACAO_SINAN.some((x) => tem(l, x))) {
+  if (!surto && IDENTIFICACAO_SINAN.some((x) => tem(l, x))) {
     const dnasc = lerData(texto(l, 'dt_nasc'));
     identificacao = {
       nome: texto(l, 'nm_pacient'),
@@ -303,8 +317,10 @@ function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoN
   }
 
   const extras: RegistroOficialNormalizado['extras'] = {};
+  const planilhaJunto = surto && tem(l, 'nu_caso');
   for (const x of EXTRAS_SINAN) {
     if (!tem(l, x)) continue;
+    if (surto && (x === 'nu_idade_n' || (planilhaJunto && x === 'nm_local'))) continue;
     extras[x] = texto(l, x);
     colunas.push(`extras.${x}`);
   }
@@ -314,10 +330,10 @@ function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoN
     colunas.push(`extras.${x}`);
   }
   const idade = texto(l, 'nu_idade_n');
-  if (idade && /^[1-4]\d{3}$/.test(idade)) {
+  if (!surto && idade && /^[1-4]\d{3}$/.test(idade)) {
     extras.idade = `${Number(idade.slice(1))} ${UNIDADE_IDADE[idade[0]!]}`;
     colunas.push('extras.idade');
-  } else if (tem(l, 'nu_idade_n')) {
+  } else if (!surto && tem(l, 'nu_idade_n')) {
     extras.idade = null;
     colunas.push('extras.idade');
   }
@@ -557,6 +573,64 @@ function normalizarEsusNotifica(l: LinhaArquivo, ctx: ContextoNormalizacao): Res
   };
   return { registro, avisos };
 }
+
+/**
+ * Colunas (normalizadas) cujo valor a detecção e a normalização leem. Os leitores só decodificam estas: as outras ficam
+ * na linha com null, porque a presença da coluna conta (`colunas` da mescla) e o valor não.
+ */
+export const COLUNAS_LIDAS: ReadonlySet<string> = new Set([
+  // Detecção e amostra das recusas.
+  'tp_not',
+  'tp_sistema',
+  // Sinan Net, Sinan Online e e-SUS Sinan.
+  'nu_notific',
+  'id_agravo',
+  'dt_notific',
+  'id_municip',
+  'id_unidade',
+  'sem_not',
+  'dt_sin_pri',
+  'dt_prim_si',
+  'sem_pri',
+  'dt_encerra',
+  'dt_conclu',
+  'dt_conclusao',
+  'dt_obito',
+  'classi_fin',
+  'criterio',
+  'evolucao',
+  'status',
+  'nduplic_n',
+  'cs_suspeit',
+  'id_mn_resi',
+  'id_muni_re',
+  'id_bairro',
+  'nm_bairro',
+  'nu_idade_n',
+  ...IDENTIFICACAO_SINAN,
+  ...EXTRAS_SINAN,
+  ...EXTRAS_DATA_SINAN,
+  // e-SUS Notifica.
+  'numero da notificacao',
+  'data da notificacao',
+  'classificacao final',
+  'evolucao caso',
+  'data do inicio dos sintomas',
+  'data de encerramento',
+  'municipio da notificacao',
+  'estado da notificacao',
+  'municipio de residencia',
+  'estado de residencia',
+  'cnes notificacao',
+  'bairro',
+  'nome completo',
+  'data de nascimento',
+  'sexo',
+  'nome completo da mae',
+  'cns',
+  'cpf',
+  ...EXTRAS_ESUS,
+]);
 
 export function normalizarRegistro(linha: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoNormalizacao {
   switch (ctx.tipo) {

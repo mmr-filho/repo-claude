@@ -17,7 +17,8 @@ import { useSession } from '@/lib/session';
 /**
  * Consolidação e surtos (VIG-1c): importação das exportações oficiais e conciliação (`vigilancia.importar`), diagrama
  * de controle, contingência e grade da notificação negativa (`vigilancia.resumo` ou `vigilancia.painel`; as ações pedem
- * `vigilancia.consolidacao` ou `vigilancia.contingencia`) e surtos (`vigilancia.surto`).
+ * `vigilancia.consolidacao` ou `vigilancia.contingencia`; os parâmetros da semana, `vigilancia.catalogo`) e surtos
+ * (`vigilancia.surto`).
  */
 function ConsolidacaoConteudo() {
   const session = useSession();
@@ -45,7 +46,7 @@ function ConsolidacaoConteudo() {
   return (
     <div className="space-y-4">
       <PageHeader title="Consolidação e surtos" description="Exportações oficiais conciliadas com as notificações, diagrama de controle, plano de contingência, surtos e notificação negativa das unidades." />
-      <Tabs value={atual} onValueChange={setTab} tabs={abas.map(({ value, label }) => ({ value, label }))}>
+      <Tabs aria-label="Consolidação e surtos" value={atual} onValueChange={setTab} tabs={abas.map(({ value, label }) => ({ value, label }))}>
         {importa && (
           <TabPanel value="importacao" className="pt-3">
             <AbaImportacao />
@@ -73,7 +74,7 @@ function ConsolidacaoConteudo() {
         )}
         {le && (
           <TabPanel value="negativa" className="pt-3">
-            <AbaNegativa podeConfigurar={session.can('vigilancia.consolidacao')} />
+            <AbaNegativa podeConfigurar={session.can('vigilancia.consolidacao')} podeParametros={session.can('vigilancia.catalogo')} />
           </TabPanel>
         )}
       </Tabs>

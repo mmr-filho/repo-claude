@@ -29,6 +29,32 @@ describe.runIf(enabled)('Vigilância: plano de contingência, sugestão de está
   const planos: Record<string, DetalhePlano> = {};
   const acionamentos: Record<string, string> = {};
 
+  let importacao = '';
+  let nReg = 0;
+  /** Registro oficial INDIVIDUAL de dengue confirmado, com início dos sintomas na SE. */
+  const registro = (ano: number, se: number) => {
+    nReg++;
+    const semana = `${ano}${String(se).padStart(2, '0')}`;
+    return {
+      system: 'SINAN_ONLINE' as const,
+      type: 'INDIVIDUAL' as const,
+      naturalKey: `f3c-${nReg}`,
+      number: String(8_000_000 + nReg),
+      notifiedOn: new Date(`${intervaloDaSemana(ano, se).inicio}T00:00:00Z`),
+      epiWeekNotified: semana,
+      epiWeekOnset: semana,
+      municipalityIbge: MUNICIPIO,
+      residenceIbge: MUNICIPIO,
+      agravo: 'A90',
+      groupKey: 'dengue',
+      situation: 'CONFIRMADO',
+      contentHash: '0'.repeat(64),
+      firstImportId: importacao,
+      lastImportId: importacao,
+      lastSeenAt: new Date(),
+    };
+  };
+
   /** Põe os dois serviços na mesma data (o da contingência decide a semana; o do diagrama valida o ano). */
   const emDia = (dia: string) => {
     t.app.get(ContingenciaService).agora = relogio(dia);
@@ -58,30 +84,23 @@ describe.runIf(enabled)('Vigilância: plano de contingência, sugestão de está
     await db.populationEstimate.deleteMany();
 
     const autor = (await db.user.findFirstOrThrow({ where: { cpf: demoFixtures.STAFF.find((s) => s.key === 'vigilancia')!.cpf }, select: { id: true } })).id;
-    const imp = await db.officialImport.create({ data: { system: 'SINAN_ONLINE', status: 'APLICADA', fileName: 'f3-contingencia.zip', sha256: 'c'.repeat(64), sizeBytes: 1, createdBy: autor } });
-    let n = 0;
-    const registro = (ano: number, se: number) => {
-      n++;
-      const semana = `${ano}${String(se).padStart(2, '0')}`;
-      return {
-        system: 'SINAN_ONLINE' as const,
-        type: 'INDIVIDUAL' as const,
-        naturalKey: `f3c-${n}`,
-        number: String(8_000_000 + n),
-        notifiedOn: new Date(`${intervaloDaSemana(ano, se).inicio}T00:00:00Z`),
-        epiWeekNotified: semana,
-        epiWeekOnset: semana,
-        municipalityIbge: MUNICIPIO,
-        residenceIbge: MUNICIPIO,
-        agravo: 'A90',
-        groupKey: 'dengue',
-        situation: 'CONFIRMADO',
-        contentHash: '0'.repeat(64),
-        firstImportId: imp.id,
-        lastImportId: imp.id,
-        lastSeenAt: new Date(),
-      };
+    // O arquivo traz o período lido (a cobertura da base é por SE): de 2011 até o fim de 2017, semana sem caso = 0.
+    const arquivo = {
+      nome: 'DENGON.DBF',
+      tipo: 'DENGON',
+      sistema: 'SINAN_ONLINE',
+      tipoRegistro: 'INDIVIDUAL',
+      tamanhoBytes: 1,
+      registros: 1,
+      codificacao: null,
+      origemCodificacao: null,
+      agravos: ['A90'],
+      periodo: { de: '2011-01-02', ate: '2017-12-30' },
+      identificado: false,
+      ignorado: false,
+      avisos: [],
     };
+    importacao = (await db.officialImport.create({ data: { system: 'SINAN_ONLINE', status: 'APLICADA', fileName: 'f3-contingencia.zip', sha256: 'c'.repeat(64), sizeBytes: 1, createdBy: autor, files: [arquivo] } })).id;
     const dados = [];
     for (const [i, ano] of [2011, 2012, 2013, 2014, 2015].entries()) for (let se = 1; se <= 52; se++) for (let k = 0; k <= i; k++) dados.push(registro(ano, se));
     for (let se = 1; se <= 33; se++) for (let k = 0; k < (se >= 30 ? 4 : 2); k++) dados.push(registro(2016, se));
@@ -146,6 +165,10 @@ describe.runIf(enabled)('Vigilância: plano de contingência, sugestão de está
     const semLimiar = structuredClone(def);
     delete semLimiar.criterios.find((c) => c.tipo === 'LETALIDADE')!.limiar;
     expect((await put(semLimiar, 422)).body.message).toContain('limiar');
+    // Agravo sigiloso não entra no plano: os indicadores do plano são lidos pelo gestor e pelo núcleo.
+    const comHiv = structuredClone(def);
+    comHiv.agravos = [...def.agravos, 'hiv'];
+    expect((await put(comHiv, 422)).body).toMatchObject({ code: 'PLANO_INVALIDO', message: 'O agravo hiv é sigiloso: não entra no plano de contingência.' });
     // Formato errado (zod): estágio com chave minúscula.
     await put({ ...def, estagios: def.estagios.map((e, i) => (i ? e : { ...e, chave: 'normal' })) }, 400);
     // A tela manda null nos campos vazios: some da definição gravada.
@@ -187,8 +210,12 @@ describe.runIf(enabled)('Vigilância: plano de contingência, sugestão de está
     let s = await situacao();
     expect(s.plano!.id).toBe(planos.v2!.id);
     const dengue = s.indicadores.find((i) => i.grupo === 'dengue')!;
-    expect(dengue.semanas).toHaveLength(33);
-    expect(dengue.semanas.slice(27).map((x) => [x.semana, x.status, x.completa])).toEqual([
+    // As SE de 2015 vêm antes das de 2016, cada uma no canal do próprio ano (as N SE seguidas atravessam a virada).
+    expect(dengue.semanas).toHaveLength(52 + 33);
+    expect(dengue.semanas[0]!.semana).toBe('201501');
+    // Na SE 33, as janelas do plano (4 SE + 4 da desmobilização) não alcançam 2015: os avisos do canal de 2015 não aparecem.
+    expect(s.avisos.some((a) => a.includes('(canal de 2015)'))).toBe(false);
+    expect(dengue.semanas.slice(-6).map((x) => [x.semana, x.status, x.completa])).toEqual([
       ['201628', 'ATE_CENTRO', true],
       ['201629', 'ATE_CENTRO', true],
       ['201630', 'ENTRE_CENTRO_E_LS', true],
@@ -278,6 +305,12 @@ describe.runIf(enabled)('Vigilância: plano de contingência, sugestão de está
     acionamentos.ale = ale.acionamento.id;
     s = await situacao();
     expect(s.estagioAtual).toMatchObject({ chave: 'ALERTA', desde: '2016-08-24' });
+    // A curva das 4 últimas SE completas (29 a 32) não sustenta o alerta, mas ele acabou de ser acionado: as SE de
+    // antes do acionamento não contam para a desmobilização (antes, ela era sugerida no mesmo dia).
+    expect(s.avaliacao).toMatchObject({
+      sugerido: 'ALERTA',
+      desmobilizacao: { sugerida: false, detalhe: expect.stringContaining('Só contam as SE completas desde o acionamento em vigor (SE 34/2016).') },
+    });
     expect(s.checklist).toHaveLength(acoesAle.length);
     expect(s.historico.map((h) => [h.estagio, h.inicio, h.semanaInicio, h.fim, h.semanaFim])).toEqual([
       ['ALERTA', '2016-08-24', '201634', null, null],
@@ -315,5 +348,71 @@ describe.runIf(enabled)('Vigilância: plano de contingência, sugestão de está
       .expect(201);
     expect((await situacao()).estagioAtual.chave).toBe('ALERTA');
     expect(await db.contingencyActivation.count({ where: { endedOn: null } })).toBe(2);
+  });
+
+  it('virada do ano: as 4 SE seguidas do alerta atravessam a SE 1 (dia-1)', async () => {
+    // 10 casos por SE nas SE 49 a 52/2016 e 1 a 3/2017: acima do limite superior dos canais de 2016 e de 2017.
+    const dados = [];
+    for (const [ano, ses] of [
+      [2016, [49, 50, 51, 52]],
+      [2017, [1, 2, 3]],
+    ] as const)
+      for (const se of ses) for (let k = 0; k < 10; k++) dados.push(registro(ano, se));
+    await db.officialRecord.createMany({ data: dados });
+    try {
+      // 18/01/2017 (SE 3): a última SE completa é a 1/2017.
+      emDia('2017-01-18');
+      const s = await situacao();
+      expect(s.semanaReferencia).toBe('201701');
+      const dengue = s.indicadores.find((i) => i.grupo === 'dengue')!;
+      expect(
+        dengue.semanas
+          .filter((x) => x.completa)
+          .slice(-4)
+          .map((x) => [x.semana, x.status]),
+      ).toEqual([
+        ['201650', 'ACIMA_LS'],
+        ['201651', 'ACIMA_LS'],
+        ['201652', 'ACIMA_LS'],
+        ['201701', 'ACIMA_LS'],
+      ]);
+      // Antes, só a SE 1/2017 contava ("Só 1 SE completa(s) no ano") e a sugestão caía para a normalidade.
+      expect(criterio(s, 'ale-canal', 'dengue')).toMatchObject({ atendido: true, valor: 4, detalhe: expect.stringContaining('SE 50/2016 a 01/2017') });
+      expect(s.avaliacao!.porEstagio.ALERTA).toBeGreaterThanOrEqual(1);
+      // Os números do acumulado continuam no ano em análise (2017): prováveis só da SE 1/2017.
+      expect(dengue.provaveis).toBe(10);
+      // No começo do ano, as janelas ainda alcançam o ano anterior: os avisos do canal dele aparecem.
+      emDia('2016-01-20');
+      expect((await situacao()).avisos).toContain('dengue (canal de 2015): Ano 2010 fora do canal: sem cobertura (nenhuma base cobre o ano).');
+    } finally {
+      emDia('2016-08-17');
+    }
+  });
+
+  it('o acumulado do ano já visto no acionamento em vigor não faz o estágio subir de novo (dia-2)', async () => {
+    try {
+      // 07/09/2016 (SE 36). Um óbito por dengue (EVOLUCAO 2) na SE 10: 1 em 75 prováveis, acima do limiar da epidemia (0,07%).
+      emDia('2016-09-07');
+      await db.officialRecord.create({ data: { ...registro(2016, 10), evolution: '2' } });
+      let s = await situacao();
+      // O alerta em vigor foi decidido sem o óbito: a letalidade passou do limiar depois e faz subir.
+      expect(s.estagioAtual.chave).toBe('ALERTA');
+      expect(criterio(s, 'epi-letalidade', 'dengue')).toMatchObject({ atendido: true });
+      expect(s.avaliacao!.sugerido).toBe('EPIDEMIA');
+      // A vigilância decide voltar à normalidade, com o óbito no retrato do acionamento.
+      await t
+        .http()
+        .post('/api/vigilancia/contingencia/acionar')
+        .set(auth(vig))
+        .send({ estagio: 'NORMALIDADE', justificativa: 'Curva de volta ao canal; óbito já investigado pelo comitê.', nivel: 'MUNICIPIO', territorio: null })
+        .expect(201);
+      s = await situacao();
+      expect(s.estagioAtual.chave).toBe('NORMALIDADE');
+      // O mesmo acumulado não volta a sugerir a epidemia logo depois da decisão (antes, sugeria).
+      expect(criterio(s, 'epi-letalidade', 'dengue')).toMatchObject({ atendido: true, detalhe: expect.stringContaining('Já atendido quando o estágio em vigor foi decidido') });
+      expect(s.avaliacao!.sugerido).toBe('NORMALIDADE');
+    } finally {
+      emDia('2016-08-17');
+    }
   });
 });

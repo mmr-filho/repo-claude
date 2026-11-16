@@ -1,55 +1,11 @@
 import type { TipoArquivoOficial } from '@omnisaude/shared';
-import { unzipSync } from 'fflate';
-import { ErroArquivo, type LinhaArquivo } from './dbf';
+import type { LinhaArquivo } from './dbf';
 
 /**
- * Detecção do tipo de arquivo pelo conteúdo, nunca pelo nome (VIG-1c, frente F2), e abertura do zip (um envio pode
- * trazer vários arquivos). Regras do desenho, §4.1: NINDINET, AGRAVO_NET, NNEGANET, NSURTNET, DENGON/CHIKON,
- * ESUS_NOTIFICA_CSV, ESUS_SINAN_CSV e TABELA_SINAN (ignorada com aviso).
+ * Detecção do tipo de arquivo pelo conteúdo, nunca pelo nome (VIG-1c, frente F2). Regras do desenho, §4.1: NINDINET,
+ * AGRAVO_NET, NNEGANET, NSURTNET, DENGON/CHIKON, ESUS_NOTIFICA_CSV, ESUS_SINAN_CSV, TABELA_SINAN e PLANILHA_SURTO
+ * (ignoradas com aviso). A abertura do zip fica em entrada.ts.
  */
-
-/** Teto do conteúdo descompactado do zip (proteção contra zip bomb). */
-export const LIMITE_DESCOMPACTADO_BYTES = 600 * 1024 * 1024;
-
-export interface ArquivoBruto {
-  nome: string;
-  bytes: Uint8Array;
-  /** Arquivo do zip que ficou de fora (motivo): não é .dbf nem .csv. */
-  ignorado?: string;
-}
-
-const eZip = (b: Uint8Array) => b.length >= 4 && b[0] === 0x50 && b[1] === 0x4b && (b[2] === 0x03 || b[2] === 0x05) && (b[3] === 0x04 || b[3] === 0x06);
-
-/** Arquivos do envio: o zip vira os seus .dbf e .csv (fflate `unzipSync` com filtro e teto); o resto passa como veio. */
-export function extrairArquivos(nome: string, bytes: Uint8Array): ArquivoBruto[] {
-  if (!eZip(bytes)) return [{ nome, bytes }];
-  const ignorados: ArquivoBruto[] = [];
-  let total = 0;
-  let extraidos: Record<string, Uint8Array>;
-  try {
-    extraidos = unzipSync(bytes, {
-      filter: (f) => {
-        const base = f.name.split('/').pop() ?? '';
-        if (!base || f.name.endsWith('/') || f.name.startsWith('__MACOSX/') || base.startsWith('.')) return false;
-        if (!/\.(dbf|csv)$/i.test(base)) {
-          ignorados.push({ nome: f.name, bytes: new Uint8Array(0), ignorado: /\.dbc$/i.test(base) ? 'DBC do DATASUS (compactado) não é lido: use a exportação DBF do Sinan' : 'não é .dbf nem .csv' });
-          return false;
-        }
-        total += f.originalSize;
-        if (total > LIMITE_DESCOMPACTADO_BYTES) throw new ErroArquivo('O zip passa de 600 MB descompactado: envie os arquivos em partes', true);
-        return true;
-      },
-    });
-  } catch (e) {
-    if (e instanceof ErroArquivo) throw e;
-    throw new ErroArquivo(`Não foi possível abrir o zip (${(e as Error).message})`, true);
-  }
-  if (ignorados.some((i) => i.nome === '[Content_Types].xml')) throw new ErroArquivo('Planilha do Excel (.xlsx) não é lida: envie o DBF ou o CSV exportado pelo sistema oficial, sem abrir no Excel', true);
-  const arquivos = Object.entries(extraidos)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([n, b]) => ({ nome: n, bytes: b }));
-  return [...arquivos, ...ignorados];
-}
 
 /** Variáveis da ficha de notificação individual do Sinan Net v5 (comuns, conclusão e internas). */
 const COLUNAS_NOTIFICACAO = new Set(
@@ -64,8 +20,11 @@ const COLUNAS_NOTIFICACAO = new Set(
     .join(' ')
     .split(' '),
 );
-/** Colunas que só existem na ficha de surto. */
-const COLUNAS_SURTO = ['qt_total_c', 'cs_local', 'dt_prim_si', 'nm_local', 'delimita'];
+/**
+ * Colunas que só existem na ficha de surto. NM_LOCAL não entra: na planilha de acompanhamento do surto (dicionário v5,
+ * 2012) ela guarda as iniciais do caso.
+ */
+const COLUNAS_SURTO = ['qt_total_c', 'cs_local', 'dt_prim_si', 'delimita'];
 /** Colunas do paciente (a negativa e o surto não têm). */
 const COLUNAS_PACIENTE = ['nm_pacient', 'dt_nasc', 'cs_sexo', 'nu_idade_n', 'nm_mae_pac', 'id_cns_sus'];
 /** Tabelas do Sinan (MUNICNET, REGIONET, UF, unidades, bairros, agravos, ocupações): pares id/nome sem notificação. */
@@ -85,6 +44,9 @@ const PARES_TABELA = [
 const valores = (amostra: LinhaArquivo[], coluna: string) => amostra.map((l) => (l[coluna] ?? '').trim()).filter(Boolean);
 const maioria = (xs: string[], teste: (x: string) => boolean) => xs.length > 0 && xs.filter(teste).length * 2 >= xs.length;
 const agravoLimpo = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+/** Dengue (A90, com ou sem subcategoria) e chikungunya (A92.0; 'A92' sozinho só sai do Sinan Online). */
+const eDengue = (a: string) => /^A90\d?$/.test(a);
+const eChikungunya = (a: string) => a === 'A92' || a === 'A920';
 
 /**
  * Tipo do arquivo pelas colunas (normalizadas, em minúsculas) e por uma amostra das linhas. `formato` separa o CSV do
@@ -97,6 +59,8 @@ export function detectarTipo(colunas: string[], amostra: LinhaArquivo[], formato
     if (PARES_TABELA.some(([id, nome]) => tem(id!) && tem(nome!)) || (tem('sg_uf') && tem('nm_uf'))) return 'TABELA_SINAN';
     return 'DESCONHECIDO';
   }
+  // Planilha de acompanhamento do surto: uma linha por caso (NU_CASO) com a chave do surto. Não é a notificação do surto.
+  if (tem('nu_caso') && !COLUNAS_SURTO.some(tem)) return 'PLANILHA_SURTO';
   const tpNot = valores(amostra, 'tp_not');
   if (COLUNAS_SURTO.some(tem) || maioria(tpNot, (v) => v === '3')) return 'NSURTNET';
   const semPaciente = !COLUNAS_PACIENTE.some(tem);
@@ -104,20 +68,23 @@ export function detectarTipo(colunas: string[], amostra: LinhaArquivo[], formato
   if (!tem('id_agravo')) return 'DESCONHECIDO';
   const agravos = valores(amostra, 'id_agravo').map(agravoLimpo);
   if (formato === 'CSV' && maioria(valores(amostra, 'nu_notific'), (v) => /^\d{12}$/.test(v))) return 'ESUS_SINAN_CSV';
-  // Sinan Online (dengue e chikungunya): TP_SISTEMA 2, CLASSI_FIN 10 a 13 ou a apresentação clínica da chikungunya.
+  // A ficha de investigação: alguma coluna fora da notificação individual (e do bloco de conclusão).
+  const investigacao = colunas.some((c) => !COLUNAS_NOTIFICACAO.has(c));
+  // Sinan Online (dengue e chikungunya): o DBF de investigação só com A90/A92 (o Sinan Net não tem mais essas fichas),
+  // ou as marcas do Sinan Online: TP_SISTEMA 2, CLASSI_FIN 10 a 13 ou a apresentação clínica da chikungunya.
   const classificacoes = valores(amostra, 'classi_fin').map((v) => v.replace(/^0+(?=\d)/, ''));
-  const online = maioria(valores(amostra, 'tp_sistema'), (v) => v === '2') || classificacoes.some((v) => ['10', '11', '12', '13'].includes(v)) || tem('clinc_chik');
-  if (online) {
-    const chik = agravos.filter((a) => a.startsWith('A92')).length;
-    const dengue = agravos.filter((a) => a.startsWith('A90')).length;
+  const dengue = agravos.filter(eDengue).length;
+  const chik = agravos.filter(eChikungunya).length;
+  const soArbovirose = agravos.length > 0 && dengue + chik === agravos.length;
+  const marcasOnline = maioria(valores(amostra, 'tp_sistema'), (v) => v === '2') || classificacoes.some((v) => ['10', '11', '12', '13'].includes(v)) || tem('clinc_chik');
+  if ((soArbovirose && investigacao) || (marcasOnline && (soArbovirose || !agravos.length))) {
     if (chik !== dengue) return chik > dengue ? 'CHIKON' : 'DENGON';
     if (classificacoes.includes('13') && !classificacoes.some((v) => ['10', '11', '12'].includes(v))) return 'CHIKON';
-    if (classificacoes.some((v) => ['10', '11', '12'].includes(v))) return 'DENGON';
-    return tem('clinc_chik') ? 'CHIKON' : 'DENGON';
+    return 'DENGON';
   }
   // O NINDINET traz todos os agravos; o DBF do agravo, um só. Com um ou dois agravos na amostra, decide a ficha de
-  // investigação: alguma coluna fora da notificação individual (e do bloco de conclusão).
+  // investigação.
   if (new Set(agravos).size >= 3) return 'NINDINET';
-  if (colunas.some((c) => !COLUNAS_NOTIFICACAO.has(c))) return 'AGRAVO_NET';
+  if (investigacao) return 'AGRAVO_NET';
   return 'NINDINET';
 }

@@ -37,6 +37,11 @@ export interface ArquivoDetectado {
   origemCodificacao: 'CABECALHO' | 'PONTUACAO' | 'INFORMADA' | 'UTF8' | null;
   /** Agravos normalizados presentes. */
   agravos: string[];
+  /**
+   * Grupos do catálogo dos registros do arquivo (opcional). O CSV do e-SUS Notifica não traz o agravo: a ficha (síndrome
+   * gripal = covid, ESAVI...) sai daqui. Sem ele (envios anteriores), a conciliação usa os grupos dos registros gravados.
+   */
+  grupos?: string[];
   /** Menor e maior data de notificação do arquivo. */
   periodo: { de: string; ate: string } | null;
   /** O arquivo traz a identificação do paciente. */
@@ -258,14 +263,20 @@ export type MetodoVinculo = 'NUMERO_OFICIAL' | 'IDENTIDADE' | 'MANUAL';
 
 export const ROTULO_METODO_VINCULO: Record<MetodoVinculo, string> = { NUMERO_OFICIAL: 'Número oficial', IDENTIDADE: 'CNS ou CPF', MANUAL: 'Manual' };
 
-/** Filtro das listas da conciliação (consulta). */
+/**
+ * Filtro das listas da conciliação (consulta). `sistema`, `de` e `ate` valem para o registro oficial (no "só no
+ * OmniSaúde", para a notificação: sistema de destino e data da notificação). `grupo` vale para o registro, para a
+ * notificação ou, nas listas de pares (sugestões, divergentes e vinculados), para qualquer um dos dois lados.
+ */
 export interface FiltroConciliacao {
   sistema?: SistemaOficial;
   grupo?: string;
   de?: string;
   ate?: string;
-  /** Número, nome ou CNS. */
+  /** Número (do registro ou da notificação), nome, CNS (15 dígitos) ou CPF (11 dígitos). */
   busca?: string;
+  /** Só na lista de vinculados: o método do vínculo. */
+  metodo?: MetodoVinculo;
   /** A partir de 1. */
   pagina?: number;
 }
@@ -330,8 +341,10 @@ export interface ResumoConciliacao {
   bairrosSemCorrespondencia: number;
   porSistema: { sistema: SistemaOficial; registros: number; vinculados: number; soOficial: number; soOmnisaude: number }[];
   /**
-   * Sistemas e períodos cobertos por importação aplicada (o "só no OmniSaúde" só vale dentro deles). `grupos`: no
-   * Sinan Online, que sai num arquivo por agravo (DENGON, CHIKON), só os grupos que vieram; null = todos do sistema.
+   * Sistemas, grupos e períodos cobertos por importação aplicada (o "só no OmniSaúde" só vale dentro deles). Cada
+   * arquivo cobre só o que traz: o DBF do agravo (Sinan Net) e o CSV do e-SUS Sinan, os agravos que vieram; o DENGON e
+   * o CHIKON, a dengue e a chikungunya; o CSV do e-SUS Notifica, a ficha (síndrome gripal = covid). `grupos` null =
+   * todos os do sistema: só o NINDINET, que traz todas as notificações individuais do Sinan Net.
    */
   cobertura: { sistema: SistemaOficial; grupos: string[] | null; de: string; ate: string }[];
   ultimaImportacao: { id: string; sistema: SistemaOficial; aplicadoEm: string } | null;
@@ -341,16 +354,23 @@ export interface ResumoConciliacao {
 export interface PaginaConciliacao<T> {
   total: number;
   pagina: number;
+  /** Linhas por página (a última página pode ter menos). */
+  porPagina: number;
   itens: T[];
 }
 
 /** GET /vigilancia/conciliacao/so-oficial. */
 export type ListaSoOficial = PaginaConciliacao<RegistroOficialResumo>;
 
-/** GET /vigilancia/conciliacao/so-omnisaude (NOTIFICADA/ENCERRADA não descartadas, de sistema e período cobertos, sem vínculo). */
+/** GET /vigilancia/conciliacao/so-omnisaude (NOTIFICADA/ENCERRADA não descartadas, de sistema, grupo e período cobertos, sem vínculo). */
 export type ListaSoOmnisaude = PaginaConciliacao<NotificacaoParaConciliar>;
 
-/** Diferença gravada no par vinculado. */
+/**
+ * Diferença do par vinculado. Situação: a do registro (classificação traduzida pela ficha do agravo) e a da notificação.
+ * Evolução: as duas na numeração da ficha do OmniSaúde (EVOLUCAO_CASO: 1 cura, 2 óbito pelo agravo, 3 óbito por outras
+ * causas, 9 ignorado); a do registro vem traduzida pela ficha de origem (Mpox no e-SUS Sinan: 1 óbito, 2 cura; e-SUS
+ * Notifica: 6 ignorado); null = sem desfecho comparável. Encerramento: AAAA-MM-DD.
+ */
 export interface DivergenciaPar {
   campo: 'situacao' | 'evolucao' | 'encerramento';
   oficial: string | null;
@@ -365,6 +385,13 @@ export interface ParConciliado {
 
 /** GET /vigilancia/conciliacao/divergentes. */
 export type ListaDivergentes = PaginaConciliacao<ParConciliado>;
+
+/**
+ * GET /vigilancia/conciliacao/vinculados: todos os pares vinculados (com ou sem diferença), do vínculo mais recente
+ * para o mais antigo, auditados como as outras listas nominais. Inclui o registro que o sistema oficial excluiu depois
+ * do vínculo (`registro.excluido`), para poder desvincular. Filtro `metodo` opcional.
+ */
+export type ListaVinculados = PaginaConciliacao<ParConciliado>;
 
 /** Par sugerido (degrau 3: nome, nascimento e sexo; ou candidato não único nos degraus 1 e 2). */
 export interface SugestaoVinculo {

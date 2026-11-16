@@ -1,10 +1,13 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import type { TenantPrisma } from '@omnisaude/database';
 import {
+  anosIncompletos,
   calcularCanal,
   csvDoCanal,
   curvaObservada,
+  LNNC_NACIONAL,
   RECEITAS_MODELO,
+  roleHasPermission,
   ROTULO_FONTE_POPULACAO,
   semanaDaData,
   semanaDoCanal,
@@ -50,6 +53,8 @@ type Db = TenantPrisma.TransactionClient;
 const MODELO_PADRAO: ChaveReceitaModelo = 'MS_2025';
 const ANO_MINIMO = 2000;
 const pad = (n: number) => String(n).padStart(2, '0');
+/** Grupos sigilosos do catálogo nacional (HIV, sífilis, violências): valem mesmo que o catálogo do tenant os desmarque. */
+const SIGILOSOS_NACIONAIS = new Set(LNNC_NACIONAL.flatMap((v) => v.conditions.filter((c) => c.sensitive).map((c) => c.group)));
 
 /** Canal congelado gravado (control_channels). */
 interface CanalGravado {
@@ -63,6 +68,8 @@ interface CanalGravado {
   populationVersion: string | null;
   referenceYears: number[];
   weeks: unknown;
+  /** Avisos do cálculo gravados no congelamento (string[]). */
+  warnings: unknown;
   notes: string | null;
   computedBy: string;
   computedAt: Date;
@@ -78,6 +85,8 @@ export interface AnoMontado {
   /** População do próprio ano (a da curva observada). */
   populacaoDoAno: number | null;
   fonte: FonteEscolhida | null;
+  /** Anos ainda incompletos na janela de referência da receita gravada: com algum, o canal do ano não pode ser congelado. */
+  referenciaIncompleta: number[];
   avisos: string[];
 }
 
@@ -132,9 +141,21 @@ export function validarConfiguracao(receita: ReceitaCanal, anosExcluidos: AnoExc
   return erros;
 }
 
-/** Canal congelado como o cálculo devolveria (receita, anos de referência e as 52 semanas gravadas). */
+/** Canal congelado como o cálculo devolveu no congelamento (receita, anos de referência, as 52 semanas e os avisos). */
 function canalDoCongelado(c: CanalGravado): CanalCalculado {
-  return { receita: receitaGravada(c.recipe), anosReferencia: [...c.referenceYears], semanas: c.weeks as SemanaCanal[], avisos: [] };
+  const avisos = Array.isArray(c.warnings) ? (c.warnings as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+  return { receita: receitaGravada(c.recipe), anosReferencia: [...c.referenceYears], semanas: c.weeks as SemanaCanal[], avisos };
+}
+
+/** SE AAAASS como "SS/AAAA". */
+const ss = (codigo: string) => `${codigo.slice(4)}/${codigo.slice(0, 4)}`;
+/** Última SE do ano (AAAASS). */
+const fimDoAno = (ano: number) => `${ano}${pad(semanasNoAno(ano))}`;
+
+/** Aviso da prévia com ano ainda incompleto na referência (o ano em curso ou SE incompletas). */
+function avisoReferenciaIncompleta(anos: number[]): string {
+  const ultimo = anos[anos.length - 1]!;
+  return `A referência inclui ${anos.join(', ')}, ano ainda incompleto (em curso ou com SE incompletas): as SE recentes, com atraso de notificação, e as que ainda não chegaram distorcem o canal. É só prévia: congele depois que a SE ${ss(fimDoAno(ultimo))} estiver completa.`;
 }
 
 /** Casos de cada SE do ano, com as semanas que ainda não chegaram em null (ano em curso ou futuro). */
@@ -175,7 +196,8 @@ export class DiagramaService {
   async diagrama(ctx: RequestContext, consulta: ConsultaDiagrama): Promise<RespostaDiagrama> {
     const eixo = consulta.eixo ?? 'EPIDEMIOLOGICO';
     const territorio = await this.territorio(ctx.db, consulta.nivel, consulta.territorio ?? null);
-    const agravo = await this.nomeDoAgravo(ctx, consulta.grupo);
+    const { nome: agravo, sigiloso } = await this.agravo(ctx, consulta.grupo);
+    if (sigiloso) this.exigirAcessoSigiloso(ctx, agravo);
     this.validarAno(ctx, consulta.ano);
     const anos = eixo === 'SAZONAL' ? [consulta.ano, consulta.ano + 1] : [consulta.ano];
     const m = await this.montar(ctx, consulta.grupo, territorio, anos, semanaEpidemiologica(this.agora(), ctx.tenant.timeZone).codigo);
@@ -200,6 +222,7 @@ export class DiagramaService {
     const pontos = eixo === 'SAZONAL' ? [...pontosDoAno(primeiro!, 27, semanasNoAno(primeiro!.ano)), ...pontosDoAno(segundo!, 1, 26)] : pontosDoAno(primeiro!, 1, semanasNoAno(primeiro!.ano));
     const populacao = new Map<number, PopulacaoUsada>();
     for (const a of m.anos) for (const p of a.populacao) if (!populacao.has(p.ano) || p.ano === a.ano) populacao.set(p.ano, p);
+    if (sigiloso) await this.auditarSigiloso(ctx, 'diagrama', consulta.grupo, { nivel: territorio.nivel, territorioId: territorio.id, ano: consulta.ano, eixo });
     return {
       grupo: consulta.grupo,
       agravo,
@@ -207,7 +230,7 @@ export class DiagramaService {
       ano: consulta.ano,
       eixo,
       configuracao: m.configuracao,
-      canais: m.anos.map((a): CanalDoAno => ({ ano: a.ano, canal: a.canal, congelado: a.congelado, observado: a.observado })),
+      canais: m.anos.map((a): CanalDoAno => ({ ano: a.ano, canal: a.canal, congelado: a.congelado, observado: a.observado, referenciaIncompleta: a.referenciaIncompleta })),
       pontos,
       semanasIncompletas: m.incompletas,
       populacao: [...populacao.values()].sort((a, b) => a.ano - b.ano),
@@ -221,7 +244,8 @@ export class DiagramaService {
   /** GET /vigilancia/diagrama.csv (o conteúdo já começa com o BOM). Sempre o canal do ano epidemiológico pedido. */
   async csv(ctx: RequestContext, consulta: ConsultaDiagrama): Promise<{ fileName: string; content: string }> {
     const territorio = await this.territorio(ctx.db, consulta.nivel, consulta.territorio ?? null);
-    const agravo = await this.nomeDoAgravo(ctx, consulta.grupo);
+    const { nome: agravo, sigiloso } = await this.agravo(ctx, consulta.grupo);
+    if (sigiloso) this.exigirAcessoSigiloso(ctx, agravo);
     this.validarAno(ctx, consulta.ano);
     const agora = this.agora();
     const m = await this.montar(ctx, consulta.grupo, territorio, [consulta.ano], semanaEpidemiologica(agora, ctx.tenant.timeZone).codigo);
@@ -229,6 +253,7 @@ export class DiagramaService {
     const fonte = a.canal.receita.unidade === 'CASOS' || !a.fonte ? null : `${ROTULO_FONTE_POPULACAO[a.fonte.fonte]}${a.fonte.versao ? `, versão ${a.fonte.versao}` : ''}`;
     const content = csvDoCanal(a.canal, a.observado, { titulo: `${agravo}, ${territorio.nome}, ${consulta.ano}`, fontePopulacao: fonte, geradoEm: agora.toISOString() });
     const lugar = territorio.nivel === 'MUNICIPIO' ? 'municipio' : slug(territorio.nome) || territorio.nivel.toLowerCase();
+    if (sigiloso) await this.auditarSigiloso(ctx, 'diagrama.csv', consulta.grupo, { nivel: territorio.nivel, territorioId: territorio.id, ano: consulta.ano });
     return { fileName: `diagrama-${consulta.grupo}-${lugar}-${consulta.ano}.csv`, content };
   }
 
@@ -240,7 +265,8 @@ export class DiagramaService {
 
   /** GET /vigilancia/diagrama/anos-epidemicos?grupo=&ano=: regra da SES-GO sobre a série do município. */
   async anosEpidemicos(ctx: RequestContext, consulta: { grupo: string; ano: number }): Promise<RespostaAnosEpidemicos> {
-    await this.nomeDoAgravo(ctx, consulta.grupo);
+    const { nome: agravo, sigiloso } = await this.agravo(ctx, consulta.grupo);
+    if (sigiloso) this.exigirAcessoSigiloso(ctx, agravo);
     this.validarAno(ctx, consulta.ano);
     const config = await this.configuracaoDe(ctx.db, consulta.grupo);
     const anos = Array.from({ length: Math.max(0, Math.trunc(config.receita.anos)) }, (_, i) => consulta.ano - Math.trunc(config.receita.anos) + i);
@@ -249,6 +275,7 @@ export class DiagramaService {
     const pop = populacaoUsada(est, municipio, anos, escolherFonte(est, municipio, anos, { fonte: config.fontePopulacao, versao: config.versaoPopulacao }), consulta.ano);
     const casos = this.consolidado.agregar(base, { nivel: 'MUNICIPIO', territorioId: null, base: config.receita.base, anos });
     const series: SerieAnual[] = anos.map((ano) => ({ ano, semanas: casos.porAno.get(ano) ?? [], populacao: pop.find((p) => p.ano === ano)?.populacao ?? null }));
+    if (sigiloso) await this.auditarSigiloso(ctx, 'diagrama/anos-epidemicos', consulta.grupo, { nivel: 'MUNICIPIO', territorioId: null, ano: consulta.ano });
     return { grupo: consulta.grupo, ano: consulta.ano, sugestao: sugerirAnosEpidemicos(series, consulta.ano, config.receita.anos), excluidos: config.anosExcluidos };
   }
 
@@ -270,14 +297,15 @@ export class DiagramaService {
     if (!territorios.length) return [];
     const out: ExcessoTerritorio[] = [];
     for (const grupo of [...new Set(grupos)]) {
-      const conhecido = await this.nomeDoAgravo(sys, grupo).then(
-        () => true,
+      const conhecido = await this.agravo(sys, grupo).then(
+        (a) => a,
         (e: unknown) => {
-          if (e instanceof DomainError) return false;
+          if (e instanceof DomainError) return null;
           throw e;
         },
       );
-      if (!conhecido) continue;
+      // Agravo sigiloso não entra: as sugestões de surto também são lidas pelo núcleo da unidade.
+      if (!conhecido || conhecido.sigiloso) continue;
       const config = await this.configuracaoDe(sys.db, grupo);
       const congelados = await sys.db.controlChannel.findMany({ where: { groupKey: grupo, year: ano, active: true, level: { in: ['BAIRRO', 'LOCALIDADE'] } } });
       const anos = [...new Set([...janelaDeReferencia(ano, config.receita), ano])];
@@ -290,11 +318,11 @@ export class DiagramaService {
       ]);
       for (const t of territorios) {
         const congelado = congelados.find((c) => c.level === t.nivel && c.territoryId === t.id) ?? null;
-        const a = this.montarAno(config, congelado, t, ano, base, est, semanaAtual, null);
+        const a = this.montarAno(config, congelado, t, ano, base, est, semanaAtual, ultimaCompleta, null);
         const ponto = a.observado[semana - 1];
         const sc = semanaDoCanal(a.canal, semana);
         if (ponto?.valor == null || sc?.ls == null || statusDaSemana(ponto.valor, sc) !== 'ACIMA_LS') continue;
-        out.push({ grupo, nivel: t.nivel, territorioId: t.id, territorioNome: t.nome, semana: ultimaCompleta, casos: ponto.casos ?? 0, valor: ponto.valor, ls: sc.ls });
+        out.push({ grupo, nivel: t.nivel, territorioId: t.id, territorioNome: t.nome, semana: ultimaCompleta, casos: ponto.casos ?? 0, valor: ponto.valor, ls: sc.ls, unidade: a.canal.receita.unidade });
       }
     }
     return out;
@@ -302,14 +330,28 @@ export class DiagramaService {
 
   // ───────────── gravações ─────────────
 
-  /** POST /vigilancia/diagrama/congelar: canal calculado agora vira a versão ativa (a anterior fica inativa). */
+  /**
+   * POST /vigilancia/diagrama/congelar: canal calculado agora vira a versão ativa (a anterior fica inativa), com os
+   * avisos do cálculo. Recusa (422 REFERENCIA_INCOMPLETA) a janela de referência com ano ainda incompleto: o canal
+   * congelado vale a temporada inteira, e o ano em curso entraria com as SE recentes subnotificadas e sem as que faltam.
+   */
   async congelar(ctx: RequestContext, corpo: CorpoCongelarCanal): Promise<RespostaCongelarCanal> {
     const territorio = await this.territorio(ctx.db, corpo.nivel, corpo.territorio ?? null);
-    await this.nomeDoAgravo(ctx, corpo.grupo);
+    const { nome: agravo, sigiloso } = await this.agravo(ctx, corpo.grupo);
+    if (sigiloso) this.exigirAcessoSigiloso(ctx, agravo);
     this.validarAno(ctx, corpo.ano);
     const semanaAtual = semanaEpidemiologica(this.agora(), ctx.tenant.timeZone).codigo;
     const m = await this.montar(ctx, corpo.grupo, territorio, [corpo.ano], semanaAtual, { ignorarCongelado: true });
     const a = m.anos[0]!;
+    if (a.referenciaIncompleta.length) {
+      const ultimo = a.referenciaIncompleta[a.referenciaIncompleta.length - 1]!;
+      throw new DomainError(
+        'REFERENCIA_INCOMPLETA',
+        `O canal de ${corpo.ano} usaria ${a.referenciaIncompleta.join(', ')} na referência, ano ainda incompleto (em curso ou com SE incompletas). Congele depois que a SE ${ss(fimDoAno(ultimo))} estiver completa.`,
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        { anos: a.referenciaIncompleta, ultimaCompleta: m.ultimaCompleta },
+      );
+    }
     if (!a.canal.anosReferencia.length) throw new DomainError('SEM_REFERENCIA', `Sem anos de referência com dados: o canal de ${corpo.ano} não pode ser congelado.`, HttpStatus.UNPROCESSABLE_ENTITY, a.canal.avisos);
     const r = m.configuracao.receita;
     return ctx.db.$transaction(async (tx) => {
@@ -327,6 +369,8 @@ export class DiagramaService {
           populationVersion: r.unidade === 'INCIDENCIA' ? (a.fonte?.versao ?? null) : null,
           referenceYears: a.canal.anosReferencia,
           weeks: a.canal.semanas as unknown as TenantPrisma.InputJsonValue,
+          // Os avisos do cálculo dependem só dos dados congelados: continuam valendo para o canal.
+          warnings: a.canal.avisos as unknown as TenantPrisma.InputJsonValue,
           notes: corpo.nota?.trim() || null,
           computedBy: ctx.session.userId,
         },
@@ -335,7 +379,18 @@ export class DiagramaService {
         action: 'vigilancia.canal_congelado',
         entityType: 'ControlChannel',
         entityId: novo.id,
-        payload: { grupo: corpo.grupo, nivel: territorio.nivel, territorioId: territorio.id, ano: corpo.ano, versao: novo.version, anterior, receita: r, anosReferencia: a.canal.anosReferencia, fonte: a.fonte },
+        payload: {
+          grupo: corpo.grupo,
+          nivel: territorio.nivel,
+          territorioId: territorio.id,
+          ano: corpo.ano,
+          versao: novo.version,
+          anterior,
+          receita: r,
+          anosReferencia: a.canal.anosReferencia,
+          fonte: a.fonte,
+          avisos: a.canal.avisos,
+        },
       });
       return { id: novo.id, versao: novo.version, ano: corpo.ano, anterior: anterior ? { id: anterior.id, versao: anterior.version } : null };
     });
@@ -390,11 +445,13 @@ export class DiagramaService {
       ? []
       : await sys.db.controlChannel.findMany({ where: { groupKey: grupo, level: territorio.nivel, territoryId: territorio.id, year: { in: anos }, active: true } });
     const doAno = (ano: number) => congelados.find((c) => c.year === ano) ?? null;
+    // Os anos de referência entram na base também com o canal congelado: a cobertura de cada ano sai na resposta.
     const necessarios = new Set<number>();
     for (const ano of anos) {
       necessarios.add(ano);
       const c = doAno(ano);
-      if (!c) for (const a of janelaDeReferencia(ano, configuracao.receita)) necessarios.add(a);
+      const referencia = c ? [...janelaDeReferencia(ano, receitaGravada(c.recipe)), ...c.referenceYears] : janelaDeReferencia(ano, configuracao.receita);
+      for (const a of referencia) necessarios.add(a);
     }
     const [base, est] = await Promise.all([
       this.consolidado.carregar(sys, grupo, [...necessarios], territorio.nivel !== 'MUNICIPIO'),
@@ -404,8 +461,8 @@ export class DiagramaService {
       sys.db,
       congelados.map((c) => c.computedBy),
     );
-    const montados = anos.map((ano) => this.montarAno(configuracao, doAno(ano), territorio, ano, base, est, semanaAtual, nomes));
     const { incompletas, ultimaCompleta } = semanasCompletas(semanaAtual, sys.tenant.settings.vigilancia.consolidacao.semanasIncompletas);
+    const montados = anos.map((ano) => this.montarAno(configuracao, doAno(ano), territorio, ano, base, est, semanaAtual, ultimaCompleta, nomes));
     const meta = this.consolidado.agregar(base, { nivel: territorio.nivel, territorioId: territorio.id, base: configuracao.receita.base, anos: base.anos });
     const avisos = [...new Set([...montados.flatMap((a) => a.avisos), ...meta.avisos])];
     return { configuracao, anos: montados, base, semanaAtual, incompletas, ultimaCompleta, semSemanaSintomas: meta.semSemanaSintomas, bairrosSemCorrespondencia: meta.bairrosSemCorrespondencia, avisos };
@@ -413,7 +470,8 @@ export class DiagramaService {
 
   /**
    * Um ano: série de cada ano de referência com a população daquele ano (mesma fonte e versão em todos), canal pela
-   * receita (ou o congelado, com a receita e a fonte com que foi congelado) e curva observada na mesma unidade.
+   * receita (ou o congelado, com a receita, a fonte e os avisos com que foi congelado) e curva observada na mesma
+   * unidade. Na prévia, o canal avisa o ano de referência coberto só em parte e o ano ainda incompleto (`ultimaCompleta`).
    */
   private montarAno(
     config: ConfiguracaoDiagrama,
@@ -423,10 +481,17 @@ export class DiagramaService {
     base: BaseConsolidada,
     est: EstimativaBase[],
     semanaAtual: string,
+    ultimaCompleta: string,
     nomes: Map<string, string> | null,
   ): AnoMontado {
     const receita = congelado ? receitaGravada(congelado.recipe) : config.receita;
     const referencia = congelado ? [...congelado.referenceYears] : janelaDeReferencia(ano, receita);
+    // O que um novo congelamento usaria: a janela da receita gravada, sem os anos excluídos.
+    const excluidos = new Set(config.anosExcluidos.map((a) => a.ano));
+    const referenciaIncompleta = anosIncompletos(
+      janelaDeReferencia(ano, config.receita).filter((y) => !excluidos.has(y)),
+      ultimaCompleta,
+    );
     const t = { nivel: territorio.nivel, territorioId: territorio.id };
     const anosPop = [...new Set([...referencia, ano])];
     const pedida = congelado ? { fonte: congelado.populationSource, versao: congelado.populationVersion } : { fonte: config.fontePopulacao, versao: config.versaoPopulacao };
@@ -442,12 +507,16 @@ export class DiagramaService {
       const series: SerieAnual[] = referencia.filter((y) => y !== ano).map((y) => ({ ano: y, semanas: semAsFuturas(casos.porAno.get(y), y, semanaAtual), populacao: popDe(y) }));
       // Com o ano em análise na referência (Tabela 1 da NT 1/2023), entra a série dele na base da receita.
       if (receita.incluiAnoEmAnalise) series.push({ ano, semanas: semAsFuturas(casos.porAno.get(ano), ano, semanaAtual), populacao: popDe(ano) });
-      canal = calcularCanal(
+      const calculado = calcularCanal(
         series,
         ano,
         receita,
         config.anosExcluidos.map((a) => a.ano),
       );
+      // Avisos da prévia que dependem da base (vão junto se o canal for congelado): ano de referência coberto só em parte
+      // e ano ainda incompleto (este impede o congelamento).
+      const daBase = [...calculado.anosReferencia.flatMap((y) => this.consolidado.avisoCoberturaParcial(base, y) ?? []), ...(referenciaIncompleta.length ? [avisoReferenciaIncompleta(referenciaIncompleta)] : [])];
+      canal = daBase.length ? { ...calculado, avisos: [...calculado.avisos, ...daBase] } : calculado;
     }
     const avisos = [...canal.avisos];
     if (receita.unidade === 'INCIDENCIA') {
@@ -480,6 +549,7 @@ export class DiagramaService {
       populacao,
       populacaoDoAno: popDe(ano),
       fonte,
+      referenciaIncompleta,
       avisos,
     };
   }
@@ -542,14 +612,46 @@ export class DiagramaService {
     return { nivel, id: t.id, nome: t.name };
   }
 
-  /** Nome do agravo pelo catálogo do tenant (a linha de casos do grupo); grupo fora do catálogo: 404. */
-  async nomeDoAgravo(sys: SystemContext, grupo: string): Promise<string> {
+  /**
+   * Nome do agravo pelo catálogo do tenant (a linha de casos do grupo) e se ele é sigiloso: alguma linha do grupo
+   * marcada no catálogo do tenant ou no nacional. Grupo fora do catálogo: 404.
+   */
+  async agravo(sys: SystemContext, grupo: string): Promise<{ nome: string; sigiloso: boolean }> {
     // O catálogo nacional é gravado no banco do tenant na primeira consulta à vigilância.
     await this.catalogo.garantir(sys);
-    const linhas = await sys.db.notifiableCondition.findMany({ where: { groupKey: grupo }, select: { key: true, name: true, context: true }, take: 50 });
+    const linhas = await sys.db.notifiableCondition.findMany({ where: { groupKey: grupo }, select: { key: true, name: true, context: true, sensitive: true }, take: 50 });
     const l = linhas.find((x) => x.key === grupo) ?? linhas.find((x) => x.context === 'CASO') ?? linhas[0];
     if (!l) throw notFound('Agravo do catálogo');
-    return l.name.replace(/\s+-\s+Casos$/i, '');
+    return { nome: l.name.replace(/\s+-\s+Casos$/i, ''), sigiloso: SIGILOSOS_NACIONAIS.has(grupo) || linhas.some((x) => x.sensitive) };
+  }
+
+  /** Nome do agravo pelo catálogo do tenant (a linha de casos do grupo); grupo fora do catálogo: 404. */
+  async nomeDoAgravo(sys: SystemContext, grupo: string): Promise<string> {
+    return (await this.agravo(sys, grupo)).nome;
+  }
+
+  /** Grupos sigilosos entre os pedidos (catálogo nacional ou do tenant), na ordem pedida. */
+  async gruposSigilosos(sys: SystemContext, grupos: string[]): Promise<string[]> {
+    if (!grupos.length) return [];
+    await this.catalogo.garantir(sys);
+    const marcados = await sys.db.notifiableCondition.findMany({ where: { groupKey: { in: grupos }, sensitive: true }, select: { groupKey: true }, distinct: ['groupKey'] });
+    const doTenant = new Set(marcados.map((m) => m.groupKey));
+    return [...new Set(grupos)].filter((g) => SIGILOSOS_NACIONAIS.has(g) || doTenant.has(g));
+  }
+
+  /**
+   * Agravo sigiloso (Lei 14.289/2022; LGPD, art. 11): a contagem semanal por território pode identificar a pessoa, e só
+   * sai para a vigilância municipal com acesso ao sigilo. O gestor não abre a ficha sigilosa; o núcleo só a da própria
+   * unidade, e o diagrama é do município inteiro.
+   */
+  private exigirAcessoSigiloso(ctx: RequestContext, agravo: string) {
+    if (ctx.session.role === 'VIGILANCIA_EPIDEMIOLOGICA' && roleHasPermission(ctx.session.role, 'notificacao.sensivel')) return;
+    throw new DomainError('AGRAVO_SIGILOSO', `${agravo}: agravo de acesso restrito. O diagrama só sai para a vigilância municipal.`, HttpStatus.FORBIDDEN);
+  }
+
+  /** Leitura de agravo sigiloso fica na auditoria, como no mapa de casos. */
+  private auditarSigiloso(ctx: RequestContext, rota: string, grupo: string, onde: { nivel: NivelTerritorio; territorioId: string | null; ano: number; eixo?: string }) {
+    return this.audit.recordStandalone(ctx, { action: 'vigilancia.diagrama_sigiloso', entityType: 'Agravo', entityId: grupo, payload: { rota, grupo, ...onde } });
   }
 
   private validarAno(sys: SystemContext, ano: number) {

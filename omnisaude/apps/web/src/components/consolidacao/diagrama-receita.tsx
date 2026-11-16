@@ -24,10 +24,10 @@ import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
-import { fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { textoFonte } from './diagrama-dados';
 import { ajustarReceita, aplicarModelo, CHAVES_MODELO, corpoDaReceita, formularioDaConfiguracao, janelasDoMetodo, MOTIVO_MINIMO_EXCLUSAO, motivoSugerido, type FormularioReceita } from './diagrama-receita-regras';
+import { useDataHora } from './fuso';
 import { opcoesDeFonte, valorDaFonte } from './populacao-colar';
 
 /** Mensagens do erro da API: a lista de problemas da configuração, quando vem, ou a mensagem. */
@@ -193,6 +193,7 @@ export function DiagramaReceita({
   onSalvo: () => void;
 }) {
   const toast = useToast();
+  const { dataHora } = useDataHora();
   const lida = useApi<ConfiguracaoDiagrama>(configuracao ? null : `/vigilancia/diagrama/configuracao/${encodeURIComponent(grupo)}`, [grupo]);
   const config = configuracao ?? lida.data;
   const municipio = useApi<ListaPopulacao>(podeConfigurar ? '/vigilancia/populacao?nivel=MUNICIPIO' : null);
@@ -231,9 +232,7 @@ export function DiagramaReceita({
         <CardHeader
           title={`Receita do canal: ${nomeAgravo}`}
           description={
-            config.padrao
-              ? 'Sem receita gravada: vale o modelo do Plano de Contingência Nacional (MS, 2025).'
-              : `Gravada em ${fmtDateTime(config.atualizadoEm)}${config.atualizadoPor ? ` por ${config.atualizadoPor}` : ''}.`
+            config.padrao ? 'Sem receita gravada: vale o modelo do Plano de Contingência Nacional (MS, 2025).' : `Gravada em ${dataHora(config.atualizadoEm)}${config.atualizadoPor ? ` por ${config.atualizadoPor}` : ''}.`
           }
           actions={
             podeConfigurar && !form ? (

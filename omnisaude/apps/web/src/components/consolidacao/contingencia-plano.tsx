@@ -13,7 +13,6 @@ import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { fmtDateTime } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useSession } from '@/lib/session';
 import {
@@ -37,6 +36,7 @@ import {
   validarPlano,
 } from './contingencia-regras';
 import { nomeDoAgravo, type OpcaoAgravo } from './diagrama-agravos';
+import { useDataHora } from './fuso';
 
 const EIXOS = Object.keys(ROTULO_EIXO_ACAO) as EixoAcao[];
 const copia = <T,>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
@@ -197,6 +197,7 @@ function EditorPlano({
   onVigente: (p: DetalhePlano) => void;
 }) {
   const toast = useToast();
+  const { dataHora } = useDataHora();
   const editavel = podeAgir && plano.status === 'RASCUNHO';
   const [def, setDef] = useState<PlanoContingencia>(() => copia(plano.definicao));
   const [nome, setNome] = useState(plano.nome);
@@ -248,7 +249,7 @@ function EditorPlano({
       <Card>
         <CardHeader
           title={plano.nome}
-          description={`Versão ${plano.versao} · ${textoVigencia(plano)} · atualizado em ${fmtDateTime(plano.atualizadoEm)}`}
+          description={`Versão ${plano.versao} · ${textoVigencia(plano)} · atualizado em ${dataHora(plano.atualizadoEm)}`}
           actions={
             <>
               <Badge tone={TOM_STATUS_PLANO[plano.status]}>{ROTULO_STATUS_PLANO[plano.status]}</Badge>
@@ -476,6 +477,7 @@ function EditorPlano({
 /** Planos de contingência: lista, rascunho a partir do modelo do MS (2025), cópia, edição e vigência. */
 export function ContingenciaPlano({ podeAgir, opcoes, onVigenteMudou }: { podeAgir: boolean; opcoes: OpcaoAgravo[]; onVigenteMudou: () => void }) {
   const toast = useToast();
+  const { dataHora } = useDataHora();
   const planos = useApi<ListaPlanos>('/vigilancia/contingencia/planos');
   const [sel, setSel] = useState<string | null>(null);
   const [criando, setCriando] = useState(false);
@@ -545,7 +547,7 @@ export function ContingenciaPlano({ podeAgir, opcoes, onVigenteMudou }: { podeAg
                     <Badge tone={TOM_STATUS_PLANO[p.status]}>{ROTULO_STATUS_PLANO[p.status]}</Badge>
                   </TD>
                   <TD className="text-xs">{textoVigencia(p)}</TD>
-                  <TD className="text-xs">{fmtDateTime(p.atualizadoEm)}</TD>
+                  <TD className="text-xs">{dataHora(p.atualizadoEm)}</TD>
                 </TR>
               ))}
             </TBody>

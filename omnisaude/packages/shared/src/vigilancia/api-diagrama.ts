@@ -3,6 +3,10 @@
  * Rotas em /api/vigilancia. Leitura: `vigilancia.resumo` ou `vigilancia.painel`; gravação do diagrama e da população:
  * `vigilancia.consolidacao`; do plano e dos acionamentos: `vigilancia.contingencia`. Datas em AAAA-MM-DD; instantes
  * em ISO 8601; semanas em AAAASS.
+ *
+ * Agravo sigiloso pelo catálogo (HIV, sífilis, violências; Lei 14.289/2022): o diagrama, o CSV e os anos epidêmicos só
+ * saem para a vigilância municipal com `notificacao.sensivel` (os demais recebem 403 AGRAVO_SIGILOSO), e cada leitura
+ * fica na auditoria (`vigilancia.diagrama_sigiloso`). O plano de contingência não aceita agravo sigiloso.
  */
 import type { AvaliacaoPlano, EixoAcao, IndicadoresAgravo, PlanoContingencia, StatusAcao } from './contingencia';
 import type { AnoExcluido, AnosEpidemicosSugeridos, CanalCalculado, ChaveReceitaModelo, PontoObservado, ReceitaCanal, StatusSemana } from './diagrama';
@@ -115,12 +119,20 @@ export interface CanalCongelado {
   versaoPopulacao: string | null;
 }
 
-/** Canal de um ano: o congelado ativo ou, sem ele, a prévia calculada na hora (`congelado: null`). */
+/**
+ * Canal de um ano: o congelado ativo ou, sem ele, a prévia calculada na hora (`congelado: null`). O canal congelado
+ * traz os avisos gravados no congelamento (curva epidêmica, SE sem quartil, ano fora, cobertura parcial).
+ */
 export interface CanalDoAno {
   ano: number;
   canal: CanalCalculado;
   congelado: CanalCongelado | null;
   observado: PontoObservado[];
+  /**
+   * Anos da janela de referência da receita gravada (sem os excluídos) ainda incompletos: o ano epidemiológico em curso
+   * ou com SE incompletas. Com algum, congelar agora é recusado (422 REFERENCIA_INCOMPLETA) e a prévia avisa.
+   */
+  referenciaIncompleta: number[];
 }
 
 /** Ponto do gráfico, na ordem do eixo (sazonal: SE 27 a 53 do ano e 1 a 26 do seguinte), com o canal do próprio ano. */
@@ -136,10 +148,19 @@ export interface PontoDiagrama {
   incompleta: boolean;
 }
 
-/** Cobertura de cada ano da série (sem cobertura = fora do canal). */
+/**
+ * Cobertura de cada ano da série, decidida por SE: a SE está coberta quando cai no período de uma importação aplicada
+ * que traz o agravo, quando o OmniSaúde já estava em uso (desde a primeira notificação) ou quando tem caso do agravo.
+ * SE sem cobertura fica null (fora do canal), diferente de 0 (semana sem caso).
+ */
 export interface CoberturaAno {
   ano: number;
+  /** Alguma SE do ano coberta. */
   coberto: boolean;
+  /** Coberto só em parte do ano (as demais SE ficam fora do canal). */
+  parcial: boolean;
+  /** Quantas SE do ano estão cobertas. */
+  semanasCobertas: number;
   motivo: string;
 }
 
@@ -174,7 +195,11 @@ export interface CorpoConfiguracaoDiagrama {
   versaoPopulacao: string | null;
 }
 
-/** POST /vigilancia/diagrama/congelar: nova versão ativa (a anterior fica inativa). */
+/**
+ * POST /vigilancia/diagrama/congelar: nova versão ativa (a anterior fica inativa), com os avisos do cálculo gravados.
+ * Recusas (422): REFERENCIA_INCOMPLETA quando a janela de referência inclui ano ainda incompleto (o ano em curso ou SE
+ * incompletas; `details.anos`); SEM_REFERENCIA sem nenhum ano de referência com dados.
+ */
 export interface CorpoCongelarCanal {
   grupo: string;
   nivel: NivelTerritorio;
@@ -207,8 +232,11 @@ export interface ExcessoTerritorio {
   territorioNome: string;
   semana: string;
   casos: number;
+  /** Na unidade do canal do território (`unidade`). */
   valor: number;
   ls: number;
+  /** Unidade de `valor` e `ls`: número de casos ou incidência por 100 mil habitantes. */
+  unidade: ReceitaCanal['unidade'];
 }
 
 // ───────────── Contingência ─────────────

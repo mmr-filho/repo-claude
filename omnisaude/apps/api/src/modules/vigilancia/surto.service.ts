@@ -2,14 +2,22 @@ import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { TenantPrisma, type TenantClient, type TenantModels } from '@omnisaude/database';
 import {
   AGRAVOS_SINAN,
+  CAMPOS_DTA,
   CLASSIFICACAO_CASO_SURTO,
   CRITERIO_CASO_SURTO,
   DELIMITACAO_SURTO,
   detectarAglomerados,
+  errosDta,
+  fromZonedParts,
   idadeSinan,
+  infoAgravoSinan,
   LOCAL_INICIAL_SURTO,
   localDateString,
   MODO_TRANSMISSAO,
+  normalizarIdade,
+  normalizarNomePessoa,
+  onlyDigits,
+  personNameKey,
   PRAZO_SURTO_HORAS,
   REGRAS_SURTO_PADRAO,
   roleHasPermission,
@@ -18,6 +26,7 @@ import {
   SINAN_ZONA,
   SINDROMES_SURTO,
   situacaoDoPrazo,
+  UNIDADES_IDADE_CASO,
   validarSurto,
   VEICULO_TRANSMISSAO,
   type BlocoDta,
@@ -25,6 +34,7 @@ import {
   type CasoParaSurto,
   type CasoSurto,
   type CategoriaSurto,
+  type ConsultaCandidatasSurto,
   type CorpoCasoSurto,
   type CorpoComunicacaoSurto,
   type CorpoDescartarSurto,
@@ -40,9 +50,13 @@ import {
   type ExcessoTerritorio,
   type ListaSurtos,
   type LocalSurto,
+  type NotificacaoCandidataSurto,
   type PrazoSurto,
+  type RegistroCandidatoSurto,
+  type RespostaCandidatasSurto,
   type RespostaCasoSurto,
   type RespostaOk,
+  type RespostaRegistrosCandidatosSurto,
   type RespostaSugestoesSurto,
   type StatusSurto,
   type SugestaoSurto,
@@ -53,6 +67,7 @@ import {
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { conflict, DomainError, forbidden, notFound } from '../../core/errors';
+import { violouUnico } from '../endemias/erros-banco';
 import type { SystemContext } from '../integrations/messaging.service';
 import { LocalizadorService, PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
 import { DiagramaService } from './diagrama.service';
@@ -101,53 +116,33 @@ export function iniciais(nome: string | null | undefined): string | null {
   return s ? s.slice(0, 15) : null;
 }
 
-const UNIDADE_IDADE: Record<string, { codigo: string; um: string; varios: string; max: number }> = {
-  H: { codigo: '1', um: 'hora', varios: 'horas', max: 23 },
-  D: { codigo: '2', um: 'dia', varios: 'dias', max: 31 },
-  M: { codigo: '3', um: 'mês', varios: 'meses', max: 11 },
-  A: { codigo: '4', um: 'ano', varios: 'anos', max: 130 },
-};
-
-/**
- * Idade da linha da planilha guardada como número + unidade do Sinan (H, D, M, A): "34", "34 anos", "34A" → "34A";
- * "5 meses", "5m" → "5M"; "10 dias" → "10D"; "12 horas" → "12H". Nulo quando o texto não é idade.
- */
-export function normalizarIdade(texto: string): string | null {
-  const t = texto.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-  const m = /^(\d{1,3})\s*([a-z]*)\.?$/.exec(t);
-  if (!m) return null;
-  const n = Number(m[1]);
-  const u = ['', 'a', 'ano', 'anos'].includes(m[2]!) ? 'A' : ['m', 'mes', 'meses'].includes(m[2]!) ? 'M' : ['d', 'dia', 'dias'].includes(m[2]!) ? 'D' : ['h', 'hora', 'horas'].includes(m[2]!) ? 'H' : null;
-  if (!u || n > UNIDADE_IDADE[u]!.max) return null;
-  return `${n}${u}`;
-}
-
 const idadeLegivel = (canon: string | null) => {
   const m = canon ? /^(\d+)([HDMA])$/.exec(canon) : null;
   if (!m) return canon;
-  const u = UNIDADE_IDADE[m[2]!]!;
+  const u = UNIDADES_IDADE_CASO[m[2] as keyof typeof UNIDADES_IDADE_CASO];
   return `${m[1]} ${Number(m[1]) === 1 ? u.um : u.varios}`;
 };
 /** NU_IDADE_N do Sinan: unidade (1 hora, 2 dia, 3 mês, 4 ano) e 3 dígitos. */
 const idadeCodigo = (canon: string | null) => {
   const m = canon ? /^(\d+)([HDMA])$/.exec(canon) : null;
-  return m ? `${UNIDADE_IDADE[m[2]!]!.codigo}${m[1]!.padStart(3, '0')}` : null;
+  return m ? `${UNIDADES_IDADE_CASO[m[2] as keyof typeof UNIDADES_IDADE_CASO].codigo}${m[1]!.padStart(3, '0')}` : null;
 };
 
-/** Rótulos das variáveis da ficha de surto de DTA (campos 27 a 60) que o espelho reconhece; as demais saem pelo nome. */
-const ROTULO_DTA: Record<string, string> = {
-  NU_ENTR: 'Nº de entrevistados',
-  NU_ENT_DOE: 'Nº de doentes entrevistados',
-  NU_TOT: 'Total de doentes',
-  NU_TOT_HOS: 'Nº de hospitalizados',
-  NU_OBITO: 'Nº de óbitos',
-  DS_ETIOLOG: 'Agente etiológico',
-  DS_ALICAUS: 'Alimento causador',
-  TP_PRO_PRE: 'Local de produção/preparação',
-  ST_ALIMEN: 'Local de ingestão',
-  CRITERIO: 'Critério de confirmação',
-  DT_ENCERRA: 'Data de encerramento (DTA)',
-};
+/** Variáveis da ficha de surto de DTA (campos 27 a 60) que o espelho reconhece (regra do shared); as demais saem pelo nome. */
+const CAMPO_DTA = new Map(CAMPOS_DTA.map((c) => [c.variavel, c]));
+/** Valor da variável do bloco DTA no espelho: datas em dd/mm/aaaa (as conhecidas e as DT_* gravadas em AAAA-MM-DD). */
+function valorDtaEspelho(variavel: string, valor: string | number | null): string | number | null {
+  const ehData = CAMPO_DTA.get(variavel)?.tipo === 'data' || variavel.startsWith('DT_');
+  return ehData && typeof valor === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(valor.trim()) ? ddmmaaaa(valor.trim()) : valor;
+}
+
+/** Início do dia local (no fuso da instituição) da data AAAA-MM-DD, como instante. */
+const inicioDoDia = (iso: string, tz: string) => fromZonedParts({ year: Number(iso.slice(0, 4)), month: Number(iso.slice(5, 7)), day: Number(iso.slice(8, 10)), hour: 0, minute: 0, second: 0 }, tz);
+const diaSeguinte = (iso: string) => new Date(Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10)) + 1)).toISOString().slice(0, 10);
+/** Teto das listas de notificações e de registros candidatos à planilha. */
+const LIMITE_CANDIDATOS = 100;
+/** Texto que substitui o número da notificação ou do registro sob sigilo na linha do tempo. */
+const SOB_SIGILO = 'sob sigilo';
 
 type Outbreak = TenantModels.Outbreak;
 type OutbreakCase = TenantModels.OutbreakCase;
@@ -155,8 +150,10 @@ type OutbreakEvent = TenantModels.OutbreakEvent;
 type DadosCaso = Omit<OutbreakCase, 'id' | 'outbreakId' | 'caseNumber' | 'createdAt' | 'createdBy'>;
 type InfoGrupo = { nome: string; sinanCode: string | null };
 type ValorEvento = string | number | boolean | null;
-/** Linha da planilha pronta para gravar, com os avisos e o que vai para o evento. */
-type CasoPreparado = { dados: DadosCaso; avisos: string[]; evento: Record<string, ValorEvento> };
+/** Origem da linha da planilha (para conferir a repetição na transação e dar a mensagem certa). */
+type OrigemCaso = { tipo: 'notificacao' | 'registro'; id: string; numero: string };
+/** Linha da planilha pronta para gravar, com os avisos, o que vai para o evento e a origem (nula na linha manual). */
+type CasoPreparado = { dados: DadosCaso; avisos: string[]; evento: Record<string, ValorEvento>; origem: OrigemCaso | null };
 /** Campos do local de ocorrência (campos 20 a 33 da ficha). */
 type DadosLocal = Partial<Pick<Outbreak, 'occurrenceIbge' | 'localityId' | 'neighborhoodId' | 'address' | 'reference' | 'zone' | 'lat' | 'lng'>>;
 
@@ -420,32 +417,59 @@ export class SurtoService {
       c('DELIMITA', 'Delimitação do surto', comRotulo(DELIMITACAO_SURTO, o.delimitation)),
       c('DT_ENCERRA', 'Data do encerramento', ddmmaaaa(dataIso(o.closedOn))),
     ];
-    // Planilha de acompanhamento: valores como vão para o Sinan (códigos).
-    const linhas = planilha.map((p) => ({
-      NU_CASO: String(p.numero),
-      NM_CASO: p.iniciais,
-      CS_SEXO: p.sexo,
-      NU_IDADE_N: idadeCodigo(normalizarIdade(p.idade ?? '') ?? null),
-      ID_MN_RESI: p.municipioResidencia ? p.municipioResidencia.slice(0, 6) : null,
-      NM_BAIRRO: p.bairroNome,
-      DT_SIN_PRI: ddmmaaaa(p.inicioSintomas),
-      ID_HOSP: simNao(p.hospitalizado),
-      OBITO: simNao(p.obito),
-      CLASSI_FIN: p.classificacao,
-      CRITERIO: p.criterio,
-      DIAG_FINAL: p.cidFinal,
-    }));
-    const dta = o.dta && typeof o.dta === 'object' ? Object.entries(o.dta as BlocoDta).map(([k, v]) => c(k, ROTULO_DTA[k] ?? k, v)) : [];
+    // Planilha de acompanhamento: valores como vão para o Sinan (códigos). A linha sob sigilo sai só com o NU_CASO.
+    const restritas = planilha.filter((p) => p.restrito).length;
+    if (restritas) avisos.push(`${restritas} caso(s) da planilha sob sigilo: os dados vêm vazios para quem não abre a notificação ou o registro. Quem pode abri-los completa a planilha no Sinan.`);
+    const linhas = planilha.map((p) =>
+      p.restrito
+        ? { NU_CASO: String(p.numero), NM_CASO: null, CS_SEXO: null, NU_IDADE_N: null, ID_MN_RESI: null, NM_BAIRRO: null, DT_SIN_PRI: null, ID_HOSP: null, OBITO: null, CLASSI_FIN: null, CRITERIO: null, DIAG_FINAL: null }
+        : {
+            NU_CASO: String(p.numero),
+            NM_CASO: p.iniciais,
+            CS_SEXO: p.sexo,
+            NU_IDADE_N: idadeCodigo(normalizarIdade(p.idade ?? '') ?? null),
+            ID_MN_RESI: p.municipioResidencia ? p.municipioResidencia.slice(0, 6) : null,
+            NM_BAIRRO: p.bairroNome,
+            DT_SIN_PRI: ddmmaaaa(p.inicioSintomas),
+            ID_HOSP: simNao(p.hospitalizado),
+            OBITO: simNao(p.obito),
+            CLASSI_FIN: p.classificacao,
+            CRITERIO: p.criterio,
+            DIAG_FINAL: p.cidFinal,
+          },
+    );
+    // Bloco DTA: rótulos das variáveis conhecidas (CAMPOS_DTA do shared) e datas em dd/mm/aaaa.
+    const dta = o.dta && typeof o.dta === 'object' ? Object.entries(o.dta as BlocoDta).map(([k, v]) => c(k, CAMPO_DTA.get(k)?.rotulo ?? k, valorDtaEspelho(k, v))) : [];
     return { campos, planilha: linhas, dta, avisos };
   }
 
-  private casoDto(c: OutbreakCase, numeros: Map<string, string>, bairros: Map<string, string>, grupoDaLista: boolean): CasoSurto {
+  /**
+   * Linha da planilha. `restrito`: a notificação ou o registro de origem é sigiloso e quem lê não pode abri-lo; a linha
+   * sai só com o NU_CASO e a origem (os ids), sem iniciais, sexo, idade, residência, datas, desfecho, CID ou número.
+   */
+  private casoDto(c: OutbreakCase, numeros: Map<string, string>, bairros: Map<string, string>, grupoDaLista: boolean, restrito: boolean): CasoSurto {
+    const base = { id: c.id, numero: c.caseNumber, notificationId: c.notificationId, officialRecordId: c.officialRecordId, semNotificacaoIndividual: grupoDaLista && !c.notificationId && !c.officialRecordId };
+    if (restrito)
+      return {
+        ...base,
+        notificacaoNumero: null,
+        iniciais: null,
+        sexo: null,
+        idade: null,
+        municipioResidencia: null,
+        bairroId: null,
+        bairroNome: null,
+        inicioSintomas: null,
+        hospitalizado: null,
+        obito: null,
+        classificacao: null,
+        criterio: null,
+        cidFinal: null,
+        restrito: true,
+      };
     return {
-      id: c.id,
-      numero: c.caseNumber,
-      notificationId: c.notificationId,
+      ...base,
       notificacaoNumero: c.notificationId ? (numeros.get(c.notificationId) ?? null) : null,
-      officialRecordId: c.officialRecordId,
       iniciais: c.initials,
       sexo: c.sex,
       idade: idadeLegivel(c.ageText),
@@ -458,8 +482,61 @@ export class SurtoService {
       classificacao: c.finalClass,
       criterio: c.criterion,
       cidFinal: c.finalCid,
-      semNotificacaoIndividual: grupoDaLista && !c.notificationId && !c.officialRecordId,
+      restrito: false,
     };
+  }
+
+  /** Registro oficial sigiloso: abre com `notificacao.sensivel` para a vigilância municipal e o núcleo da unidade dele (id ou CNES). */
+  private abreRegistroSigiloso(ctx: RequestContext, r: { unitId: string | null; unitCnes: string | null }, cnesDaSessao: string | null) {
+    if (!roleHasPermission(ctx.session.role, 'notificacao.sensivel')) return false;
+    return this.vigilanciaMunicipal(ctx) || r.unitId === ctx.session.unitId || (!!r.unitCnes && r.unitCnes === cnesDaSessao);
+  }
+
+  /** CNES da unidade da sessão (o núcleo alcança o registro oficial pela unidade ou pelo CNES dela). */
+  private async cnesDaSessao(ctx: RequestContext): Promise<string | null> {
+    return (await ctx.db.unit.findUnique({ where: { id: ctx.session.unitId }, select: { cnes: true } }))?.cnes ?? null;
+  }
+
+  /**
+   * Origens sob sigilo para quem lê: as notificações e os registros oficiais sigilosos da planilha e da linha do tempo
+   * que ele não pode abrir (a mesma regra da ficha da notificação e das listas do registro oficial).
+   */
+  private async origensRestritas(ctx: RequestContext, cases: Pick<OutbreakCase, 'notificationId' | 'officialRecordId'>[], eventos: Pick<OutbreakEvent, 'payload'>[]) {
+    const dados = eventos.map((e) => (e.payload ?? {}) as Record<string, unknown>);
+    const texto = (v: unknown) => (typeof v === 'string' && v ? v : null);
+    const uuid = (v: string | null) => (v && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v) ? v : null);
+    const idsN = new Set([...cases.map((c) => c.notificationId), ...dados.map((d) => uuid(texto(d.notificationId)))].filter((x): x is string => !!x));
+    const numerosN = new Set(dados.map((d) => texto(d.notificacao)).filter((x): x is string => !!x && x !== SOB_SIGILO));
+    // Registro: id na linha e no evento; nos eventos antigos, o id em `registro` (retirada) ou o número com o sistema.
+    const idsR = new Set([...cases.map((c) => c.officialRecordId), ...dados.map((d) => uuid(texto(d.officialRecordId)) ?? uuid(texto(d.registro)))].filter((x): x is string => !!x));
+    const numerosR = new Set(dados.map((d) => (uuid(texto(d.registro)) ? null : texto(d.registro))).filter((x): x is string => !!x && x !== SOB_SIGILO));
+    const [notifs, regs] = await Promise.all([
+      idsN.size || numerosN.size
+        ? ctx.db.notification.findMany({ where: { OR: [{ id: { in: [...idsN] } }, { number: { in: [...numerosN] } }] }, select: { id: true, number: true, sensitive: true, unitId: true, notifierId: true } })
+        : [],
+      idsR.size || numerosR.size
+        ? ctx.db.officialRecord.findMany({ where: { OR: [{ id: { in: [...idsR] } }, { number: { in: [...numerosR] } }] }, select: { id: true, number: true, system: true, sensitive: true, unitId: true, unitCnes: true } })
+        : [],
+    ]);
+    const cnes = regs.some((r) => r.sensitive) && !this.vigilanciaMunicipal(ctx) ? await this.cnesDaSessao(ctx) : null;
+    const notifRestritas = notifs.filter((n) => n.sensitive && !this.notificacoes.podeAbrirSigilosa(ctx, n));
+    const regsRestritos = regs.filter((r) => r.sensitive && !this.abreRegistroSigiloso(ctx, r, cnes));
+    return {
+      numerosNotificacao: new Map(notifs.map((n) => [n.id, n.number])),
+      notificacoes: new Set([...notifRestritas.map((n) => n.id), ...notifRestritas.map((n) => n.number)]),
+      registros: new Set([...regsRestritos.map((r) => r.id), ...regsRestritos.map((r) => `${r.system}|${r.number}`)]),
+    };
+  }
+
+  /** Dados do evento da linha do tempo, com o número da notificação ou do registro sob sigilo trocado por "sob sigilo". */
+  private dadosDoEvento(payload: unknown, restritas: { notificacoes: Set<string>; registros: Set<string> }): Record<string, unknown> {
+    const d = { ...((payload ?? {}) as Record<string, unknown>) };
+    const notif = [d.notificationId, d.notificacao].some((v) => typeof v === 'string' && restritas.notificacoes.has(v));
+    const reg = [d.officialRecordId, d.registro, d.sistema && d.registro ? `${String(d.sistema)}|${String(d.registro)}` : null].some((v) => typeof v === 'string' && restritas.registros.has(v));
+    if (notif) d.notificacao = SOB_SIGILO;
+    if (reg) d.registro = SOB_SIGILO;
+    if (notif || reg) d.restrito = true;
+    return d;
   }
 
   private async montarDetalhe(ctx: RequestContext, id: string): Promise<DetalheSurto> {
@@ -470,24 +547,23 @@ export class SurtoService {
     const agora = this.agora();
     const grupos = await this.grupos(ctx.db, o.groupKey ? [o.groupKey] : []);
     const grupoDaLista = !!o.groupKey && grupos.has(o.groupKey);
-    const notificacoesIds = o.cases.map((c) => c.notificationId).filter((x): x is string => !!x);
     const bairrosIds = [...o.cases.map((c) => c.neighborhoodId), o.neighborhoodId].filter((x): x is string => !!x);
     const usuariosIds = [o.notifierId, o.discardedBy, ...o.events.map((e) => e.byUser)].filter((x): x is string => !!x);
-    const [notifs, bairros, usuarios] = await Promise.all([
-      notificacoesIds.length ? ctx.db.notification.findMany({ where: { id: { in: notificacoesIds } }, select: { id: true, number: true } }) : [],
+    const [restritas, bairros, usuarios] = await Promise.all([
+      this.origensRestritas(ctx, o.cases, o.events),
       bairrosIds.length ? ctx.db.neighborhood.findMany({ where: { id: { in: [...new Set(bairrosIds)] } }, select: { id: true, name: true } }) : [],
       ctx.db.user.findMany({ where: { id: { in: [...new Set(usuariosIds)] } }, select: { id: true, name: true, socialName: true } }),
     ]);
-    const numeros = new Map(notifs.map((n) => [n.id, n.number]));
     const nomesBairros = new Map(bairros.map((b) => [b.id, b.name]));
     const nomes = new Map(usuarios.map((u) => [u.id, u.socialName ?? u.name]));
-    const planilha = o.cases.map((c) => this.casoDto(c, numeros, nomesBairros, grupoDaLista));
+    const restrito = (c: OutbreakCase) => (!!c.notificationId && restritas.notificacoes.has(c.notificationId)) || (!!c.officialRecordId && restritas.registros.has(c.officialRecordId));
+    const planilha = o.cases.map((c) => this.casoDto(c, restritas.numerosNotificacao, nomesBairros, grupoDaLista, restrito(c)));
     const eventos: EventoSurto[] = o.events.map((e) => ({
       id: e.id,
       tipo: e.kind as TipoEventoSurto,
       em: e.at.toISOString(),
       por: e.byUser ? (nomes.get(e.byUser) ?? null) : null,
-      dados: (e.payload ?? {}) as Record<string, unknown>,
+      dados: this.dadosDoEvento(e.payload, restritas),
     }));
     const aberto = o.status === 'ABERTO';
     return {
@@ -551,7 +627,6 @@ export class SurtoService {
     if ('notificationId' in corpo) {
       const n = await this.notificacoes.acessar(ctx, corpo.notificationId, { leitura: true });
       if (n.status === 'DESCARTADA') throw new DomainError('NOTIFICACAO_DESCARTADA', `A notificação ${n.number} foi descartada: não entra na planilha`, HttpStatus.UNPROCESSABLE_ENTITY);
-      if (surto.id && (await ctx.db.outbreakCase.count({ where: { outbreakId: surto.id, notificationId: n.id } }))) throw conflict(`A notificação ${n.number} já está na planilha deste surto`);
       const outros = await ctx.db.outbreakCase.findMany({
         where: { notificationId: n.id, outbreak: { status: 'ABERTO' }, ...(surto.id ? { outbreakId: { not: surto.id } } : {}) },
         select: { outbreak: { select: { number: true } } },
@@ -578,7 +653,8 @@ export class SurtoService {
           finalCid: n.codeSystem === 'CID10' && n.code ? cidGuardado(n.code) : null,
         },
         avisos,
-        evento: { notificacao: n.number },
+        evento: { notificacao: n.number, notificationId: n.id },
+        origem: { tipo: 'notificacao', id: n.id, numero: n.number },
       };
     }
     if ('officialRecordId' in corpo) {
@@ -590,7 +666,6 @@ export class SurtoService {
         if (r.unitId !== ctx.session.unitId && r.unitCnes !== minha?.cnes) throw forbidden('Registro oficial de outra unidade: fora do seu alcance');
       }
       if (r.sensitive && !roleHasPermission(ctx.session.role, 'notificacao.sensivel')) throw forbidden('Agravo de acesso restrito');
-      if (surto.id && (await ctx.db.outbreakCase.count({ where: { outbreakId: surto.id, officialRecordId: r.id } }))) throw conflict(`O registro ${r.number} já está na planilha deste surto`);
       if (surto.grupo && r.groupKey && r.groupKey !== surto.grupo) avisos.push(`O agravo do registro ${r.number} é diferente do agravo do surto.`);
       const idade = r.birthDate ? idadeSinan(r.birthDate, r.symptomsOnset ?? r.notifiedOn) : null;
       return {
@@ -607,7 +682,8 @@ export class SurtoService {
           finalCid: cidGuardado(r.agravo),
         },
         avisos,
-        evento: { registro: r.number, sistema: r.system },
+        evento: { registro: r.number, sistema: r.system, officialRecordId: r.id },
+        origem: { tipo: 'registro', id: r.id, numero: r.number },
       };
     }
     const l = corpo.linha;
@@ -641,6 +717,7 @@ export class SurtoService {
       },
       avisos,
       evento: { manual: true },
+      origem: null,
     };
   }
 
@@ -789,6 +866,8 @@ export class SurtoService {
     if (veiculo === '6' && !veiculoTexto?.trim()) throw new DomainError('SURTO_INVALIDO', 'Descreva o veículo de transmissão (Outro)', HttpStatus.BAD_REQUEST);
     if (corpo.dta && !(categoria === 'DTA' || veiculo === '1'))
       throw new DomainError('DTA_FORA_DE_LUGAR', 'O bloco de DTA é da ficha de surto de DTA (categoria DTA ou veículo alimento/água)', HttpStatus.UNPROCESSABLE_ENTITY);
+    // Variáveis conhecidas do bloco DTA: a mesma regra do shared que a tela usa (número inteiro, data não futura, critério).
+    if (corpo.dta) this.exigirValido(errosDta(corpo.dta, hoje));
     const investigadoEm = inv?.investigadoEm !== undefined ? inv.investigadoEm : dataIso(o.investigatedOn);
     const dados: DadosSurtoValidacao = {
       ...this.dadosValidacao(o),
@@ -848,10 +927,16 @@ export class SurtoService {
     this.exigirAberto(o);
     const grupoDaLista = o.groupKey ? (await this.grupos(ctx.db, [o.groupKey])).has(o.groupKey) : false;
     const p = await this.prepararCaso(ctx, { id: o.id, grupo: o.groupKey, grupoDaLista, categoria: o.category as CategoriaSurto }, corpo);
+    const repetido = (origem: OrigemCaso) => conflict(`${origem.tipo === 'registro' ? 'O registro' : 'A notificação'} ${origem.numero} já está na planilha deste surto`);
     let casoId: string;
     try {
       casoId = await ctx.db.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`surto-caso:${o.id}`}))`;
+        // Conferida depois da trava: os envios simultâneos do mesmo caso passam aqui um de cada vez.
+        if (p.origem) {
+          const ja = await tx.outbreakCase.count({ where: { outbreakId: o.id, ...(p.origem.tipo === 'registro' ? { officialRecordId: p.origem.id } : { notificationId: p.origem.id }) } });
+          if (ja) throw repetido(p.origem);
+        }
         const ultimo = await tx.outbreakCase.findFirst({ where: { outbreakId: o.id }, orderBy: { caseNumber: 'desc' }, select: { caseNumber: true } });
         const numero = (ultimo?.caseNumber ?? 0) + 1;
         const c = await tx.outbreakCase.create({ data: { ...p.dados, outbreakId: o.id, caseNumber: numero, createdBy: ctx.session.userId }, select: { id: true } });
@@ -860,7 +945,9 @@ export class SurtoService {
         return c.id;
       });
     } catch (err) {
-      if ((err as { code?: string }).code === 'P2002') throw conflict('A notificação já está na planilha deste surto');
+      // Os índices únicos parciais da planilha (outbreak_cases_notificacao e outbreak_cases_registro) são a última barreira.
+      if (p.origem && (violouUnico(err, 'outbreak_cases_registro') || violouUnico(err, 'outbreak_cases_notificacao'))) throw repetido(p.origem);
+      if (violouUnico(err)) throw conflict('A planilha do surto mudou ao mesmo tempo: tente de novo');
       throw err;
     }
     await this.reconciliarNegativa(ctx, o.unitId, o.notifiedOn);
@@ -872,11 +959,18 @@ export class SurtoService {
   async retirarCaso(ctx: RequestContext, id: string, caseId: string): Promise<RespostaOk> {
     const o = await this.carregar(ctx, id);
     this.exigirAberto(o);
-    const c = await ctx.db.outbreakCase.findFirst({ where: { id: caseId, outbreakId: o.id }, include: { notification: { select: { number: true } } } });
+    const c = await ctx.db.outbreakCase.findFirst({ where: { id: caseId, outbreakId: o.id }, include: { notification: { select: { number: true } }, officialRecord: { select: { number: true, system: true } } } });
     if (!c) throw notFound('Caso do surto');
     await ctx.db.$transaction(async (tx) => {
       await tx.outbreakCase.delete({ where: { id: c.id } });
-      const payload = { caso: c.caseNumber, notificacao: c.notification?.number ?? null, registro: c.officialRecordId };
+      const payload = {
+        caso: c.caseNumber,
+        notificacao: c.notification?.number ?? null,
+        notificationId: c.notificationId,
+        registro: c.officialRecord?.number ?? null,
+        sistema: c.officialRecord?.system ?? null,
+        officialRecordId: c.officialRecordId,
+      };
       await tx.outbreakEvent.create({ data: { outbreakId: o.id, kind: 'CASO_RETIRADO', payload, byUser: ctx.session.userId, at: this.agora() } });
       await this.audit.record(ctx, tx, { action: 'vigilancia.surto_caso_retirar', entityType: 'Outbreak', entityId: o.id, payload: { numero: o.number, ...payload } });
     });
@@ -965,8 +1059,12 @@ export class SurtoService {
 
   /**
    * Casos para as regras: notificações não descartadas (nem encerradas como descartadas) conhecidas nos últimos 30 dias,
-   * sem agravo sigiloso, com quarteirão e bairro pela residência e a unidade (hospitalar ou não). O histórico do evento
-   * inusitado olha as notificações e os registros oficiais anteriores à janela; sem nenhum histórico, não é avaliado.
+   * sem agravo sigiloso, com quarteirão e bairro pela residência e a unidade (hospitalar ou não). O caso já ligado a
+   * surto, de qualquer situação, não volta a ser sugerido. O histórico do evento inusitado olha as notificações e os
+   * registros oficiais anteriores à janela que são caso (sem os descartados); sem nenhum histórico, não é avaliado. Os
+   * outros casos da janela que quem lê não vê (de outra unidade, na visão do núcleo, ou sob sigilo) contam só como caso
+   * anterior no evento inusitado. As dispensas são as da visão de quem lê: as da vigilância municipal (valem para todos)
+   * e, para o núcleo, as da unidade dele.
    */
   private async calcularSugestoes(ctx: RequestContext) {
     const agora = this.agora();
@@ -1002,7 +1100,8 @@ export class SurtoService {
     const [territorio, unidades, emSurto] = await Promise.all([
       this.territorioDasNotificacoes(ctx.db, rows),
       ctx.db.unit.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.unitId))] } }, select: { id: true, name: true, type: true } }),
-      ctx.db.outbreakCase.findMany({ where: { notificationId: { in: rows.map((r) => r.id) }, outbreak: { status: 'ABERTO' } }, select: { notificationId: true } }),
+      // Surto aberto, encerrado ou descartado: o caso já foi tratado e não volta como sugestão.
+      ctx.db.outbreakCase.findMany({ where: { notificationId: { in: rows.map((r) => r.id) } }, select: { notificationId: true } }),
     ]);
     const semPosicao = rows.filter((r) => !territorio.get(r.id)?.temPosicao).length;
     if (semPosicao) avisos.push(`${semPosicao} notificação(ões) sem posição da residência ficaram fora das regras de quarteirão e bairro.`);
@@ -1022,30 +1121,49 @@ export class SurtoService {
     }));
     const grupos = [...new Set(casos.map((c) => c.grupo))];
     const historicoPorGrupo: Record<string, string | null> = {};
+    const outrosCasosPorGrupo: Record<string, string[]> = {};
     const temHistorico = (await ctx.db.notification.count({ where: { knownAt: { lt: desde }, status: { not: 'DESCARTADA' } } })) > 0 || (await ctx.db.officialRecord.count({ where: { type: 'INDIVIDUAL' } })) > 0;
     if (!temHistorico) avisos.push(`Sem histórico anterior aos últimos ${JANELA_SUGESTOES_DIAS} dias: o evento inusitado (agravo ausente há muito tempo) não é avaliado.`);
     else if (grupos.length) {
       const limite = localDateString(desde, tz);
-      const [omni, oficiais] = await Promise.all([
+      const vistos = rows.map((r) => r.id);
+      // Caso anterior é caso: a suspeita descartada (notificação encerrada com classificação 2, registro DESCARTADO) não conta.
+      const [omni, oficiais, outros] = await Promise.all([
         ctx.db.$queryRaw<{ grupo: string; ultimo: Date | null }[]>`
           SELECT group_key AS grupo, max(COALESCE(symptoms_onset, (known_at AT TIME ZONE 'UTC' AT TIME ZONE ${tz})::date)) AS ultimo
-          FROM notifications WHERE group_key = ANY(${grupos}::text[]) AND status <> 'DESCARTADA' AND known_at < ${desde} GROUP BY group_key`,
+          FROM notifications
+          WHERE group_key = ANY(${grupos}::text[]) AND status <> 'DESCARTADA' AND (status <> 'ENCERRADA' OR final_class IS DISTINCT FROM '2') AND known_at < ${desde}
+          GROUP BY group_key`,
         ctx.db.$queryRaw<{ grupo: string; ultimo: Date | null }[]>`
           SELECT group_key AS grupo, max(COALESCE(symptoms_onset, notified_on)) AS ultimo
-          FROM official_records WHERE type = 'INDIVIDUAL' AND NOT excluded AND group_key = ANY(${grupos}::text[]) AND COALESCE(symptoms_onset, notified_on) < ${limite}::date GROUP BY group_key`,
+          FROM official_records
+          WHERE type = 'INDIVIDUAL' AND NOT excluded AND situation <> 'DESCARTADO' AND group_key = ANY(${grupos}::text[]) AND COALESCE(symptoms_onset, notified_on) < ${limite}::date
+          GROUP BY group_key`,
+        // Os outros casos da janela (de outra unidade, sob sigilo ou além do teto): só as datas, por grupo.
+        ctx.db.$queryRaw<{ grupo: string; data: Date }[]>`
+          SELECT DISTINCT group_key AS grupo, COALESCE(symptoms_onset, (known_at AT TIME ZONE 'UTC' AT TIME ZONE ${tz})::date) AS data
+          FROM notifications
+          WHERE group_key = ANY(${grupos}::text[]) AND status IN ('RASCUNHO', 'NOTIFICADA', 'ENCERRADA') AND (status <> 'ENCERRADA' OR final_class IS DISTINCT FROM '2')
+            AND known_at >= ${desde} AND known_at <= ${agora} AND NOT (id = ANY(${vistos}::uuid[]))`,
       ]);
       for (const g of grupos) {
         const datas = [...omni, ...oficiais].filter((x) => x.grupo === g && x.ultimo).map((x) => dataIso(x.ultimo)!);
         historicoPorGrupo[g] = datas.length ? datas.sort().at(-1)! : null;
       }
+      for (const o of outros) (outrosCasosPorGrupo[o.grupo] ??= []).push(dataIso(o.data)!);
     }
-    const dispensas = await ctx.db.outbreakDismissal.findMany({ select: { signature: true, untilKnownAt: true } });
+    const dispensas = await ctx.db.outbreakDismissal.findMany({
+      where: this.vigilanciaMunicipal(ctx) ? { unitId: null } : { OR: [{ unitId: null }, { unitId: ctx.session.unitId }] },
+      select: { signature: true, untilKnownAt: true, unitId: true },
+    });
     const cfg = ctx.tenant.settings.vigilancia.surto;
     const sugestoes = detectarAglomerados(casos, cfg.regras ?? REGRAS_SURTO_PADRAO, {
       hoje,
-      dispensas: dispensas.map((d) => ({ assinatura: d.signature, ateConhecimento: d.untilKnownAt.toISOString() })),
+      fuso: tz,
+      dispensas: dispensas.map((d) => ({ assinatura: d.signature, ateConhecimento: d.untilKnownAt.toISOString(), unitId: d.unitId })),
       diasInusitado: cfg.diasInusitado,
       historicoPorGrupo,
+      outrosCasosPorGrupo,
     });
     return { sugestoes, rows, territorio, unidadePorId, avisos, hoje };
   }
@@ -1099,16 +1217,24 @@ export class SurtoService {
     return { sugestoes: tela, excessos, avisos: aviso ? [...avisos, aviso] : avisos };
   }
 
-  /** POST /vigilancia/surtos/sugestoes/dispensar: vale até aparecer caso conhecido depois do último da sugestão. */
+  /**
+   * POST /vigilancia/surtos/sugestoes/dispensar: vale até aparecer caso conhecido depois do último da sugestão. A da
+   * vigilância municipal (unidade nula) vale para todos; a do núcleo grava a unidade dele e só vale na visão dele, para
+   * sugestão com todos os casos da unidade (detectarAglomerados).
+   */
   async dispensarSugestao(ctx: RequestContext, corpo: CorpoDispensarSugestao): Promise<RespostaOk> {
-    const { sugestoes } = await this.calcularSugestoes(ctx);
+    const { sugestoes, rows } = await this.calcularSugestoes(ctx);
     const s = sugestoes.find((x) => x.assinatura === corpo.assinatura);
     if (!s) throw new DomainError('NAO_ENCONTRADO', 'Sugestão não encontrada: já dispensada, já virou surto ou ficou sem casos', HttpStatus.NOT_FOUND);
+    const unitId = this.vigilanciaMunicipal(ctx) ? null : ctx.session.unitId;
+    const unidadeDe = new Map(rows.map((r) => [r.id, r.unitId]));
+    if (unitId && s.casos.some((id) => unidadeDe.get(id) !== unitId)) throw forbidden('O núcleo dispensa só sugestão com todos os casos da unidade em que está lotado');
     const motivo = corpo.motivo.trim();
     await ctx.db.$transaction(async (tx) => {
       const d = await tx.outbreakDismissal.create({
         data: {
           signature: s.assinatura,
+          unitId,
           ruleId: s.regra.slice(0, 40),
           groupKey: s.grupo.slice(0, 40),
           linkKind: s.vinculo.tipo,
@@ -1120,8 +1246,172 @@ export class SurtoService {
         },
         select: { id: true },
       });
-      await this.audit.record(ctx, tx, { action: 'vigilancia.surto_sugestao_dispensar', entityType: 'OutbreakDismissal', entityId: d.id, payload: { assinatura: s.assinatura, casos: s.casos.length, motivo } });
+      await this.audit.record(ctx, tx, {
+        action: 'vigilancia.surto_sugestao_dispensar',
+        entityType: 'OutbreakDismissal',
+        entityId: d.id,
+        payload: { assinatura: s.assinatura, casos: s.casos.length, motivo, unidade: unitId },
+      });
     });
     return { ok: true };
+  }
+
+  // ───────────────────────────── busca para a planilha ─────────────────────────────
+
+  /** O filtro como vai para a auditoria. */
+  private filtroAuditado(q: ConsultaCandidatasSurto) {
+    return { grupo: q.grupo ?? null, de: q.de ?? null, ate: q.ate ?? null, busca: q.busca?.trim() || null, surtoId: q.surtoId ?? null };
+  }
+
+  /**
+   * GET /vigilancia/surtos/candidatas: notificações que podem entrar na planilha (não descartadas), por grupo, período
+   * do conhecimento e texto (número, nome, CNS ou CPF), além das mais recentes. Mesmo alcance e sigilo das notificações:
+   * o núcleo vê as da unidade em que está lotado; a sigilosa só aparece para quem a abre. Com `surtoId`, as que já estão
+   * na planilha dele ficam de fora. A busca por texto e a lista com sigilosa são auditadas.
+   */
+  async notificacoesCandidatas(ctx: RequestContext, q: ConsultaCandidatasSurto): Promise<RespostaCandidatasSurto> {
+    const tz = ctx.tenant.timeZone;
+    if (q.surtoId) await this.carregar(ctx, q.surtoId);
+    const busca = q.busca?.trim() || null;
+    const ou: TenantPrisma.NotificationWhereInput[] = [];
+    if (busca) {
+      const nome = personNameKey(busca);
+      const digitos = onlyDigits(busca);
+      ou.push({ number: { contains: busca } });
+      if (nome.length >= 2) ou.push({ patient: { nameKey: { contains: nome } } });
+      if (digitos.length === 11) ou.push({ patient: { cpf: digitos } });
+      if (digitos.length === 15) ou.push({ patient: { cns: digitos } });
+    }
+    const rows = await ctx.db.notification.findMany({
+      where: {
+        ...this.notificacoes.escopo(ctx),
+        status: { in: ['RASCUNHO', 'NOTIFICADA', 'ENCERRADA'] },
+        ...(roleHasPermission(ctx.session.role, 'notificacao.sensivel') ? {} : { sensitive: false }),
+        ...(q.grupo ? { groupKey: q.grupo } : {}),
+        ...(q.de || q.ate ? { knownAt: { ...(q.de ? { gte: inicioDoDia(q.de, tz) } : {}), ...(q.ate ? { lt: inicioDoDia(diaSeguinte(q.ate), tz) } : {}) } } : {}),
+        ...(ou.length ? { OR: ou } : {}),
+        ...(q.surtoId ? { outbreakCases: { none: { outbreakId: q.surtoId } } } : {}),
+      },
+      select: {
+        id: true,
+        number: true,
+        status: true,
+        groupKey: true,
+        knownAt: true,
+        symptomsOnset: true,
+        sensitive: true,
+        unitId: true,
+        notifierId: true,
+        condition: { select: { name: true } },
+        unit: { select: { id: true, name: true } },
+        patient: { select: { name: true, socialName: true } },
+        outbreakCases: { where: { outbreak: { status: 'ABERTO' } }, select: { outbreak: { select: { number: true } } } },
+      },
+      orderBy: [{ knownAt: 'desc' }, { id: 'desc' }],
+      take: LIMITE_CANDIDATOS + 1,
+    });
+    // Sigilosa: só para quem a abre (o autor, a vigilância municipal e o núcleo da unidade), como na ficha.
+    const visiveis = rows.slice(0, LIMITE_CANDIDATOS).filter((n) => !n.sensitive || this.notificacoes.podeAbrirSigilosa(ctx, n));
+    const itens: NotificacaoCandidataSurto[] = visiveis.map((n) => ({
+      id: n.id,
+      numero: n.number,
+      status: n.status,
+      grupo: n.groupKey,
+      agravo: n.condition.name,
+      unidade: { id: n.unit.id, nome: n.unit.name },
+      paciente: n.patient.socialName ?? n.patient.name,
+      conhecidoEm: n.knownAt.toISOString(),
+      inicioSintomas: dataIso(n.symptomsOnset),
+      sigilosa: n.sensitive,
+      emSurtos: [...new Set(n.outbreakCases.map((c) => c.outbreak.number))].sort(),
+    }));
+    const sigilosas = itens.filter((i) => i.sigilosa).map((i) => i.id);
+    if (busca || sigilosas.length)
+      await this.audit.recordStandalone(ctx, { action: 'vigilancia.surto_busca_notificacoes', entityType: 'Notification', payload: { filtro: this.filtroAuditado(q), linhas: itens.length, sigilosas } });
+    return { itens, limitado: rows.length > LIMITE_CANDIDATOS };
+  }
+
+  /**
+   * GET /vigilancia/surtos/registros: registros oficiais individuais (não excluídos) que podem entrar na planilha, por
+   * grupo, período da notificação e texto (número, nome, CNS ou CPF). O núcleo vê os da unidade em que está lotado (pelo
+   * id ou pelo CNES); o sigiloso só aparece com `notificacao.sensivel`. Lista nominal de dado identificado: auditada,
+   * como as listas da conciliação.
+   */
+  async registrosCandidatos(ctx: RequestContext, q: ConsultaCandidatasSurto): Promise<RespostaRegistrosCandidatosSurto> {
+    if (q.surtoId) await this.carregar(ctx, q.surtoId);
+    const municipal = this.vigilanciaMunicipal(ctx);
+    const cnes = municipal ? null : await this.cnesDaSessao(ctx);
+    const busca = q.busca?.trim() || null;
+    const e: TenantPrisma.OfficialRecordWhereInput[] = [];
+    if (!municipal) e.push({ OR: [{ unitId: ctx.session.unitId }, ...(cnes ? [{ unitCnes: cnes }] : [])] });
+    if (busca) {
+      const nome = normalizarNomePessoa(busca);
+      const digitos = onlyDigits(busca);
+      const ou: TenantPrisma.OfficialRecordWhereInput[] = [{ number: { contains: busca } }];
+      if (nome.length >= 2) ou.push({ patientNameNorm: { contains: nome } });
+      if (digitos.length === 11) ou.push({ cpf: digitos });
+      if (digitos.length === 15) ou.push({ cns: digitos });
+      e.push({ OR: ou });
+    }
+    const rows = await ctx.db.officialRecord.findMany({
+      where: {
+        type: 'INDIVIDUAL',
+        excluded: false,
+        ...(roleHasPermission(ctx.session.role, 'notificacao.sensivel') ? {} : { sensitive: false }),
+        ...(q.grupo ? { groupKey: q.grupo } : {}),
+        ...(q.de || q.ate ? { notifiedOn: { ...(q.de ? { gte: comoData(q.de) } : {}), ...(q.ate ? { lte: comoData(q.ate) } : {}) } } : {}),
+        ...(q.surtoId ? { outbreakCases: { none: { outbreakId: q.surtoId } } } : {}),
+        ...(e.length ? { AND: e } : {}),
+      },
+      select: {
+        id: true,
+        system: true,
+        number: true,
+        notifiedOn: true,
+        symptomsOnset: true,
+        agravo: true,
+        groupKey: true,
+        unitId: true,
+        unitCnes: true,
+        unit: { select: { name: true } },
+        patientName: true,
+        birthDate: true,
+        sex: true,
+        sensitive: true,
+        situation: true,
+        absentSince: true,
+        outbreakCases: { where: { outbreak: { status: 'ABERTO' } }, select: { outbreak: { select: { number: true } } } },
+      },
+      orderBy: [{ notifiedOn: 'desc' }, { number: 'desc' }, { id: 'desc' }],
+      take: LIMITE_CANDIDATOS + 1,
+    });
+    const visiveis = rows.slice(0, LIMITE_CANDIDATOS).filter((r) => !r.sensitive || this.abreRegistroSigiloso(ctx, r, cnes));
+    const nomes = await this.grupos(
+      ctx.db,
+      visiveis.map((r) => r.groupKey).filter((g): g is string => !!g),
+    );
+    const itens: RegistroCandidatoSurto[] = visiveis.map((r) => ({
+      id: r.id,
+      sistema: r.system,
+      numero: r.number,
+      notificadoEm: dataIso(r.notifiedOn)!,
+      inicioSintomas: dataIso(r.symptomsOnset),
+      agravo: r.agravo,
+      agravoNome: infoAgravoSinan(r.agravo)?.nome ?? (r.groupKey ? (nomes.get(r.groupKey)?.nome ?? null) : null),
+      grupo: r.groupKey,
+      unidade: { id: r.unitId, cnes: r.unitCnes, nome: r.unit?.name ?? null },
+      paciente: r.patientName || r.birthDate || r.sex ? { nome: r.patientName, nascimento: dataIso(r.birthDate), sexo: r.sex } : null,
+      sigiloso: r.sensitive,
+      situacao: r.situation as RegistroCandidatoSurto['situacao'],
+      ausenteDesde: r.absentSince?.toISOString() ?? null,
+      emSurtos: [...new Set(r.outbreakCases.map((c) => c.outbreak.number))].sort(),
+    }));
+    if (busca || itens.length)
+      await this.audit.recordStandalone(ctx, {
+        action: 'vigilancia.surto_busca_registros',
+        entityType: 'OfficialRecord',
+        payload: { filtro: this.filtroAuditado(q), linhas: itens.length, sigilosos: itens.filter((i) => i.sigiloso).map((i) => i.id) },
+      });
+    return { itens, limitado: rows.length > LIMITE_CANDIDATOS };
   }
 }
