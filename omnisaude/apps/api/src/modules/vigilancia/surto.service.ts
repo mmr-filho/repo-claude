@@ -154,6 +154,8 @@ type ValorEvento = string | number | boolean | null;
 type OrigemCaso = { tipo: 'notificacao' | 'registro'; id: string; numero: string };
 /** Linha da planilha pronta para gravar, com os avisos, o que vai para o evento e a origem (nula na linha manual). */
 type CasoPreparado = { dados: DadosCaso; avisos: string[]; evento: Record<string, ValorEvento>; origem: OrigemCaso | null };
+/** Linha da planilha com notificação ou registro oficial sigiloso que quem lê abre (vai sem máscara na resposta). */
+type CasoSigiloso = { id: string; notificationId: string | null; officialRecordId: string | null };
 /** Campos do local de ocorrência (campos 20 a 33 da ficha). */
 type DadosLocal = Partial<Pick<Outbreak, 'occurrenceIbge' | 'localityId' | 'neighborhoodId' | 'address' | 'reference' | 'zone' | 'lat' | 'lng'>>;
 
@@ -499,7 +501,8 @@ export class SurtoService {
 
   /**
    * Origens sob sigilo para quem lê: as notificações e os registros oficiais sigilosos da planilha e da linha do tempo
-   * que ele não pode abrir (a mesma regra da ficha da notificação e das listas do registro oficial).
+   * que ele não pode abrir (a mesma regra da ficha da notificação e das listas do registro oficial), e os sigilosos que
+   * ele abre (a leitura deles é auditada).
    */
   private async origensRestritas(ctx: RequestContext, cases: Pick<OutbreakCase, 'notificationId' | 'officialRecordId'>[], eventos: Pick<OutbreakEvent, 'payload'>[]) {
     const dados = eventos.map((e) => (e.payload ?? {}) as Record<string, unknown>);
@@ -525,7 +528,30 @@ export class SurtoService {
       numerosNotificacao: new Map(notifs.map((n) => [n.id, n.number])),
       notificacoes: new Set([...notifRestritas.map((n) => n.id), ...notifRestritas.map((n) => n.number)]),
       registros: new Set([...regsRestritos.map((r) => r.id), ...regsRestritos.map((r) => `${r.system}|${r.number}`)]),
+      notificacoesAbertas: new Set(notifs.filter((n) => n.sensitive && !notifRestritas.includes(n)).map((n) => n.id)),
+      registrosAbertos: new Set(regs.filter((r) => r.sensitive && !regsRestritos.includes(r)).map((r) => r.id)),
     };
+  }
+
+  /**
+   * Leitura sigilosa (como `notificacao.ler_sensivel` e `vigilancia.conciliacao_ver_sensivel`): a resposta mostra sem
+   * máscara caso da planilha com notificação ou registro oficial de agravo sigiloso. Uma entrada por resposta, com a
+   * rota, os casos mostrados e as origens deles; sem caso sigiloso aberto (ou só com os mascarados), nada.
+   */
+  private async auditarLeituraSigilosa(ctx: RequestContext, surto: { id: string; numero: string }, rota: string, casos: CasoSigiloso[]) {
+    if (!casos.length) return;
+    await this.audit.recordStandalone(ctx, {
+      action: 'vigilancia.surto_ver_sensivel',
+      entityType: 'Outbreak',
+      entityId: surto.id,
+      payload: {
+        numero: surto.numero,
+        rota,
+        casos: casos.map((c) => c.id),
+        notificacoes: casos.map((c) => c.notificationId).filter((x): x is string => !!x),
+        registros: casos.map((c) => c.officialRecordId).filter((x): x is string => !!x),
+      },
+    });
   }
 
   /** Dados do evento da linha do tempo, com o número da notificação ou do registro sob sigilo trocado por "sob sigilo". */
@@ -539,7 +565,15 @@ export class SurtoService {
     return d;
   }
 
-  private async montarDetalhe(ctx: RequestContext, id: string): Promise<DetalheSurto> {
+  /** Detalhe do surto para a resposta da rota, com a auditoria da leitura sigilosa (a planilha e o espelho dele). */
+  private async montarDetalhe(ctx: RequestContext, id: string, rota: string): Promise<DetalheSurto> {
+    const { detalhe, sigilosos } = await this.montar(ctx, id);
+    await this.auditarLeituraSigilosa(ctx, detalhe, rota, sigilosos);
+    return detalhe;
+  }
+
+  /** Detalhe do surto e os casos sigilosos que ele mostra sem máscara (quem chama audita o que devolver). */
+  private async montar(ctx: RequestContext, id: string): Promise<{ detalhe: DetalheSurto; sigilosos: CasoSigiloso[] }> {
     const o = await ctx.db.outbreak.findUniqueOrThrow({
       where: { id },
       include: { unit: { select: { id: true, name: true, cnes: true, ibgeCode: true } }, cases: { orderBy: { caseNumber: 'asc' } }, events: { orderBy: [{ at: 'asc' }, { id: 'asc' }] } },
@@ -558,6 +592,9 @@ export class SurtoService {
     const nomes = new Map(usuarios.map((u) => [u.id, u.socialName ?? u.name]));
     const restrito = (c: OutbreakCase) => (!!c.notificationId && restritas.notificacoes.has(c.notificationId)) || (!!c.officialRecordId && restritas.registros.has(c.officialRecordId));
     const planilha = o.cases.map((c) => this.casoDto(c, restritas.numerosNotificacao, nomesBairros, grupoDaLista, restrito(c)));
+    const sigilosos: CasoSigiloso[] = o.cases
+      .filter((c) => (!!c.notificationId && restritas.notificacoesAbertas.has(c.notificationId)) || (!!c.officialRecordId && restritas.registrosAbertos.has(c.officialRecordId)))
+      .map((c) => ({ id: c.id, notificationId: c.notificationId, officialRecordId: c.officialRecordId }));
     const eventos: EventoSurto[] = o.events.map((e) => ({
       id: e.id,
       tipo: e.kind as TipoEventoSurto,
@@ -566,7 +603,7 @@ export class SurtoService {
       dados: this.dadosDoEvento(e.payload, restritas),
     }));
     const aberto = o.status === 'ABERTO';
-    return {
+    const detalhe: DetalheSurto = {
       ...this.resumo(o, grupos, agora),
       venceEm: o.dueAt.toISOString(),
       notificador: nomes.get(o.notifierId) ?? null,
@@ -599,6 +636,7 @@ export class SurtoService {
         numeroOficial: o.status !== 'DESCARTADO' && roleHasPermission(ctx.session.role, 'vigilancia.digitar'),
       },
     };
+    return { detalhe, sigilosos };
   }
 
   // ───────────────────────────── planilha de acompanhamento ─────────────────────────────
@@ -833,7 +871,7 @@ export class SurtoService {
       return criado;
     });
     await this.reconciliarNegativa(ctx, o.unitId, o.notifiedOn);
-    const detalhe = await this.montarDetalhe(ctx, o.id);
+    const detalhe = await this.montarDetalhe(ctx, o.id, 'POST /vigilancia/surtos');
     // Avisos dos casos indicados (ex.: notificação que já está em outro surto aberto) voltam junto, na criação.
     const extras = preparados.flatMap((p) => p.avisos);
     return extras.length ? { ...detalhe, avisos: [...new Set([...detalhe.avisos, ...extras])] } : detalhe;
@@ -842,7 +880,7 @@ export class SurtoService {
   /** GET /vigilancia/surtos/:id (com casos, eventos e espelho). */
   async detalhe(ctx: RequestContext, id: string): Promise<DetalheSurto> {
     const o = await this.carregar(ctx, id);
-    return this.montarDetalhe(ctx, o.id);
+    return this.montarDetalhe(ctx, o.id, 'GET /vigilancia/surtos/:id');
   }
 
   /** PATCH /vigilancia/surtos/:id: campos da notificação, local, investigação e bloco DTA (só surto aberto). */
@@ -918,7 +956,7 @@ export class SurtoService {
       await this.audit.record(ctx, tx, { action: 'vigilancia.surto_editar', entityType: 'Outbreak', entityId: id, payload: { numero: o.number, campos } });
     });
     if (corpo.notificadoEm && corpo.notificadoEm !== dataIso(o.notifiedOn)) await this.reconciliarNegativa(ctx, o.unitId, comoData(corpo.notificadoEm));
-    return this.montarDetalhe(ctx, id);
+    return this.montarDetalhe(ctx, id, 'PATCH /vigilancia/surtos/:id');
   }
 
   /** POST /vigilancia/surtos/:id/casos: notificação, registro oficial ou linha manual (NU_CASO sequencial). */
@@ -951,7 +989,9 @@ export class SurtoService {
       throw err;
     }
     await this.reconciliarNegativa(ctx, o.unitId, o.notifiedOn);
-    const detalhe = await this.montarDetalhe(ctx, o.id);
+    // A resposta mostra só a linha incluída: a auditoria da leitura sigilosa é só dela.
+    const { detalhe, sigilosos } = await this.montar(ctx, o.id);
+    await this.auditarLeituraSigilosa(ctx, detalhe, 'POST /vigilancia/surtos/:id/casos', sigilosos.filter((c) => c.id === casoId));
     return { caso: detalhe.planilha.find((c) => c.id === casoId)!, avisos: p.avisos };
   }
 
@@ -991,7 +1031,7 @@ export class SurtoService {
       await tx.outbreakEvent.create({ data: { outbreakId: o.id, kind: 'COMUNICADO', payload, byUser: ctx.session.userId, at: this.agora() } });
       await this.audit.record(ctx, tx, { action: 'vigilancia.surto_comunicar', entityType: 'Outbreak', entityId: o.id, payload: { numero: o.number, alvo: corpo.alvo, canal: corpo.canal } });
     });
-    return this.montarDetalhe(ctx, o.id);
+    return this.montarDetalhe(ctx, o.id, 'POST /vigilancia/surtos/:id/comunicacoes');
   }
 
   /** POST /vigilancia/surtos/:id/encerrar: delimitação (texto quando 11) e data ≥ notificação; exige a investigação. */
@@ -1010,7 +1050,7 @@ export class SurtoService {
       await tx.outbreakEvent.create({ data: { outbreakId: o.id, kind: 'ENCERRADO', payload: { delimitacao: corpo.delimitacao, data: corpo.data }, byUser: ctx.session.userId, at: this.agora() } });
       await this.audit.record(ctx, tx, { action: 'vigilancia.surto_encerrar', entityType: 'Outbreak', entityId: o.id, payload: { numero: o.number, delimitacao: corpo.delimitacao, data: corpo.data } });
     });
-    return this.montarDetalhe(ctx, o.id);
+    return this.montarDetalhe(ctx, o.id, 'POST /vigilancia/surtos/:id/encerrar');
   }
 
   /** POST /vigilancia/surtos/:id/descartar (só a vigilância municipal; motivo com 10 ou mais caracteres). */
@@ -1025,7 +1065,7 @@ export class SurtoService {
       await tx.outbreakEvent.create({ data: { outbreakId: o.id, kind: 'DESCARTADO', payload: { motivo }, byUser: ctx.session.userId, at: this.agora() } });
       await this.audit.record(ctx, tx, { action: 'vigilancia.surto_descartar', entityType: 'Outbreak', entityId: o.id, payload: { numero: o.number, motivo } });
     });
-    return this.montarDetalhe(ctx, o.id);
+    return this.montarDetalhe(ctx, o.id, 'POST /vigilancia/surtos/:id/descartar');
   }
 
   /** POST /vigilancia/surtos/:id/numero-oficial: NU_NOTIFIC do Sinan Net (1 a 7 dígitos). */
@@ -1046,13 +1086,13 @@ export class SurtoService {
       await tx.outbreakEvent.create({ data: { outbreakId: o.id, kind: 'NUMERO_OFICIAL', payload: { numero, anterior: o.officialNumber }, byUser: ctx.session.userId, at: this.agora() } });
       await this.audit.record(ctx, tx, { action: 'vigilancia.surto_numero_oficial', entityType: 'Outbreak', entityId: o.id, payload: { numero: o.number, sinan: numero, anterior: o.officialNumber } });
     });
-    return this.montarDetalhe(ctx, o.id);
+    return this.montarDetalhe(ctx, o.id, 'POST /vigilancia/surtos/:id/numero-oficial');
   }
 
   /** GET /vigilancia/surtos/:id/espelho: as variáveis do dicionário de dados do Sinan (surto e planilha). */
   async espelho(ctx: RequestContext, id: string): Promise<EspelhoSurto> {
     const o = await this.carregar(ctx, id);
-    return (await this.montarDetalhe(ctx, o.id)).espelho;
+    return (await this.montarDetalhe(ctx, o.id, 'GET /vigilancia/surtos/:id/espelho')).espelho;
   }
 
   // ───────────────────────────── sugestões ─────────────────────────────

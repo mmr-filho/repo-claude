@@ -1,9 +1,10 @@
 import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { appendAudit, hashPassword, tenantSettings, type MasterClient, type TenantClient, type TenantPrisma } from '@omnisaude/database';
-import { cboLabel, isValidCns, isValidCpf, onlyDigits, ROLE_LABELS, type Role, type UnitType } from '@omnisaude/shared';
+import { cboLabel, isValidCns, isValidCpf, localDateString, onlyDigits, ROLE_LABELS, type Role, type UnitType } from '@omnisaude/shared';
 import type { RequestContext } from '../../core/context';
 import { MASTER_DB, TenantsService } from '../../core/database';
 import { DomainError, notFound } from '../../core/errors';
+import { encerrarUnidadeNotificante, MOTIVO_UNIDADE_DESATIVADA } from '../vigilancia/negativa.service';
 import { generateProvisionalPassword } from './passwords';
 import { linkStaged } from './staged';
 
@@ -52,6 +53,9 @@ const clean = (value: string | null | undefined) => value?.trim() || null;
  */
 @Injectable()
 export class AdminService {
+  /** Relógio do serviço (os testes trocam por uma data fixa). */
+  agora: () => Date = () => new Date();
+
   constructor(
     @Inject(MASTER_DB) private readonly master: MasterClient,
     private readonly tenants: TenantsService,
@@ -87,15 +91,32 @@ export class AdminService {
     });
   }
 
+  /**
+   * Desativar uma unidade ativa encerra, na mesma transação, a unidade notificante da negativa: o período aberto e as
+   * designações de responsável terminam hoje, no fuso da instituição (nunca antes do início de cada um). Reativar não
+   * reabre nada: a vigilância abre um novo período na tela das unidades notificantes.
+   */
   async updateUnit(ctx: RequestContext, id: string, input: Partial<UnitInput>) {
     const current = await ctx.db.unit.findUnique({ where: { id } });
     if (!current) throw notFound('Unidade');
     if (input.active === false && id === ctx.session.unitId) {
       throw new DomainError('UNIDADE_EM_USO', 'Não é possível desativar a unidade da sessão atual', HttpStatus.UNPROCESSABLE_ENTITY);
     }
+    const desativar = input.active === false && current.active;
     return ctx.db.$transaction(async (tx) => {
       const unit = await tx.unit.update({ where: { id }, data: { ...this.unitData(input), ...(input.active === undefined ? {} : { active: input.active }) } });
       await this.audit(tx, ctx, 'unidade.atualizar', 'Unit', id, input);
+      if (desativar) {
+        const agora = this.agora();
+        await encerrarUnidadeNotificante(tx, (e) => this.audit(tx, ctx, e.action, e.entityType, e.entityId, e.payload), {
+          unitId: id,
+          cnes: unit.cnes,
+          ate: localDateString(agora, ctx.tenant.timeZone),
+          motivo: MOTIVO_UNIDADE_DESATIVADA,
+          userId: ctx.session.userId,
+          agora,
+        });
+      }
       return unit;
     });
   }

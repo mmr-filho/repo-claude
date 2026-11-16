@@ -296,8 +296,9 @@ export class ContingenciaService {
   }
 
   /**
-   * POST /vigilancia/contingencia/acionar: fecha o acionamento aberto do território (fim = véspera), abre o novo com o
-   * retrato dos indicadores e cria o checklist com as ações do estágio e dos anteriores ("manter e intensificar").
+   * POST /vigilancia/contingencia/acionar: fecha o acionamento aberto do território (fim = véspera; o que começou hoje
+   * termina hoje, nunca antes do início), abre o novo com o retrato dos indicadores e cria o checklist com as ações do
+   * estágio e dos anteriores ("manter e intensificar").
    */
   async acionar(ctx: RequestContext, corpo: CorpoAcionar): Promise<RespostaAcionar> {
     const territorio = await this.diagramas.territorio(ctx.db, corpo.nivel, corpo.territorio ?? null);
@@ -316,8 +317,13 @@ export class ContingenciaService {
     const r = await ctx.db.$transaction(async (tx) => {
       const abertos = await tx.contingencyActivation.findMany({ where: { level: territorio.nivel, territoryId: territorio.id, endedOn: null }, orderBy: { startedOn: 'desc' } });
       if (abertos.some((a) => a.planId === plano.id && a.stage === estagio.chave)) throw conflict(`O estágio ${estagio.nome} já está em vigor`);
-      const fim = vespera(hoje);
-      for (const a of abertos) await tx.contingencyActivation.update({ where: { id: a.id }, data: { endedOn: dataCivil(fim), endedWeek: semanaDaData(fim).codigo } });
+      // Fim do aberto: a véspera, ou o próprio início quando ele começou hoje (dois acionamentos no mesmo dia).
+      const ontem = vespera(hoje);
+      const fimDe = (a: { startedOn: Date }) => (dia(a.startedOn)! > ontem ? dia(a.startedOn)! : ontem);
+      for (const a of abertos) {
+        const fim = fimDe(a);
+        await tx.contingencyActivation.update({ where: { id: a.id }, data: { endedOn: dataCivil(fim), endedWeek: semanaDaData(fim).codigo } });
+      }
       const novo = await tx.contingencyActivation.create({
         data: {
           planId: plano.id,
@@ -345,11 +351,11 @@ export class ContingenciaService {
           estagio: estagio.chave,
           justificativa,
           ato: novo.act,
-          encerrados: abertos.map((a) => ({ id: a.id, estagio: a.stage, fim })),
+          encerrados: abertos.map((a) => ({ id: a.id, estagio: a.stage, fim: fimDe(a) })),
           acoes: acoes.length,
         },
       });
-      return { novo, anterior: abertos[0] ? { id: abertos[0].id, fim } : null };
+      return { novo, anterior: abertos[0] ? { id: abertos[0].id, fim: fimDe(abertos[0]) } : null };
     });
     const nomes = await this.nomes(ctx.db, [r.novo.decidedBy]);
     return { acionamento: this.acionamentoResumo(r.novo, definicao, nomes), anteriorEncerrado: r.anterior, acoesCriadas: acoes.length };

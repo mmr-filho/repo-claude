@@ -77,6 +77,45 @@ function exigirSemana(semana: string) {
   }
 }
 
+/** Motivo do fim do período de notificante e das designações quando a unidade é desativada no cadastro. */
+export const MOTIVO_UNIDADE_DESATIVADA = 'Unidade desativada no cadastro';
+
+/**
+ * Encerra a unidade notificante em `ate` (AAAA-MM-DD, no fuso da instituição), na transação de quem chama: o período
+ * aberto e as designações ativas de responsável, cada um nunca antes do próprio início (como na revogação), com as
+ * auditorias das ações da tela (`vigilancia.notificante_encerrar` e `vigilancia.negativa_revogar`). Usado na
+ * desativação da unidade no cadastro (AdminService.updateUnit). Na grade, a SE do fim continua notificante (o período
+ * alcança parte dela); as seguintes ficam "não notificante", fora das silenciosas e do percentual.
+ */
+export async function encerrarUnidadeNotificante(
+  tx: Db,
+  auditar: (entrada: { action: string; entityType: string; entityId: string; payload: unknown }) => Promise<unknown>,
+  p: { unitId: string; cnes: string; ate: string; motivo: string; userId: string; agora: Date },
+): Promise<{ periodo: string | null; designacoes: string[] }> {
+  const fimDe = (inicio: Date) => (p.ate < dataIso(inicio)! ? dataIso(inicio)! : p.ate);
+  let periodo: string | null = null;
+  const aberto = await tx.notifyingUnit.findFirst({ where: { unitId: p.unitId, until: null }, select: { id: true, since: true } });
+  if (aberto) {
+    const ate = fimDe(aberto.since);
+    // Só o que ainda está aberto: o que a vigilância encerrou ao mesmo tempo fica como ela deixou.
+    const { count } = await tx.notifyingUnit.updateMany({ where: { id: aberto.id, until: null }, data: { until: comoData(ate), endReason: p.motivo, endedBy: p.userId, endedAt: p.agora } });
+    if (count === 1) {
+      periodo = aberto.id;
+      await auditar({ action: 'vigilancia.notificante_encerrar', entityType: 'NotifyingUnit', entityId: aberto.id, payload: { unidade: p.cnes, ate, motivo: p.motivo } });
+    }
+  }
+  const designacoes: string[] = [];
+  const ativas = await tx.notifyingUnitResponsible.findMany({ where: { unitId: p.unitId, until: null }, select: { id: true, userId: true, kind: true, since: true }, orderBy: [{ designatedAt: 'asc' }, { id: 'asc' }] });
+  for (const r of ativas) {
+    const ate = fimDe(r.since);
+    const { count } = await tx.notifyingUnitResponsible.updateMany({ where: { id: r.id, until: null }, data: { until: comoData(ate), revokedBy: p.userId, revokedAt: p.agora } });
+    if (count !== 1) continue;
+    designacoes.push(r.id);
+    await auditar({ action: 'vigilancia.negativa_revogar', entityType: 'NotifyingUnitResponsible', entityId: r.id, payload: { unidade: p.unitId, usuario: r.userId, tipo: r.kind, ate, motivo: p.motivo } });
+  }
+  return { periodo, designacoes };
+}
+
 interface Ref {
   id: string;
   numero: string;
