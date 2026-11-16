@@ -991,7 +991,8 @@ export class SurtoService {
     await this.reconciliarNegativa(ctx, o.unitId, o.notifiedOn);
     // A resposta mostra só a linha incluída: a auditoria da leitura sigilosa é só dela.
     const { detalhe, sigilosos } = await this.montar(ctx, o.id);
-    await this.auditarLeituraSigilosa(ctx, detalhe, 'POST /vigilancia/surtos/:id/casos', sigilosos.filter((c) => c.id === casoId));
+    const incluido = sigilosos.filter((c) => c.id === casoId);
+    await this.auditarLeituraSigilosa(ctx, detalhe, 'POST /vigilancia/surtos/:id/casos', incluido);
     return { caso: detalhe.planilha.find((c) => c.id === casoId)!, avisos: p.avisos };
   }
 

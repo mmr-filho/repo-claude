@@ -174,9 +174,40 @@ export interface PreviaImportacao {
 
 // ───────────── Importações ─────────────
 
-export type StatusImportacao = 'PREVIA' | 'APLICADA' | 'DESCARTADA';
+/** PROCESSANDO (lendo o arquivo no servidor) vira PREVIA ou FALHOU; a PREVIA vira APLICADA, DESCARTADA ou expira. */
+export type StatusImportacao = 'PROCESSANDO' | 'PREVIA' | 'APLICADA' | 'DESCARTADA' | 'FALHOU';
 
-export const ROTULO_STATUS_IMPORTACAO: Record<StatusImportacao, string> = { PREVIA: 'Prévia', APLICADA: 'Aplicada', DESCARTADA: 'Descartada' };
+export const ROTULO_STATUS_IMPORTACAO: Record<StatusImportacao, string> = {
+  PROCESSANDO: 'Lendo o arquivo',
+  PREVIA: 'Prévia',
+  APLICADA: 'Aplicada',
+  DESCARTADA: 'Descartada',
+  FALHOU: 'Falhou',
+};
+
+/**
+ * Trabalho que roda em segundo plano no servidor: LENDO (status PROCESSANDO) ou APLICANDO (status PREVIA; APLICADA
+ * enquanto a notificação negativa é reconciliada, logo depois de gravar).
+ */
+export type EtapaImportacao = 'LENDO' | 'APLICANDO';
+
+/** Trabalho em andamento. `atualizadoEm` é o sinal de vida (a cada ~15 s); parado há mais de 2 min = interrompido. */
+export interface ProcessamentoImportacao {
+  etapa: EtapaImportacao;
+  desde: string;
+  atualizadoEm: string;
+}
+
+/**
+ * Por que a leitura falhou (FALHOU) ou por que a última aplicação não terminou (a importação continua PREVIA e pode ser
+ * aplicada de novo). O código e a mensagem são os da resposta de erro da API quando o trabalho termina dentro da espera.
+ */
+export interface ErroImportacao {
+  codigo: string;
+  mensagem: string;
+  /** Os detalhes da resposta de erro, quando há (SEM_REGISTROS: os arquivos detectados e os motivos de recusa). */
+  detalhes?: unknown;
+}
 
 /**
  * POST /vigilancia/importacoes: o corpo é o arquivo cru (zip, dbf ou csv; até 95 MB). Estes são os parâmetros da
@@ -193,14 +224,16 @@ export interface ConsultaEnvioImportacao {
 /** Linha da lista de importações. GET /vigilancia/importacoes. */
 export interface ResumoImportacao {
   id: string;
-  sistema: SistemaOficial;
+  /** Sistema predominante do envio; null enquanto lê o arquivo e quando a leitura falhou. */
+  sistema: SistemaOficial | null;
   status: StatusImportacao;
   arquivo: string;
   tamanhoBytes: number;
   periodo: { de: string; ate: string } | null;
   periodoDeclarado: boolean;
   identificado: boolean;
-  contagens: ContagensImportacao;
+  /** null enquanto lê o arquivo e quando a leitura falhou. */
+  contagens: ContagensImportacao | null;
   criadoEm: string;
   criadoPor: string | null;
   aplicadoEm: string | null;
@@ -209,6 +242,11 @@ export interface ResumoImportacao {
   descartadoPor: string | null;
   /** Prévia descartada por tempo (sem ação de usuário). */
   expirada: boolean;
+  /** Leitura ou aplicação rodando no servidor; null quando nada está rodando. */
+  processamento: ProcessamentoImportacao | null;
+  erro: ErroImportacao | null;
+  /** Resultado guardado ao aplicar (null antes de aplicar e nas importações aplicadas antes de ele ser guardado). */
+  resultadoAplicacao: ResultadoAplicacao | null;
 }
 
 export type ListaImportacoes = ResumoImportacao[];
@@ -217,7 +255,7 @@ export type ListaImportacoes = ResumoImportacao[];
 export interface DetalheImportacao extends ResumoImportacao {
   sha256: string;
   arquivos: ArquivoDetectado[];
-  /** null depois de aplicar, descartar ou expirar (as amostras saem junto com o payload). */
+  /** null enquanto lê, quando a leitura falhou e depois de aplicar, descartar ou expirar (as amostras saem com o payload). */
   previa: PreviaImportacao | null;
   avisos: string[];
   /** Prévia: até quando pode ser aplicada. */
@@ -229,10 +267,26 @@ export interface ArquivoJaImportado {
   jaImportado: { id: string; aplicadoEm: string };
 }
 
-/** Resposta de POST /vigilancia/importacoes. */
-export type RespostaEnvioImportacao = DetalheImportacao | ArquivoJaImportado;
+/**
+ * Envio que continua no servidor depois da espera (202): a leitura segue em segundo plano e a tela acompanha
+ * GET /vigilancia/importacoes/:id até PREVIA ou FALHOU.
+ */
+export interface EnvioEmProcessamento {
+  id: string;
+  status: 'PROCESSANDO';
+  arquivo: string;
+  tamanhoBytes: number;
+  /** Quando a leitura começou. */
+  desde: string;
+}
 
-/** Resposta de POST /vigilancia/importacoes/:id/aplicar. */
+/**
+ * Resposta de POST /vigilancia/importacoes: 201 com o detalhe da prévia pronta, 202 com o envio em processamento ou 200
+ * com `jaImportado` (o mesmo arquivo já aplicado; nada é criado).
+ */
+export type RespostaEnvioImportacao = DetalheImportacao | ArquivoJaImportado | EnvioEmProcessamento;
+
+/** Resposta de POST /vigilancia/importacoes/:id/aplicar quando a aplicação termina dentro da espera (200). */
 export interface ResultadoAplicacao {
   id: string;
   aplicadoEm: string;
@@ -249,6 +303,18 @@ export interface ResultadoAplicacao {
   negativasCanceladas: number;
   avisos: string[];
 }
+
+/**
+ * Aplicação que continua no servidor depois da espera (202): a tela acompanha GET /vigilancia/importacoes/:id até a
+ * APLICADA (com `resultadoAplicacao`) ou até a PREVIA com `erro`.
+ */
+export interface AplicacaoEmAndamento {
+  id: string;
+  status: 'APLICANDO';
+}
+
+/** Resposta de POST /vigilancia/importacoes/:id/aplicar: 200 com o resultado ou 202 com a aplicação em andamento. */
+export type RespostaAplicacao = ResultadoAplicacao | AplicacaoEmAndamento;
 
 /** Resposta de POST /vigilancia/importacoes/:id/descartar. */
 export interface ResultadoDescarte {

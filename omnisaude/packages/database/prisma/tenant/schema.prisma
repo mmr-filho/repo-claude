@@ -3464,10 +3464,13 @@ model BlockingOrderAssignee {
 
 // ───────────── Vigilância: consolidação, diagrama de controle, contingência, surto e notificação negativa (VIG-1c) ─────────────
 
+/// PROCESSANDO (lendo o arquivo em segundo plano) vira PREVIA ou FALHOU; a PREVIA vira APLICADA, DESCARTADA ou expira.
 enum OfficialImportStatus {
+  PROCESSANDO
   PREVIA
   APLICADA
   DESCARTADA
+  FALHOU
 }
 
 /// TP_NOT do Sinan: 2 individual, 1 negativa, 3 surto.
@@ -3527,8 +3530,9 @@ enum NegativeReportStatus {
 /// official_imports_sha_aplicado, só no SQL).
 model OfficialImport {
   id             String               @id @default(uuid(7)) @db.Uuid
-  /// Sistema predominante do envio.
-  system         OfficialSystem
+  /// Sistema predominante do envio: só se sabe no fim da leitura (nulo enquanto lê e quando a leitura falha; a PREVIA e
+  /// a APLICADA sempre têm, CHECK official_imports_sistema, só no SQL).
+  system         OfficialSystem?
   status         OfficialImportStatus @default(PREVIA)
   fileName       String               @map("file_name")
   sha256         String               @db.Char(64)
@@ -3554,6 +3558,16 @@ model OfficialImport {
   appliedAt      DateTime?            @map("applied_at")
   discardedBy    String?              @map("discarded_by") @db.Uuid
   discardedAt    DateTime?            @map("discarded_at")
+  /// Trabalho em andamento no processo da API: LENDO (PROCESSANDO) ou APLICANDO (PREVIA; APLICADA enquanto reconcilia
+  /// a negativa). Coerência com o status no CHECK official_imports_etapa, só no SQL.
+  workingStep    String?              @map("working_step") @db.VarChar(10)
+  workingSince   DateTime?            @map("working_since")
+  /// Sinal de vida do trabalho (a cada ~15 s): mais de 2 min sem ele, fora do processo, é trabalho interrompido.
+  workingAt      DateTime?            @map("working_at")
+  /// {codigo, mensagem, detalhes?}: por que a leitura falhou (FALHOU) ou a última aplicação não terminou (PREVIA).
+  error          Json?
+  /// ResultadoAplicacao (contratos em @omnisaude/shared).
+  applyResult    Json?                @map("apply_result")
 
   firstRecords OfficialRecord[] @relation("OfficialRecordFirstImport")
   lastRecords  OfficialRecord[] @relation("OfficialRecordLastImport")
@@ -3564,7 +3578,8 @@ model OfficialImport {
 }
 
 /// Registro consolidado de um sistema oficial, único pela chave natural do sistema. Uma notificação do OmniSaúde casa
-/// com um registro só (índice único parcial official_records_notificacao, só no SQL).
+/// com um registro só (índice único parcial official_records_notificacao, só no SQL). O degrau 1 da conciliação usa o
+/// índice de expressão official_records_numero_sem_zeros_idx (número sem zeros à esquerda), também só no SQL.
 model OfficialRecord {
   id               String             @id @default(uuid(7)) @db.Uuid
   system           OfficialSystem
@@ -3636,6 +3651,8 @@ model OfficialRecord {
   @@index([cns])
   @@index([cpf])
   @@index([patientNameNorm, birthDate])
+  @@index([lastImportId])
+  @@index([system, type, notifiedOn])
   @@map("official_records")
 }
 

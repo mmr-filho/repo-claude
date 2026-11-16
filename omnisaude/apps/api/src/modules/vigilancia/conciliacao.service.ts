@@ -850,7 +850,8 @@ export class ConciliacaoService {
       bairrosSemCorrespondencia: bairros.length,
       porSistema: linhas,
       cobertura,
-      ultimaImportacao: ultima?.appliedAt ? { id: ultima.id, sistema: ultima.system, aplicadoEm: ultima.appliedAt.toISOString() } : null,
+      // A APLICADA sempre tem o sistema (CHECK official_imports_sistema); o nulo é só da leitura em andamento ou que falhou.
+      ultimaImportacao: ultima?.appliedAt ? { id: ultima.id, sistema: ultima.system!, aplicadoEm: ultima.appliedAt.toISOString() } : null,
     };
   }
 

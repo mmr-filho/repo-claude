@@ -126,4 +126,48 @@ describe.runIf(enabled)('Migração 0031: unidades notificantes semeadas e restr
     expect(await falha(envio, [randomUUID(), 'APLICADA', sha, randomUUID()])).toEqual({ code: '23505', constraint: 'official_imports_sha_aplicado' });
     expect(await falha(envio, [randomUUID(), 'PREVIA', sha, randomUUID()])).toBeNull();
   });
+
+  it('importação em segundo plano: etapa, sinal de vida, erro e sistema coerentes com o status', async () => {
+    const falha = (sql: string, params: unknown[]) =>
+      db.query(sql, params).then(
+        () => null,
+        (e: { code: string; constraint: string }) => ({ code: e.code, constraint: e.constraint }),
+      );
+    const linha = `INSERT INTO official_imports (id, system, status, file_name, sha256, size_bytes, created_by, working_step, working_since, working_at, error)
+      VALUES ($1, $2, $3, 'envio.zip', $4, 10, $5, $6::varchar, CASE WHEN $6::varchar IS NULL THEN NULL ELSE now() END, CASE WHEN $6::varchar IS NULL THEN NULL ELSE now() END, $7::jsonb)`;
+    const sha = 'b'.repeat(64);
+    const vai = (system: string | null, status: string, etapa: string | null, erro: object | null = null) => falha(linha, [randomUUID(), system, status, sha, randomUUID(), etapa, erro]);
+    const etapa = { code: '23514', constraint: 'official_imports_etapa' };
+    // Lendo o arquivo: sem sistema (só se sabe no fim), sempre com a etapa LENDO e o sinal de vida.
+    expect(await vai(null, 'PROCESSANDO', 'LENDO')).toBeNull();
+    expect(await vai(null, 'PROCESSANDO', null)).toEqual(etapa);
+    expect(await vai(null, 'PROCESSANDO', 'APLICANDO')).toEqual(etapa);
+    expect(
+      await falha(`INSERT INTO official_imports (id, status, file_name, sha256, size_bytes, created_by, working_step, working_since) VALUES ($1, 'PROCESSANDO', 'x', $2, 1, $3, 'LENDO', now())`, [
+        randomUUID(),
+        sha,
+        randomUUID(),
+      ]),
+    ).toEqual(etapa);
+    // A prévia e a aplicada têm sistema; APLICANDO só nelas; etapa desconhecida, nunca.
+    expect(await vai(null, 'PREVIA', null)).toEqual({ code: '23514', constraint: 'official_imports_sistema' });
+    expect(await vai(null, 'APLICADA', null)).toEqual({ code: '23514', constraint: 'official_imports_sistema' });
+    expect(await vai('SINAN_NET', 'PREVIA', 'APLICANDO')).toBeNull();
+    expect(await vai('SINAN_NET', 'PREVIA', 'LENDO')).toEqual(etapa);
+    expect(await vai('SINAN_NET', 'DESCARTADA', 'APLICANDO')).toEqual(etapa);
+    expect(await vai('SINAN_NET', 'PREVIA', 'PARADO')).toEqual(etapa);
+    // A que falhou guarda o erro; descartada depois de falhar, continua sem sistema.
+    expect(await vai(null, 'FALHOU', null)).toEqual({ code: '23514', constraint: 'official_imports_falhou' });
+    expect(await vai(null, 'FALHOU', null, { codigo: 'SEM_REGISTROS', mensagem: 'Nenhum registro válido no envio.' })).toBeNull();
+    expect(await vai(null, 'DESCARTADA', null, { codigo: 'SEM_REGISTROS', mensagem: 'Nenhum registro válido no envio.' })).toBeNull();
+  });
+
+  it('índices que a aplicação e a conciliação usam: tocados pelo envio, cobertura dos ausentes e número sem zeros', async () => {
+    const { rows } = await db.query<{ indexname: string; indexdef: string }>(`SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'official_records'`);
+    const def = new Map(rows.map((r) => [r.indexname, r.indexdef]));
+    expect(def.get('official_records_last_import_id_idx')).toContain('(last_import_id)');
+    expect(def.get('official_records_system_type_notified_on_idx')).toContain('(system, type, notified_on)');
+    // A mesma expressão do degrau 1 (sqlSemZeros): o planejador só usa o índice se a expressão for idêntica.
+    expect(def.get('official_records_numero_sem_zeros_idx')).toContain("regexp_replace(btrim((number)::text), '^0+(?=[0-9])'::text, ''::text)");
+  });
 });

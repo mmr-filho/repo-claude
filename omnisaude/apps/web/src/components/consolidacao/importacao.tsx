@@ -1,6 +1,15 @@
 'use client';
 
-import { ROTULO_CODIFICACAO, SISTEMA_INFO, type ArquivoJaImportado, type CodificacaoArquivo, type DetalheImportacao, type ListaImportacoes, type RespostaEnvioImportacao } from '@omnisaude/shared';
+import {
+  ROTULO_CODIFICACAO,
+  SISTEMA_INFO,
+  type ArquivoJaImportado,
+  type CodificacaoArquivo,
+  type DetalheImportacao,
+  type EnvioEmProcessamento,
+  type ListaImportacoes,
+  type RespostaEnvioImportacao,
+} from '@omnisaude/shared';
 import { FileUp } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
@@ -15,7 +24,23 @@ import { fmtDate } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
 import { useDataHora } from './fuso';
 import { ArquivosDetectados, DetalheDaImportacao } from './importacao-previa';
-import { conferirArquivo, conferirPeriodo, consultaDoEnvio, detalhesDoErroDeEnvio, fmtBytes, jaImportado, situacaoImportacao } from './importacao-regras';
+import {
+  conferirArquivo,
+  conferirPeriodo,
+  consultaDoEnvio,
+  detalhesDoErroDeEnvio,
+  envioEmProcessamento,
+  fmtBytes,
+  jaImportado,
+  mensagemDoErro,
+  mensagemDoErroGravado,
+  respostaPerdida,
+  situacaoImportacao,
+  TEXTO_LIMITES_ENVIO,
+} from './importacao-regras';
+
+/** Enquanto alguma importação lê ou aplica no servidor, o histórico se atualiza sozinho neste intervalo. */
+const RECARGA_HISTORICO_MS = 5000;
 
 /** Erro do envio, com o que a API achou nos arquivos (quando não sobrou registro para importar). */
 interface ErroDoEnvio {
@@ -46,9 +71,16 @@ function ComoExportar() {
   );
 }
 
-/** Lista das importações (a mais recente primeiro). */
+/** Lista das importações (a mais recente primeiro). Com leitura ou aplicação em andamento, recarrega sozinha. */
 function Historico({ lista, aberta, onAbrir }: { lista: ReturnType<typeof useApi<ListaImportacoes>>; aberta: string | null; onAbrir: (id: string) => void }) {
   const { dataHora } = useDataHora();
+  const emAndamento = !!lista.data?.some((r) => r.processamento || r.status === 'PROCESSANDO');
+  const recarregar = lista.reload;
+  useEffect(() => {
+    if (!emAndamento) return;
+    const t = setInterval(() => void recarregar(), RECARGA_HISTORICO_MS);
+    return () => clearInterval(t);
+  }, [emAndamento, recarregar]);
   return (
     <Card>
       <CardHeader title="Importações" description="As 200 mais recentes. A prévia expira se não for aplicada a tempo." />
@@ -78,6 +110,7 @@ function Historico({ lista, aberta, onAbrir }: { lista: ReturnType<typeof useApi
           <TBody>
             {lista.data.map((r) => {
               const s = situacaoImportacao(r);
+              const falha = mensagemDoErroGravado(r);
               return (
                 <TR key={r.id} className={aberta === r.id ? 'bg-brand-50' : undefined}>
                   <TD className="whitespace-nowrap text-sm">
@@ -88,14 +121,15 @@ function Historico({ lista, aberta, onAbrir }: { lista: ReturnType<typeof useApi
                     <span className="break-all">{r.arquivo}</span>
                     <span className="block text-xs text-slate-500">{fmtBytes(r.tamanhoBytes)}</span>
                   </TD>
-                  <TD className="text-sm">{SISTEMA_INFO[r.sistema]?.label ?? r.sistema}</TD>
-                  <TD>
+                  <TD className="text-sm">{r.sistema ? (SISTEMA_INFO[r.sistema]?.label ?? r.sistema) : '—'}</TD>
+                  <TD className="max-w-64">
                     <Badge tone={s.tom}>{s.rotulo}</Badge>
+                    {falha && <span className="mt-1 block text-xs text-red-800">{falha}</span>}
                   </TD>
                   <TD className="whitespace-nowrap text-xs">{r.periodo ? `${fmtDate(r.periodo.de)} a ${fmtDate(r.periodo.ate)}` : '—'}</TD>
-                  <TD className="text-right tabular-nums">{r.contagens.novos?.toLocaleString('pt-BR') ?? '—'}</TD>
-                  <TD className="text-right tabular-nums">{r.contagens.alterados?.toLocaleString('pt-BR') ?? '—'}</TD>
-                  <TD className="text-right tabular-nums">{r.contagens.recusados?.toLocaleString('pt-BR') ?? '—'}</TD>
+                  <TD className="text-right tabular-nums">{r.contagens?.novos?.toLocaleString('pt-BR') ?? '—'}</TD>
+                  <TD className="text-right tabular-nums">{r.contagens?.alterados?.toLocaleString('pt-BR') ?? '—'}</TD>
+                  <TD className="text-right tabular-nums">{r.contagens?.recusados?.toLocaleString('pt-BR') ?? '—'}</TD>
                   <TD className="text-right">
                     <Button size="sm" variant="ghost" onClick={() => onAbrir(r.id)} aria-label={`Abrir a importação ${r.arquivo}`}>
                       Abrir
@@ -127,7 +161,7 @@ export function AbaImportacao() {
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<ErroDoEnvio | null>(null);
   const [ja, setJa] = useState<ArquivoJaImportado['jaImportado'] | null>(null);
-  const [aberta, setAberta] = useState<{ id: string; inicial: DetalheImportacao | null } | null>(null);
+  const [aberta, setAberta] = useState<{ id: string; inicial: DetalheImportacao | null; lendo?: EnvioEmProcessamento | null } | null>(null);
   const [envio, setEnvio] = useState<(EnvioLocal & { id: string }) | null>(null);
   const detalhe = useRef<HTMLDivElement>(null);
   // O detalhe abre acima do histórico: leva a tela até ele.
@@ -151,6 +185,10 @@ export function AbaImportacao() {
         setJa(r.jaImportado);
         setAberta(null);
         setEnvio(null);
+      } else if (envioEmProcessamento(r)) {
+        // A leitura continua no servidor: o detalhe acompanha até a prévia (ou a falha).
+        setAberta({ id: r.id, inicial: null, lendo: r });
+        setEnvio({ ...local, id: r.id });
       } else {
         setAberta({ id: r.id, inicial: r });
         setEnvio({ ...local, id: r.id });
@@ -160,7 +198,10 @@ export function AbaImportacao() {
       if (entrada.current) entrada.current.value = '';
       void lista.reload();
     } catch (err) {
-      setErro({ mensagem: errorMessage(err), detalhes: err instanceof ApiError ? detalhesDoErroDeEnvio(err.details) : detalhesDoErroDeEnvio(null) });
+      const e = err instanceof ApiError ? err : null;
+      setErro({ mensagem: mensagemDoErro('enviar', { status: e?.status, code: e?.code, message: errorMessage(err) }), detalhes: detalhesDoErroDeEnvio(e?.details ?? null) });
+      // A resposta pode ter se perdido com o arquivo já recebido: o histórico mostra a leitura em andamento.
+      if (respostaPerdida(e?.status)) void lista.reload();
     } finally {
       setEnviando(false);
     }
@@ -169,7 +210,7 @@ export function AbaImportacao() {
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader title="Enviar uma exportação" description="Zip, DBF ou CSV de até 95 MB. Nada é gravado antes de você conferir a prévia e aplicar." />
+        <CardHeader title="Enviar uma exportação" description={`${TEXTO_LIMITES_ENVIO}. Nada é gravado antes de você conferir a prévia e aplicar.`} />
         <CardBody className="space-y-4">
           <form
             className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,2fr)_repeat(3,minmax(0,1fr))_auto] xl:items-end"
@@ -237,6 +278,7 @@ export function AbaImportacao() {
             key={aberta.id}
             id={aberta.id}
             inicial={aberta.inicial}
+            lendo={aberta.lendo ?? null}
             podeReprocessar={envio?.id === aberta.id}
             reprocessando={enviando}
             onReprocessar={(cod) => envio && void enviar(envio, cod)}

@@ -5,7 +5,7 @@
 -- vigência e responsáveis, e o atesto da notificação negativa semanal. Só tipos novos: nenhum valor é acrescentado a
 -- enum existente.
 
-CREATE TYPE "OfficialImportStatus" AS ENUM ('PREVIA', 'APLICADA', 'DESCARTADA');
+CREATE TYPE "OfficialImportStatus" AS ENUM ('PROCESSANDO', 'PREVIA', 'APLICADA', 'DESCARTADA', 'FALHOU');
 CREATE TYPE "OfficialRecordType" AS ENUM ('INDIVIDUAL', 'NEGATIVA', 'SURTO');
 CREATE TYPE "RecordMatchMethod" AS ENUM ('NUMERO_OFICIAL', 'IDENTIDADE', 'MANUAL');
 CREATE TYPE "TerritoryLevel" AS ENUM ('MUNICIPIO', 'LOCALIDADE', 'BAIRRO');
@@ -17,11 +17,13 @@ CREATE TYPE "NegativeReportStatus" AS ENUM ('ATESTADA', 'CANCELADA', 'ANULADA');
 
 -- ───────────── Importação e conciliação ─────────────
 
--- Um envio (arquivo solto ou zip com vários arquivos). A prévia guarda os registros normalizados (JSON com gzip) em
--- payload, que é apagado ao aplicar, descartar ou expirar.
+-- Um envio (arquivo solto ou zip com vários arquivos). A leitura e a aplicação rodam em segundo plano no processo da
+-- API: PROCESSANDO (lendo o arquivo) vira PREVIA ou FALHOU; a PREVIA vira APLICADA, DESCARTADA ou expira. A prévia
+-- guarda os registros normalizados (JSON com gzip) em payload, que é apagado ao aplicar, descartar ou expirar.
 CREATE TABLE official_imports (
   id uuid PRIMARY KEY,
-  system "OfficialSystem" NOT NULL,
+  -- Sistema predominante do envio: só se sabe no fim da leitura (nulo enquanto lê e quando a leitura falha).
+  system "OfficialSystem",
   status "OfficialImportStatus" NOT NULL DEFAULT 'PREVIA',
   file_name text NOT NULL,
   sha256 char(64) NOT NULL,
@@ -40,7 +42,26 @@ CREATE TABLE official_imports (
   applied_by uuid,
   applied_at timestamp(3),
   discarded_by uuid,
-  discarded_at timestamp(3)
+  discarded_at timestamp(3),
+  -- Trabalho em andamento no processo da API: LENDO (com o status PROCESSANDO) ou APLICANDO (PREVIA; APLICADA enquanto
+  -- reconcilia a negativa), desde quando e o sinal de vida (a cada ~15 s). Sinal com mais de 2 min, sem o trabalho no
+  -- processo, é trabalho interrompido (o servidor reiniciou).
+  working_step varchar(10),
+  working_since timestamp(3),
+  working_at timestamp(3),
+  -- {codigo, mensagem, detalhes?}: por que a leitura falhou (FALHOU) ou a última aplicação não terminou (PREVIA).
+  error jsonb,
+  -- ResultadoAplicacao (contratos em @omnisaude/shared), para a tela ler o resultado da aplicação em segundo plano.
+  apply_result jsonb,
+  CONSTRAINT official_imports_sistema CHECK (system IS NOT NULL OR status NOT IN ('PREVIA', 'APLICADA')),
+  CONSTRAINT official_imports_etapa CHECK (
+    CASE working_step
+      WHEN 'LENDO' THEN status = 'PROCESSANDO' AND working_since IS NOT NULL AND working_at IS NOT NULL
+      WHEN 'APLICANDO' THEN status IN ('PREVIA', 'APLICADA') AND working_since IS NOT NULL AND working_at IS NOT NULL
+      ELSE working_step IS NULL AND working_since IS NULL AND working_at IS NULL AND status <> 'PROCESSANDO'
+    END
+  ),
+  CONSTRAINT official_imports_falhou CHECK (status <> 'FALHOU' OR error IS NOT NULL)
 );
 CREATE INDEX official_imports_status_created_at_idx ON official_imports (status, created_at);
 CREATE INDEX official_imports_sha256_idx ON official_imports (sha256);
@@ -110,6 +131,15 @@ CREATE INDEX official_records_type_epi_week_notified_idx ON official_records (ty
 CREATE INDEX official_records_cns_idx ON official_records (cns);
 CREATE INDEX official_records_cpf_idx ON official_records (cpf);
 CREATE INDEX official_records_patient_name_norm_birth_date_idx ON official_records (patient_name_norm, birth_date);
+-- Registros que a aplicação tocou (unidades pelo CNES, conciliação automática em páginas, negativa); também atende a
+-- conferência da chave estrangeira last_import_id quando a linha de um envio que falhou é apagada.
+CREATE INDEX official_records_last_import_id_idx ON official_records (last_import_id);
+-- Ausentes previstos e marcados: sistema, tipo e período da cobertura do envio.
+CREATE INDEX official_records_system_type_notified_on_idx ON official_records (system, type, notified_on);
+-- Degrau 1 da conciliação (número oficial sem zeros à esquerda, a mesma expressão de sqlSemZeros): os concorrentes das
+-- notificações que casam com os registros tocados saem por este índice, sem varrer a tabela (com 50 mil registros e 10
+-- mil notificações, 33 ms viram 0,4 ms por página da conciliação automática).
+CREATE INDEX official_records_numero_sem_zeros_idx ON official_records ((regexp_replace(btrim(number), '^0+(?=[0-9])', '')));
 
 -- "Não é o mesmo caso": o par não é sugerido de novo.
 CREATE TABLE official_record_rejections (

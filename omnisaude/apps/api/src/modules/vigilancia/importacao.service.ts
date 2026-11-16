@@ -14,8 +14,11 @@ import {
   type ConsultaEnvioImportacao,
   type ContagensImportacao,
   type DetalheImportacao,
+  type ErroImportacao,
+  type EtapaImportacao,
   type ListaImportacoes,
   type PreviaImportacao,
+  type RespostaAplicacao,
   type RespostaEnvioImportacao,
   type ResultadoAplicacao,
   type ResultadoDescarte,
@@ -27,7 +30,7 @@ import {
 } from '@omnisaude/shared';
 import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
-import { MASTER_DB } from '../../core/database';
+import { MASTER_DB, TenantsService } from '../../core/database';
 import { conflict, DomainError, notFound } from '../../core/errors';
 import { ConciliacaoService } from './conciliacao.service';
 import { gruposSigilosos, grupoDoCidFabrica, municipioDoTenant, municipiosPorNome } from './importacao/apoio';
@@ -47,10 +50,30 @@ import { NegativaService } from './negativa.service';
  * Memória (container de 1 GiB): o envio é lido em fluxo e comparado em lotes; o payload vai para um arquivo temporário
  * com gzip e daí para o banco em fatias; a aplicação o lê em fatias e em lotes. Uma prévia ou aplicação por vez neste
  * processo: a outra recebe 409.
+ *
+ * Tempo (container de 1/4 de vCPU; a borda da Cloudflare corta com 524 a resposta que não começa em ~100 s): a leitura
+ * e a aplicação rodam em segundo plano no próprio processo, com a vez do processo presa até acabarem. O pedido espera
+ * até `esperaMs`: se o trabalho termina, responde como sempre (201 com a prévia, 200 com o resultado, ou o erro de
+ * sempre); se não, responde 202 e a tela acompanha pelo detalhe. A linha guarda a etapa (LENDO ou APLICANDO), o sinal
+ * de vida, o erro e o resultado da aplicação. Sinal parado há mais de 2 min, sem o trabalho neste processo, é trabalho
+ * interrompido (o servidor reiniciou): a leitura vira FALHOU; a aplicação, que é uma transação só, perde a marca sem ter
+ * gravado nada.
  */
 
 type Db = TenantPrisma.TransactionClient;
 const HORA = 3_600_000;
+/** Sinal de vida mais velho que isto, sem o trabalho neste processo: o trabalho foi interrompido. */
+const SINAL_PARADO_MS = 2 * 60_000;
+const ERRO_LEITURA_INTERROMPIDA: ErroImportacao = {
+  codigo: 'LEITURA_INTERROMPIDA',
+  mensagem: 'A leitura do arquivo foi interrompida (o servidor reiniciou). Envie o arquivo de novo.',
+};
+const ERRO_APLICACAO_INTERROMPIDA: ErroImportacao = {
+  codigo: 'APLICACAO_INTERROMPIDA',
+  mensagem: 'A aplicação foi interrompida antes de terminar; nada foi gravado. Aplique de novo.',
+};
+/** Aviso da reconciliação da negativa que não rodou (fica no resultado gravado até ela rodar). */
+const AVISO_NEGATIVA_PENDENTE = 'A reconciliação da notificação negativa não rodou agora; o job da vigilância tenta de novo em alguns minutos.';
 /**
  * Registros por INSERT. O Prisma 7 guarda os argumentos das últimas 100 chamadas de `debug()` (mesmo com o DEBUG
  * desligado), inclusive o plano de cada consulta: um `createMany` de 500 linhas deixava uns 2 MB presos por chamada (até
@@ -111,16 +134,41 @@ function dataExiste(s: string): boolean {
 /** Uma prévia ou aplicação por vez neste processo (o envio grande ocupa a memória e a CPU do container). */
 let ocupado = false;
 
+/** Leitura ou aplicação rodando em segundo plano neste processo. */
+interface Trabalho {
+  id: string;
+  etapa: EtapaImportacao;
+  /** O pedido deixou de esperar (respondeu 202): a falha passa a ser gravada na linha. */
+  abandonado: boolean;
+  /** Termina quando o trabalho acaba de vez (com a falha gravada ou desfeita, o sinal parado e a vez devolvida). */
+  fim: Promise<void>;
+}
+
+/** Trabalhos deste processo, pelo id da importação: o sinal de vida parado de um deles não é trabalho interrompido. */
+const trabalhos = new Map<string, Trabalho>();
+
+type Desfecho<T> = { ok: true; valor: T } | { ok: false; erro: unknown };
+
 @Injectable()
 export class ImportacaoService {
   /** Fatia do payload por comando no banco (os testes diminuem para passar por várias). */
   static fatiaPayload = FATIA_PAYLOAD;
+  /** Quanto o pedido espera o trabalho em segundo plano antes de responder 202 (os testes mudam). */
+  static esperaMs = 20_000;
+  /** Intervalo do sinal de vida do trabalho em segundo plano (os testes diminuem). */
+  static sinalMs = 15_000;
+  /**
+   * Só para os testes: roda no trabalho em segundo plano (no começo da leitura; na aplicação, no começo da transação),
+   * para segurá-lo ou simular uma falha.
+   */
+  static ganchoDeTeste: ((etapa: EtapaImportacao, id: string) => Promise<void>) | null = null;
   private readonly logger = new Logger('Importacao');
 
   constructor(
     private readonly audit: AuditService,
     private readonly conciliacao: ConciliacaoService,
     private readonly moduleRef: ModuleRef,
+    private readonly tenants: TenantsService,
     @Inject(MASTER_DB) private readonly master: MasterClient,
   ) {}
 
@@ -129,15 +177,164 @@ export class ImportacaoService {
     return this.moduleRef.get(NegativaService, { strict: false });
   }
 
-  /** Roda `fn` sozinho neste processo; com outra prévia ou aplicação em andamento, 409. */
-  private async exclusivo<T>(fn: () => Promise<T>): Promise<T> {
+  /** Toma a vez do processo; com outra prévia ou aplicação em andamento, 409. */
+  private tomarVez(): void {
     if (ocupado) throw new DomainError('IMPORTACAO_OCUPADA', 'Outra importação está sendo processada agora. Tente de novo em alguns minutos.', HttpStatus.CONFLICT);
     ocupado = true;
+  }
+
+  private devolverVez(): void {
+    ocupado = false;
+  }
+
+  /** Roda `fn` sozinho neste processo; com outra prévia ou aplicação em andamento, 409. */
+  private async exclusivo<T>(fn: () => Promise<T>): Promise<T> {
+    this.tomarVez();
     try {
       return await fn();
     } finally {
-      ocupado = false;
+      this.devolverVez();
     }
+  }
+
+  /** Espera os trabalhos em segundo plano deste processo acabarem (os testes, antes de fechar a API). */
+  static async aguardarTrabalhos(): Promise<void> {
+    await Promise.allSettled([...trabalhos.values()].map((t) => t.fim));
+  }
+
+  // ───────────────────────────── segundo plano ─────────────────────────────
+
+  /**
+   * Roda `trabalho` em segundo plano, com a vez do processo (tomada por quem chama) presa até ele acabar, o sinal de vida
+   * da linha e o registro deste processo, e espera até `esperaMs`. Devolve o desfecho quando o trabalho acaba dentro da
+   * espera (falhou: `falha.desfazer` já rodou), ou null quando continua: o pedido responde 202 e, se falhar depois,
+   * `falha.registrar` grava a falha na linha. O que vem do pedido e é usado depois (sessão, IP, configurações do tenant,
+   * banco) é um objeto comum, sem nada que o fim da resposta feche (não há interceptor nem provedor por pedido): o banco
+   * é o pool do tenant no processo, que o sinal de vida mantém entre os abertos.
+   */
+  private async emSegundoPlano<T>(
+    db: Db,
+    tenantId: string,
+    id: string,
+    etapa: EtapaImportacao,
+    trabalho: () => Promise<T>,
+    falha: { desfazer: () => Promise<unknown>; registrar: (erro: ErroImportacao) => Promise<unknown> },
+  ): Promise<Desfecho<T> | null> {
+    // `as`: o desfecho é escrito pelas funções de baixo (sem ele, o TypeScript o daria como sempre null).
+    let desfecho = null as Desfecho<T> | null;
+    const t: Trabalho = { id, etapa, abandonado: false, fim: Promise.resolve() };
+    trabalhos.set(id, t);
+    const sinal = this.sinalDeVida(db, tenantId, id, etapa);
+    const terminou = (async () => {
+      try {
+        desfecho = { ok: true, valor: await trabalho() };
+      } catch (erro) {
+        desfecho = { ok: false, erro };
+      }
+    })();
+    // Registrado antes da espera: roda antes dela ao terminar, então `abandonado` aqui e lá é o mesmo.
+    t.fim = terminou
+      .then(async () => {
+        const d = desfecho;
+        if (!d || d.ok) return;
+        try {
+          if (t.abandonado) await falha.registrar(this.erroGravado(d.erro, etapa));
+          else await falha.desfazer();
+        } catch (e) {
+          this.logger.error(`Importação ${id}: não deu para gravar a falha da ${etapa === 'LENDO' ? 'leitura' : 'aplicação'}: ${(e as Error).message}`);
+        }
+      })
+      .finally(() => {
+        sinal.parar();
+        trabalhos.delete(id);
+        this.devolverVez();
+      });
+    let espera: NodeJS.Timeout | undefined;
+    await Promise.race([terminou, new Promise<void>((ok) => (espera = setTimeout(ok, ImportacaoService.esperaMs)))]);
+    clearTimeout(espera);
+    if (desfecho) {
+      await t.fim;
+      return desfecho;
+    }
+    t.abandonado = true;
+    return null;
+  }
+
+  /**
+   * Sinal de vida do trabalho: atualiza working_at a cada `sinalMs`, só na linha com a mesma etapa e o status do
+   * trabalho (nunca na linha já concluída) e sem esperar a linha travada pela transação do próprio trabalho. Também usa o
+   * banco do tenant pelo gerenciador de conexões: o pool usado há mais tempo é o que fecha quando passa do teto de
+   * tenants abertos, e o do trabalho não pode fechar no meio dele.
+   */
+  private sinalDeVida(db: Db, tenantId: string, id: string, etapa: EtapaImportacao): { parar(): void } {
+    let parado = false;
+    let timer: NodeJS.Timeout | undefined;
+    const agendar = () => {
+      if (parado) return;
+      timer = setTimeout(() => void bater(), ImportacaoService.sinalMs);
+      timer.unref();
+    };
+    const bater = async () => {
+      try {
+        await this.tenants.client(tenantId).catch(() => undefined);
+        await db.$executeRaw`
+          UPDATE official_imports SET working_at = ${new Date().toISOString()}::timestamptz AT TIME ZONE 'UTC'
+          WHERE id IN (
+            SELECT id FROM official_imports
+            WHERE id = ${id}::uuid AND working_step = ${etapa}
+              AND (CASE WHEN working_step = 'LENDO' THEN status = 'PROCESSANDO' ELSE status IN ('PREVIA', 'APLICADA') END)
+            FOR UPDATE SKIP LOCKED)`;
+      } catch (e) {
+        this.logger.warn(`Sinal de vida da importação ${id}: ${(e as Error).message}`);
+      }
+      agendar();
+    };
+    agendar();
+    return {
+      parar: () => {
+        parado = true;
+        clearTimeout(timer);
+      },
+    };
+  }
+
+  /**
+   * Trabalho com o sinal de vida parado há mais de 2 min, que não roda neste processo, foi interrompido (o servidor
+   * reiniciou): a leitura vira FALHOU; a aplicação perde a marca e, na PREVIA, ganha o erro (a transação não terminou,
+   * nada foi gravado; na APLICADA, só faltou a reconciliação da negativa, que o job faz). Roda na lista, no detalhe, ao
+   * aplicar e descartar, e no job das prévias vencidas.
+   */
+  private async recuperarInterrompidos(db: Db, id?: string): Promise<number> {
+    const limite = new Date(Date.now() - SINAL_PARADO_MS).toISOString();
+    const meus = [...trabalhos.keys()];
+    const so = id ? TenantPrisma.sql`AND id = ${id}::uuid` : TenantPrisma.empty;
+    const leitura = await db.$executeRaw`
+      UPDATE official_imports SET status = 'FALHOU', error = ${JSON.stringify(ERRO_LEITURA_INTERROMPIDA)}::jsonb, working_step = NULL, working_since = NULL,
+        working_at = NULL, payload = NULL, preview = NULL
+      WHERE status = 'PROCESSANDO' AND working_at < ${limite}::timestamptz AT TIME ZONE 'UTC' AND NOT (id = ANY(${meus}::uuid[])) ${so}`;
+    const aplicacao = await db.$executeRaw`
+      UPDATE official_imports SET working_step = NULL, working_since = NULL, working_at = NULL,
+        error = CASE WHEN status = 'PREVIA' THEN ${JSON.stringify(ERRO_APLICACAO_INTERROMPIDA)}::jsonb ELSE error END
+      WHERE working_step = 'APLICANDO' AND working_at < ${limite}::timestamptz AT TIME ZONE 'UTC' AND NOT (id = ANY(${meus}::uuid[])) ${so}`;
+    if (leitura + aplicacao) this.logger.warn(`Importações interrompidas: ${leitura} leitura(s) e ${aplicacao} aplicação(ões) com o sinal de vida parado.`);
+    return leitura + aplicacao;
+  }
+
+  /** Erro como fica gravado na linha: o código e a mensagem da resposta de erro; o erro inesperado vai para o log. */
+  private erroGravado(e: unknown, etapa: EtapaImportacao): ErroImportacao {
+    if (e instanceof DomainError) return JSON.parse(JSON.stringify({ codigo: e.code, mensagem: e.message, detalhes: e.details })) as ErroImportacao;
+    this.logger.error(`${etapa === 'LENDO' ? 'Leitura' : 'Aplicação'} da importação em segundo plano: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
+    return etapa === 'LENDO'
+      ? { codigo: 'ERRO_INTERNO', mensagem: 'Erro interno ao ler o arquivo. Envie de novo; se o erro se repetir, avise o suporte.' }
+      : { codigo: 'ERRO_INTERNO', mensagem: 'Erro interno ao aplicar; nada foi gravado. Aplique de novo; se o erro se repetir, avise o suporte.' };
+  }
+
+  /** Tira a marca da aplicação; na PREVIA, grava o erro (null: sem erro, a falha foi respondida ao pedido). */
+  private async limparMarcaDaAplicacao(db: Db, id: string, erro: ErroImportacao | null): Promise<void> {
+    await db.$executeRaw`
+      UPDATE official_imports SET working_step = NULL, working_since = NULL, working_at = NULL,
+        error = CASE WHEN status = 'PREVIA' THEN ${erro ? JSON.stringify(erro) : null}::jsonb ELSE error END
+      WHERE id = ${id}::uuid AND working_step = 'APLICANDO'`;
   }
 
   // ───────────────────────────── comparação com o banco ─────────────────────────────
@@ -296,7 +493,11 @@ export class ImportacaoService {
     return h.digest('hex');
   }
 
-  /** POST /vigilancia/importacoes (corpo cru). Mesmo SHA-256 já aplicado: `{ jaImportado }`, sem criar nada. */
+  /**
+   * POST /vigilancia/importacoes (corpo cru). Mesmo SHA-256 já aplicado: `{ jaImportado }`, sem criar nada. Senão, cria a
+   * linha PROCESSANDO e lê o arquivo em segundo plano: a prévia pronta dentro da espera volta como sempre (201); a falha
+   * dentro da espera apaga a linha e volta como sempre (nada fica gravado); senão, 202 com o que já se sabe.
+   */
   async enviar(ctx: RequestContext, arquivo: Buffer, consulta: ConsultaEnvioImportacao): Promise<RespostaEnvioImportacao> {
     if (!arquivo.length) throw new DomainError('ARQUIVO_VAZIO', 'Arquivo vazio', HttpStatus.BAD_REQUEST);
     if (!!consulta.de !== !!consulta.ate) throw new DomainError('PERIODO_INVALIDO', 'Informe o início e o fim do período, ou nenhum dos dois', HttpStatus.BAD_REQUEST);
@@ -310,11 +511,52 @@ export class ImportacaoService {
     const sha256 = await this.sha256(arquivo, ritmo);
     const aplicada = await ctx.db.officialImport.findFirst({ where: { sha256, status: 'APLICADA' }, select: { id: true, appliedAt: true } });
     if (aplicada) return { jaImportado: { id: aplicada.id, aplicadoEm: (aplicada.appliedAt ?? new Date()).toISOString() } };
-    const id = await this.exclusivo(() => this.criarPrevia(ctx, arquivo, consulta, sha256, ritmo));
-    return this.detalhe(ctx, id, { auditar: false });
+    this.tomarVez();
+    let comVez = true;
+    try {
+      const id = uuidv7();
+      const agora = new Date();
+      const nome = consulta.nome.slice(0, 255);
+      const declarado = consulta.de && consulta.ate ? { de: consulta.de, ate: consulta.ate } : null;
+      await ctx.db.officialImport.create({
+        data: {
+          id,
+          status: 'PROCESSANDO',
+          fileName: nome,
+          sha256,
+          sizeBytes: arquivo.length,
+          periodFrom: declarado ? new Date(`${declarado.de}T00:00:00Z`) : null,
+          periodTo: declarado ? new Date(`${declarado.ate}T00:00:00Z`) : null,
+          declaredPeriod: !!declarado,
+          createdBy: ctx.session.userId,
+          createdAt: agora,
+          workingStep: 'LENDO',
+          workingSince: agora,
+          workingAt: agora,
+        },
+        select: { id: true },
+      });
+      comVez = false;
+      const desfecho = await this.emSegundoPlano(ctx.db, ctx.tenant.id, id, 'LENDO', () => this.criarPrevia(ctx, id, arquivo, consulta, sha256, ritmo), {
+        // Dentro da espera, como antes: nada fica gravado.
+        desfazer: () => ctx.db.officialImport.deleteMany({ where: { id, status: 'PROCESSANDO' } }),
+        registrar: (erro) =>
+          ctx.db.officialImport.updateMany({
+            where: { id, status: 'PROCESSANDO' },
+            data: { status: 'FALHOU', error: erro as unknown as TenantPrisma.InputJsonValue, workingStep: null, workingSince: null, workingAt: null, payload: null, preview: TenantPrisma.DbNull },
+          }),
+      });
+      if (!desfecho) return { id, status: 'PROCESSANDO', arquivo: nome, tamanhoBytes: arquivo.length, desde: agora.toISOString() };
+      if (!desfecho.ok) throw desfecho.erro;
+      return this.detalhe(ctx, id, { auditar: false });
+    } finally {
+      if (comVez) this.devolverVez();
+    }
   }
 
-  private async criarPrevia(ctx: RequestContext, arquivo: Buffer, consulta: ConsultaEnvioImportacao, sha256: string, ritmo: Ritmo): Promise<string> {
+  /** Lê o envio e transforma a linha PROCESSANDO em PREVIA (em segundo plano, com a vez do processo). */
+  private async criarPrevia(ctx: RequestContext, id: string, arquivo: Buffer, consulta: ConsultaEnvioImportacao, sha256: string, ritmo: Ritmo): Promise<void> {
+    await ImportacaoService.ganchoDeTeste?.('LENDO', id);
     const { ibge } = await municipioDoTenant(this.master, ctx.tenant.id);
     const [sensiveis, grupoDoCid, porNome] = await Promise.all([gruposSigilosos(ctx.db), grupoDoCidFabrica(ctx.db), municipiosPorNome(ctx.db)]);
     const hoje = localDateString(new Date(), ctx.tenant.timeZone);
@@ -416,19 +658,28 @@ export class ImportacaoService {
       if (validos.some((a) => a.sistema === 'SINAN_ONLINE')) avisos.push('Sinan Online: a mesma solicitação em menos de 24 horas devolve o mesmo arquivo, e o período não cruza o ano.');
 
       const agora = new Date();
-      return await ctx.db.$transaction(
+      await ctx.db.$transaction(
         async (tx) => {
-          // A prévia anterior do mesmo arquivo (troca de codificação, reenvio) é descartada.
+          // A prévia anterior do mesmo arquivo (troca de codificação, reenvio) é descartada; a que está sendo aplicada
+          // agora (marca com sinal de vida), não. A marca de uma aplicação interrompida sai junto.
           await tx.officialImport.updateMany({
-            where: { sha256, status: 'PREVIA' },
-            data: { status: 'DESCARTADA', payload: null, preview: TenantPrisma.DbNull, discardedBy: ctx.session.userId, discardedAt: agora },
-          });
-          const criada = await tx.officialImport.create({
+            where: { sha256, status: 'PREVIA', OR: [{ workingStep: null }, { workingAt: { lt: new Date(agora.getTime() - SINAL_PARADO_MS) } }] },
             data: {
+              status: 'DESCARTADA',
+              payload: null,
+              preview: TenantPrisma.DbNull,
+              discardedBy: ctx.session.userId,
+              discardedAt: agora,
+              workingStep: null,
+              workingSince: null,
+              workingAt: null,
+            },
+          });
+          const { count } = await tx.officialImport.updateMany({
+            where: { id, status: 'PROCESSANDO' },
+            data: {
+              status: 'PREVIA',
               system: sistema,
-              fileName: consulta.nome.slice(0, 255),
-              sha256,
-              sizeBytes: arquivo.length,
               files: leitura.arquivos as unknown as TenantPrisma.InputJsonValue,
               periodFrom: periodo ? new Date(`${periodo.de}T00:00:00Z`) : null,
               periodTo: periodo ? new Date(`${periodo.ate}T00:00:00Z`) : null,
@@ -437,15 +688,18 @@ export class ImportacaoService {
               counts: contagens as unknown as TenantPrisma.InputJsonValue,
               preview: previa as unknown as TenantPrisma.InputJsonValue,
               warnings: avisos,
-              createdBy: ctx.session.userId,
+              workingStep: null,
+              workingSince: null,
+              workingAt: null,
+              error: TenantPrisma.DbNull,
             },
-            select: { id: true },
           });
-          await this.gravarPayload(tx, criada.id, escritor.caminho, tamanhoPayload);
+          if (count !== 1) throw conflict('A leitura do arquivo foi interrompida: envie o arquivo de novo.');
+          await this.gravarPayload(tx, id, escritor.caminho, tamanhoPayload);
           await this.audit.record(ctx, tx, {
             action: 'vigilancia.importacao_previa',
             entityType: 'OfficialImport',
-            entityId: criada.id,
+            entityId: id,
             payload: {
               arquivo: consulta.nome,
               sha256,
@@ -455,7 +709,6 @@ export class ImportacaoService {
               contagens: { ...contagens, motivosRecusa: undefined },
             },
           });
-          return criada.id;
         },
         { timeout: 120_000, maxWait: 30_000 },
       );
@@ -570,7 +823,7 @@ export class ImportacaoService {
   private resumo(
     imp: {
       id: string;
-      system: SistemaOficial;
+      system: SistemaOficial | null;
       status: StatusImportacao;
       fileName: string;
       sizeBytes: number;
@@ -585,9 +838,16 @@ export class ImportacaoService {
       appliedBy: string | null;
       discardedAt: Date | null;
       discardedBy: string | null;
+      workingStep: string | null;
+      workingSince: Date | null;
+      workingAt: Date | null;
+      error: unknown;
+      applyResult: unknown;
     },
     nomes: Map<string, string>,
   ): ResumoImportacao {
+    const contagens = imp.counts as Partial<ContagensImportacao> | null;
+    const erro = imp.error as ErroImportacao | null;
     return {
       id: imp.id,
       sistema: imp.system,
@@ -597,7 +857,8 @@ export class ImportacaoService {
       periodo: imp.periodFrom && imp.periodTo ? { de: dia(imp.periodFrom)!, ate: dia(imp.periodTo)! } : null,
       periodoDeclarado: imp.declaredPeriod,
       identificado: imp.identified,
-      contagens: imp.counts as ContagensImportacao,
+      // A linha nasce com '{}' (PROCESSANDO) e assim fica se a leitura falha.
+      contagens: typeof contagens?.lidos === 'number' ? (contagens as ContagensImportacao) : null,
       criadoEm: imp.createdAt.toISOString(),
       criadoPor: nomes.get(imp.createdBy) ?? null,
       aplicadoEm: imp.appliedAt?.toISOString() ?? null,
@@ -605,6 +866,9 @@ export class ImportacaoService {
       descartadoEm: imp.discardedAt?.toISOString() ?? null,
       descartadoPor: imp.discardedBy ? (nomes.get(imp.discardedBy) ?? null) : null,
       expirada: imp.status === 'DESCARTADA' && !imp.discardedBy,
+      processamento: imp.workingStep && imp.workingSince && imp.workingAt ? { etapa: imp.workingStep as EtapaImportacao, desde: imp.workingSince.toISOString(), atualizadoEm: imp.workingAt.toISOString() } : null,
+      erro: erro ? { codigo: erro.codigo, mensagem: erro.mensagem } : null,
+      resultadoAplicacao: (imp.applyResult as ResultadoAplicacao | null) ?? null,
     };
   }
 
@@ -625,10 +889,16 @@ export class ImportacaoService {
     appliedBy: true,
     discardedAt: true,
     discardedBy: true,
+    workingStep: true,
+    workingSince: true,
+    workingAt: true,
+    error: true,
+    applyResult: true,
   } as const;
 
   /** GET /vigilancia/importacoes. */
   async listar(ctx: RequestContext): Promise<ListaImportacoes> {
+    await this.recuperarInterrompidos(ctx.db);
     const rows = await ctx.db.officialImport.findMany({ orderBy: { createdAt: 'desc' }, take: 200, select: this.selectResumo });
     const nomes = await this.nomes(
       ctx,
@@ -637,8 +907,12 @@ export class ImportacaoService {
     return rows.map((r) => this.resumo(r, nomes));
   }
 
-  /** GET /vigilancia/importacoes/:id. Sem `notificacao.sensivel`, o nome do registro sigiloso não aparece na prévia. */
+  /**
+   * GET /vigilancia/importacoes/:id (a tela acompanha a leitura e a aplicação em segundo plano por aqui). Sem
+   * `notificacao.sensivel`, o nome do registro sigiloso não aparece na prévia.
+   */
   async detalhe(ctx: RequestContext, id: string, opts: { auditar?: boolean } = {}): Promise<DetalheImportacao> {
+    await this.recuperarInterrompidos(ctx.db, id);
     const imp = await ctx.db.officialImport.findUnique({ where: { id }, select: { ...this.selectResumo, sha256: true, files: true, preview: true, warnings: true } });
     if (!imp) throw notFound('Importação');
     const nomes = await this.nomes(ctx, [imp.createdBy, imp.appliedBy, imp.discardedBy]);
@@ -667,8 +941,12 @@ export class ImportacaoService {
         payload: { nominais: nominais.length, sigilosos: nominais.filter((a) => a.sigiloso).length },
       });
     const horas = ctx.tenant.settings.vigilancia.consolidacao.expiraPreviaHoras;
+    const resumo = this.resumo(imp, nomes);
+    const erro = imp.error as ErroImportacao | null;
     return {
-      ...this.resumo(imp, nomes),
+      ...resumo,
+      // No detalhe, o erro vem com os detalhes da resposta de erro (SEM_REGISTROS: arquivos detectados e motivos).
+      erro: resumo.erro && erro?.detalhes !== undefined ? { ...resumo.erro, detalhes: erro.detalhes } : resumo.erro,
       sha256: imp.sha256,
       arquivos: imp.files as unknown as ArquivoDetectado[],
       previa,
@@ -679,14 +957,22 @@ export class ImportacaoService {
 
   // ───────────────────────────── aplicação ─────────────────────────────
 
-  /** POST /vigilancia/importacoes/:id/aplicar. */
-  async aplicar(ctx: RequestContext, id: string): Promise<ResultadoAplicacao> {
+  /**
+   * POST /vigilancia/importacoes/:id/aplicar. Confere a prévia, reivindica a aplicação (marca APLICANDO, atômica) e
+   * aplica em segundo plano: o que termina dentro da espera volta como sempre (200 com o resultado, ou o erro de sempre,
+   * sem nada gravado); senão, 202 e a tela acompanha pelo detalhe.
+   */
+  async aplicar(ctx: RequestContext, id: string): Promise<RespostaAplicacao> {
+    await this.recuperarInterrompidos(ctx.db, id);
     const imp = await ctx.db.officialImport.findUnique({
       where: { id },
-      select: { id: true, status: true, sha256: true, counts: true, createdAt: true, discardedBy: true, fileName: true },
+      select: { id: true, status: true, sha256: true, counts: true, createdAt: true, discardedBy: true, fileName: true, workingStep: true },
     });
     if (!imp) throw notFound('Importação');
+    if (imp.status === 'PROCESSANDO') throw conflict('A prévia ainda está sendo preparada: aguarde a leitura do arquivo terminar.');
+    if (imp.status === 'FALHOU') throw conflict('A leitura do arquivo falhou e não gerou prévia: envie o arquivo de novo.');
     if (imp.status === 'APLICADA') throw conflict('A importação já foi aplicada');
+    if (imp.workingStep === 'APLICANDO') throw conflict('A importação já está sendo aplicada: acompanhe nesta tela.');
     if (imp.status === 'DESCARTADA') throw conflict(imp.discardedBy ? 'A prévia foi descartada' : 'A prévia expirou: envie o arquivo de novo');
     const horas = ctx.tenant.settings.vigilancia.consolidacao.expiraPreviaHoras;
     if (imp.createdAt.getTime() + horas * HORA < Date.now()) {
@@ -695,7 +981,28 @@ export class ImportacaoService {
     }
     const [tem] = await ctx.db.$queryRaw<{ n: number | null }[]>`SELECT octet_length(payload)::int AS n FROM official_imports WHERE id = ${id}::uuid`;
     if (!tem?.n) throw conflict('A prévia não tem mais os registros: envie o arquivo de novo');
-    return this.exclusivo(() => this.aplicarPrevia(ctx, imp));
+    this.tomarVez();
+    let comVez = true;
+    try {
+      // Reivindicação atômica: só a PREVIA sem marca, ou com a marca de uma aplicação interrompida (sinal parado).
+      const agora = new Date();
+      const { count } = await ctx.db.officialImport.updateMany({
+        where: { id, status: 'PREVIA', OR: [{ workingStep: null }, { workingAt: { lt: new Date(agora.getTime() - SINAL_PARADO_MS) } }] },
+        data: { workingStep: 'APLICANDO', workingSince: agora, workingAt: agora, error: TenantPrisma.DbNull },
+      });
+      if (count !== 1) throw conflict('A importação já está sendo aplicada (ou mudou): abra de novo.');
+      comVez = false;
+      const desfecho = await this.emSegundoPlano(ctx.db, ctx.tenant.id, id, 'APLICANDO', () => this.aplicarPrevia(ctx, imp), {
+        // Dentro da espera, a falha volta ao pedido: a linha continua PREVIA, sem erro gravado.
+        desfazer: () => this.limparMarcaDaAplicacao(ctx.db, id, null),
+        registrar: (erro) => this.limparMarcaDaAplicacao(ctx.db, id, erro),
+      });
+      if (!desfecho) return { id, status: 'APLICANDO' };
+      if (!desfecho.ok) throw desfecho.erro;
+      return desfecho.valor;
+    } finally {
+      if (comVez) this.devolverVez();
+    }
   }
 
   private async aplicarPrevia(ctx: RequestContext, imp: { id: string; sha256: string; counts: unknown; fileName: string }): Promise<ResultadoAplicacao> {
@@ -713,6 +1020,7 @@ export class ImportacaoService {
           const atual = await tx.officialImport.findUnique({ where: { id }, select: { status: true } });
           if (atual?.status !== 'PREVIA') throw conflict('A importação mudou: abra de novo');
           if (await tx.officialImport.findFirst({ where: { sha256: imp.sha256, status: 'APLICADA' }, select: { id: true } })) throw conflict('Este arquivo já foi aplicado');
+          await ImportacaoService.ganchoDeTeste?.('APLICANDO', id);
 
           let novos = 0;
           let alterados = 0;
@@ -794,9 +1102,36 @@ export class ImportacaoService {
 
           const anteriores = imp.counts as unknown as ContagensImportacao;
           const contagens: ContagensImportacao = { ...anteriores, novos, alterados, iguais, ausentesPrevistos: ausentesMarcados };
+          const unidades = (await tx.$queryRaw<{ u: string }[]>`SELECT DISTINCT unit_id::text AS u FROM official_records WHERE last_import_id = ${id}::uuid AND unit_id IS NOT NULL`).map((r) => r.u);
+          const semanas = (await tx.$queryRaw<{ s: string }[]>`SELECT DISTINCT trim(epi_week_notified) AS s FROM official_records WHERE last_import_id = ${id}::uuid AND trim(COALESCE(epi_week_notified, '')) <> ''`).map(
+            (r) => r.s,
+          );
+          // O resultado fica gravado com a aplicação. A reconciliação da negativa roda depois da transação: até ela
+          // terminar, fica o aviso de que não rodou (verdade se o processo cair antes; o job reconcilia depois).
+          const gravado: ResultadoAplicacao = {
+            id,
+            aplicadoEm: agora.toISOString(),
+            contagens,
+            ausentesMarcados,
+            voltaram,
+            unidadesLigadas: ligadas,
+            vinculadosAutomaticamente: vinculados,
+            negativasCanceladas: 0,
+            avisos: unidades.length ? [AVISO_NEGATIVA_PENDENTE] : [],
+          };
+          // A marca APLICANDO continua até a reconciliação da negativa acabar (a tela espera o resultado final).
           const { count } = await tx.officialImport.updateMany({
-            where: { id, status: 'PREVIA' },
-            data: { status: 'APLICADA', appliedBy: ctx.session.userId, appliedAt: agora, payload: null, preview: TenantPrisma.DbNull, counts: contagens as unknown as TenantPrisma.InputJsonValue },
+            where: { id, status: 'PREVIA', workingStep: 'APLICANDO' },
+            data: {
+              status: 'APLICADA',
+              appliedBy: ctx.session.userId,
+              appliedAt: agora,
+              payload: null,
+              preview: TenantPrisma.DbNull,
+              counts: contagens as unknown as TenantPrisma.InputJsonValue,
+              applyResult: gravado as unknown as TenantPrisma.InputJsonValue,
+              error: TenantPrisma.DbNull,
+            },
           });
           if (count !== 1) throw conflict('A importação mudou: abra de novo');
           await this.audit.record(ctx, tx, {
@@ -805,11 +1140,7 @@ export class ImportacaoService {
             entityId: id,
             payload: { arquivo: imp.fileName, sha256: imp.sha256, contagens: { ...contagens, motivosRecusa: undefined }, ausentesMarcados, voltaram, unidadesLigadas: ligadas, vinculados },
           });
-          const unidades = (await tx.$queryRaw<{ u: string }[]>`SELECT DISTINCT unit_id::text AS u FROM official_records WHERE last_import_id = ${id}::uuid AND unit_id IS NOT NULL`).map((r) => r.u);
-          const semanas = (await tx.$queryRaw<{ s: string }[]>`SELECT DISTINCT trim(epi_week_notified) AS s FROM official_records WHERE last_import_id = ${id}::uuid AND trim(COALESCE(epi_week_notified, '')) <> ''`).map(
-            (r) => r.s,
-          );
-          return { contagens, ausentesMarcados, voltaram, unidadesLigadas: ligadas, vinculados, unidades, semanas };
+          return { gravado, unidades, semanas };
         },
         { timeout: 600_000, maxWait: 30_000 },
       )
@@ -825,34 +1156,39 @@ export class ImportacaoService {
         negativasCanceladas = await this.negativas().reconciliar(ctx.db, { unitIds: resultado.unidades, semanas: resultado.semanas });
       } catch (e) {
         this.logger.error(`Reconciliação da negativa depois da importação ${id}: ${(e as Error).message}`);
-        avisos.push('A reconciliação da notificação negativa não rodou agora; o job da vigilância tenta de novo em alguns minutos.');
+        avisos.push(AVISO_NEGATIVA_PENDENTE);
       }
     }
-    return {
-      id,
-      aplicadoEm: agora.toISOString(),
-      contagens: resultado.contagens,
-      ausentesMarcados: resultado.ausentesMarcados,
-      voltaram: resultado.voltaram,
-      unidadesLigadas: resultado.unidadesLigadas,
-      vinculadosAutomaticamente: resultado.vinculados,
-      negativasCanceladas,
-      avisos,
-    };
+    const final: ResultadoAplicacao = { ...resultado.gravado, negativasCanceladas, avisos };
+    // A importação já vale: se o resultado final não for gravado agora, fica o da transação (com o aviso da negativa) e
+    // a marca sai pelo sinal de vida parado.
+    try {
+      await ctx.db.officialImport.updateMany({
+        where: { id, workingStep: 'APLICANDO' },
+        data: { applyResult: final as unknown as TenantPrisma.InputJsonValue, workingStep: null, workingSince: null, workingAt: null },
+      });
+    } catch (e) {
+      this.logger.error(`Resultado da importação ${id} não gravado: ${(e as Error).message}`);
+    }
+    return final;
   }
 
-  /** POST /vigilancia/importacoes/:id/descartar. */
+  /** POST /vigilancia/importacoes/:id/descartar: a PREVIA (sem aplicação em andamento) ou a FALHOU. */
   async descartar(ctx: RequestContext, id: string): Promise<ResultadoDescarte> {
+    await this.recuperarInterrompidos(ctx.db, id);
     const agora = new Date();
     await ctx.db.$transaction(async (tx) => {
       const { count } = await tx.officialImport.updateMany({
-        where: { id, status: 'PREVIA' },
+        where: { id, status: { in: ['PREVIA', 'FALHOU'] }, workingStep: null },
         data: { status: 'DESCARTADA', payload: null, preview: TenantPrisma.DbNull, discardedBy: ctx.session.userId, discardedAt: agora },
       });
       if (count !== 1) {
-        const imp = await tx.officialImport.findUnique({ where: { id }, select: { status: true } });
+        const imp = await tx.officialImport.findUnique({ where: { id }, select: { status: true, workingStep: true } });
         if (!imp) throw notFound('Importação');
-        throw conflict(imp.status === 'APLICADA' ? 'A importação já foi aplicada' : 'A prévia já foi descartada');
+        if (imp.status === 'APLICADA') throw conflict('A importação já foi aplicada');
+        if (imp.status === 'PROCESSANDO') throw conflict('O arquivo ainda está sendo lido: espere a prévia ficar pronta para descartar.');
+        if (imp.workingStep === 'APLICANDO') throw conflict('A importação está sendo aplicada: não dá para descartar agora.');
+        throw conflict('A prévia já foi descartada');
       }
       await this.audit.record(ctx, tx, { action: 'vigilancia.importacao_descartada', entityType: 'OfficialImport', entityId: id, payload: {} });
     });
@@ -860,13 +1196,15 @@ export class ImportacaoService {
   }
 
   /**
-   * Job 'vigilancia': a PREVIA com mais de `horas` vira DESCARTADA e perde o payload. Devolve quantas expiraram.
+   * Job 'vigilancia': a PREVIA com mais de `horas` vira DESCARTADA e perde o payload (a que está sendo aplicada, não).
+   * Devolve quantas expiraram. Antes, a leitura e a aplicação interrompidas (sinal de vida parado) saem do caminho.
    * `horas` é obrigatório: o job passa `sys.tenant.settings.vigilancia.consolidacao.expiraPreviaHoras` (com um padrão
    * fixo aqui, a configuração do tenant seria ignorada sem aviso).
    */
   async expirarPrevias(db: TenantPrisma.TransactionClient, agora: Date, horas: number): Promise<number> {
+    await this.recuperarInterrompidos(db);
     const { count } = await db.officialImport.updateMany({
-      where: { status: 'PREVIA', createdAt: { lt: new Date(agora.getTime() - horas * HORA) } },
+      where: { status: 'PREVIA', workingStep: null, createdAt: { lt: new Date(agora.getTime() - horas * HORA) } },
       data: { status: 'DESCARTADA', payload: null, preview: TenantPrisma.DbNull, discardedAt: agora },
     });
     return count;

@@ -68,8 +68,9 @@ export class ImportacaoController {
   ) {}
 
   /**
-   * Envio do arquivo cru (zip, DBF ou CSV; até 95 MB) com `?nome=&de=&ate=&codificacao=`. Cria a prévia (201) ou, se o
-   * mesmo arquivo já foi aplicado, responde 200 com `{ jaImportado }` sem criar nada.
+   * Envio do arquivo cru (zip, DBF ou CSV; até 95 MB) com `?nome=&de=&ate=&codificacao=`. A leitura roda em segundo
+   * plano: pronta dentro da espera, 201 com a prévia; senão, 202 com `{ id, status: 'PROCESSANDO', ... }` e a tela
+   * acompanha pelo detalhe. O mesmo arquivo já aplicado responde 200 com `{ jaImportado }` sem criar nada.
    */
   @Post('importacoes')
   @RequirePermission('vigilancia.importar')
@@ -79,6 +80,7 @@ export class ImportacaoController {
     const arquivo = await rawBody(req, LIMITE_ENVIO_BYTES);
     const r = await this.importacoes.enviar(ctx, arquivo, q);
     if ('jaImportado' in r) res.status(200);
+    else if (r.status === 'PROCESSANDO') res.status(202);
     return r;
   }
 
@@ -94,11 +96,14 @@ export class ImportacaoController {
     return this.importacoes.detalhe(ctx, id);
   }
 
+  /** Aplica em segundo plano: terminou dentro da espera, 200 com o resultado; senão, 202 com `{ id, status: 'APLICANDO' }`. */
   @Post('importacoes/:id/aplicar')
   @HttpCode(200)
   @RequirePermission('vigilancia.importar')
-  aplicar(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string) {
-    return this.importacoes.aplicar(ctx, id);
+  async aplicar(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Res({ passthrough: true }) res: Response) {
+    const r = await this.importacoes.aplicar(ctx, id);
+    if ('status' in r && r.status === 'APLICANDO') res.status(202);
+    return r;
   }
 
   @Post('importacoes/:id/descartar')
