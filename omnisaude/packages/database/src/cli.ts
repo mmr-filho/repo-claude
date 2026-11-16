@@ -6,8 +6,9 @@ import { applyMigrations } from './migrate';
 import { hashPassword, passwordProblems } from './passwords';
 import { registrarFalhaDePartida } from './partida';
 import { migrateAllTenants, provisionTenant } from './provision';
+import { completarDemoNoBanco } from './seed/completar';
 import { DEMO_PLATFORM_EMAIL, seedDemo } from './seed/demo';
-import { createMasterClient, envCredentials } from './tenancy';
+import { connectionUrl, createMasterClient, envCredentials } from './tenancy';
 
 /**
  * Operação da base de dados:
@@ -49,6 +50,21 @@ async function main() {
         etapa = 'instituição de demonstração';
         const result = await seedDemo({ master, credentials, primaryHost: host, primaryPort: port, replicaHost, replicaPort, platformUser: !process.env.PLATFORM_ADMIN_PASSWORD, territorioDemo: true });
         console.log(result.skipped ? `Tenant demo já existe (${result.dbName})` : `Tenant demo criado em ${result.dbName}`);
+        // A carga só roda em instituição vazia: a demonstração já existente recebe as unidades, os acessos e as lotações
+        // que a carga atual cria e que faltam nela. Falha aqui não impede a API de subir.
+        if (result.skipped) {
+          try {
+            const feito = await completarDemoNoBanco(connectionUrl(host, port, result.dbName, credentials('default', 'oltp')));
+            const partes = [
+              feito.unidades.length ? `unidades: ${feito.unidades.join(', ')}` : '',
+              feito.profissionais.length ? `profissionais: ${feito.profissionais.join(', ')}` : '',
+              feito.lotacoes.length ? `lotações: ${feito.lotacoes.join(', ')}` : '',
+            ].filter(Boolean);
+            console.log(partes.length ? `Demonstração completada (${partes.join('; ')})` : 'Demonstração completa');
+          } catch (err) {
+            console.error(`Demonstração não completada (a API sobe assim mesmo): ${err instanceof Error ? err.message : err}`);
+          }
+        }
       }
       etapa = 'conta da plataforma (PLATFORM_ADMIN_PASSWORD)';
       await ensurePlatformAdmin(master);
