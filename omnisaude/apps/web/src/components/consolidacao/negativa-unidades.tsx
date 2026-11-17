@@ -36,10 +36,14 @@ import {
   pendenciasDesignacao,
   pendenciasEncerrarPeriodo,
   periodoAberto,
+  periodoParaEncerrar,
   responsaveisAtivos,
   resumoUnidades,
+  rotuloDesignar,
+  rotuloEncerrarPeriodo,
   rotuloRevogar,
   rotuloTipoUnidade,
+  rotuloTornarNotificante,
   situacaoDaUnidade,
   titularQueNaoVale,
   type FiltroUnidades,
@@ -112,21 +116,28 @@ function AbrirPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFecha
   );
 }
 
-/** Encerra o período aberto (a unidade sai do denominador depois do fim; o histórico não muda). */
-function EncerrarPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: () => void; onFeito: () => void }) {
+/**
+ * Encerra o período aberto (a unidade sai do denominador depois do fim; o histórico não muda). Na unidade inativa, a
+ * data vai até hoje, e o período que ainda termina depois de hoje também se encerra (a API encurta o fim).
+ */
+export function EncerrarPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: () => void; onFeito: () => void }) {
   const toast = useToast();
   const hojeNoFuso = useHoje();
   const [ate, setAte] = useState(hojeNoFuso);
   const [motivo, setMotivo] = useState('');
   const [busy, setBusy] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
-  const pend = pendenciasEncerrarPeriodo(u, ate, motivo);
+  const pend = pendenciasEncerrarPeriodo(u, ate, motivo, hojeNoFuso);
   return (
     <Dialog
       open
       onOpenChange={(o) => !o && onFechar()}
       title={`Encerrar o período: ${u.unidade.nome}`}
-      description="Use quando a unidade deixa de atender ou de ser fonte de notificação. As semanas até o fim continuam contando."
+      description={
+        u.ativa
+          ? 'Use quando a unidade deixa de atender ou de ser fonte de notificação. As semanas até o fim continuam contando.'
+          : 'A unidade está inativa: o fim vai até hoje. Use a data da desativação; as semanas até o fim continuam contando.'
+      }
       footer={
         <Button
           variant="danger"
@@ -152,7 +163,7 @@ function EncerrarPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFe
     >
       <div className="space-y-3">
         <Field label="Último dia como notificante" htmlFor="neg-encerrar-ate">
-          <Input id="neg-encerrar-ate" type="date" value={ate} onChange={(e) => setAte(e.target.value)} />
+          <Input id="neg-encerrar-ate" type="date" value={ate} max={u.ativa ? undefined : hojeNoFuso} onChange={(e) => setAte(e.target.value)} />
         </Field>
         <Field label="Motivo" htmlFor="neg-encerrar-motivo" hint={`Pelo menos ${MINIMO_MOTIVO_FIM} caracteres. Ex.: unidade desativada no CNES.`}>
           <Textarea id="neg-encerrar-motivo" rows={2} maxLength={500} value={motivo} onChange={(e) => setMotivo(e.target.value)} />
@@ -315,6 +326,7 @@ function Revogar({ u, r, onFechar, onFeito }: { u: UnidadeNotificante; r: Respon
 export function NegativaUnidades() {
   const lista = useApi<ListaUnidadesNotificantes>('/vigilancia/unidades-notificantes');
   const { dataHora } = useDataHora();
+  const hojeNoFuso = useHoje();
   const [filtro, setFiltro] = useState<FiltroUnidades>('TODAS');
   const [busca, setBusca] = useState('');
   const [acao, setAcao] = useState<Acao | null>(null);
@@ -380,6 +392,8 @@ export function NegativaUnidades() {
                 const ativos = responsaveisAtivos(u);
                 const antigos = u.responsaveis.filter((r) => r.ate !== null);
                 const aberto = periodoAberto(u);
+                // Na unidade inativa, também o período que ainda termina depois de hoje (o aviso pede o encerramento).
+                const paraEncerrar = periodoParaEncerrar(u, hojeNoFuso);
                 return (
                   <TR key={u.unidade.id}>
                     <TD>
@@ -441,21 +455,20 @@ export function NegativaUnidades() {
                     </TD>
                     <TD className="text-right">
                       <div className="flex flex-wrap justify-end gap-1.5">
-                        {aberto ? (
-                          <>
-                            <Button size="sm" onClick={() => setAcao({ tipo: 'designar', u })}>
-                              Designar
-                            </Button>
-                            <Button size="sm" variant="secondary" onClick={() => setAcao({ tipo: 'encerrar', u })}>
-                              Encerrar período
-                            </Button>
-                          </>
-                        ) : (
-                          u.ativa && (
-                            <Button size="sm" variant="secondary" onClick={() => setAcao({ tipo: 'abrir', u })}>
-                              Tornar notificante
-                            </Button>
-                          )
+                        {aberto && (
+                          <Button size="sm" aria-label={rotuloDesignar(u)} onClick={() => setAcao({ tipo: 'designar', u })}>
+                            Designar
+                          </Button>
+                        )}
+                        {paraEncerrar && (
+                          <Button size="sm" variant="secondary" aria-label={rotuloEncerrarPeriodo(u)} onClick={() => setAcao({ tipo: 'encerrar', u })}>
+                            Encerrar período
+                          </Button>
+                        )}
+                        {!paraEncerrar && u.ativa && (
+                          <Button size="sm" variant="secondary" aria-label={rotuloTornarNotificante(u)} onClick={() => setAcao({ tipo: 'abrir', u })}>
+                            Tornar notificante
+                          </Button>
                         )}
                       </div>
                     </TD>

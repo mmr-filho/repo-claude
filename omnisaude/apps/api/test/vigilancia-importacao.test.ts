@@ -901,7 +901,8 @@ describe.runIf(enabled)('Vigilância: importação das exportações oficiais e 
     let liberar = () => {};
     let ocupado = servico.exclusivo(() => new Promise<void>((r) => (liberar = r)));
     const recusa = await enviar(arquivo, 'ocupado.dbf', {}, 409);
-    expect(recusa).toMatchObject({ code: 'IMPORTACAO_OCUPADA', message: expect.stringContaining('Outra importação está sendo processada') });
+    // A vez tomada sem o tenant (como a de outro tenant): o servidor está ocupado (quarta rodada, N2).
+    expect(recusa).toMatchObject({ code: 'IMPORTACAO_SERVIDOR_OCUPADO', message: 'O servidor está recebendo ou processando outros envios agora. Tente de novo em instantes.' });
     liberar();
     await ocupado;
     const d = (await enviar(arquivo, 'ocupado.dbf')) as Detalhe;

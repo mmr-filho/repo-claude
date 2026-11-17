@@ -217,7 +217,10 @@ describe('leitura em pedaços (imp-memoria)', () => {
         expect(lote.length).toBeLessThanOrEqual(2);
         voltaram.push(...lote);
       }
-      expect(voltaram).toEqual(lidos);
+      // O arquivo de origem e o CNES dele (quarta rodada, N0) só existem na leitura: a cobertura já sai calculada no
+      // payload, e os registros voltam sem eles.
+      expect(lidos[0]).toMatchObject({ arquivo: 0, cnesDoArquivo: '9000011' });
+      expect(voltaram).toEqual(lidos.map(({ arquivo: _a, cnesDoArquivo: _c, ...r }) => r));
       expect(leitor.cobertura).toEqual(cobertura.resultado().cobertura);
     } finally {
       l.fechar();

@@ -105,6 +105,10 @@ export class AdminService {
     }
     const desativar = input.active === false && current.active;
     return ctx.db.$transaction(async (tx) => {
+      // Na desativação, a trava da unidade notificante vem antes da linha da unidade: a abertura do período e a
+      // designação (que travam a unidade notificante e gravam linhas que apontam para a unidade) não fecham ciclo com a
+      // linha presa aqui, nem quando a mesma alteração troca o CNES.
+      if (desativar) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`negativa-responsavel:${id}`}))`;
       const unit = await tx.unit.update({ where: { id }, data: { ...this.unitData(input), ...(input.active === undefined ? {} : { active: input.active }) } });
       // A negativa antes da trilha: as travas da unidade notificante vêm antes da trava da cadeia da auditoria (a
       // designação feita ao mesmo tempo trava a unidade e depois audita; a ordem inversa fecharia um ciclo). A trilha

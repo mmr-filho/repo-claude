@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { erroDaConsulta } from '../src/components/consolidacao/consulta';
-import { api, ApiError, errorMessage, MENSAGEM_SERVIDOR_DEMOROU } from '../src/lib/api';
+import { api, ApiError, errorMessage, MENSAGEM_ARQUIVO_GRANDE, MENSAGEM_SERVIDOR_DEMOROU } from '../src/lib/api';
 
 /*
  * Mensagem do erro que não vem em JSON (TELAS-6): a página HTML da borda da Cloudflare (524, 502), do proxy ou do
  * Worker nunca vira o texto do alerta nas abas. 502, 503, 504 e 524 dizem que o servidor demorou; os demais,
  * "Erro <status>". Texto curto sem HTML continua valendo, e a 503 da partida do Worker ("está iniciando", em JSON)
- * mantém a mensagem dela. fetch simulado.
+ * mantém a mensagem dela. Quarta rodada (N3): o 413 do proxy diz que o arquivo passou do tamanho aceito. fetch simulado.
  */
 
 const PAGINA_524 =
@@ -53,6 +53,26 @@ describe('TELAS-6: corpo de erro que não é JSON', () => {
   it('texto curto sem HTML continua como mensagem; texto longo, não', async () => {
     expect(errorMessage(await erroDe(() => new Response('Arquivo inválido', { status: 400, headers: { 'content-type': 'text/plain' } })))).toBe('Arquivo inválido');
     expect(errorMessage(await erroDe(() => new Response('x'.repeat(301), { status: 400, headers: { 'content-type': 'text/plain' } })))).toBe('Erro 400');
+  });
+
+  it('N3: o 413 do proxy (página do nginx, sem JSON) diz que o arquivo passou do tamanho aceito; o 413 da API, em JSON, mantém a mensagem dela', async () => {
+    const PAGINA_413 = '<html>\r\n<head><title>413 Request Entity Too Large</title></head>\r\n<body>\r\n<center><h1>413 Request Entity Too Large</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n';
+    vi.stubGlobal('fetch', async () => new Response(PAGINA_413, { status: 413, headers: { 'content-type': 'text/html' } }));
+    let envio: ApiError | null = null;
+    try {
+      await api.post('/vigilancia/importacoes?nome=x.zip', new Blob([new Uint8Array(10)]), { raw: true, token: null, headers: { 'Content-Type': 'application/zip' } });
+    } catch (e) {
+      envio = e as ApiError;
+    }
+    expect(envio).toMatchObject({ status: 413 });
+    expect(errorMessage(envio)).toBe('O arquivo passa do tamanho aceito pelo servidor. Exporte um período menor ou separe o arquivo.');
+    expect(MENSAGEM_ARQUIVO_GRANDE).toBe('O arquivo passa do tamanho aceito pelo servidor. Exporte um período menor ou separe o arquivo.');
+    // Sem corpo, ou com texto curto, também (o proxy é que cortou).
+    expect(errorMessage(await erroDe(() => new Response('', { status: 413 })))).toBe(MENSAGEM_ARQUIVO_GRANDE);
+    expect(errorMessage(await erroDe(() => new Response('Request Entity Too Large', { status: 413, headers: { 'content-type': 'text/plain' } })))).toBe(MENSAGEM_ARQUIVO_GRANDE);
+    const daApi = await erroDe(() => Response.json({ statusCode: 413, code: 'ARQUIVO_GRANDE', message: 'Arquivo maior que o permitido' }, { status: 413 }));
+    expect(daApi).toMatchObject({ status: 413, code: 'ARQUIVO_GRANDE' });
+    expect(errorMessage(daApi)).toBe('Arquivo maior que o permitido');
   });
 
   it('JSON continua igual: a 503 da partida do Worker ("está iniciando") e o erro da API com código', async () => {

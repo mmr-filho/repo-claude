@@ -3634,7 +3634,8 @@ model OfficialRecord {
   lastSeenAt       DateTime           @map("last_seen_at")
   /// O registro não veio na última exportação do mesmo sistema, tipo, agravos e período.
   absentSince      DateTime?          @map("absent_since")
-  /// A importação que marcou o ausente (junto com absentSince: CHECK official_records_ausencia, só no SQL).
+  /// A importação que marcou o ausente (junto com absentSince: CHECK official_records_ausencia, só no SQL). Índice
+  /// parcial official_records_absent_import_id_idx (só as linhas marcadas), também só no SQL.
   absentImportId   String?            @map("absent_import_id") @db.Uuid
   notificationId   String?            @map("notification_id") @db.Uuid
   matchMethod      RecordMatchMethod? @map("match_method")
@@ -3981,6 +3982,9 @@ model NotifyingUnit {
   createdAt DateTime  @default(now()) @map("created_at")
   endedBy   String?   @map("ended_by") @db.Uuid
   endedAt   DateTime? @map("ended_at")
+  /// Quando a desativação da unidade no cadastro apagou o período planejado que viria depois deste (o último que
+  /// restou): reativada, a unidade fica "sem configuração", com aviso, até a vigilância abrir um período novo.
+  nextRemovedAt DateTime? @map("next_removed_at")
 
   unit Unit @relation(fields: [unitId], references: [id])
 
@@ -4026,6 +4030,8 @@ model NegativeReport {
   onBehalfReason      String?              @map("on_behalf_reason")
   declaration         String
   late                Boolean              @default(false)
+  /// O prazo usado no atesto (o de `late`), com a configuração lida no banco mestre na hora; o espelho imprime este.
+  deadlineAt          DateTime             @map("deadline_at")
   cancelledAt         DateTime?            @map("cancelled_at")
   cancelledBy         String?              @map("cancelled_by") @db.Uuid
   cancelReason        String?              @map("cancel_reason")

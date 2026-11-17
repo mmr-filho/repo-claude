@@ -51,7 +51,17 @@ describe.runIf(enabled)('Vigilância: conciliação, quarta rodada (cobertura, c
 
   const paciente = async (nome: string, nasc: string, sex: 'M' | 'F' = 'M', cns?: string) => {
     seq++;
-    const body = { name: nome, birthDate: nasc, sex, confirmNotDuplicate: true, cpf: completeCpf(String(291000100 + seq)), cns: cns ?? cnsFromBase(String(29100000100 + seq)), motherName: `Mae de ${nome}`, phone: '(11) 97777-2791', address };
+    const body = {
+      name: nome,
+      birthDate: nasc,
+      sex,
+      confirmNotDuplicate: true,
+      cpf: completeCpf(String(291000100 + seq)),
+      cns: cns ?? cnsFromBase(String(29100000100 + seq)),
+      motherName: `Mae de ${nome}`,
+      phone: '(11) 97777-2791',
+      address,
+    };
     return (await t.http().post('/api/patients').set(auth('recepcao')).send(body).expect(201)).body.id as string;
   };
   /** Notificação confirmada pelo atendimento (CID no SOAP assinado), como a unidade faz. */
@@ -138,7 +148,22 @@ describe.runIf(enabled)('Vigilância: conciliação, quarta rodada (cobertura, c
           fileName: o.nome,
           sha256: o.sha ?? String(++seq).padStart(64, 'f'),
           sizeBytes: 1,
-          files: [{ nome: o.nome, sistema: o.sistema, tipoRegistro: 'INDIVIDUAL', tamanhoBytes: 1, registros: 1, codificacao: null, origemCodificacao: null, agravos: [], identificado: true, ignorado: false, avisos: [], ...o.arquivo }],
+          files: [
+            {
+              nome: o.nome,
+              sistema: o.sistema,
+              tipoRegistro: 'INDIVIDUAL',
+              tamanhoBytes: 1,
+              registros: 1,
+              codificacao: null,
+              origemCodificacao: null,
+              agravos: [],
+              identificado: true,
+              ignorado: false,
+              avisos: [],
+              ...o.arquivo,
+            },
+          ],
           createdBy: autor,
           createdAt: o.enviadaEm ?? new Date(),
           appliedBy: autor,
@@ -171,7 +196,13 @@ describe.runIf(enabled)('Vigilância: conciliação, quarta rodada (cobertura, c
     ...v,
   });
   const enviar = (bytes: Uint8Array, nome: string, q: Record<string, string> = {}, tipo = 'application/octet-stream') =>
-    t.http().post('/api/vigilancia/importacoes').query({ nome, ...q }).set(auth('vig')).set('Content-Type', tipo).send(Buffer.from(bytes));
+    t
+      .http()
+      .post('/api/vigilancia/importacoes')
+      .query({ nome, ...q })
+      .set(auth('vig'))
+      .set('Content-Type', tipo)
+      .send(Buffer.from(bytes));
   const enviarEAplicar = async (bytes: Uint8Array, nome: string, q: Record<string, string> = {}, tipo?: string) => {
     const envio = (await enviar(bytes, nome, q, tipo).expect(201)).body as { id: string };
     const ap = (await t.http().post(`/api/vigilancia/importacoes/${envio.id}/aplicar`).set(auth('vig')).expect(200)).body as { vinculadosAutomaticamente: number };
@@ -234,9 +265,27 @@ describe.runIf(enabled)('Vigilância: conciliação, quarta rodada (cobertura, c
     const naUpa = await notificarPorCid(await paciente('Beltrana Verificacao Upa', '1976-06-06', 'F'), 'U07.1');
     await db.notification.update({ where: { id: naUpa }, data: { unitId: (await db.unit.findUniqueOrThrow({ where: { cnes: UPA } })).id } });
     const d = hoje();
-    const cab = ['Número da Notificação', 'Data da Notificação', 'Data do início dos sintomas', 'Estado de Residência', 'Município de Residência', 'Estado da Notificação', 'Município da Notificação', 'CNES Notificação', 'Nome Completo', 'Data de Nascimento', 'Sexo', 'Sintoma- Febre', 'Evolução Caso', 'Classificação Final'];
-    const linha = (numero: string, nome: string, nasc: string, sexo: string) => [numero, br(d), br(d), 'São Paulo', '3550308', 'São Paulo', '3550308', UPA, nome, br(nasc), sexo, 'Sim', '', 'Confirmado Laboratorial'].join(';');
-    const csv = new TextEncoder().encode(`${[cab.join(';'), linha('352611110001', 'Fulana Cnes Souza', '1975-05-05', 'Feminino'), linha('352611110002', 'Outra Pessoa Da Upa', '1990-01-01', 'Masculino')].join('\r\n')}\r\n`);
+    const cab = [
+      'Número da Notificação',
+      'Data da Notificação',
+      'Data do início dos sintomas',
+      'Estado de Residência',
+      'Município de Residência',
+      'Estado da Notificação',
+      'Município da Notificação',
+      'CNES Notificação',
+      'Nome Completo',
+      'Data de Nascimento',
+      'Sexo',
+      'Sintoma- Febre',
+      'Evolução Caso',
+      'Classificação Final',
+    ];
+    const linha = (numero: string, nome: string, nasc: string, sexo: string) =>
+      [numero, br(d), br(d), 'São Paulo', '3550308', 'São Paulo', '3550308', UPA, nome, br(nasc), sexo, 'Sim', '', 'Confirmado Laboratorial'].join(';');
+    const csv = new TextEncoder().encode(
+      `${[cab.join(';'), linha('352611110001', 'Fulana Cnes Souza', '1975-05-05', 'Feminino'), linha('352611110002', 'Outra Pessoa Da Upa', '1990-01-01', 'Masculino')].join('\r\n')}\r\n`,
+    );
     const imp = await enviarEAplicar(csv, 'esus-notifica-upa.csv', {}, 'text/csv');
     expect(((await db.officialImport.findUniqueOrThrow({ where: { id: imp.id }, select: { files: true } })).files as { cnes?: string }[]).map((f) => f.cnes)).toEqual([UPA]);
     // O "só no OmniSaúde" continua só com a UPA (o arquivo de um CNES só cobre só ela).
@@ -276,7 +325,13 @@ describe.runIf(enabled)('Vigilância: conciliação, quarta rodada (cobertura, c
     const usuario = await db.user.findUniqueOrThrow({ where: { cpf: gestora.cpf }, select: { id: true } });
     expect(roleHasPermission('GESTOR', 'notificacao.sensivel')).toBe(false);
     const sys = await sistema();
-    const ctx = { session: { tenantId: sys.tenant.id, tenantSlug: t.slug, userId: usuario.id, unitId: ubsId, role: 'GESTOR', mfa: false }, tenant: sys.tenant, db: sys.db, ip: '127.0.0.1', cbo: '' } as unknown as RequestContext;
+    const ctx = {
+      session: { tenantId: sys.tenant.id, tenantSlug: t.slug, userId: usuario.id, unitId: ubsId, role: 'GESTOR', mfa: false },
+      tenant: sys.tenant,
+      db: sys.db,
+      ip: '127.0.0.1',
+      cbo: '',
+    } as unknown as RequestContext;
     const conciliacao = t.app.get(ConciliacaoService);
     expect((await conciliacao.candidatas(ctx, { busca: 'Saulo' })).total).toBe(0);
     const porNumero = await conciliacao.candidatas(ctx, { busca: s.number });
@@ -291,7 +346,17 @@ describe.runIf(enabled)('Vigilância: conciliação, quarta rodada (cobertura, c
         .http()
         .post('/api/vigilancia/surtos')
         .set(auth('vig'))
-        .send({ casosIndicados: [{ notificationId: n1 }], categoria: 'DA_LISTA', grupo: 'coqueluche', notificadoEm: hoje(), conhecidoEm: new Date(Date.now() - 3_600_000).toISOString(), unitId: ubsId, primeirosSintomasEm: hoje(), casos: 1, localInicial: '8' })
+        .send({
+          casosIndicados: [{ notificationId: n1 }],
+          categoria: 'DA_LISTA',
+          grupo: 'coqueluche',
+          notificadoEm: hoje(),
+          conhecidoEm: new Date(Date.now() - 3_600_000).toISOString(),
+          unitId: ubsId,
+          primeirosSintomasEm: hoje(),
+          casos: 1,
+          localInicial: '8',
+        })
         .expect(201)
     ).body as { id: string; numero: string };
     await t.http().post(`/api/vigilancia/surtos/${s.id}/casos`).set(auth('vig')).send({ officialRecordId: r1 }).expect(201);
@@ -321,7 +386,17 @@ describe.runIf(enabled)('Vigilância: conciliação, quarta rodada (cobertura, c
         .http()
         .post('/api/vigilancia/surtos')
         .set(auth('vig'))
-        .send({ casosIndicados: [{ notificationId: n2 }], categoria: 'DA_LISTA', grupo: 'coqueluche', notificadoEm: hoje(), conhecidoEm: new Date(Date.now() - 3_600_000).toISOString(), unitId: ubsId, primeirosSintomasEm: hoje(), casos: 1, localInicial: '8' })
+        .send({
+          casosIndicados: [{ notificationId: n2 }],
+          categoria: 'DA_LISTA',
+          grupo: 'coqueluche',
+          notificadoEm: hoje(),
+          conhecidoEm: new Date(Date.now() - 3_600_000).toISOString(),
+          unitId: ubsId,
+          primeirosSintomasEm: hoje(),
+          casos: 1,
+          localInicial: '8',
+        })
         .expect(201)
     ).body as { id: string; numero: string };
     await t.http().post(`/api/vigilancia/surtos/${s.id}/casos`).set(auth('vig')).send({ officialRecordId: r2 }).expect(201);
@@ -330,7 +405,9 @@ describe.runIf(enabled)('Vigilância: conciliação, quarta rodada (cobertura, c
     expect((await tarefa()).vinculadosAutomaticamente).toBe(0);
     expect(await vinculo(r2)).toBeNull();
     const sug = await lista<{ registro: { id: string }; notificacao: { id: string }; degrau: number; motivo: string }>('sugestoes', { busca: '7701002' });
-    expect(sug.itens.map((i) => ({ r: i.registro.id, n: i.notificacao.id, degrau: i.degrau, motivo: i.motivo }))).toEqual([{ r: r2, n: n2, degrau: 1, motivo: `mesmo número oficial; as duas linhas estão no surto ${s.numero}` }]);
+    expect(sug.itens.map((i) => ({ r: i.registro.id, n: i.notificacao.id, degrau: i.degrau, motivo: i.motivo }))).toEqual([
+      { r: r2, n: n2, degrau: 1, motivo: `mesmo número oficial; as duas linhas estão no surto ${s.numero}` },
+    ]);
     // O surto descartado não segura mais o par: a tarefa liga.
     await t.http().post(`/api/vigilancia/surtos/${s.id}/descartar`).set(auth('vig')).send({ motivo: 'Não era surto: casos isolados.' }).expect(200);
     expect((await tarefa()).vinculadosAutomaticamente).toBe(1);

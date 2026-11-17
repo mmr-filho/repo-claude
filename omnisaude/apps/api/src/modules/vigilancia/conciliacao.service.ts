@@ -538,7 +538,18 @@ export class ConciliacaoService {
     for (let i = 0; i < recordIds.length; i += LOTE_GRAVACAO) {
       const lote = recordIds.slice(i, i + LOTE_GRAVACAO);
       const pares = await db.$queryRaw<
-        { id: string; system: string; agravo: string | null; situation: string; evolution: string | null; closedOn: string | null; status: string; finalClass: string | null; nEvolution: string | null; closedAt: string | null }[]
+        {
+          id: string;
+          system: string;
+          agravo: string | null;
+          situation: string;
+          evolution: string | null;
+          closedOn: string | null;
+          status: string;
+          finalClass: string | null;
+          nEvolution: string | null;
+          closedAt: string | null;
+        }[]
       >`
         SELECT r.id::text AS id, r.system::text AS system, r.agravo, r.situation, r.evolution, r.closed_on::text AS "closedOn",
                n.status::text AS status, n.final_class AS "finalClass", n.evolution AS "nEvolution", n.closed_at::date::text AS "closedAt"
@@ -1173,7 +1184,7 @@ export class ConciliacaoService {
    */
   private async conferirSurtos(tx: Db, r: { id: string; number: string }, n: { id: string }): Promise<void> {
     const surtos = await tx.$queryRaw<{ id: string }[]>`
-      SELECT DISTINCT outbreak_id::text AS id FROM outbreak_cases WHERE notification_id = ${n.id}::uuid OR official_record_id = ${r.id}::uuid ORDER BY 1`;
+      SELECT s.id::text AS id FROM (SELECT DISTINCT outbreak_id AS id FROM outbreak_cases WHERE notification_id = ${n.id}::uuid OR official_record_id = ${r.id}::uuid) s ORDER BY s.id`;
     for (const s of surtos) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`surto-caso:${s.id}`}))`;
     const [dupla] = await tx.$queryRaw<{ surto: string; a: number; b: number }[]>`
       SELECT o.number AS surto, a.case_number AS a, b.case_number AS b
@@ -1382,9 +1393,11 @@ export function bairrosParecidos(norm: string, bairros: readonly BairroComparave
 /**
  * Semelhança entre dois nomes normalizados (0 a 1): 1 se iguais; 0,8 se um contém o outro; senão, a maior entre a das
  * palavras em comum (Jaccard) e a da distância de edição (1 - distância / maior comprimento). Exata sempre que chega a
- * 0,5; abaixo disso pode sair menor (o bairro fica fora do mesmo jeito). Pré-filtro barato: a distância de edição é
- * pelo menos a diferença de comprimento; se nem com ela a nota da distância alcança o limiar (0,5, ou a das palavras,
- * quando é maior), a conta da distância não muda o resultado e fica de fora.
+ * 0,5; abaixo disso pode sair menor (o bairro fica fora do mesmo jeito). A distância só conta quando leva a nota acima
+ * do limiar (0,5, ou a das palavras, quando é maior): o teto é a maior distância que ainda faz isso. Pré-filtro barato:
+ * a distância é pelo menos a diferença de comprimento, e acima do teto a conta fica de fora; dentro, a distância de
+ * edição para assim que passa do teto (`distanciaDeEdicao`). As palavras em comum não servem de filtro: "CENTRO" e
+ * "CENTRU" não têm nenhuma e são parecidos pela distância.
  */
 function semelhancaAcimaDoLimiar(a: NomeComparavel, b: NomeComparavel): number {
   const x = a.texto;
@@ -1396,20 +1409,25 @@ function semelhancaAcimaDoLimiar(a: NomeComparavel, b: NomeComparavel): number {
   for (const p of a.palavras) if (b.palavras.has(p)) comuns++;
   const jaccard = comuns / (a.palavras.size + b.palavras.size - comuns);
   const maior = Math.max(x.length, y.length);
-  if (1 - Math.abs(x.length - y.length) / maior < Math.max(jaccard, NOTA_PARECIDO)) return jaccard;
-  return Math.max(jaccard, 1 - distanciaDeEdicao(x, y) / maior);
+  // 1 - d / maior >= limiar  <=>  d <= (1 - limiar) * maior (com folga para o arredondamento: o teto nunca fica abaixo
+  // da distância que alcança o limiar; acima do teto, a nota da distância fica abaixo dele e não muda o resultado).
+  const teto = Math.floor((1 - Math.max(jaccard, NOTA_PARECIDO)) * maior + 1e-9);
+  if (Math.abs(x.length - y.length) > teto) return jaccard;
+  const d = distanciaDeEdicao(x, y, teto);
+  return d > teto ? jaccard : Math.max(jaccard, 1 - d / maior);
 }
 
 /** Máscaras de bits do padrão no algoritmo de Myers, por código de caractere (abaixo de 128), zeradas depois de cada conta. */
 const MASCARAS = new Int32Array(128);
 
 /**
- * Distância de edição (Levenshtein: inserção, remoção e troca custam 1), a mesma da conta por programação dinâmica.
- * Com o menor dos dois de até 32 caracteres (abaixo do código 128), pelo algoritmo de vetores de bits de Myers (1999),
- * na formulação de Hyyrö: uma passada pelo maior, com operações de 32 bits, em vez da tabela inteira; senão, a conta
- * linha a linha.
+ * Distância de edição (Levenshtein: inserção, remoção e troca custam 1), a mesma da conta por programação dinâmica,
+ * com teto: a conta para assim que a distância com certeza passa do teto e devolve teto + 1 (sem teto, sempre a
+ * exata). Com o menor dos dois de até 32 caracteres (abaixo do código 128), pelo algoritmo de vetores de bits de Myers
+ * (1999), na formulação de Hyyrö: uma passada pelo maior, com operações de 32 bits, em vez da tabela inteira; senão, a
+ * tabela linha a linha só na faixa do teto em volta da diagonal.
  */
-export function distanciaDeEdicao(a: string, b: string): number {
+export function distanciaDeEdicao(a: string, b: string, teto = Number.POSITIVE_INFINITY): number {
   let p = a;
   let t = b;
   if (b.length < a.length) {
@@ -1417,13 +1435,15 @@ export function distanciaDeEdicao(a: string, b: string): number {
     t = a;
   }
   const m = p.length;
-  if (!m) return t.length;
-  if (m > 32) return levenshtein(a, b);
+  const n = t.length;
+  if (n - m > teto) return teto + 1;
+  if (!m) return n;
+  if (m > 32) return levenshteinComTeto(p, t, teto);
   for (let i = 0; i < m; i++) {
     const c = p.charCodeAt(i);
     if (c >= 128) {
       for (let k = 0; k < i; k++) MASCARAS[p.charCodeAt(k)] = 0;
-      return levenshtein(a, b);
+      return levenshteinComTeto(p, t, teto);
     }
     MASCARAS[c] = MASCARAS[c]! | (1 << i);
   }
@@ -1431,7 +1451,7 @@ export function distanciaDeEdicao(a: string, b: string): number {
   let pv = -1;
   let mv = 0;
   let d = m;
-  for (let j = 0; j < t.length; j++) {
+  for (let j = 0; j < n; j++) {
     const c = t.charCodeAt(j);
     const eq = c < 128 ? MASCARAS[c]! : 0;
     const xv = eq | mv;
@@ -1440,6 +1460,11 @@ export function distanciaDeEdicao(a: string, b: string): number {
     let mh = pv & xh;
     if (ph & ultimo) d++;
     else if (mh & ultimo) d--;
+    // A última linha muda no máximo 1 por coluna: com o que falta do maior, a distância não desce abaixo disto.
+    if (d - (n - 1 - j) > teto) {
+      d = teto + 1;
+      break;
+    }
     ph = (ph << 1) | 1;
     mh <<= 1;
     pv = mh | ~(xv | ph);
@@ -1449,17 +1474,28 @@ export function distanciaDeEdicao(a: string, b: string): number {
   return d;
 }
 
-/** Distância de edição pela tabela de programação dinâmica, linha a linha (para o nome de mais de 32 caracteres). */
-function levenshtein(a: string, b: string): number {
-  const linha = Array.from({ length: b.length + 1 }, (_, j) => j);
+/**
+ * Distância de edição pela tabela de programação dinâmica, linha a linha, só na faixa |i - j| <= teto (fora dela a
+ * distância passa do teto), parando quando a linha inteira passa do teto (para o nome de mais de 32 caracteres ou fora
+ * do ASCII). `a` é o menor.
+ */
+function levenshteinComTeto(a: string, b: string, teto: number): number {
+  const fora = Number.isFinite(teto) ? teto + 1 : Number.POSITIVE_INFINITY;
+  const linha = Array.from({ length: b.length + 1 }, (_, j) => (j > teto ? fora : j));
   for (let i = 1; i <= a.length; i++) {
-    let anterior = linha[0]!;
-    linha[0] = i;
-    for (let j = 1; j <= b.length; j++) {
+    const de = Math.max(1, i - teto);
+    const ate = Math.min(b.length, i + teto);
+    let anterior = linha[de - 1]!;
+    linha[de - 1] = de - 1 === 0 ? (i > teto ? fora : i) : fora;
+    let menor = linha[de - 1]!;
+    for (let j = de; j <= ate; j++) {
       const atual = linha[j]!;
-      linha[j] = Math.min(linha[j]! + 1, linha[j - 1]! + 1, anterior + (a[i - 1] === b[j - 1] ? 0 : 1));
+      linha[j] = Math.min(linha[j]! + 1, linha[j - 1]! + 1, anterior + (a[i - 1] === b[j - 1] ? 0 : 1), fora);
       anterior = atual;
+      if (linha[j]! < menor) menor = linha[j]!;
     }
+    if (ate < b.length) linha[ate + 1] = fora;
+    if (menor > teto) return fora;
   }
   return linha[b.length]!;
 }

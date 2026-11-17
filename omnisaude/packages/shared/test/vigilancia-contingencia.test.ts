@@ -351,13 +351,14 @@ describe('contingência: motor do estágio', () => {
     // Já a chikungunya que teve canal e ficou sem ele nas últimas SE trava: ela pode estar acima do LS.
     const semCanalAgora = ind('chikungunya', [C, C, C, C, S, S, S, S]);
     expect(avalia([ind('dengue', [A, A, A, A, C, C, C, C]), semCanalAgora], [], 'ALERTA').sugerido).toBe('ALERTA');
-    // O critério de canal de estágio abaixo do em vigor sem canal não trava (a mobilização não segura o alerta).
+    // A SE sem canal de um agravo com canal também trava quando o critério de canal dele é de estágio abaixo do em vigor
+    // (4ª rodada: a SE sem canal nunca conta como abaixo; antes, a mobilização sem canal não segurava o alerta).
     const plano: PlanoContingencia = { ...PLANO_MODELO_MS_2025, criterios: PLANO_MODELO_MS_2025.criterios.map((c) => (c.id === 'mob-canal' ? { ...c, agravos: ['zika'] } : c)) };
     const zika = ind('zika', [C, C, C, C, S, S, S, S]);
-    expect(avalia([ind('dengue', [A, A, A, A, C, C, C, C]), zika], [], 'ALERTA', plano)).toMatchObject({ sugerido: 'NORMALIDADE', desmobilizacao: { sugerida: true } });
+    expect(avalia([ind('dengue', [A, A, A, A, C, C, C, C]), zika], [], 'ALERTA', plano)).toMatchObject({ sugerido: 'ALERTA', desmobilizacao: { sugerida: false } });
   });
 
-  it('o retrato do acionamento só segura o acumulado sem óbito ou caso novo e com a curva de volta ao canal (DIAGRAMA-2)', () => {
+  it('o retrato do acionamento segura o acumulado enquanto o que chegou desde ele não passa do limiar (DIAGRAMA-2)', () => {
     // Mobilização acionada na SE 5 com 20 prováveis, 1 grave e 1 óbito (5% e 5%: o retrato já passa dos limiares).
     const retratoSE5 = ind('dengue', Array<StatusSemana>(5).fill(E), { provaveis: 20, graves: 1, obitosAgravo: 1 });
     // Na SE 30: 5.000 prováveis, 150 graves (3%) e 25 óbitos (0,5%; 16,7% entre os graves), curva entre o centro e o LS.
@@ -382,9 +383,10 @@ describe('contingência: motor do estágio', () => {
     const maisUm = avaliarPlano(PLANO_MODELO_MS_2025, [ind('dengue', curva, { provaveis: 2000, obitosAgravo: 4 })], [], 'NORMALIDADE', desceu);
     expect(maisUm.sugerido).toBe('EPIDEMIA');
     expect(item(maisUm, 'epi-letalidade', 'dengue').detalhe).not.toContain('Já atendido');
-    // Os mesmos 3 óbitos, mas a curva saiu do canal na última SE: o retrato não segura.
+    // Os mesmos 3 óbitos e a curva saiu do canal na última SE: o retrato segura (4ª rodada: a saída do canal conta pelos
+    // critérios de canal, que pedem 4 SE, e não reabre o acumulado do ano; antes, uma SE acima do LS levava à epidemia).
     const saiu = [...Array<StatusSemana>(10).fill(A), ...Array<StatusSemana>(19).fill(C), A];
-    expect(avaliarPlano(PLANO_MODELO_MS_2025, [ind('dengue', saiu, { provaveis: 2000, obitosAgravo: 3 })], [], 'NORMALIDADE', desceu).sugerido).toBe('EPIDEMIA');
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [ind('dengue', saiu, { provaveis: 2000, obitosAgravo: 3 })], [], 'NORMALIDADE', desceu).sugerido).toBe('NORMALIDADE');
     // Graves: o numerador é a soma de graves e sinais de alarme; caso provável novo sem grave a mais segura.
     const graves = (g: number, s: number, prov: number) => ind('dengue', curva, { provaveis: prov, graves: g, sinaisAlarme: s });
     const comGraves = { semanaInicio: '202629', indicadores: [ind('dengue', curva.slice(0, 28), { provaveis: 100, graves: 2, sinaisAlarme: 1 })] };
@@ -398,6 +400,104 @@ describe('contingência: motor do estágio', () => {
     expect(d.desmobilizacao.sugerida).toBe(true);
     expect(d.desmobilizacao.detalhe).toContain('pode desmobilizar para Mobilização. 4 SE completas seguidas abaixo do estágio em vigor, ou volta da curva ao canal endêmico');
     expect(d.desmobilizacao.detalhe).not.toContain('por mais de 4');
+  });
+
+  it('uma SE de queda no meio da alta não vale 4 SE abaixo: a curva da própria SE tem de sair do nível do critério de canal (N8)', () => {
+    // Alerta em vigor; a SE 7 cai até o centro (feriado com subnotificação) e as SE 8 a 10 voltam acima do LS. Antes, a
+    // SE de queda quebrava as 4 janelas dos critérios e a tela dizia "pode desmobilizar para Normalidade".
+    const alta = ind('dengue', [A, A, A, A, A, A, C, A, A, A]);
+    const r = avaliarPlano(PLANO_MODELO_MS_2025, [alta], [], 'ALERTA', { semanaInicio: '202601' });
+    expect(item(r, 'ale-canal', 'dengue')).toMatchObject({ atendido: false, valor: 3 });
+    expect(r).toMatchObject({ sugerido: 'ALERTA', desmobilizacao: { sugerida: false } });
+    expect(r.desmobilizacao.detalhe).toBe(
+      'Sugestão abaixo de Alerta há 0 de 4 SE completas seguidas: manter Alerta até completar 4. A SE 10/2026 não conta como abaixo: a curva de dengue está acima do limite superior, no nível do critério de canal de Alerta; descer pede a curva abaixo desse nível em cada SE.',
+    );
+    // Sem a data do acionamento, o mesmo.
+    expect(avalia([alta], [], 'ALERTA')).toMatchObject({ sugerido: 'ALERTA', desmobilizacao: { sugerida: false } });
+    // Mobilização em vigor e a curva entre o centro e o LS de novo depois de uma SE até o centro: mantém.
+    const mob = avaliarPlano(PLANO_MODELO_MS_2025, [ind('dengue', [E, E, E, E, E, E, C, E, E, E])], [], 'MOBILIZACAO', { semanaInicio: '202604' });
+    expect(mob).toMatchObject({ sugerido: 'MOBILIZACAO', desmobilizacao: { sugerida: false } });
+    expect(mob.desmobilizacao.detalhe).toContain('a curva de dengue está entre o centro e o limite superior, no nível do critério de canal de Mobilização');
+    // Na mobilização, a SE acima do LS também segura (o critério dela aceita as SE acima do LS).
+    expect(avalia([ind('dengue', [E, E, E, E, E, E, C, C, C, A])], [], 'MOBILIZACAO').desmobilizacao.sugerida).toBe(false);
+    // A queda sustentada (4 SE até o centro) desce, como antes.
+    expect(avalia([ind('dengue', [A, A, A, A, A, A, C, C, C, C])], [], 'ALERTA')).toMatchObject({ sugerido: 'NORMALIDADE', desmobilizacao: { sugerida: true } });
+    expect(avalia([ind('dengue', [E, E, E, E, E, E, C, C, C, C])], [], 'MOBILIZACAO')).toMatchObject({ sugerido: 'NORMALIDADE', desmobilizacao: { sugerida: true } });
+    // Do alerta, a curva entre o centro e o LS (abaixo do nível do alerta) desce para a mobilização.
+    expect(avalia([ind('dengue', [A, A, A, A, A, A, E, E, E, E])], [], 'ALERTA')).toMatchObject({ sugerido: 'MOBILIZACAO', desmobilizacao: { sugerida: true } });
+    // O agravo fora dos critérios de canal do alerta (o Zika, no modelo) não segura o alerta pela curva dele.
+    expect(avalia([ind('dengue', [A, A, A, A, A, A, C, C, C, C]), ind('zika', [E, E, E, E, E, E, C, C, C, A])], [], 'ALERTA').desmobilizacao.sugerida).toBe(true);
+  });
+
+  it('SE sem canal de agravo com canal nunca conta como abaixo; o destino não fica abaixo do critério de canal sem avaliação (DIAGRAMA-1)', () => {
+    // Epidemia em vigor (o estágio da epidemia do MS não tem critério de canal); chikungunya até o centro nas SE 1 a 3,
+    // acima do LS da 4 à 29 e sem canal da 30 à 34 (a importação para na 29); sem óbito. Antes: "pode desmobilizar para
+    // Normalidade ... volta da curva ao canal endêmico".
+    const chik = {
+      ...ind('chikungunya', [], { provaveis: 2000 }),
+      semanas: [...Array<StatusSemana>(3).fill(C), ...Array<StatusSemana>(26).fill(A), ...Array<StatusSemana>(5).fill(S)].map((status, i) => ({ semana: deslocarSemana('201601', i), status, completa: true })),
+    };
+    const epi = avaliarPlano(PLANO_MODELO_MS_2025, [chik], [], 'EPIDEMIA', { semanaInicio: '201631' });
+    expect(epi).toMatchObject({ sugerido: 'EPIDEMIA', desmobilizacao: { sugerida: false } });
+    expect(epi.desmobilizacao.detalhe).toContain('A SE sem canal (sem base que cubra a semana, sem população ou com o quartil indefinido) não conta como abaixo');
+    // Alerta em vigor: 6 SE acima do LS, 1 até o centro e 3 sem canal. Antes, as 3 SE sem canal contavam como abaixo
+    // (a janela já tinha a SE até o centro: o critério dava "não atendido", e não "sem avaliação").
+    const ale = avalia([ind('dengue', [A, A, A, A, A, A, C, S, S, S])], [], 'ALERTA');
+    expect(item(ale, 'ale-canal', 'dengue').atendido).toBe(false);
+    expect(ale).toMatchObject({ sugerido: 'ALERTA', desmobilizacao: { sugerida: false } });
+    // O critério de canal da mobilização ficou sem avaliação em 3 das 4 SE (o Zika sem canal na SE 6, dentro das
+    // janelas): a dengue desceu, mas o alerta só desce até a mobilização.
+    const zika = ind('zika', [C, C, C, E, E, S, E, E, E, C]);
+    const desce = avalia([ind('dengue', [A, A, A, A, C, C, C, C, C, C]), zika], [], 'ALERTA');
+    expect(item(desce, 'mob-canal', 'zika').atendido).toBe(false);
+    expect(desce).toMatchObject({ sugerido: 'MOBILIZACAO', desmobilizacao: { sugerida: true } });
+    expect(desce.desmobilizacao.detalhe).toContain('pode desmobilizar para Mobilização');
+    expect(desce.desmobilizacao.detalhe).toContain('O critério de canal de Mobilização ficou sem avaliação numa dessas SE (SE sem canal na janela): a descida para nele.');
+    // Com o Zika no canal em todas as SE, a descida vai à normalidade.
+    expect(avalia([ind('dengue', [A, A, A, A, C, C, C, C, C, C]), ind('zika', Array<StatusSemana>(10).fill(C))], [], 'ALERTA')).toMatchObject({ sugerido: 'NORMALIDADE', desmobilizacao: { sugerida: true } });
+  });
+
+  it('o acumulado já atendido no retrato segue conhecido enquanto o que chegou desde ele, avaliado sozinho, não passa do limiar (DIAGRAMA-2)', () => {
+    // Normalidade acionada na SE 29, depois da descida: 2.000 prováveis, 50 graves e com sinais de alarme (2,5%) e
+    // 3 óbitos (0,15%; 6% entre os graves); a curva de volta ao canal.
+    const curva = [...Array<StatusSemana>(10).fill(A), ...Array<StatusSemana>(20).fill(C)];
+    const desceu = { semanaInicio: '202629', indicadores: [ind('dengue', curva.slice(0, 28), { provaveis: 2000, graves: 10, sinaisAlarme: 40, obitosAgravo: 3 })] };
+    const agora = (o: Partial<IndicadoresAgravo>, semanas = curva) => ind('dengue', semanas, { provaveis: 2000, graves: 10, sinaisAlarme: 40, obitosAgravo: 3, ...o });
+    // 100 casos novos, 1 com sinais de alarme (1% dos novos, abaixo dos 2% da epidemia e sem passar de 1% do alerta).
+    // Antes, o numerador que cresceu reabria o critério e a epidemia voltava.
+    const r = avaliarPlano(PLANO_MODELO_MS_2025, [agora({ provaveis: 2100, sinaisAlarme: 41 })], [], 'NORMALIDADE', desceu);
+    expect(r.sugerido).toBe('NORMALIDADE');
+    for (const id of ['epi-graves', 'ale-graves', 'epi-letalidade', 'epi-letalidade-graves']) {
+      expect(item(r, id, 'dengue').atendido).toBe(true);
+      expect(item(r, id, 'dengue').detalhe).toContain('Já atendido quando o estágio em vigor foi decidido, e o que chegou desde então não passa do limiar: não faz subir');
+    }
+    // Uma SE acima do LS depois da descida não reabre o acumulado: a curva sobe pelos critérios de canal (4 SE).
+    const umaAcima = [...curva.slice(0, 29), A];
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [agora({ provaveis: 2100, sinaisAlarme: 41 }, umaAcima)], [], 'NORMALIDADE', desceu).sugerido).toBe('NORMALIDADE');
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [agora({ provaveis: 2100, sinaisAlarme: 41 }, [...curva.slice(0, 26), A, A, A, A])], [], 'NORMALIDADE', desceu).sugerido).toBe('ALERTA');
+    // Sem caso provável novo, o óbito a mais (de um caso antigo) não reabre: sem denominador novo, segue conhecido.
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [agora({ obitosAgravo: 4 })], [], 'NORMALIDADE', desceu).sugerido).toBe('NORMALIDADE');
+    // O que chegou passa do limiar sozinho: sobe. 1 óbito em 100 casos novos (1%, acima de 0,07%).
+    const obito = avaliarPlano(PLANO_MODELO_MS_2025, [agora({ provaveis: 2100, sinaisAlarme: 41, obitosAgravo: 4 })], [], 'NORMALIDADE', desceu);
+    expect(obito.sugerido).toBe('EPIDEMIA');
+    expect(item(obito, 'epi-letalidade', 'dengue').detalhe).not.toContain('Já atendido');
+    // 5 graves em 100 casos novos (5%, acima de 2%).
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [agora({ provaveis: 2100, graves: 15 })], [], 'NORMALIDADE', desceu).sugerido).toBe('EPIDEMIA');
+
+    // Incidência acumulada (limiar de 300 por 100 mil; população de 100 mil): 5 casos novos são 5 por 100 mil.
+    const plano: PlanoContingencia = {
+      ...PLANO_MODELO_MS_2025,
+      criterios: [...PLANO_MODELO_MS_2025.criterios, { id: 'epi-incidencia', estagio: 'EPIDEMIA', agravos: ['dengue'], tipo: 'INCIDENCIA_ACUMULADA', descricao: 'Mais de 300 por 100 mil', limiar: 300 }],
+    };
+    const comIncidencia = { semanaInicio: '202629', indicadores: [ind('dengue', curva.slice(0, 28), { provaveis: 2000, incidenciaAcumulada: 2000 })] };
+    const inc = (provaveis: number) => avaliarPlano(plano, [ind('dengue', curva, { provaveis, incidenciaAcumulada: provaveis })], [], 'NORMALIDADE', comIncidencia);
+    expect(inc(2005).sugerido).toBe('NORMALIDADE');
+    expect(item(inc(2005), 'epi-incidencia', 'dengue').detalhe).toContain('Já atendido');
+    // 301 casos novos por 100 mil: sobe.
+    expect(inc(2301).sugerido).toBe('EPIDEMIA');
+    // Vira o ano: o acumulado recomeça e o retrato do ano anterior não vale.
+    const doAnoPassado = { semanaInicio: '202550', indicadores: [{ ...desceu.indicadores[0]!, semanas: desceu.indicadores[0]!.semanas.map((s) => ({ ...s, semana: `2025${s.semana.slice(4)}` })) }] };
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [agora({ provaveis: 2100, sinaisAlarme: 41 })], [], 'NORMALIDADE', doAnoPassado).sugerido).toBe('EPIDEMIA');
   });
 
   it('semanas completas: as incompletas contam a semana em curso', () => {

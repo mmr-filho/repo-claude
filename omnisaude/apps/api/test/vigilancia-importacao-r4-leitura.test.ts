@@ -1,5 +1,6 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { Readable } from 'node:stream';
 import { semanaDaData } from '@omnisaude/shared';
 import type { Request } from 'express';
 import { zipSync } from 'fflate';
@@ -42,7 +43,9 @@ const csvSg = (linhas: [string, string | null][]) =>
   );
 /** CSV do e-SUS Notifica de outra ficha (sem as colunas da síndrome gripal): os registros ficam fora da cobertura. */
 const csvOutraFicha = (linhas: [string, string][]) =>
-  enc(`${['Número da Notificação', 'Data da Notificação', 'Município da Notificação', 'CNES Notificação', 'Vacina aplicada'].join(';')}\r\n${linhas.map(([n, cnes]) => [n, '10/06/2024', '3550308', cnes, 'X'].join(';')).join('\r\n')}\r\n`);
+  enc(
+    `${['Número da Notificação', 'Data da Notificação', 'Município da Notificação', 'CNES Notificação', 'Vacina aplicada'].join(';')}\r\n${linhas.map(([n, cnes]) => [n, '10/06/2024', '3550308', cnes, 'X'].join(';')).join('\r\n')}\r\n`,
+  );
 
 describe('N0: o CNES de cada arquivo do e-SUS restringe a cobertura (a união) quando todo arquivo traz um só', () => {
   it('zip com o CSV da unidade X e o da Y: cada arquivo com o seu CNES, a cobertura nos dois e o aviso com a lista', async () => {
@@ -254,6 +257,20 @@ describe('N1: leitura do corpo cru (rawBody)', () => {
     });
     expect(await emPedacos.resposta).toMatchObject({ status: 413, corpo: { code: 'ARQUIVO_GRANDE' } });
     emPedacos.req.destroy();
+  });
+
+  it('mais bytes que o Content-Length, ou o fim antes dele: 400 (o fluxo do pedido simulado, que o parser HTTP do Node não deixa passar)', async () => {
+    /** Pedido simulado: o Content-Length declarado e os bytes entregues de fato. */
+    const simulado = (declarado: number, entregues: number) => {
+      const r = Readable.from([Buffer.alloc(entregues, 0x46)], { objectMode: false }) as Readable & { headers: Record<string, string>; complete: boolean };
+      r.headers = { 'content-length': String(declarado) };
+      r.complete = false;
+      r.on('end', () => (r.complete = true));
+      return r as unknown as Request;
+    };
+    await expect(rawBody(simulado(10, 20), LIMITE)).rejects.toMatchObject({ status: 400, code: 'ENVIO_INVALIDO', message: 'O envio trouxe mais bytes que o tamanho declarado. Envie o arquivo de novo.' });
+    await expect(rawBody(simulado(100, 50), LIMITE)).rejects.toMatchObject({ status: 400, code: 'ENVIO_INCOMPLETO', message: 'O envio chegou incompleto. Envie o arquivo de novo.' });
+    expect((await rawBody(simulado(30, 30), LIMITE)).length).toBe(30);
   });
 
   it('o cliente que cai no meio: o envio termina com erro (corpo incompleto), sem ficar esperando', async () => {

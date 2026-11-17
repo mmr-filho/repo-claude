@@ -93,8 +93,7 @@ export function situacaoImportacao(r: Pick<ResumoImportacao, 'status' | 'expirad
   return r.expirada ? { rotulo: 'Expirada', tom: 'amber' } : { rotulo: 'Descartada', tom: 'slate' };
 }
 
-const periodoBr = (p: ImportacaoDoMesmoArquivo['periodo'], declarado: boolean) =>
-  p ? `período ${dataBr(p.de)} a ${dataBr(p.ate)}, ${declarado ? 'declarado' : 'lido das notificações'}` : 'sem período';
+const periodoBr = (p: ImportacaoDoMesmoArquivo['periodo'], declarado: boolean) => (p ? `período ${dataBr(p.de)} a ${dataBr(p.ate)}, ${declarado ? 'declarado' : 'lido das notificações'}` : 'sem período');
 
 /**
  * Detalhe da SUBSTITUIDA: por qual aplicação do mesmo arquivo foi substituída, com a data. `dataHora` formata o instante

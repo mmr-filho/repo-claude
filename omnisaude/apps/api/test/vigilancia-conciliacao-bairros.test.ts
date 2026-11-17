@@ -67,7 +67,37 @@ function sorteador(semente: number) {
   return { proximo, inteiro, um };
 }
 
-const PALAVRAS = ['JARDIM', 'JD', 'VILA', 'VL', 'PARQUE', 'PQ', 'CONJUNTO', 'RESIDENCIAL', 'RES', 'SAO', 'SANTA', 'NOVA', 'BELA', 'VISTA', 'ALTO', 'DO', 'DA', 'DOS', 'CENTRO', 'BOM', 'JESUS', 'AMERICA', 'ESPERANCA', 'PRIMAVERA', 'II', 'III', '1', '2', '10'];
+const PALAVRAS = [
+  'JARDIM',
+  'JD',
+  'VILA',
+  'VL',
+  'PARQUE',
+  'PQ',
+  'CONJUNTO',
+  'RESIDENCIAL',
+  'RES',
+  'SAO',
+  'SANTA',
+  'NOVA',
+  'BELA',
+  'VISTA',
+  'ALTO',
+  'DO',
+  'DA',
+  'DOS',
+  'CENTRO',
+  'BOM',
+  'JESUS',
+  'AMERICA',
+  'ESPERANCA',
+  'PRIMAVERA',
+  'II',
+  'III',
+  '1',
+  '2',
+  '10',
+];
 const LETRAS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 
 /** Nome de bairro sorteado (já normalizado: maiúsculas, dígitos e um espaço entre as palavras). */
@@ -108,7 +138,12 @@ function nomesDaPagina(r: ReturnType<typeof sorteador>, bairros: Bairro[], quant
     const b = r.um(bairros);
     const x = r.proximo();
     if (x < 0.45) return variacao(r, r.um(b.nomes));
-    if (x < 0.55) return r.um(b.nomes).split(' ').slice(0, 1 + r.inteiro(2)).join(' ');
+    if (x < 0.55)
+      return r
+        .um(b.nomes)
+        .split(' ')
+        .slice(0, 1 + r.inteiro(2))
+        .join(' ');
     if (x < 0.65) return `${r.um(b.nomes)} ${nomeSorteado(r, 4)}`;
     if (x < 0.75) return normalizarNome(`${r.um(b.nomes)} ${nomeSorteado(r, 6)} ${nomeSorteado(r, 6)}`);
     if (x < 0.85) return nomeSorteado(r, 6);
@@ -126,7 +161,11 @@ describe('Vigilância: bairros parecidos da conciliação (quarta rodada, concil
       const tam = () => (r.proximo() < 0.15 ? 28 + r.inteiro(12) : r.inteiro(14));
       const a = Array.from({ length: tam() }, () => (r.proximo() < 0.97 ? r.um(alfabeto.slice(0, 5)) : r.um(alfabeto))).join('');
       const b = r.proximo() < 0.3 ? a : Array.from({ length: tam() }, () => r.um(alfabeto.slice(0, 5))).join('');
-      expect(distanciaDeEdicao(a, b), `${JSON.stringify(a)} x ${JSON.stringify(b)}`).toBe(levenshteinAntigo(a, b));
+      const exata = levenshteinAntigo(a, b);
+      expect(distanciaDeEdicao(a, b), `${JSON.stringify(a)} x ${JSON.stringify(b)}`).toBe(exata);
+      // Com teto: a exata até o teto; acima dele, teto + 1 (a conta para quando passa).
+      const teto = r.inteiro(Math.max(a.length, b.length) + 2);
+      expect(distanciaDeEdicao(a, b, teto), `${JSON.stringify(a)} x ${JSON.stringify(b)} (teto ${teto})`).toBe(exata <= teto ? exata : teto + 1);
       comparados++;
     }
     // As bordas: vazio, 32 e 33 letras, um só caractere.
@@ -185,8 +224,8 @@ describe('Vigilância: bairros parecidos da conciliação (quarta rodada, concil
     expect(novos).toEqual(antigos);
 
     // A página pelo serviço (a leitura do banco simulada), medindo o maior atraso do laço de eventos.
-    const servico = Object.create(ConciliacaoService.prototype) as ConciliacaoService & { nomesSemCorrespondencia: () => Promise<unknown> };
-    servico.nomesSemCorrespondencia = async () => ({ nomes, bairros });
+    const servico = Object.create(ConciliacaoService.prototype) as ConciliacaoService;
+    (servico as unknown as { nomesSemCorrespondencia: () => Promise<unknown> }).nomesSemCorrespondencia = async () => ({ nomes, bairros });
     let maior = 0;
     let ultimo = performance.now();
     const relogio = setInterval(() => {
@@ -196,13 +235,19 @@ describe('Vigilância: bairros parecidos da conciliação (quarta rodada, concil
     }, 5);
     const t2 = performance.now();
     let lista: Awaited<ReturnType<ConciliacaoService['bairros']>>;
+    let tempoServico = 0;
     try {
       lista = await servico.bairros({} as RequestContext, { pagina: 1 });
+      tempoServico = performance.now() - t2;
+      // Uma volta a mais do laço antes de parar o relógio: o atraso do último trecho (ou da página inteira, se ela não
+      // cedeu o laço nenhuma vez) entra na conta.
+      await new Promise((r) => setTimeout(r, 20));
     } finally {
       clearInterval(relogio);
     }
-    const tempoServico = performance.now() - t2;
-    console.log(`conciliacao-1: página de 50 com 3.000 bairros × 4 nomes: conta antiga ${tempoAntigo.toFixed(0)} ms; nova ${tempoNovo.toFixed(0)} ms; serviço ${tempoServico.toFixed(0)} ms, laço parado no máximo ${maior.toFixed(0)} ms`);
+    console.log(
+      `conciliacao-1: página de 50 com 3.000 bairros × 4 nomes: conta antiga ${tempoAntigo.toFixed(0)} ms; nova ${tempoNovo.toFixed(0)} ms; serviço ${tempoServico.toFixed(0)} ms, laço parado no máximo ${maior.toFixed(0)} ms`,
+    );
     expect(lista.total).toBe(200);
     expect(lista.itens.map((i) => i.nome)).toEqual(pagina);
     expect(lista.itens.map((i) => i.candidatos.map((c) => c.neighborhoodId))).toEqual(antigos);

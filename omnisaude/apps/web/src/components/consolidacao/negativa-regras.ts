@@ -231,6 +231,24 @@ export const semResponsavel = (u: UnidadeNotificante) => !!periodoAberto(u) && !
 export const titularQueNaoVale = (u: Pick<UnidadeNotificante, 'responsaveis'>): ResponsavelNegativa | null => responsaveisAtivos(u).find((r) => r.tipo === 'TITULAR' && !designacaoValida(r)) ?? null;
 /** Nome acessível do botão "Revogar" de cada responsável (o leitor de tela diz de quem é a designação). */
 export const rotuloRevogar = (r: Pick<ResponsavelNegativa, 'nome'>) => `Revogar a designação de ${r.nome}`;
+/** Nomes acessíveis dos botões que se repetem em cada linha das unidades notificantes (dizem de qual unidade são). */
+export const rotuloDesignar = (u: Pick<UnidadeNotificante, 'unidade'>) => `Designar responsável da ${u.unidade.nome}`;
+export const rotuloEncerrarPeriodo = (u: Pick<UnidadeNotificante, 'unidade'>) => `Encerrar o período da ${u.unidade.nome}`;
+export const rotuloTornarNotificante = (u: Pick<UnidadeNotificante, 'unidade'>) => `Tornar ${u.unidade.nome} notificante`;
+/** Nomes acessíveis dos botões da tela do responsável, um por semana ou por atesto (dizem de qual SE são). */
+export const rotuloAtestar = (semana: string) => `Atestar a SE ${rotuloSemana(semana)}`;
+/** No histórico, que junta as unidades, o nome leva também a unidade. */
+export const rotuloEspelhoPdf = (semana: string, unidade?: string) => `Espelho em PDF da SE ${rotuloSemana(semana)}${unidade ? `, ${unidade}` : ''}`;
+
+/**
+ * O período que o encerramento alcança: o aberto; na unidade inativa, também o que ainda termina depois de hoje (dado
+ * anterior; a API encurta o fim para a data informada, até hoje). O mais recente, como na API.
+ */
+export function periodoParaEncerrar(u: Pick<UnidadeNotificante, 'ativa' | 'periodos'>, hoje: string): PeriodoNotificante | null {
+  const aberto = periodoAberto(u);
+  if (aberto || u.ativa) return aberto;
+  return [...u.periodos].filter((p) => p.ate !== null && p.ate > hoje).sort((a, b) => b.desde.localeCompare(a.desde))[0] ?? null;
+}
 
 /** Situação da unidade na configuração. */
 export function situacaoDaUnidade(u: UnidadeNotificante): { texto: string; tom: Tom } {
@@ -284,12 +302,19 @@ export function pendenciasAbrirPeriodo(u: UnidadeNotificante, desde: string): st
 
 export const MINIMO_MOTIVO_FIM = 5;
 
-export function pendenciasEncerrarPeriodo(u: UnidadeNotificante, ate: string, motivo: string): string[] {
+/**
+ * Pendências para encerrar o período (as mesmas regras da API). Com `hoje` (no fuso da instituição), a da unidade
+ * inativa: o fim não passa de hoje, e o período que termina depois de hoje também se encerra.
+ */
+export function pendenciasEncerrarPeriodo(u: UnidadeNotificante, ate: string, motivo: string, hoje?: string): string[] {
   const erros: string[] = [];
-  const aberto = periodoAberto(u);
-  if (!aberto) erros.push('A unidade não tem período de notificante aberto.');
+  const alvo = hoje ? periodoParaEncerrar(u, hoje) : periodoAberto(u);
+  if (!alvo) erros.push('A unidade não tem período de notificante aberto.');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(ate)) erros.push('Informe o fim do período.');
-  else if (aberto && ate < aberto.desde) erros.push('O fim não pode ser antes do início do período.');
+  else {
+    if (alvo && ate < alvo.desde) erros.push('O fim não pode ser antes do início do período.');
+    if (!u.ativa && hoje && ate > hoje) erros.push(`A unidade está inativa: o fim do período não pode passar de hoje (${dataBr(hoje)}). Use a data da desativação.`);
+  }
   if (motivo.trim().length < MINIMO_MOTIVO_FIM) erros.push(`Escreva o motivo (pelo menos ${MINIMO_MOTIVO_FIM} caracteres).`);
   return erros;
 }

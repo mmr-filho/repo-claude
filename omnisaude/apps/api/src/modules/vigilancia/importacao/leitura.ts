@@ -360,8 +360,7 @@ export class AcumuladorCobertura {
       }
       cobertura.push(out);
     }
-    if (depoisDoEnvio && limite && this.declarado)
-      avisos.push(`O período declarado começa depois do primeiro envio deste arquivo (${dataBr(limite)}): nada do período fica marcado como ausente.`);
+    if (depoisDoEnvio && limite && this.declarado) avisos.push(`O período declarado começa depois do primeiro envio deste arquivo (${dataBr(limite)}): nada do período fica marcado como ausente.`);
     if (this.semFicha)
       avisos.push(
         cobertura.some((c) => c.sistema === 'ESUS_NOTIFICA')

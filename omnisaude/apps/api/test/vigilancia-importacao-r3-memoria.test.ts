@@ -9,8 +9,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { pgAvailable } from './harness';
 
 /**
- * Memória da importação (VIG-1c), terceira rodada, sempre num processo filho com --max-old-space-size=512 (o heap do
- * container de 1 GiB da produção):
+ * Memória da importação (VIG-1c), terceira e quarta rodadas, sempre num processo filho com --max-old-space-size=512 (o
+ * heap do container de 1 GiB da produção):
  * - leitura (filho empacotado com o esbuild): o zip com centenas de milhares de entradas no diretório central é recusado
  *   antes de montar a lista (IMPORTACAO-1); mil cópias do mesmo CSV no zip ficam com uma parte por registro e lotes
  *   pequenos (IMPORTACAO-2);
@@ -18,7 +18,9 @@ import { pgAvailable } from './harness';
  *   o processo no teto de arquivos na memória, os envios simultâneos de 25 MB recebem 409 antes de o corpo ser lido, e o
  *   pico da memória retida fora do heap do servidor (os Buffers, medidos depois do coletor) não sobe com os corpos
  *   (imp-memoria). Depois da resposta, o Node lê o corpo que ninguém pediu e o descarta, sem guardar (a conexão segue
- *   viva e o cliente recebe o 409). Um envio aceito, no fim, mostra que a medida enxerga o corpo guardado.
+ *   viva e o cliente recebe o 409). Quarta rodada (N1): o teto do processo vem dos envios de outros tenants (um envio
+ *   por tenant), e dois envios simultâneos do mesmo tenant ficam com um corpo só na memória: o segundo recebe 409 antes
+ *   de o corpo ser lido. O envio lido mostra que a medida enxerga o corpo guardado.
  */
 
 const RAIZ = resolve(__dirname, '../../..');
@@ -261,26 +263,38 @@ export default {
 };
 `;
 
-/** O servidor: a API inteira, com uma leitura segura no gancho; responde aos comandos do teste pela entrada padrão. */
+/**
+ * O servidor: a API inteira, com uma leitura segura no gancho; responde aos comandos do teste pela entrada padrão.
+ * `segurar` prende a próxima leitura no gancho (o arquivo dela fica na memória) até `soltar`; `ocupar` põe dois corpos
+ * de outros tenants sendo lidos pelo serviço (as duas cargas do processo) até `desocupar`.
+ */
 const FILHO_SERVIDOR = `
 import { createInterface } from 'node:readline';
 import { startTestApp } from '${RAIZ}/apps/api/test/harness';
+import { TenantsService } from '${RAIZ}/apps/api/src/core/database';
 import { ImportacaoService } from '${RAIZ}/apps/api/src/modules/vigilancia/importacao.service';
 import { CAMPOS_NINDINET, escreverDbf } from '${RAIZ}/apps/api/test/helpers/dbf-escrita';
 
 const diga = (o) => process.stdout.write('@@R3 ' + JSON.stringify(o) + '\\n');
 const t = await startTestApp('vigimpr3mem');
 const vig = await t.login('vigilancia', 'Vigilância em Saúde', 'VIGILANCIA_EPIDEMIOLOGICA');
+const tenants = t.app.get(TenantsService);
+const tenant = await tenants.resolve(t.slug);
+const db = await tenants.client(tenant.id);
 let soltar = () => {};
-const solto = new Promise((r) => (soltar = r));
-let chegou = () => {};
-const chegada = new Promise((r) => (chegou = r));
-ImportacaoService.esperaMs = 0;
-ImportacaoService.ganchoDeTeste = async (etapa) => {
-  if (etapa !== 'LENDO') return;
-  chegou();
-  await solto;
+let chegada = Promise.resolve();
+const segurar = () => {
+  let chegou = () => {};
+  chegada = new Promise((r) => (chegou = r));
+  const solto = new Promise((r) => (soltar = r));
+  ImportacaoService.ganchoDeTeste = async (etapa) => {
+    if (etapa !== 'LENDO') return;
+    chegou();
+    await solto;
+  };
 };
+ImportacaoService.esperaMs = 0;
+segurar();
 const dbf = escreverDbf(CAMPOS_NINDINET, [{ NU_NOTIFIC: '5100001', TP_NOT: '2', ID_AGRAVO: 'A279', DT_NOTIFIC: '2024-05-02', ID_MUNICIP: '355030', ID_UNIDADE: '9000011' }]);
 const r = await t.http().post('/api/vigilancia/importacoes').query({ nome: 'segura.dbf' }).set({ authorization: 'Bearer ' + vig }).set('Content-Type', 'application/octet-stream').send(dbf);
 if (r.status !== 202) throw new Error('a leitura que segura a vez não começou: ' + r.status);
@@ -295,6 +309,7 @@ const retida = () => {
   globalThis.gc();
   return process.memoryUsage().arrayBuffers - base;
 };
+let ocupados = [];
 const comandos = {
   medir() {
     globalThis.gc();
@@ -314,6 +329,10 @@ const comandos = {
     if (m > pico) pico = m;
     return { picoMB: mb(pico) };
   },
+  segurar() {
+    segurar();
+    return {};
+  },
   async soltar() {
     ImportacaoService.ganchoDeTeste = null;
     soltar();
@@ -322,6 +341,23 @@ const comandos = {
   },
   cargas() {
     return { cargas: ImportacaoService.cargas };
+  },
+  ocupar() {
+    // Dois corpos de outros tenants sendo lidos (um envio por tenant): as duas cargas do processo.
+    const svc = t.app.get(ImportacaoService);
+    const ctx = (id) => ({ db, tenant: { ...tenant, id }, session: { userId: '00000000-0000-0000-0000-000000000000' }, ip: '127.0.0.1' });
+    ocupados = ['tenant-b', 'tenant-c'].map((id) => {
+      let ok = () => {};
+      const fim = svc.enviar(ctx(id), () => new Promise((r) => (ok = r)), { nome: id + '.dbf' }).catch((e) => e);
+      return { soltar: () => ok(Buffer.alloc(0)), fim };
+    });
+    return {};
+  },
+  async desocupar() {
+    for (const o of ocupados) o.soltar();
+    const codigos = (await Promise.all(ocupados.map((o) => o.fim))).map((e) => e?.code ?? null);
+    ocupados = [];
+    return { codigos, cargas: ImportacaoService.cargas };
   },
   async sair() {
     await ImportacaoService.aguardarTrabalhos();
@@ -394,9 +430,9 @@ class Servidor {
 /**
  * Envio pelo cliente HTTP cru, com o corpo inteiro posto no socket de uma vez (`req.end(corpo)`). `antesDoFim`: a
  * resposta chegou com o corpo ainda saindo do cliente (o servidor respondeu sem esperar o corpo; 25 MB não cabem nos
- * buffers do socket sem o outro lado ler). `lento`: só os 100 primeiros bytes, e `resto()` manda o que falta.
+ * buffers do socket sem o outro lado ler).
  */
-function envio(url: string, token: string, nome: string, corpo: Buffer, lento = false) {
+function envio(url: string, token: string, nome: string, corpo: Buffer) {
   const u = new URL(url);
   const req = http.request({
     hostname: u.hostname,
@@ -420,14 +456,12 @@ function envio(url: string, token: string, nome: string, corpo: Buffer, lento = 
   });
   // O servidor fecha a conexão do corpo não lido (EPIPE/ECONNRESET depois da resposta): não é falha do teste.
   resposta.catch(() => undefined);
-  if (lento) req.write(corpo.subarray(0, 100));
-  else req.end(corpo);
+  req.end(corpo);
   return {
     resposta,
     get respondeu() {
       return respondeu;
     },
-    resto: () => req.end(corpo.subarray(100)),
     fechar: () => req.destroy(),
   };
 }
@@ -455,7 +489,7 @@ describe.runIf(enabled)('imp-memoria: a API num processo filho com 512 MB de hea
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
-  it('envios simultâneos de 25 MB recebem 409 antes de o corpo ser lido e a memória do servidor não sobe com eles; o envio aceito, sim', async () => {
+  it('envios simultâneos de 25 MB recebem 409 antes de o corpo ser lido e a memória do servidor não sobe com eles; dois do mesmo tenant ficam com um corpo só', async () => {
     servidor = new Servidor(dir);
     const pronto = await servidor.proxima();
     expect(pronto).toMatchObject({ pronto: true });
@@ -463,7 +497,8 @@ describe.runIf(enabled)('imp-memoria: a API num processo filho com 512 MB de hea
     const token = pronto.token as string;
     const grande = Buffer.alloc(25 * MB, 0x20);
     const ocupada = { code: 'IMPORTACAO_OCUPADA', message: 'Outra importação está sendo processada agora. Tente de novo em alguns minutos.' };
-    const cheio = { code: 'IMPORTACAO_OCUPADA', message: 'Outro envio está sendo recebido ou processado. Tente de novo em instantes.' };
+    const cheio = { code: 'IMPORTACAO_SERVIDOR_OCUPADO', message: 'O servidor está recebendo ou processando outros envios agora. Tente de novo em instantes.' };
+    const doTenant = { code: 'IMPORTACAO_SERVIDOR_OCUPADO', message: 'Outro envio da sua instituição está sendo recebido agora. Tente de novo quando ele terminar.' };
 
     // (b) Outra importação do tenant lendo (a do gancho): os três recebem 409 sem o servidor ler os corpos.
     await servidor.pedir('medir');
@@ -473,10 +508,10 @@ describe.runIf(enabled)('imp-memoria: a API num processo filho com 512 MB de hea
     for (const e of b) expect(e.respondeu).toEqual({ status: 409, corpo: expect.objectContaining(ocupada), antesDoFim: true });
     b.forEach((e) => e.fechar());
 
-    // (a) Nada rodando no tenant, mas dois corpos sendo lidos (o teto do processo): os três recebem 409.
+    // (a) Nada rodando no tenant, mas dois corpos de outros tenants sendo lidos (o teto do processo; um envio por tenant,
+    // quarta rodada): os três recebem 409 IMPORTACAO_SERVIDOR_OCUPADO.
     expect(await servidor.pedir('soltar')).toMatchObject({ cargas: 0 });
-    const pequeno = Buffer.alloc(2 * MB, 0x20);
-    const lentos = [1, 2].map((i) => envio(url, token, `lento-${i}.csv`, pequeno, true));
+    await servidor.pedir('ocupar');
     await esperarAte(async () => (await servidor!.pedir('cargas')).cargas === 2);
     await servidor.pedir('medir');
     const a = [1, 2, 3].map((i) => envio(url, token, `grande-a${i}.csv`, grande));
@@ -484,22 +519,31 @@ describe.runIf(enabled)('imp-memoria: a API num processo filho com 512 MB de hea
     const picoA = (await servidor.pedir('pico')).picoMB as number;
     for (const e of a) expect(e.respondeu).toEqual({ status: 409, corpo: expect.objectContaining(cheio), antesDoFim: true });
     a.forEach((e) => e.fechar());
-    lentos.forEach((e) => e.resto());
-    for (const e of lentos) expect([202, 409]).toContain((await e.resposta).status);
+    expect(await servidor.pedir('desocupar')).toMatchObject({ codigos: ['ARQUIVO_VAZIO', 'ARQUIVO_VAZIO'], cargas: 0 });
+
+    // (c) Quarta rodada (N1): dois envios de 25 MB do mesmo tenant ao mesmo tempo, nada rodando. Um é lido e fica na
+    // memória (a leitura presa no gancho); o outro recebe 409 antes de o corpo ser lido. A memória fica em um corpo e
+    // não dobra (antes, os dois corpos eram lidos e o segundo só recebia o 409 depois). O lido mostra que a medida
+    // enxerga o corpo guardado.
+    await servidor.pedir('segurar');
+    await servidor.pedir('medir');
+    const c = [1, 2].map((i) => envio(url, token, `grande-c${i}.csv`, grande));
+    // O corpo lido demora (o amostrador roda o coletor a cada 10 ms): espera as duas respostas, sem o prazo curto.
+    await Promise.all(c.map((e) => e.resposta));
+    const picoC = (await servidor.pedir('pico')).picoMB as number;
+    const [aceito, recusado] = [...c].sort((x, y) => x.respondeu!.status - y.respondeu!.status);
+    expect(aceito!.respondeu).toMatchObject({ status: 202, antesDoFim: false });
+    expect(recusado!.respondeu).toEqual({ status: 409, corpo: expect.objectContaining(doTenant), antesDoFim: true });
+    c.forEach((e) => e.fechar());
     expect(await servidor.pedir('soltar')).toMatchObject({ cargas: 0 });
 
-    // Controle: o envio aceito tem o corpo lido inteiro na memória (a medida enxerga o corpo).
-    await servidor.pedir('medir');
-    const aceito = envio(url, token, 'aceito.csv', grande);
-    expect(await aceito.resposta).toMatchObject({ status: 202, antesDoFim: false });
-    const picoAceito = (await servidor.pedir('pico')).picoMB as number;
-
     console.log(
-      `[imp-memoria, r3] pico da memória retida fora do heap no servidor (depois do coletor) com 3 envios de 25 MB recusados: vez ocupada +${picoB} MB, teto do processo +${picoA} MB; um envio aceito +${picoAceito} MB`,
+      `[imp-memoria, r3 e r4] pico da memória retida fora do heap no servidor (depois do coletor): 3 envios de 25 MB recusados com a vez ocupada +${picoB} MB e com o teto do processo +${picoA} MB; dois envios de 25 MB do mesmo tenant (um lido, o outro recusado) +${picoC} MB`,
     );
     expect(picoB).toBeLessThan(10);
     expect(picoA).toBeLessThan(10);
-    expect(picoAceito).toBeGreaterThanOrEqual(25);
+    expect(picoC).toBeGreaterThanOrEqual(25);
+    expect(picoC).toBeLessThan(40);
     await servidor.pedir('sair');
     expect(await servidor.fim).toBe(0);
     servidor = null;

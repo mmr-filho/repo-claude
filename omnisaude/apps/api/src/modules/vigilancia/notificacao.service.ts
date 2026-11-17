@@ -1752,8 +1752,14 @@ export class NotificacaoService implements OnModuleInit {
     return c;
   }
 
-  configuracoes(ctx: RequestContext) {
-    return { ...ctx.tenant.settings.vigilancia, whatsappEnabled: ctx.tenant.settings.whatsappEnabled };
+  /**
+   * As configurações da vigilância lidas no banco mestre, sem o cache do catálogo (até 60 s em cada instância da API):
+   * a tela de parâmetros mostra o valor salvo logo depois de salvar, mesmo vindo de outra instância.
+   */
+  async configuracoes(ctx: RequestContext) {
+    const t = await this.master.tenant.findUnique({ where: { id: ctx.tenant.id }, select: { settings: true } });
+    const s = t ? tenantSettings(t.settings) : ctx.tenant.settings;
+    return { ...s.vigilancia, whatsappEnabled: s.whatsappEnabled };
   }
 
   /**

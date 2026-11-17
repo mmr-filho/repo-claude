@@ -184,10 +184,11 @@ export function UnitsAdmin() {
                   <TD>{u._count.assignments}</TD>
                   <TD>{u.active ? <Badge tone="green">Ativa</Badge> : <Badge tone="slate">Desativada</Badge>}</TD>
                   <TD className="whitespace-nowrap text-right">
-                    <Button size="sm" variant="ghost" onClick={() => open(u)}>
+                    {/* Os botões se repetem em cada linha: o nome acessível diz de qual unidade são. */}
+                    <Button size="sm" variant="ghost" aria-label={`Editar ${u.name}`} onClick={() => open(u)}>
                       <Pencil className="h-4 w-4" /> Editar
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => toggle(u)}>
+                    <Button size="sm" variant="ghost" aria-label={`${u.active ? 'Desativar' : 'Reativar'} ${u.name}`} onClick={() => toggle(u)}>
                       {u.active ? 'Desativar' : 'Reativar'}
                     </Button>
                   </TD>

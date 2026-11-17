@@ -443,6 +443,16 @@ function Retirar({ d, c, onFechar, onFeito }: { d: DetalheSurto; c: CasoSurto; o
   );
 }
 
+/** Marca da linha que é o mesmo caso de outra (a notificação e o registro oficial conciliado com ela). */
+function MarcaMesmoCaso({ c }: { c: CasoSurto }) {
+  if (c.mesmoCasoQue == null) return null;
+  return (
+    <Badge tone="amber" className="mt-0.5" title="A notificação e o registro oficial conciliado com ela: o mesmo caso em duas linhas.">
+      Mesmo caso do caso {c.mesmoCasoQue}
+    </Badge>
+  );
+}
+
 /**
  * Planilha de acompanhamento do surto: uma linha por caso (notificação, registro oficial ou linha manual). A linha de
  * origem sigilosa que quem lê não pode abrir vem só com o número do caso.
@@ -457,7 +467,7 @@ export function SurtoPlanilha({ d, onMudou }: { d: DetalheSurto; onMudou: () => 
   return (
     <Card>
       <CardHeader
-        title={`Planilha de casos (${d.planilha.length} de ${d.casos} informados)`}
+        title={`Planilha de casos (${d.casosNaPlanilha} de ${d.casos} informados)`}
         description="Preenchida ao fim de cada semana epidemiológica até o encerramento. Caso de agravo da lista sem notificação individual fica marcado."
         actions={
           editavel ? (
@@ -514,6 +524,7 @@ export function SurtoPlanilha({ d, onMudou }: { d: DetalheSurto; onMudou: () => 
                         Sem notificação individual
                       </Badge>
                     )}
+                    <MarcaMesmoCaso c={c} />
                   </TD>
                   {editavel && (
                     <TD className="text-right">
@@ -546,6 +557,7 @@ export function SurtoPlanilha({ d, onMudou }: { d: DetalheSurto; onMudou: () => 
                         Sem notificação individual
                       </Badge>
                     )}
+                    <MarcaMesmoCaso c={c} />
                   </TD>
                   {editavel && (
                     <TD className="text-right">

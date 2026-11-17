@@ -12,16 +12,20 @@ import { useToast } from '@/components/ui/toast';
 import { api, errorMessage, saveBlob } from '@/lib/api';
 import { useApi } from '@/lib/hooks';
 import { useDataHora } from './fuso';
-import { dataBr, resumoMinhas, rotuloSemana, textoCancelamento, textoDaSemanaDoResponsavel, TOM_SITUACAO, TOM_STATUS_ATESTO } from './negativa-regras';
+import { dataBr, resumoMinhas, rotuloAtestar, rotuloEspelhoPdf, rotuloSemana, textoCancelamento, textoDaSemanaDoResponsavel, TOM_SITUACAO, TOM_STATUS_ATESTO } from './negativa-regras';
 
-/** Baixa o espelho em PDF do atesto. */
-function BotaoPdf({ atesto, rotulo = 'PDF' }: { atesto: Pick<AtestoNegativa, 'id' | 'cnes' | 'semana'>; rotulo?: string }) {
+/**
+ * Baixa o espelho em PDF do atesto. O botão se repete (um por semana ou por atesto): o nome acessível diz a SE e, no
+ * histórico (`comUnidade`), também a unidade.
+ */
+function BotaoPdf({ atesto, rotulo = 'PDF', comUnidade = false }: { atesto: Pick<AtestoNegativa, 'id' | 'cnes' | 'semana' | 'unidade'>; rotulo?: string; comUnidade?: boolean }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   return (
     <Button
       size="sm"
       variant="secondary"
+      aria-label={rotuloEspelhoPdf(atesto.semana, comUnidade ? atesto.unidade : undefined)}
       loading={busy}
       onClick={async () => {
         setBusy(true);
@@ -81,6 +85,7 @@ function SemanaDaUnidade({ unidade, s, onAtestado }: { unidade: UnidadeRef; s: S
           <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
+              aria-label={rotuloAtestar(s.semana)}
               disabled={!confirmo}
               loading={busy}
               onClick={async () => {
@@ -197,7 +202,7 @@ export function NegativaMinhas() {
                       </TD>
                       <TD className="text-xs text-slate-600">{textoCancelamento(a) ?? (a.registroOficialId ? 'Negativa digitada no Sinan.' : '—')}</TD>
                       <TD className="text-right">
-                        <BotaoPdf atesto={a} />
+                        <BotaoPdf atesto={a} comUnidade />
                       </TD>
                     </TR>
                   ))}

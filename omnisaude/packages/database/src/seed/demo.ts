@@ -816,6 +816,8 @@ async function consolidacaoDemo(db: TenantClient, c: ContextoConsolidacao) {
     const atrasado = NEGATIVA_DEMO.atrasado[a.u]?.includes(a.k) ?? false;
     const em = noPassado(atrasado ? as(diaDa(seguinte, 2), 10, 20) : as(diaDa(seguinte, 1), 9, 10 + a.k));
     const nome = nomesDe.get(c.staff[a.pessoa]!)!;
+    // O prazo usado no atesto fica gravado com ele (o espelho imprime este), como no atesto pela API.
+    const prazo = prazoDaNegativa(a.semana, cfg.negativa, tz);
     linhasAtesto.push({
       unitId: c.unit[a.u],
       epiWeek: a.semana,
@@ -826,7 +828,8 @@ async function consolidacaoDemo(db: TenantClient, c: ContextoConsolidacao) {
       attesterRole: ROLE_LABELS[lot.role as Role] ?? lot.role,
       attesterCbo: /^\d{6}$/.test(lot.cbo) ? lot.cbo : null,
       declaration: textoDoAtesto({ unidade: unidade(a.u).name, cnes: unidade(a.u).cnes, semana: a.semana, inicio, fim, nome, funcao: `${ROLE_LABELS[lot.role as Role] ?? lot.role}, CBO ${lot.cbo}` }),
-      late: em.getTime() > prazoDaNegativa(a.semana, cfg.negativa, tz).getTime(),
+      late: em.getTime() > prazo.getTime(),
+      deadlineAt: prazo,
       officialRecordId: doSinan.get(`${a.u}|${a.semana}`) ?? null,
       createdAt: em,
     });

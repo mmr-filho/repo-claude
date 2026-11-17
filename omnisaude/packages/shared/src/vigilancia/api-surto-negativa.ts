@@ -49,7 +49,10 @@ export interface SurtoResumo {
   primeirosSintomasEm: string;
   /** Nº de casos suspeitos/expostos informado (campo 18). */
   casos: number;
-  /** Linhas da planilha de acompanhamento. */
+  /**
+   * Casos da planilha de acompanhamento: as linhas, com o caso que está em duas delas (a notificação e o registro
+   * oficial conciliado com ela) contado uma vez.
+   */
   casosNaPlanilha: number;
   localInicial: string;
   esp: boolean;
@@ -115,6 +118,11 @@ export interface CasoSurto {
   cidFinal: string | null;
   /** Caso de agravo da lista sem notificação individual (o surto não a substitui). */
   semNotificacaoIndividual: boolean;
+  /**
+   * NU_CASO da outra linha que é o mesmo caso: a notificação de uma e o registro oficial conciliado com ela na outra
+   * (vínculo feito depois de as duas estarem na planilha). As duas ficam, marcadas, até a vigilância retirar uma.
+   */
+  mesmoCasoQue: number | null;
   /**
    * A notificação ou o registro oficial de origem é sigiloso e quem lê não pode abri-lo: a linha vem só com o número
    * do caso e os ids da origem (sem iniciais, sexo, idade, residência, datas, desfecho, CID nem número da notificação).
@@ -557,7 +565,8 @@ export interface UnidadeNotificante {
   responsaveis: ResponsavelNegativa[];
   /**
    * Unidade ativa sem período de notificante: a que atende e nunca teve período, ou a reativada cujo último período
-   * terminou na desativação no cadastro (sem período aberto nem com fim depois de hoje).
+   * terminou na desativação no cadastro, ou cuja desativação apagou o período planejado que viria depois dele (sem
+   * período aberto nem com fim depois de hoje).
    */
   semConfiguracao: boolean;
   /** Problemas da configuração (ex.: unidade reativada sem período, titular cuja designação não vale). */
@@ -573,7 +582,11 @@ export interface CorpoAbrirPeriodoNotificante {
   desde: string;
 }
 
-/** POST /vigilancia/unidades-notificantes/:unitId/encerrar. */
+/**
+ * POST /vigilancia/unidades-notificantes/:unitId/encerrar: fecha o período aberto. Na unidade inativa, o fim não passa
+ * de hoje, no fuso da instituição (FIM_DEPOIS_DE_HOJE, 422), e também se encerra o período que ainda termina depois de
+ * hoje (o fim encurta).
+ */
 export interface CorpoEncerrarPeriodoNotificante {
   ate: string;
   motivo: string;

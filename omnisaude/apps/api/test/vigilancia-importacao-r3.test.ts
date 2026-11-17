@@ -2,6 +2,7 @@ import http from 'node:http';
 import { semanaDaData, type DetalheImportacao, type EtapaImportacao } from '@omnisaude/shared';
 import { zipSync } from 'fflate';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import type { RequestContext } from '../src/core/context';
 import { TenantsService } from '../src/core/database';
 import { ImportacaoService, type MomentoDoGancho } from '../src/modules/vigilancia/importacao.service';
 import { lerEnvio } from '../src/modules/vigilancia/importacao/leitura';
@@ -71,6 +72,7 @@ describe.runIf(enabled)('importação, terceira rodada: segundo plano, travas, 4
   let t: TestApp;
   let vig = '';
   let db: Awaited<ReturnType<TenantsService['client']>>;
+  let tenant: Awaited<ReturnType<TenantsService['resolve']>>;
   let seq = 0;
   const auth = (tk: string) => ({ authorization: `Bearer ${tk}` });
 
@@ -171,7 +173,8 @@ describe.runIf(enabled)('importação, terceira rodada: segundo plano, travas, 4
     t = await startTestApp('vigimpr3');
     vig = await t.login('vigilancia', 'Vigilância em Saúde', 'VIGILANCIA_EPIDEMIOLOGICA');
     const tenants = t.app.get(TenantsService);
-    db = await tenants.client((await tenants.resolve(t.slug)).id);
+    tenant = await tenants.resolve(t.slug);
+    db = await tenants.client(tenant.id);
   }, 120_000);
 
   afterEach(async () => {
@@ -295,29 +298,35 @@ describe.runIf(enabled)('importação, terceira rodada: segundo plano, travas, 4
   });
 
   it('imp-memoria (a): com dois arquivos na memória do processo (corpos sendo lidos), o terceiro envio recebe 409 antes de o corpo ser lido', async () => {
-    const um = envioLento(arquivo(2).bytes, 'lento-1.dbf');
-    const dois = envioLento(arquivo(2).bytes, 'lento-2.dbf');
+    // Quarta rodada: um envio por tenant (o segundo do mesmo tenant já recebe 409). Os dois corpos sendo lidos são de
+    // outros dois tenants, pelo serviço (o corpo fica pendente até o teste soltar); o terceiro chega pela API.
+    const svc = t.app.get(ImportacaoService);
+    const ctx = (id: string) => ({ db, tenant: { ...tenant, id }, session: { userId: '00000000-0000-0000-0000-000000000000' }, ip: '127.0.0.1' }) as unknown as RequestContext;
+    const soltar: ((corpo: Buffer) => void)[] = [];
+    const outros = ['tenant-b', 'tenant-c'].map((id) =>
+      svc
+        .enviar(ctx(id), () => new Promise<Buffer>((ok) => soltar.push(ok)), { nome: `${id}.dbf` })
+        .then(
+          () => 'leu',
+          (e: { code?: string }) => e.code ?? 'erro',
+        ),
+    );
     try {
       await esperar(async () => ImportacaoService.cargas === 2);
       const terceiro = envioLento(Buffer.alloc(8 * 1024 * 1024, 0x20), 'terceiro.dbf');
       try {
         expect(await emAte(terceiro.resposta, 5000)).toEqual({
           status: 409,
-          corpo: expect.objectContaining({ code: 'IMPORTACAO_OCUPADA', message: 'Outro envio está sendo recebido ou processado. Tente de novo em instantes.' }),
+          corpo: expect.objectContaining({ code: 'IMPORTACAO_SERVIDOR_OCUPADO', message: 'O servidor está recebendo ou processando outros envios agora. Tente de novo em instantes.' }),
         });
       } finally {
         terceiro.fechar();
       }
-      um.resto();
-      dois.resto();
-      const status = (await Promise.all([um.resposta, dois.resposta])).map((x) => x.status).sort();
-      // O primeiro a terminar de chegar toma a vez; o outro pode encontrá-la ocupada.
-      expect(status[0]).toBe(201);
-      expect([201, 409]).toContain(status[1]);
     } finally {
-      um.fechar();
-      dois.fechar();
+      // Os corpos dos outros tenants chegam vazios: 400, e as cargas voltam.
+      for (const s of soltar) s(Buffer.alloc(0));
     }
+    expect(await Promise.all(outros)).toEqual(['ARQUIVO_VAZIO', 'ARQUIVO_VAZIO']);
     await ImportacaoService.aguardarTrabalhos();
     expect(ImportacaoService.cargas).toBe(0);
     await enviar(arquivo(1).bytes, 'depois.dbf').expect(201);
@@ -467,9 +476,10 @@ describe.runIf(enabled)('importação, terceira rodada: segundo plano, travas, 4
     expect(r).toMatchObject({ contagens: { novos: 0, alterados: 0, iguais: 3 }, ausentesMarcados: 1 });
     expect(await todos()).toBe(4);
     expect((await db.officialRecord.findFirstOrThrow({ where: { number: '6400001' } })).absentSince).not.toBeNull();
-    // As duas aplicações valem (a correção não apaga a primeira).
+    // A correção substitui a primeira aplicação (quarta rodada: vale só a aplicação mais recente do arquivo).
     const sha = lido.sha256;
-    expect(await db.officialImport.count({ where: { sha256: sha, status: 'APLICADA' } })).toBe(2);
+    expect(await db.officialImport.count({ where: { sha256: sha, status: 'APLICADA' } })).toBe(1);
+    expect(await db.officialImport.findUniqueOrThrow({ where: { id: lido.id }, select: { status: true, supersededBy: true } })).toEqual({ status: 'SUBSTITUIDA', supersededBy: corrigido.id });
 
     // O mesmo período declarado de novo, ou sem período: já importado (a aplicação com período, a mais recente).
     expect((await enviar(a, 'r3-coqueluche.dbf', ano).expect(200)).body).toEqual({ jaImportado: { id: corrigido.id, aplicadoEm: expect.any(String) } });

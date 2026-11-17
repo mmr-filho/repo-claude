@@ -108,9 +108,25 @@ describe.runIf(enabled)('Vigilância: ações da conciliação com a importaçã
     // Importação real, segura logo depois de pegar as duas travas (gancho INICIO): uma conexão do pool presa nela.
     const d = hoje();
     const dbf = escreverDbf(CAMPOS_NINDINET, [
-      { TP_NOT: '2', ID_AGRAVO: 'A379', DT_NOTIFIC: d, SEM_NOT: semanaDaData(d).codigo, NU_ANO: d.slice(0, 4), SG_UF_NOT: '35', ID_MUNICIP: MUN, ID_UNIDADE: UBS, SG_UF: '35', ID_MN_RESI: MUN, NU_NOTIFIC: '7792901', NM_PACIENT: 'PESSOA DO POOL', CS_SEXO: 'F' },
+      {
+        TP_NOT: '2',
+        ID_AGRAVO: 'A379',
+        DT_NOTIFIC: d,
+        SEM_NOT: semanaDaData(d).codigo,
+        NU_ANO: d.slice(0, 4),
+        SG_UF_NOT: '35',
+        ID_MUNICIP: MUN,
+        ID_UNIDADE: UBS,
+        SG_UF: '35',
+        ID_MN_RESI: MUN,
+        NU_NOTIFIC: '7792901',
+        NM_PACIENT: 'PESSOA DO POOL',
+        CS_SEXO: 'F',
+      },
     ]);
-    const envio = (await t.http().post('/api/vigilancia/importacoes').query({ nome: 'NINDINET-POOL.DBF' }).set(auth('vig')).set('Content-Type', 'application/octet-stream').send(Buffer.from(dbf)).expect(201)).body as { id: string };
+    const envio = (await t.http().post('/api/vigilancia/importacoes').query({ nome: 'NINDINET-POOL.DBF' }).set(auth('vig')).set('Content-Type', 'application/octet-stream').send(Buffer.from(dbf)).expect(201)).body as {
+      id: string;
+    };
     let chegou!: () => void;
     let soltar!: () => void;
     const naTrava = new Promise<void>((r) => (chegou = r));
@@ -133,7 +149,9 @@ describe.runIf(enabled)('Vigilância: ações da conciliação com a importaçã
     url.pathname = `/tenant_db_${t.slug.replace(/-/g, '_')}`;
     const mon = new Client({ connectionString: url.toString() });
     await mon.connect();
-    const dona = (await mon.query(`SELECT DISTINCT pid FROM pg_locks WHERE locktype = 'advisory' AND granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`)).rows.map((x) => Number(x.pid));
+    const dona = (await mon.query(`SELECT DISTINCT pid FROM pg_locks WHERE locktype = 'advisory' AND granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`)).rows.map((x) =>
+      Number(x.pid),
+    );
     expect(dona).toHaveLength(1);
     let maiorIdade = 0;
     let esperandoNaTransacao = 0;
@@ -186,9 +204,6 @@ describe.runIf(enabled)('Vigilância: ações da conciliação com a importaçã
         `maior transação de outra conexão ${maiorIdade.toFixed(0)} ms em ${amostras} amostras`,
     );
 
-    for (const r of respostas) expect(r).toMatchObject({ status: 409, body: { code: 'CONCILIACAO_OCUPADA', message: MENSAGEM } });
-    expect(tempo).toBeGreaterThanOrEqual(2_500);
-    expect(tempo).toBeLessThan(10_000);
     // Nenhuma conexão esperando a trava com a transação aberta (antes: as 4, por 3 s cada).
     expect(amostras).toBeGreaterThan(20);
     expect(esperandoNaTransacao).toBe(0);
@@ -201,6 +216,11 @@ describe.runIf(enabled)('Vigilância: ações da conciliação com a importaçã
     expect(rLeitura.ms).toBeLessThan(1_500);
     expect(rCadastro).toMatchObject({ status: 201 });
     expect(rCadastro.ms).toBeLessThan(2_000);
+    // As quatro ações esperam a trava por ~3 s (fora da transação) e respondem 409, com a mensagem que vale para
+    // qualquer dono da trava (importação, tarefa ou outra ação).
+    for (const r of respostas) expect(r).toMatchObject({ status: 409, body: { code: 'CONCILIACAO_OCUPADA', message: MENSAGEM } });
+    expect(tempo).toBeGreaterThanOrEqual(2_500);
+    expect(tempo).toBeLessThan(10_000);
 
     // Nada mudou, e a importação terminou.
     expect([200, 202]).toContain(aplicada.status);

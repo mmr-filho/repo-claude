@@ -84,7 +84,17 @@ describe.runIf(enabled)('Migração 0031: unidades notificantes semeadas e restr
     expect(notificantes.map((r) => r.name)).toEqual(['UBS Centro', 'UPA Norte', 'Policlínica', 'Hospital Municipal', 'CEO', 'SAMU', 'CAPS', 'Laboratório Municipal']);
     for (const r of notificantes) expect(r).toMatchObject({ periodos: 1, desde: '2026-01-01', abertos: 1 });
     // A semeadura não tem autor: a vigilância ajusta na tela das unidades notificantes.
-    expect((await db.query('SELECT count(*)::int AS n FROM notifying_units WHERE created_by IS NOT NULL OR end_reason IS NOT NULL')).rows[0].n).toBe(0);
+    expect((await db.query('SELECT count(*)::int AS n FROM notifying_units WHERE created_by IS NOT NULL OR end_reason IS NOT NULL OR next_removed_at IS NOT NULL')).rows[0].n).toBe(0);
+    // A marca do período planejado apagado na desativação (sur-7), vazia no dado que não a tem, e o prazo usado no atesto
+    // (N13), sempre gravado: instantes sem fuso.
+    const colunas = await db.query<{ tabela: string; coluna: string; tipo: string; nulo: string }>(
+      `SELECT table_name AS tabela, column_name AS coluna, data_type AS tipo, is_nullable AS nulo FROM information_schema.columns
+       WHERE (table_name, column_name) IN (('notifying_units', 'next_removed_at'), ('negative_reports', 'deadline_at')) ORDER BY table_name`,
+    );
+    expect(colunas.rows).toEqual([
+      { tabela: 'negative_reports', coluna: 'deadline_at', tipo: 'timestamp without time zone', nulo: 'NO' },
+      { tabela: 'notifying_units', coluna: 'next_removed_at', tipo: 'timestamp without time zone', nulo: 'YES' },
+    ]);
   });
 
   it('recusa o que o desenho proíbe e aceita o histórico', async () => {
@@ -114,7 +124,7 @@ describe.runIf(enabled)('Migração 0031: unidades notificantes semeadas e restr
     expect(await falha(canal, [randomUUID(), 2, false, randomUUID()])).toBeNull();
 
     // Atesto da negativa: um ATESTADA por unidade e semana; o cancelado fica no histórico.
-    const atesto = `INSERT INTO negative_reports (id, unit_id, epi_week, status, attested_by, attested_at, attester_name, declaration) VALUES ($1, $2, '202644', $3, $4, now(), 'Pessoa Sintética', 'Declaro...')`;
+    const atesto = `INSERT INTO negative_reports (id, unit_id, epi_week, status, attested_by, attested_at, attester_name, declaration, deadline_at) VALUES ($1, $2, '202644', $3, $4, now(), 'Pessoa Sintética', 'Declaro...', now())`;
     expect(await falha(atesto, [randomUUID(), ubs, 'ATESTADA', randomUUID()])).toBeNull();
     expect(await falha(atesto, [randomUUID(), ubs, 'ATESTADA', randomUUID()])).toEqual({ code: '23505', constraint: 'negative_reports_atestada' });
     expect(await falha(atesto, [randomUUID(), ubs, 'CANCELADA', randomUUID()])).toBeNull();
@@ -173,6 +183,45 @@ describe.runIf(enabled)('Migração 0031: unidades notificantes semeadas e restr
     expect(await vai(null, 'FALHOU', null)).toEqual({ code: '23514', constraint: 'official_imports_falhou' });
     expect(await vai(null, 'FALHOU', null, { codigo: 'SEM_REGISTROS', mensagem: 'Nenhum registro válido no envio.' })).toBeNull();
     expect(await vai(null, 'DESCARTADA', null, { codigo: 'SEM_REGISTROS', mensagem: 'Nenhum registro válido no envio.' })).toBeNull();
+  });
+
+  it('substituição do mesmo arquivo: a SUBSTITUIDA aponta a aplicação que a substituiu, e o ausente guarda a importação que o marcou', async () => {
+    const falha = (sql: string, params: unknown[]) =>
+      db.query(sql, params).then(
+        () => null,
+        (e: { code: string; constraint: string }) => ({ code: e.code, constraint: e.constraint }),
+      );
+    const sha = 'd'.repeat(64);
+    const importacao = `INSERT INTO official_imports (id, system, status, file_name, sha256, size_bytes, created_by, superseded_by, working_step, working_since, working_at)
+      VALUES ($1, $2, $3, 'DENGON.DBF', $4, 10, $5, $6, $7::varchar, CASE WHEN $7::varchar IS NULL THEN NULL ELSE now() END, CASE WHEN $7::varchar IS NULL THEN NULL ELSE now() END)`;
+    const vai = (id: string, status: string, por: string | null, o: { sistema?: string | null; etapa?: string; sha?: string } = {}) =>
+      falha(importacao, [id, o.sistema === undefined ? 'SINAN_ONLINE' : o.sistema, status, o.sha ?? sha, randomUUID(), por, o.etapa ?? null]);
+    const substituida = { code: '23514', constraint: 'official_imports_substituida' };
+    const nova = randomUUID();
+    expect(await vai(nova, 'APLICADA', null)).toBeNull();
+    // Só a SUBSTITUIDA tem superseded_by, e sempre; ele aponta uma importação que existe.
+    expect(await vai(randomUUID(), 'SUBSTITUIDA', null)).toEqual(substituida);
+    expect(await vai(randomUUID(), 'APLICADA', nova, { sha: 'e'.repeat(64) })).toEqual(substituida);
+    expect(await vai(randomUUID(), 'PREVIA', nova)).toEqual(substituida);
+    expect(await vai(randomUUID(), 'SUBSTITUIDA', randomUUID())).toEqual({ code: '23503', constraint: 'official_imports_superseded_by_fkey' });
+    // A SUBSTITUIDA não conta no índice do arquivo aplicado: convive com a APLICADA do mesmo arquivo e período.
+    const antiga = randomUUID();
+    expect(await vai(antiga, 'SUBSTITUIDA', nova)).toBeNull();
+    // Tem sistema; pode estar terminando a reconciliação da negativa (APLICANDO), mas não lendo.
+    expect(await vai(randomUUID(), 'SUBSTITUIDA', nova, { sistema: null })).toEqual({ code: '23514', constraint: 'official_imports_sistema' });
+    expect(await vai(randomUUID(), 'SUBSTITUIDA', nova, { etapa: 'APLICANDO' })).toBeNull();
+    expect(await vai(randomUUID(), 'SUBSTITUIDA', nova, { etapa: 'LENDO' })).toEqual({ code: '23514', constraint: 'official_imports_etapa' });
+
+    // O ausente: absent_since e absent_import_id sempre juntos, e a importação existe.
+    const registro = `INSERT INTO official_records (id, system, type, natural_key, number, notified_on, situation, content_hash, first_import_id, last_import_id, last_seen_at, updated_at, absent_since, absent_import_id)
+      VALUES ($1, 'SINAN_ONLINE', 'INDIVIDUAL', $2, '1', '2025-03-10', 'EM_INVESTIGACAO', $3, $4, $4, now(), now(), $5::timestamp, $6)`;
+    const ausencia = { code: '23514', constraint: 'official_records_ausencia' };
+    const reg = (chave: string, desde: string | null, por: string | null) => falha(registro, [randomUUID(), chave, 'f'.repeat(64), antiga, desde, por]);
+    expect(await reg('k1', null, null)).toBeNull();
+    expect(await reg('k2', '2026-11-17 10:00', nova)).toBeNull();
+    expect(await reg('k3', '2026-11-17 10:00', null)).toEqual(ausencia);
+    expect(await reg('k4', null, nova)).toEqual(ausencia);
+    expect(await reg('k5', '2026-11-17 10:00', randomUUID())).toEqual({ code: '23503', constraint: 'official_records_absent_import_id_fkey' });
   });
 
   it('índices que a aplicação e a conciliação usam: tocados pelo envio, cobertura dos ausentes e número sem zeros', async () => {

@@ -289,6 +289,11 @@ export interface CasoParaSurto {
    * grupo no evento inusitado.
    */
   jaEmSurto: boolean;
+  /**
+   * Lido só para o evento inusitado (SURTO-2): o caso do agravo que pode ser inusitado e que ficou de fora da leitura
+   * das regras de vizinhança (que tem teto) não entra nas regras de quarteirão, bairro e unidade.
+   */
+  soInusitado?: boolean;
 }
 
 /**
@@ -318,8 +323,9 @@ export interface OpcoesDeteccaoSurto {
    */
   outrosCasosPorGrupo?: Record<string, string[]>;
   /**
-   * Grupos com caso da janela já ligado a surto entre os que quem lê não vê (de outra unidade, na visão do núcleo, sob
-   * sigilo ou além do teto): o grupo fica fora do evento inusitado, como quando o caso em surto é dos que ele vê.
+   * Grupos com caso da janela já ligado a surto entre os que quem lê não vê (de outra unidade, na visão do núcleo, ou
+   * sob sigilo): o grupo fica fora do evento inusitado, como quando o caso em surto é dos que ele vê. Em surto também
+   * quando o registro oficial conciliado com a notificação está na planilha (é o mesmo caso).
    */
   outrosEmSurto?: string[];
 }
@@ -405,7 +411,8 @@ function sugestao(regra: string, descricao: string, fonte: string, grupo: string
 
 /**
  * Sugestões de surto (o sistema sugere, a vigilância confirma). Casos já ligados a surto (de qualquer situação) não
- * entram; uma sugestão por (regra, vínculo, grupo), com o aglomerado mais recente; a dispensada volta quando aparece
+ * entram, e o caso lido só para o evento inusitado (`soInusitado`) fica fora das regras de quarteirão, bairro e
+ * unidade; uma sugestão por (regra, vínculo, grupo), com o aglomerado mais recente; a dispensada volta quando aparece
  * caso conhecido depois do `ateConhecimento`, e a do núcleo só esconde sugestão com todos os casos da unidade dele.
  * Evento inusitado: o primeiro caso de um grupo depois de `diasInusitado` dias sem casos (ou nunca visto) vira sugestão
  * própria; caso anterior é o do histórico e o de `outrosCasosPorGrupo` com data até a do primeiro. O grupo com caso da
@@ -426,7 +433,7 @@ export function detectarAglomerados(casos: CasoParaSurto[], regras: RegraSurto[]
   for (const regra of regras) {
     const grupos = new Map<string, { id: string; grupo: string; casos: CasoParaSurto[] }>();
     for (const c of validos) {
-      if (!regraAlcanca(regra, c.grupo)) continue;
+      if (c.soInusitado || !regraAlcanca(regra, c.grupo)) continue;
       if (regra.soUnidadeHospitalar && !c.unidadeHospitalar) continue;
       const id = regra.vinculo === 'QUARTEIRAO' ? c.blockId : regra.vinculo === 'BAIRRO' ? c.neighborhoodId : c.unitId;
       if (!id) continue;

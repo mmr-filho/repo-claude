@@ -127,7 +127,7 @@ describe.runIf(enabled)('Território: quarteirão da residência em lote (DIAGRA
     const a = await db.neighborhood.create({ data: { localityId: loc.id, name: 'Bairro Quarteirões A', aliases: [] } });
     const b = await db.neighborhood.create({ data: { localityId: loc.id, name: 'Bairro Quarteirões B', aliases: [] } });
     Object.assign(ids, { localidade: loc.id, bairroA: a.id, bairroB: b.id });
-    const criar = async (numero: string, [x0, y0, x1, y1]: number[], bairro: string) => {
+    const criar = async (numero: string, [x0, y0, x1, y1]: number[], bairro: string, areaM2 = 10_000) => {
       const q = await db.block.create({
         data: {
           localityId: loc.id,
@@ -140,7 +140,7 @@ describe.runIf(enabled)('Território: quarteirão da residência em lote (DIAGRA
           maxLat: y1!,
           centerLat: (y0! + y1!) / 2,
           centerLng: (x0! + x1!) / 2,
-          areaM2: 10_000,
+          areaM2,
         },
       });
       quarteirao.set(numero, q.id);
@@ -151,7 +151,8 @@ describe.runIf(enabled)('Território: quarteirão da residência em lote (DIAGRA
     await criar('D', [xc + LADO, Y0, xc + 2 * LADO, Y0 + LADO], b.id);
     const xe = X0 + 8 * PASSO;
     await criar('E', [xe, Y0, xe + LADO, Y0 + LADO], a.id);
-    await criar('F', [xe + LADO / 4, Y0 + LADO / 4, xe + LADO / 2, Y0 + LADO / 2], b.id);
+    // O F tem um quarto do lado do E: 1/16 da área.
+    await criar('F', [xe + LADO / 4, Y0 + LADO / 4, xe + LADO / 2, Y0 + LADO / 2], b.id, 625);
   });
 
   afterAll(async () => {
@@ -187,14 +188,15 @@ describe.runIf(enabled)('Território: quarteirão da residência em lote (DIAGRA
     try {
       const lote = await loc.quarteiroesDosPontos(db, pontos);
       expect(lote).toEqual(umAUm);
-      // Só os dois empates (divisa e quarteirão dentro de outro) vão para a consulta de um ponto.
-      expect(espiao).toHaveBeenCalledTimes(2);
+      // Nenhum ponto volta à consulta de um ponto: os dois empates (divisa e quarteirão dentro de outro) seguem o desempate
+      // (área menor e depois o id), no lote como na consulta de um ponto (4ª rodada; antes, os dois iam para ela).
+      expect(espiao.mock.calls.length).toBe(0);
     } finally {
       espiao.mockRestore();
     }
-    expect(umAUm.map((q) => q?.number ?? null)).toEqual(['Q00', 'Q11', 'Q00', 'Q10', null, umAUm[5]!.number, umAUm[6]!.number, 'Q00', 'Q22', null]);
-    expect(['C', 'D']).toContain(umAUm[5]!.number);
-    expect(['E', 'F']).toContain(umAUm[6]!.number);
+    // Na divisa do C com o D (a mesma área), o de menor id; dentro do F, que fica dentro do E, o F (a área menor).
+    const divisa = [...['C', 'D']].sort((x, y) => (quarteirao.get(x)! < quarteirao.get(y)! ? -1 : 1))[0];
+    expect(umAUm.map((q) => q?.number ?? null)).toEqual(['Q00', 'Q11', 'Q00', 'Q10', null, divisa, 'F', 'Q00', 'Q22', null]);
     expect(await loc.quarteiroesDosPontos(db, [])).toEqual([]);
   });
 

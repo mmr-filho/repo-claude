@@ -486,6 +486,16 @@ export const faltaNoMotivo = (motivo: string) => Math.max(0, MINIMO_MOTIVO - mot
 export function corpoDispensa(s: Pick<SugestaoSurtoTela, 'assinatura' | 'ultimoConhecimento'>, motivo: string): CorpoDispensarSugestao {
   return { assinatura: s.assinatura, motivo: motivo.trim(), ultimoConhecimento: s.ultimoConhecimento };
 }
+
+/** O diálogo de dispensa depois do 409: a sugestão mudou e passa a mostrar a nova, com o mesmo motivo. */
+export const TEXTO_SUGESTAO_MUDOU = 'Chegou caso novo depois de a lista carregar: confira antes de dispensar.';
+/** A sugestão saiu da lista recarregada (409 sem ela, ou 404): o diálogo fecha. */
+export const TEXTO_SUGESTAO_SAIU = 'A sugestão saiu da lista: virou surto, foi dispensada ou ficou sem casos. Não há o que dispensar.';
+
+/** A sugestão de mesma assinatura (a mesma chave) na lista recarregada, ou nula se ela saiu da lista. */
+export function sugestaoAtualizada(lista: SugestaoSurtoTela[], assinatura: string): SugestaoSurtoTela | null {
+  return lista.find((x) => x.assinatura === assinatura) ?? null;
+}
 export const numeroSinanValido = (n: string) => /^\d{1,7}$/.test(n.trim());
 
 export interface FormComunicacao {

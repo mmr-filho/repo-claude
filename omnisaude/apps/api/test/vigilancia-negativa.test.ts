@@ -510,6 +510,7 @@ describe.runIf(enabled)('Vigilância: notificação negativa semanal (VIG-1c)', 
         attesterName: 'Bruno Almeida Enfermeiro',
         declaration: 'Atesto de teste.',
         late: true,
+        deadlineAt: new Date('2026-06-15T11:00:00Z'),
       })),
     });
     const g = await grade('semanas=6');
@@ -696,8 +697,9 @@ describe.runIf(enabled)('Vigilância: notificação negativa semanal (VIG-1c)', 
     relogio(QUARTA);
     const neg = await db.officialRecord.findFirstOrThrow({ where: { type: 'NEGATIVA', number: '9000101' } });
     expect((await db.negativeReport.findUniqueOrThrow({ where: { id: atestos.ubs23!.id } })).officialRecordId).toBe(neg.id);
-    // A exportação seguinte não traz mais a negativa (ausente).
-    await db.officialRecord.update({ where: { id: neg.id }, data: { absentSince: new Date() } });
+    // A exportação seguinte não traz mais a negativa (ausente). A ausência leva a importação que a marcou (CHECK
+    // official_records_ausencia): a importação do próprio teste.
+    await db.officialRecord.update({ where: { id: neg.id }, data: { absentSince: new Date(), absentImportId: importacaoId } });
     const g = await grade('semanas=6');
     expect(celula(g, 'ubs', '202623').fontes.negativaSinan).toBe(false);
     expect(g.atestadoSemSinan).toContainEqual(expect.objectContaining({ semana: '202623', unidade: expect.objectContaining({ id: U.ubs!.id }), atestoId: atestos.ubs23!.id }));

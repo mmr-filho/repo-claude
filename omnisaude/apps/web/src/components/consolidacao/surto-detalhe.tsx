@@ -118,6 +118,8 @@ function LinhaDoTempo({ d }: { d: DetalheSurto }) {
 function Espelho({ d }: { d: DetalheSurto }) {
   const e = d.espelho;
   const colunas = e.planilha.length ? Object.keys(e.planilha[0]!) : [];
+  // As duas linhas do mesmo caso (notificação e registro conciliados) saem no espelho, marcadas, até a vigilância retirar uma.
+  const mesmoCaso = new Map(d.planilha.filter((c) => c.mesmoCasoQue != null).map((c) => [String(c.numero), c.mesmoCasoQue!]));
   return (
     <div className="space-y-4">
       {e.avisos.length > 0 && (
@@ -167,7 +169,11 @@ function Espelho({ d }: { d: DetalheSurto }) {
             </THead>
             <TBody>
               {e.planilha.map((linha, i) => (
-                <TR key={i}>
+                <TR
+                  key={i}
+                  className={mesmoCaso.has(String(linha.NU_CASO)) ? 'bg-amber-50' : undefined}
+                  title={mesmoCaso.has(String(linha.NU_CASO)) ? `Mesmo caso do caso ${mesmoCaso.get(String(linha.NU_CASO))} (notificação e registro conciliados).` : undefined}
+                >
                   {colunas.map((c) => (
                     <TD key={c} className="tabular-nums">
                       {linha[c] ?? ''}

@@ -1,5 +1,5 @@
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
-import type { MasterClient, TenantPrisma } from '@omnisaude/database';
+import { tenantSettings, type MasterClient, type NegativaSettings, type TenantPrisma } from '@omnisaude/database';
 import {
   analisarGrade,
   deslocarSemana,
@@ -87,14 +87,16 @@ export const MOTIVO_UNIDADE_DESATIVADA = 'Unidade desativada no cadastro';
 export const AVISO_UNIDADE_REATIVADA = 'Unidade reativada: o período de notificante terminou na desativação. Abra um período novo se ela voltou a notificar.';
 
 /**
- * Unidade ativa reativada depois da desativação no cadastro: o último período terminou na desativação (motivo
- * `MOTIVO_UNIDADE_DESATIVADA`) e não há período aberto nem com fim depois de hoje. Nada se reabre sozinho: a lista e a
- * grade avisam, e a unidade conta como "sem configuração" até a vigilância abrir um período novo.
+ * Unidade ativa reativada depois da desativação no cadastro, sem período aberto nem com fim depois de hoje: o último
+ * período terminou na desativação (motivo `MOTIVO_UNIDADE_DESATIVADA`) ou a desativação apagou o período planejado que
+ * viria depois dele (`seguinteApagado`, a coluna next_removed_at; ex.: a reabertura depois da reforma). O período
+ * aberto depois disso passa a ser o último e tira a marca. Nada se reabre sozinho: a lista e a grade avisam, e a
+ * unidade conta como "sem configuração" até a vigilância abrir um período novo.
  */
-function reativadaSemPeriodo(ativa: boolean, periodos: { desde: string; ate: string | null; motivoFim: string | null }[], hoje: string): boolean {
+function reativadaSemPeriodo(ativa: boolean, periodos: { desde: string; ate: string | null; motivoFim: string | null; seguinteApagado: boolean }[], hoje: string): boolean {
   if (!ativa || !periodos.length || periodos.some((p) => p.ate === null || p.ate > hoje)) return false;
   const ultimo = periodos.reduce((a, b) => (b.desde > a.desde ? b : a));
-  return ultimo.motivoFim === MOTIVO_UNIDADE_DESATIVADA;
+  return ultimo.motivoFim === MOTIVO_UNIDADE_DESATIVADA || ultimo.seguinteApagado;
 }
 
 /**
@@ -103,13 +105,16 @@ function reativadaSemPeriodo(ativa: boolean, periodos: { desde: string; ate: str
  * - O período aberto e o encerrado com fim depois de `ate` (a vigilância pode encerrar com data futura) terminam em
  *   `ate`, com o motivo, quem e quando (`vigilancia.notificante_encerrar`; no encurtado, a trilha guarda o fim e o
  *   motivo anteriores).
- * - O período que só começaria depois de `ate` é apagado (`vigilancia.notificante_excluir`, com o que ele tinha).
+ * - O período que só começaria depois de `ate` é apagado (`vigilancia.notificante_excluir`, com o que ele tinha), e o
+ *   último período que restou ganha a marca next_removed_at: reativada, a unidade fica "sem configuração", com aviso,
+ *   como a do período que terminou na desativação (reativadaSemPeriodo).
  * - As designações ativas de responsável terminam em `ate` (`vigilancia.negativa_revogar`); a que só começaria depois,
  *   é apagada (`vigilancia.negativa_designacao_excluir`).
- * Travas, nesta ordem: a da designação da unidade (a designação feita ao mesmo tempo espera e encontra a unidade sem
- * período aberto), as linhas dos períodos (o encerramento feito ao mesmo tempo pela vigilância espera e é relido) e,
- * por último, a da trilha: as auditorias saem no fim, e quem chama não deve gravar auditoria antes (a cadeia da trilha
- * presa antes das outras travas fecharia um ciclo com a designação, que trava a unidade e depois audita).
+ * Travas, nesta ordem: a da designação da unidade (a designação, a abertura e o encerramento do período feitos ao
+ * mesmo tempo esperam e releem a unidade e os períodos), as linhas dos períodos (o encerramento feito ao mesmo tempo
+ * pela vigilância espera e é relido) e, por último, a da trilha: as auditorias saem no fim, e quem chama não deve gravar
+ * auditoria antes (a cadeia da trilha presa antes das outras travas fecharia um ciclo com a designação, que trava a
+ * unidade e depois audita).
  * Na grade, a SE do fim continua notificante (o período alcança parte dela); as seguintes ficam "não notificante",
  * fora das silenciosas e do percentual.
  */
@@ -147,6 +152,12 @@ export async function encerrarUnidadeNotificante(
       entityId: x.id,
       payload: fimAnterior ? { unidade: p.cnes, ate: p.ate, motivo: p.motivo, fimAnterior, motivoAnterior: x.endReason } : { unidade: p.cnes, ate: p.ate, motivo: p.motivo },
     });
+  }
+  if (r.periodosExcluidos.length) {
+    // A marca fica no último período que restou (todos terminam até `ate`); sem nenhum, a unidade reativada já conta
+    // como "sem configuração" por nunca ter tido período.
+    const ultimo = await tx.notifyingUnit.findFirst({ where: { unitId: p.unitId }, orderBy: { since: 'desc' }, select: { id: true } });
+    if (ultimo) await tx.notifyingUnit.update({ where: { id: ultimo.id }, data: { nextRemovedAt: p.agora } });
   }
   const ativas = await tx.notifyingUnitResponsible.findMany({ where: { unitId: p.unitId, until: null }, select: { id: true, userId: true, kind: true, since: true }, orderBy: [{ designatedAt: 'asc' }, { id: 'asc' }] });
   for (const d of ativas) {
@@ -322,6 +333,16 @@ export class NegativaService {
     return null;
   }
 
+  /**
+   * A configuração da negativa gravada no banco mestre, lida na hora: o catálogo da instituição fica em cache por até
+   * 60 s em cada instância da API, e o que vira dado durável (o prazo e o "atrasado" do atesto) não pode sair de uma
+   * configuração velha.
+   */
+  private async configuracaoNoMestre(ctx: RequestContext): Promise<NegativaSettings> {
+    const t = await this.master.tenant.findUnique({ where: { id: ctx.tenant.id }, select: { settings: true } });
+    return t ? tenantSettings(t.settings).vigilancia.negativa : ctx.tenant.settings.vigilancia.negativa;
+  }
+
   private funcaoDe(l: { role: string; cbo: string } | null) {
     return l ? `${ROLE_LABELS[l.role as Role] ?? l.role}, CBO ${l.cbo}` : '';
   }
@@ -437,12 +458,13 @@ export class NegativaService {
    * POST /vigilancia/negativas: só semana terminada e dentro de `semanasAtesto`; exige designação ativa (titular ou
    * substituto, com lotação ativa na unidade em papel que atesta) ou, em nome da unidade, `vigilancia.consolidacao` com motivo. RQ002:
    * recusa a semana com notificação, rascunho, surto ou registro oficial da unidade. Atesto ATESTADA já existente: 409.
+   * A configuração (prazo e semanas do atesto) vem do banco mestre na hora, e o prazo usado fica gravado com o atesto.
    */
   async atestar(ctx: RequestContext, corpo: CorpoAtestarNegativa): Promise<AtestoNegativa> {
     exigirSemana(corpo.semana);
     const agora = this.agora();
     const tz = ctx.tenant.timeZone;
-    const cfg = ctx.tenant.settings.vigilancia.negativa;
+    const cfg = await this.configuracaoNoMestre(ctx);
     const hoje = localDateString(agora, tz);
     const unidade = await ctx.db.unit.findUnique({ where: { id: corpo.unitId }, select: { id: true, name: true, cnes: true } });
     if (!unidade) throw notFound('Unidade');
@@ -494,6 +516,7 @@ export class NegativaService {
             onBehalfReason: emNome,
             declaration: declaracao,
             late: atrasado,
+            deadlineAt: prazo,
             officialRecordId: f.negativasSinan[0]?.id ?? null,
           },
           select: { id: true },
@@ -513,7 +536,10 @@ export class NegativaService {
     return this.atestoDto(await ctx.db.negativeReport.findUniqueOrThrow({ where: { id: criado.id }, include: { unit: { select: { name: true, cnes: true } } } }));
   }
 
-  /** GET /vigilancia/negativas/:id/espelho.pdf (quem atestou, os responsáveis ativos da unidade ou a vigilância). */
+  /**
+   * GET /vigilancia/negativas/:id/espelho.pdf (quem atestou, os responsáveis ativos da unidade ou a vigilância). O prazo
+   * impresso é o gravado com o atesto (o que decidiu o "fora do prazo"), não o recalculado com a configuração de agora.
+   */
   async espelhoPdf(ctx: RequestContext, id: string): Promise<{ data: Buffer; fileName: string }> {
     const r = await ctx.db.negativeReport.findUnique({ where: { id }, include: { unit: { select: { name: true, cnes: true, address: true } } } });
     if (!r) throw notFound('Atesto');
@@ -523,9 +549,8 @@ export class NegativaService {
     }
     const tz = ctx.tenant.timeZone;
     const agora = this.agora();
-    const cfg = ctx.tenant.settings.vigilancia.negativa;
     const { inicio, fim } = intervalo(r.epiWeek);
-    const prazo = prazoDaNegativa(r.epiWeek, cfg, tz);
+    const prazo = r.deadlineAt;
     const emissor = await ctx.db.user.findUniqueOrThrow({ where: { id: ctx.session.userId }, select: { name: true, socialName: true, cpf: true } });
     const situacao: string[] = [];
     if (r.status === 'CANCELADA') situacao.push(`Atesto cancelado em ${formatDateTime(r.cancelledAt!, tz)}: ${r.cancelReason ?? 'a unidade passou a ter notificação na semana'}.`);
@@ -767,15 +792,19 @@ export class NegativaService {
     });
     if (!linhas.length) avisos.push('Nenhuma unidade notificante no período: configure as unidades notificantes.');
     // Sem configuração: a ativa que atende e nunca teve período, e a reativada cujo último período terminou na
-    // desativação no cadastro (a mesma regra da lista das unidades notificantes).
+    // desativação no cadastro ou cuja desativação apagou o período planejado (a mesma regra da lista das unidades
+    // notificantes).
     const [nuncaTiveram, comFimNaDesativacao] = await Promise.all([
       ctx.db.unit.count({ where: { active: true, type: { notIn: [...TIPOS_FORA_DA_NEGATIVA] }, notifyingPeriods: { none: {} } } }),
       ctx.db.unit.findMany({
         where: {
           active: true,
-          AND: [{ notifyingPeriods: { some: { endReason: MOTIVO_UNIDADE_DESATIVADA } } }, { notifyingPeriods: { none: { OR: [{ until: null }, { until: { gt: comoData(hoje) } }] } } }],
+          AND: [
+            { notifyingPeriods: { some: { OR: [{ endReason: MOTIVO_UNIDADE_DESATIVADA }, { nextRemovedAt: { not: null } }] } } },
+            { notifyingPeriods: { none: { OR: [{ until: null }, { until: { gt: comoData(hoje) } }] } } },
+          ],
         },
-        select: { name: true, notifyingPeriods: { select: { since: true, until: true, endReason: true } } },
+        select: { name: true, notifyingPeriods: { select: { since: true, until: true, endReason: true, nextRemovedAt: true } } },
         orderBy: { name: 'asc' },
       }),
     ]);
@@ -783,7 +812,7 @@ export class NegativaService {
       .filter((u) =>
         reativadaSemPeriodo(
           true,
-          u.notifyingPeriods.map((p) => ({ desde: dataIso(p.since)!, ate: dataIso(p.until), motivoFim: p.endReason })),
+          u.notifyingPeriods.map((p) => ({ desde: dataIso(p.since)!, ate: dataIso(p.until), motivoFim: p.endReason, seguinteApagado: p.nextRemovedAt !== null })),
           hoje,
         ),
       )
@@ -793,10 +822,22 @@ export class NegativaService {
     if (reativadas.length === 1) avisos.push(`Unidade reativada: o período de notificante de ${reativadas[0]} terminou na desativação. Abra um período novo se ela voltou a notificar.`);
     else if (reativadas.length) avisos.push(`Unidades reativadas: o período de notificante de ${emFrase(reativadas)} terminou na desativação. Abra um período novo se elas voltaram a notificar.`);
     // Unidade inativa com o período ainda aberto (a desativação no cadastro já o encerra): continua na grade (silenciosa e
-    // no denominador) até a vigilância encerrar o período na data da desativação. Sem período aberto, não há o que encerrar.
+    // no denominador) até a vigilância encerrar o período na data da desativação. O mesmo com o período que termina
+    // depois de hoje (dado anterior a esta versão): o encerramento da unidade inativa aceita esse período e encurta o fim
+    // até hoje. Sem nenhum dos dois, não há o que encerrar.
     const inativas = exibidas.filter((l) => !l.u.active && l.doPeriodo.some((p) => !p.until)).map((l) => l.u.name);
     if (inativas.length === 1) avisos.push(`${inativas[0]} está inativa e com período de notificante aberto: entra como silenciosa e no percentual. Encerre o período na data da desativação.`);
     else if (inativas.length) avisos.push(`${emFrase(inativas)} estão inativas e com período de notificante aberto: entram como silenciosas e no percentual. Encerre o período na data da desativação.`);
+    const comFimFuturo = exibidas
+      .filter((l) => !l.u.active && !l.doPeriodo.some((p) => !p.until))
+      .map((l) => ({ nome: l.u.name, ate: l.doPeriodo.map((p) => dataIso(p.until)!).reduce((a, b) => (b > a ? b : a), '') }))
+      .filter((x) => x.ate > hoje);
+    if (comFimFuturo.length === 1)
+      avisos.push(`${comFimFuturo[0]!.nome} está inativa e com período de notificante até ${ddmmaaaa(comFimFuturo[0]!.ate)}: entra como silenciosa e no percentual até lá. Encerre o período na data da desativação.`);
+    else if (comFimFuturo.length)
+      avisos.push(
+        `${emFrase(comFimFuturo.map((x) => x.nome))} estão inativas e com período de notificante que termina depois de hoje: entram como silenciosas e no percentual até o fim dele. Encerre o período na data da desativação.`,
+      );
     const regularidade = regularidadeDoMunicipio(doMunicipio, cfg.semanasRegularidadeMunicipal);
     if (regularidade.semanasSemInformacao > 0) {
       avisos.push('A regularidade não lê as notificações de epizootia nem de tracoma (o OmniSaúde não importa EPIZONET nem NTRACOMA). Confira no Sinan.');
@@ -821,8 +862,8 @@ export class NegativaService {
   /**
    * Monta as unidades (todas as ativas e as que já tiveram período) com os períodos e os responsáveis (cada ativo com a
    * marca de válido). "Sem configuração": unidade ativa que atende (fora farmácia central, almoxarifado e vigilância) e
-   * nunca teve período, ou a reativada cujo último período terminou na desativação no cadastro, sem período aberto nem
-   * com fim depois de hoje (com aviso; nada se reabre sozinho).
+   * nunca teve período, ou a reativada cujo último período terminou na desativação no cadastro ou cuja desativação
+   * apagou o período planejado, sem período aberto nem com fim depois de hoje (com aviso; nada se reabre sozinho).
    */
   private async montarUnidades(db: Db, timeZone: string, unitIds?: string[]): Promise<UnidadeNotificante[]> {
     const hoje = localDateString(this.agora(), timeZone);
@@ -880,10 +921,16 @@ export class NegativaService {
           };
         });
       const avisos: string[] = [];
-      // A desativação no cadastro já encerra o período; o aviso fica para a unidade inativa que ainda tenha um aberto
-      // (o único que a tela deixa encerrar).
+      // A desativação no cadastro já encerra o período; o aviso fica para a unidade inativa que ainda tenha um aberto,
+      // ou um que termina depois de hoje (dado anterior a esta versão): os dois a tela deixa encerrar, com fim até hoje.
+      const fimFuturo = periodos.find((p) => p.ate !== null && p.ate > hoje);
       if (!u.active && periodos.some((p) => p.ate === null)) avisos.push('Unidade inativa com período de notificante aberto. Encerre o período na data da desativação.');
-      const reativada = reativadaSemPeriodo(u.active, periodos, hoje);
+      else if (!u.active && fimFuturo) avisos.push(`Unidade inativa com período de notificante até ${ddmmaaaa(fimFuturo.ate!)}, depois de hoje. Encerre o período na data da desativação.`);
+      const reativada = reativadaSemPeriodo(
+        u.active,
+        u.notifyingPeriods.map((p) => ({ desde: dataIso(p.since)!, ate: dataIso(p.until), motivoFim: p.endReason, seguinteApagado: p.nextRemovedAt !== null })),
+        hoje,
+      );
       if (reativada) avisos.push(AVISO_UNIDADE_REATIVADA);
       const titularInvalido = responsaveis.find((r) => r.tipo === 'TITULAR' && r.valido === false);
       if (titularInvalido)
@@ -916,18 +963,33 @@ export class NegativaService {
     return this.montarUnidades(ctx.db, ctx.tenant.timeZone);
   }
 
-  /** POST /vigilancia/unidades-notificantes: abre período (um aberto por unidade; sem sobrepor o anterior). */
+  /**
+   * Trava a unidade e as linhas dos períodos dela, na ordem de encerrarUnidadeNotificante: a desativação no cadastro,
+   * a abertura e o encerramento feitos ao mesmo tempo entram em fila, e quem vem depois relê a unidade e os períodos.
+   */
+  private async travarPeriodos(tx: Db, unitId: string) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`negativa-responsavel:${unitId}`}))`;
+    await tx.$queryRaw`SELECT id FROM notifying_units WHERE unit_id = ${unitId}::uuid FOR UPDATE`;
+  }
+
+  /**
+   * POST /vigilancia/unidades-notificantes: abre período (um aberto por unidade; sem sobrepor o anterior). As
+   * conferências (unidade ativa, período aberto, sobreposição) rodam na transação, depois das travas da unidade e dos
+   * períodos: a desativação feita ao mesmo tempo espera a abertura e encerra o período novo, ou é esperada, e a abertura
+   * encontra a unidade inativa (422).
+   */
   async abrirPeriodo(ctx: RequestContext, corpo: CorpoAbrirPeriodoNotificante): Promise<UnidadeNotificante> {
-    const unidade = await ctx.db.unit.findUnique({ where: { id: corpo.unitId }, select: { id: true, cnes: true, active: true } });
-    if (!unidade) throw notFound('Unidade');
-    if (!unidade.active) throw new DomainError('UNIDADE_INATIVA', 'Unidade inativa não é notificante', HttpStatus.UNPROCESSABLE_ENTITY);
-    const periodos = await ctx.db.notifyingUnit.findMany({ where: { unitId: unidade.id }, orderBy: { since: 'desc' } });
-    const aberto = periodos.find((p) => !p.until);
-    if (aberto) throw conflict(`A unidade já é notificante desde ${ddmmaaaa(dataIso(aberto.since)!)}: encerre o período antes de abrir outro`);
-    const sobreposto = periodos.find((p) => dataIso(p.until)! >= corpo.desde);
-    if (sobreposto) throw new DomainError('PERIODO_SOBREPOSTO', `O novo período não pode começar antes do fim do anterior (${ddmmaaaa(dataIso(sobreposto.until)!)})`, HttpStatus.UNPROCESSABLE_ENTITY);
     try {
       await ctx.db.$transaction(async (tx) => {
+        await this.travarPeriodos(tx, corpo.unitId);
+        const unidade = await tx.unit.findUnique({ where: { id: corpo.unitId }, select: { id: true, cnes: true, active: true } });
+        if (!unidade) throw notFound('Unidade');
+        if (!unidade.active) throw new DomainError('UNIDADE_INATIVA', 'Unidade inativa não é notificante', HttpStatus.UNPROCESSABLE_ENTITY);
+        const periodos = await tx.notifyingUnit.findMany({ where: { unitId: unidade.id }, orderBy: { since: 'desc' } });
+        const aberto = periodos.find((p) => !p.until);
+        if (aberto) throw conflict(`A unidade já é notificante desde ${ddmmaaaa(dataIso(aberto.since)!)}: encerre o período antes de abrir outro`);
+        const sobreposto = periodos.find((p) => dataIso(p.until)! >= corpo.desde);
+        if (sobreposto) throw new DomainError('PERIODO_SOBREPOSTO', `O novo período não pode começar antes do fim do anterior (${ddmmaaaa(dataIso(sobreposto.until)!)})`, HttpStatus.UNPROCESSABLE_ENTITY);
         const p = await tx.notifyingUnit.create({ data: { unitId: unidade.id, since: comoData(corpo.desde), createdBy: ctx.session.userId }, select: { id: true } });
         await this.audit.record(ctx, tx, { action: 'vigilancia.notificante_abrir', entityType: 'NotifyingUnit', entityId: p.id, payload: { unidade: unidade.cnes, desde: corpo.desde } });
       });
@@ -935,23 +997,41 @@ export class NegativaService {
       if ((err as { code?: string }).code === 'P2002') throw conflict('A unidade já tem período aberto');
       throw err;
     }
-    return this.umaUnidade(ctx, unidade.id);
+    return this.umaUnidade(ctx, corpo.unitId);
   }
 
-  /** POST /vigilancia/unidades-notificantes/:unitId/encerrar: fecha o período aberto (o histórico não é recalculado). */
+  /**
+   * POST /vigilancia/unidades-notificantes/:unitId/encerrar: fecha o período aberto (o histórico não é recalculado). Na
+   * unidade inativa, o fim não passa de hoje, no fuso da instituição (422 FIM_DEPOIS_DE_HOJE): depois de hoje, ela
+   * seguiria silenciosa e no denominador sem atender. Nela também se encerra o período que ainda termina depois de hoje
+   * (dado anterior a esta versão): o fim encurta para a data informada, e a trilha guarda o fim e o motivo anteriores.
+   * As conferências rodam na transação, depois das travas da unidade e dos períodos (como a abertura).
+   */
   async encerrarPeriodo(ctx: RequestContext, unitId: string, corpo: CorpoEncerrarPeriodoNotificante): Promise<UnidadeNotificante> {
-    const unidade = await ctx.db.unit.findUnique({ where: { id: unitId }, select: { id: true, cnes: true } });
-    if (!unidade) throw notFound('Unidade');
-    const aberto = await ctx.db.notifyingUnit.findFirst({ where: { unitId, until: null } });
-    if (!aberto) throw new DomainError('SEM_PERIODO_ABERTO', 'A unidade não tem período de notificante aberto', HttpStatus.UNPROCESSABLE_ENTITY);
-    if (corpo.ate < dataIso(aberto.since)!) throw new DomainError('DATA_INVALIDA', 'O fim não pode ser antes do início do período', HttpStatus.BAD_REQUEST);
+    const agora = this.agora();
+    const hoje = localDateString(agora, ctx.tenant.timeZone);
     await ctx.db.$transaction(async (tx) => {
+      await this.travarPeriodos(tx, unitId);
+      const unidade = await tx.unit.findUnique({ where: { id: unitId }, select: { id: true, cnes: true, active: true } });
+      if (!unidade) throw notFound('Unidade');
+      const periodos = await tx.notifyingUnit.findMany({ where: { unitId, OR: [{ until: null }, { until: { gt: comoData(hoje) } }] }, orderBy: { since: 'desc' } });
+      const alvo = periodos.find((p) => !p.until) ?? (unidade.active ? undefined : periodos[0]);
+      if (!alvo) throw new DomainError('SEM_PERIODO_ABERTO', 'A unidade não tem período de notificante aberto', HttpStatus.UNPROCESSABLE_ENTITY);
+      if (corpo.ate < dataIso(alvo.since)!) throw new DomainError('DATA_INVALIDA', 'O fim não pode ser antes do início do período', HttpStatus.BAD_REQUEST);
+      if (!unidade.active && corpo.ate > hoje)
+        throw new DomainError('FIM_DEPOIS_DE_HOJE', `A unidade está inativa: o fim do período não pode passar de hoje (${ddmmaaaa(hoje)}). Use a data da desativação.`, HttpStatus.UNPROCESSABLE_ENTITY);
       const { count } = await tx.notifyingUnit.updateMany({
-        where: { id: aberto.id, until: null },
-        data: { until: comoData(corpo.ate), endReason: corpo.motivo.trim(), endedBy: ctx.session.userId, endedAt: this.agora() },
+        where: { id: alvo.id, until: alvo.until },
+        data: { until: comoData(corpo.ate), endReason: corpo.motivo.trim(), endedBy: ctx.session.userId, endedAt: agora },
       });
       if (count !== 1) throw conflict('O período mudou desde a leitura; abra de novo');
-      await this.audit.record(ctx, tx, { action: 'vigilancia.notificante_encerrar', entityType: 'NotifyingUnit', entityId: aberto.id, payload: { unidade: unidade.cnes, ate: corpo.ate, motivo: corpo.motivo } });
+      const fimAnterior = dataIso(alvo.until);
+      await this.audit.record(ctx, tx, {
+        action: 'vigilancia.notificante_encerrar',
+        entityType: 'NotifyingUnit',
+        entityId: alvo.id,
+        payload: fimAnterior ? { unidade: unidade.cnes, ate: corpo.ate, motivo: corpo.motivo, fimAnterior, motivoAnterior: alvo.endReason } : { unidade: unidade.cnes, ate: corpo.ate, motivo: corpo.motivo },
+      });
     });
     return this.umaUnidade(ctx, unitId);
   }

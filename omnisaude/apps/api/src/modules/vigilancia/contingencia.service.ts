@@ -220,6 +220,11 @@ export class ContingenciaService {
   async editarPlano(ctx: RequestContext, id: string, corpo: CorpoEditarPlano): Promise<DetalhePlano> {
     await this.conferirDefinicao(ctx, corpo.definicao);
     return ctx.db.$transaction(async (tx) => {
+      // A trava da vigência, no escopo do plano, antes de ler a situação: o rascunho posto em vigor ao mesmo tempo entra
+      // antes (e a edição recebe 409) ou depois (e a vigência recusa a definição que mudou durante a conferência dela).
+      const escopo = await tx.contingencyPlan.findUnique({ where: { id }, select: { scope: true } });
+      if (!escopo) throw notFound('Plano de contingência');
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`contingencia-plano:${escopo.scope}`}))`;
       const atual = await tx.contingencyPlan.findUnique({ where: { id } });
       if (!atual) throw notFound('Plano de contingência');
       if (atual.status !== 'RASCUNHO') throw conflict(`Só o rascunho pode ser editado: este plano está ${atual.status === 'VIGENTE' ? 'em vigor' : 'arquivado'}. Faça uma cópia para mudar.`);
@@ -240,15 +245,20 @@ export class ContingenciaService {
   /**
    * POST /vigilancia/contingencia/planos/:id/vigencia: o anterior do mesmo escopo vira ARQUIVADO com vigência até a
    * véspera de `desde`, ou até o próprio dia quando ele começou nesse dia (vigorou só naquele dia; nunca termina antes
-   * de começar), como no acionamento.
+   * de começar), como no acionamento. Um pedido por vez no escopo (a trava da criação): o mesmo rascunho posto em vigor
+   * duas vezes ao mesmo tempo dá 409 'O plano já está em vigor' no segundo, e dois rascunhos ao mesmo tempo entram em
+   * ordem (o segundo arquiva o primeiro, ou recebe 422 se começar antes dele).
    */
   async porEmVigencia(ctx: RequestContext, id: string, corpo: CorpoVigenciaPlano): Promise<DetalhePlano> {
     const hoje = localDateString(this.agora(), ctx.tenant.timeZone);
     if (corpo.desde > hoje) throw new DomainError('DATA_FUTURA', 'A vigência começa hoje ou numa data passada', HttpStatus.BAD_REQUEST);
     // A definição é conferida fora da transação (o catálogo pode ser gravado na primeira leitura).
-    const rascunho = await ctx.db.contingencyPlan.findUnique({ where: { id }, select: { status: true, definition: true } });
+    const rascunho = await ctx.db.contingencyPlan.findUnique({ where: { id }, select: { status: true, definition: true, scope: true } });
     if (rascunho?.status === 'RASCUNHO') await this.conferirDefinicao(ctx, definicaoDe(rascunho.definition));
     return ctx.db.$transaction(async (tx) => {
+      // A trava da criação, no escopo do plano: o plano e o vigente são lidos depois dela (o pedido que chegou antes já
+      // gravou e liberou a trava no commit).
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`contingencia-plano:${rascunho?.scope ?? ESCOPO}`}))`;
       const p = await tx.contingencyPlan.findUnique({ where: { id } });
       if (!p) throw notFound('Plano de contingência');
       if (p.status !== 'RASCUNHO') throw conflict(p.status === 'VIGENTE' ? 'O plano já está em vigor' : 'Plano arquivado não volta a vigorar: faça uma cópia');

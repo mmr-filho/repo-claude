@@ -150,6 +150,9 @@ CREATE INDEX official_records_patient_name_norm_birth_date_idx ON official_recor
 -- Registros que a aplicação tocou (unidades pelo CNES, conciliação automática em páginas, negativa); também atende a
 -- conferência da chave estrangeira last_import_id quando a linha de um envio que falhou é apagada.
 CREATE INDEX official_records_last_import_id_idx ON official_records (last_import_id);
+-- Os ausentes que uma importação marcou (a substituição do mesmo arquivo os devolve) e a conferência da chave
+-- estrangeira absent_import_id quando a linha de um envio que falhou é apagada; só as linhas marcadas entram.
+CREATE INDEX official_records_absent_import_id_idx ON official_records (absent_import_id) WHERE absent_import_id IS NOT NULL;
 -- Ausentes previstos e marcados: sistema, tipo e período da cobertura do envio.
 CREATE INDEX official_records_system_type_notified_on_idx ON official_records (system, type, notified_on);
 -- Degrau 1 da conciliação (número oficial sem zeros à esquerda, a mesma expressão de sqlSemZeros): os concorrentes das
@@ -438,7 +441,10 @@ CREATE TABLE notifying_units (
   created_by uuid,
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   ended_by uuid,
-  ended_at timestamp(3)
+  ended_at timestamp(3),
+  -- Quando a desativação da unidade no cadastro apagou o período planejado que viria depois deste (o último que
+  -- restou): reativada, a unidade fica "sem configuração", com aviso, até a vigilância abrir um período novo.
+  next_removed_at timestamp(3)
 );
 CREATE UNIQUE INDEX notifying_units_aberto ON notifying_units (unit_id) WHERE until IS NULL;
 CREATE INDEX notifying_units_unit_id_since_idx ON notifying_units (unit_id, since);
@@ -484,6 +490,9 @@ CREATE TABLE negative_reports (
   on_behalf_reason text,
   declaration text NOT NULL,
   late boolean NOT NULL DEFAULT false,
+  -- O prazo usado no atesto (o de "late"), com a configuração lida no banco mestre na hora: o espelho imprime este, e
+  -- não o prazo recalculado com a configuração de agora.
+  deadline_at timestamp(3) NOT NULL,
   cancelled_at timestamp(3),
   cancelled_by uuid,
   cancel_reason text,

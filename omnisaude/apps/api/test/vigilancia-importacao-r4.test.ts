@@ -65,7 +65,13 @@ describe.runIf(enabled)('importação, quarta rodada: CNES por arquivo, substitu
     ...(typeof v.DT_NOTIFIC === 'string' ? { SEM_NOT: semanaDaData(v.DT_NOTIFIC).codigo, NU_ANO: v.DT_NOTIFIC.slice(0, 4), DT_SIN_PRI: v.DT_NOTIFIC } : {}),
     ...v,
   });
-  const NIND: CampoEscrita[] = [...CAMPOS_NINDINET, { nome: 'CLASSI_FIN', tipo: 'C', tamanho: 2 }, { nome: 'CRITERIO', tipo: 'C', tamanho: 1 }, { nome: 'EVOLUCAO', tipo: 'C', tamanho: 1 }, { nome: 'DT_ENCERRA', tipo: 'D', tamanho: 8 }];
+  const NIND: CampoEscrita[] = [
+    ...CAMPOS_NINDINET,
+    { nome: 'CLASSI_FIN', tipo: 'C', tamanho: 2 },
+    { nome: 'CRITERIO', tipo: 'C', tamanho: 1 },
+    { nome: 'EVOLUCAO', tipo: 'C', tamanho: 1 },
+    { nome: 'DT_ENCERRA', tipo: 'D', tamanho: 8 },
+  ];
   const DENGON: CampoEscrita[] = [...NIND, { nome: 'FEBRE', tipo: 'C', tamanho: 1 }, { nome: 'MIALGIA', tipo: 'C', tamanho: 1 }];
   const den = (n: string, dt: string) => base({ NU_NOTIFIC: n, ID_AGRAVO: 'A90', DT_NOTIFIC: dt, NM_PACIENT: `DENGUE ${n}`, CS_SEXO: 'F', DT_NASC: '2000-01-01', FEBRE: '1', CLASSI_FIN: '10', CRITERIO: '1' });
   const coq = (n: string, dt: string) => base({ NU_NOTIFIC: n, ID_AGRAVO: 'A379', DT_NOTIFIC: dt, NM_PACIENT: `COQUELUCHE ${n}`, CS_SEXO: 'M', DT_NASC: '2025-01-01' });
@@ -157,6 +163,12 @@ describe.runIf(enabled)('importação, quarta rodada: CNES por arquivo, substitu
     expect((await aplicar(errado.id)).ausentesMarcados).toBe(2);
     for (const n of ['0000501', '0000502']) expect(await registro(n)).toMatchObject({ absentSince: expect.any(Date), absentImportId: errado.id });
     expect((await casos('dengue', [2025])).oficiais).toBe(0);
+    // Com os dois registros ausentes, a UBS atestou a negativa da semana do primeiro: quando ele voltar, o atesto cai (RQ003).
+    const ubs = await db.unit.findFirstOrThrow({ where: { cnes: UBS }, select: { id: true } });
+    const atesto = await db.negativeReport.create({
+      data: { unitId: ubs.id, epiWeek: semanaDaData('2025-03-10').codigo, attestedBy: ubs.id, attestedAt: new Date(), attesterName: 'Atesto sintético', declaration: 'Atesto de teste.', deadlineAt: new Date() },
+      select: { id: true },
+    });
 
     // O mesmo arquivo com o período certo: a prévia avisa a substituição e quantos voltam.
     const certo = await previa(d2026, 'DENGON2026.DBF', ano(2026));
@@ -171,6 +183,9 @@ describe.runIf(enabled)('importação, quarta rodada: CNES por arquivo, substitu
     expect(await importacao(errado.id)).toMatchObject({ status: 'SUBSTITUIDA', supersededBy: certo.id });
     expect(await importacao(certo.id)).toMatchObject({ status: 'APLICADA', supersededBy: null });
     for (const n of ['0000501', '0000502']) expect(await registro(n)).toMatchObject({ absentSince: null, absentImportId: null });
+    // A negativa das unidades e semanas dos que voltaram é reconciliada junto com a dos registros do arquivo.
+    expect(r.negativasCanceladas).toBe(1);
+    expect(await db.negativeReport.findUniqueOrThrow({ where: { id: atesto.id }, select: { status: true, causeRecordId: true } })).toEqual({ status: 'CANCELADA', causeRecordId: (await registro('0000501')).id });
     expect(await casos('dengue', [2025])).toEqual({ oficiais: 2, cobertura: ['2025:todo'] });
     expect((await casos('dengue', [2026])).oficiais).toBe(2);
     expect(await db.officialRecord.count({ where: { number: { in: ['0000601', '0000602'] } } })).toBe(2);

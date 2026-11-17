@@ -71,6 +71,7 @@ const detalhe = (d: Partial<DetalheImportacao> = {}): DetalheImportacao => ({
   processamento: null,
   erro: null,
   resultadoAplicacao: null,
+  substituidaPor: null,
   sha256: 'a'.repeat(64),
   arquivos: [arquivo('NINDINET')],
   previa: null,

@@ -660,13 +660,16 @@ export class ImportacaoService {
    * registros que elas deram como ausentes e que a cobertura desta marca de novo (dentro dela e não tocados por este
    * envio) continuam ausentes, agora por esta, com o absent_since de quando sumiram; os outros voltam (absent_since e
    * absent_import_id nulos). Devolve, por substituída, quantos voltaram em termos líquidos (os dela que deixaram de
-   * estar ausentes, os que vieram no arquivo inclusive).
+   * estar ausentes, os que vieram no arquivo inclusive), e as unidades e semanas dos que voltaram agora (a negativa
+   * delas é reconciliada junto com a dos registros do arquivo).
    */
-  private async substituirAnteriores(tx: Db, anteriores: AnteriorDoArquivo[], cobertura: Cobertura[], id: string): Promise<ImportacaoSubstituida[]> {
-    if (!anteriores.length) return [];
+  private async substituirAnteriores(tx: Db, anteriores: AnteriorDoArquivo[], cobertura: Cobertura[], id: string, agora: Date): Promise<{ substituidas: ImportacaoSubstituida[]; unidades: string[]; semanas: string[] }> {
+    const unidades = new Set<string>();
+    const semanas = new Set<string>();
+    if (!anteriores.length) return { substituidas: [], unidades: [], semanas: [] };
     const { count } = await tx.officialImport.updateMany({ where: { id: { in: anteriores.map((a) => a.id) }, status: 'APLICADA' }, data: { status: 'SUBSTITUIDA', supersededBy: id } });
     if (count !== anteriores.length) throw conflict('A importação mudou: abra de novo');
-    const out: ImportacaoSubstituida[] = [];
+    const substituidas: ImportacaoSubstituida[] = [];
     for (const a of anteriores) {
       let continuam = 0;
       for (const c of cobertura) {
@@ -674,10 +677,19 @@ export class ImportacaoService {
         const r = await tx.officialRecord.updateMany({ where: { ...this.ondeCobertura(c), absentSince: undefined, absentImportId: a.id, lastImportId: { not: id } }, data: { absentImportId: id } });
         continuam += r.count;
       }
-      await tx.officialRecord.updateMany({ where: { absentImportId: a.id }, data: { absentSince: null, absentImportId: null } });
-      out.push({ ...this.doMesmoArquivo(a), voltaram: Math.max(0, a.ausentes - continuam) });
+      const voltas = await tx.$queryRaw<{ u: string | null; s: string | null }[]>`
+        WITH v AS (
+          UPDATE official_records SET absent_since = NULL, absent_import_id = NULL, updated_at = ${agora.toISOString()}::timestamptz AT TIME ZONE 'UTC'
+          WHERE absent_import_id = ${a.id}::uuid
+          RETURNING unit_id, epi_week_notified)
+        SELECT DISTINCT unit_id::text AS u, trim(epi_week_notified) AS s FROM v WHERE unit_id IS NOT NULL`;
+      for (const v of voltas) {
+        unidades.add(v.u!);
+        if (v.s) semanas.add(v.s);
+      }
+      substituidas.push({ ...this.doMesmoArquivo(a), voltaram: Math.max(0, a.ausentes - continuam) });
     }
-    return out;
+    return { substituidas, unidades: [...unidades], semanas: [...semanas] };
   }
 
   private amostra(c: Comparado): AmostraRegistro {
@@ -1400,7 +1412,7 @@ export class ImportacaoService {
 
           // O mesmo arquivo aplicado antes com outro período: esta aplicação o substitui, e os ausentes que ele marcou
           // fora da cobertura desta voltam.
-          const substituidas = await this.substituirAnteriores(tx, aplicadasAntes, cobertura, id);
+          const { substituidas, unidades: unidadesQueVoltaram, semanas: semanasQueVoltaram } = await this.substituirAnteriores(tx, aplicadasAntes, cobertura, id, agora);
 
           // Ausentes: só dentro da cobertura do envio (sistema, tipo, agravos, período, municípios, ficha e CNES), entre
           // os registros que este envio não tocou. Nunca apaga.
@@ -1432,10 +1444,22 @@ export class ImportacaoService {
 
           const anteriores = imp.counts as unknown as ContagensImportacao;
           const contagens: ContagensImportacao = { ...anteriores, novos, alterados, iguais, ausentesPrevistos: ausentesMarcados };
-          const unidades = (await tx.$queryRaw<{ u: string }[]>`SELECT DISTINCT unit_id::text AS u FROM official_records WHERE last_import_id = ${id}::uuid AND unit_id IS NOT NULL`).map((r) => r.u);
-          const semanas = (await tx.$queryRaw<{ s: string }[]>`SELECT DISTINCT trim(epi_week_notified) AS s FROM official_records WHERE last_import_id = ${id}::uuid AND trim(COALESCE(epi_week_notified, '')) <> ''`).map(
-            (r) => r.s,
-          );
+          // As unidades e semanas tocadas (os registros do arquivo e os que voltaram com a substituição): a negativa delas
+          // é reconciliada depois da transação.
+          const unidades = [
+            ...new Set([
+              ...(await tx.$queryRaw<{ u: string }[]>`SELECT DISTINCT unit_id::text AS u FROM official_records WHERE last_import_id = ${id}::uuid AND unit_id IS NOT NULL`).map((r) => r.u),
+              ...unidadesQueVoltaram,
+            ]),
+          ];
+          const semanas = [
+            ...new Set([
+              ...(await tx.$queryRaw<{ s: string }[]>`SELECT DISTINCT trim(epi_week_notified) AS s FROM official_records WHERE last_import_id = ${id}::uuid AND trim(COALESCE(epi_week_notified, '')) <> ''`).map(
+                (r) => r.s,
+              ),
+              ...semanasQueVoltaram,
+            ]),
+          ];
           // O resultado fica gravado com a aplicação. A reconciliação da negativa roda depois da transação: até ela
           // terminar, fica o aviso de que não rodou (verdade se o processo cair antes; o job reconcilia depois).
           const gravado: ResultadoAplicacao = {

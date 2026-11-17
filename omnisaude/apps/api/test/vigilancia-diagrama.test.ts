@@ -72,6 +72,8 @@ describe.runIf(enabled)('Vigilância: base consolidada, população e diagrama d
       evolution: o.evolucao ?? null,
       excluded: o.excluido ?? false,
       absentSince: o.ausente ? new Date() : null,
+      // A importação que marcou o ausente vai junto (CHECK official_records_ausencia).
+      absentImportId: o.ausente ? ids.importacao : null,
       contentHash: '0'.repeat(64),
       firstImportId: ids.importacao,
       lastImportId: ids.importacao,
