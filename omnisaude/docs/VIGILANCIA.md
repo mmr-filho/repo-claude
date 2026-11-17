@@ -472,7 +472,10 @@ encerradas, não descartadas e **sem vínculo** com registro oficial: o par vinc
 oficial. A semana é a de início dos sintomas; sem ela, a da notificação (contada à parte, com aviso). Base de casos
 prováveis (situação diferente de descartado), notificados ou confirmados. Território: município pela residência;
 bairro e localidade pelo código ou pelo nome do bairro do registro (com os apelidos) e pelo quarteirão da residência
-da notificação.
+da notificação. Os quarteirões são localizados em lote: duas consultas para todas as notificações, com o mesmo
+resultado da localização ponto a ponto (o polígono que contém o ponto, com a borda contando como dentro; fora de
+todos, o mais próximo até 15 m). Divisa, quarteirão dentro de outro e empate vão para a consulta de um ponto. Da ficha
+da notificação sem quarteirão, a base lê só o nome do bairro.
 
 **Cobertura** por SE. A semana sem caso só vale zero em três situações:
 - está no período de uma importação aplicada que traz o agravo. O período vai até a data do envio, e o arquivo do
@@ -502,9 +505,16 @@ parte", com as SE cobertas.
   versão ativa; a anterior fica inativa). Sem canal congelado, a tela mostra a prévia calculada na hora. Não se congela
   com ano ainda incompleto na referência (o ano em curso, ou o recém-fechado enquanto tem SE incompletas): a tela diz a
   SE a partir da qual se poderá congelar.
-- **Agravo sigiloso** (aids, HIV, HIV na gestação, sífilis e violências, pelo catálogo nacional ou pelo da
-  instituição): diagrama, CSV e anos epidêmicos só para a vigilância epidemiológica municipal, com cada leitura
-  auditada. O agravo sigiloso também fica fora do plano de contingência e das sugestões de surto pelo diagrama.
+- **Agravo sigiloso** no diagrama: os sigilosos do catálogo nacional (aids, HIV, HIV na gestação, sífilis e
+  violências) mais tuberculose, hanseníase, hepatites virais e hepatite B na gestação (Lei 14.289/2022, art. 1º e 2º),
+  e a linha marcada sigilosa no catálogo da instituição. É uma lista única, da API e da tela, que vale mesmo que o
+  catálogo da instituição desmarque a linha. Diagrama, CSV, anos epidêmicos, congelar e configuração
+  (`diagrama/configuracao/:grupo`, com o motivo dos anos excluídos) só para a vigilância epidemiológica municipal com
+  `notificacao.sensivel`, com cada leitura auditada; os demais papéis, gestor e núcleo inclusive, recebem 403
+  AGRAVO_SIGILOSO. O agravo sigiloso também fica fora do plano de contingência (o plano recusa; indicadores e excessos o
+  pulam) e das sugestões de surto pelo diagrama. A marca `sensitive` do catálogo nacional **não mudou**: tuberculose,
+  hanseníase e hepatites seguem sem ela nas notificações, porque essa marca governa o acesso às notificações nos outros
+  módulos (ficha, mapa de casos, conciliação, surto), e essa decisão é da instituição.
 - **Eixo** epidemiológico (SE 1 a 52/53) ou sazonal (SE 27 a 26 do ano seguinte, cada ponto com o canal do seu ano).
   As semanas incompletas (2 por padrão, contando a em curso) aparecem tracejadas.
 - **CSV** com `;`, vírgula decimal e BOM: uma coluna por ano de referência, os limites, o observado e, no cabeçalho, as
@@ -527,11 +537,16 @@ parte", com as SE cobertas.
   marcada "estimada" (inferência nossa, a validar com a vigilância).
 - A RIPSA refaz a série toda a cada ano: o canal congelado guarda a versão usada, e a tela avisa quando a população
   mudou depois do congelamento.
+- Na tela, a tabela *População e cobertura por ano* mostra a fonte uma vez, acima da tabela, quando ela (fonte e
+  versão) é a mesma em todos os anos; a coluna Fonte só aparece quando a fonte varia.
 
 ### Plano de contingência
 
 - **Plano** (tabela `contingency_plans`) criado a partir do modelo do MS 2025 ou copiado de outro, editável só em
-  rascunho e posto em vigor com data (o vigente anterior do mesmo escopo é arquivado). Modelo: estágios normalidade
+  rascunho e posto em vigor com data. O vigente anterior do mesmo escopo é arquivado até a véspera dessa data, ou até
+  a própria data se começou nela (a tela diz "Vigorou só em DD/MM/AAAA"). A versão é única no escopo: a criação trava
+  o escopo antes de ler a última versão, e a migração 0031 tem o índice único (escopo, versão) e a restrição de que a
+  vigência não termina antes de começar. Modelo: estágios normalidade
   (preparação), mobilização, alerta e situação de epidemia; dengue, chikungunya e Zika; critérios do Apêndice B com a
   fonte e a página; ações por estágio e eixo (gestão, vigilância, laboratório, vetores, APS, atenção especializada,
   comunicação).
@@ -543,16 +558,33 @@ parte", com as SE cobertas.
 - **Critérios manuais** (nowcasting do InfoDengue, positividade do RT-PCR e do teste ZDC, sorotipo, atendimentos): a
   vigilância responde a cada semana; sem resposta, o critério fica "não avaliado", nunca "atendido".
 - **Sugestão**: combinação "qualquer critério" (o "E/OU" do plano; o estágio de maior ordem com algum critério
-  atendido) ou "dois ou mais" (regra da SES-MG). Descer de estágio só é sugerido depois de 4 SE completas seguidas com
-  a sugestão abaixo do estágio em vigor, contadas desde o início do acionamento em vigor. Quando a curva volta ao canal
-  endêmico, o acumulado do ano (percentuais e letalidade) deixa de segurar o estágio (item 7.2.3), e o detalhe diz o
-  que segue acima do limiar; o acumulado que já estava atendido quando o estágio foi decidido não faz o estágio subir
-  de novo. Na virada do ano, as SE do ano anterior contam, cada uma no canal do próprio ano.
+  atendido) ou "dois ou mais" (regra da SES-MG).
+- **Descer de estágio** só é sugerido depois de 4 SE completas seguidas com a sugestão abaixo do estágio em vigor,
+  contadas desde o início do acionamento em vigor ("4 SE completas seguidas abaixo do estágio em vigor, ou volta da
+  curva ao canal endêmico", Plano 2025, item 7.2.3, p. 52). O item fala em "período superior a quatro semanas" para a
+  curva epidêmica: 4 SE é interpretação, e a vigilância que quiser a letra põe 5 nas semanas da desmobilização do
+  plano. A SE em que um critério de
+  canal do estágio em vigor, ou de um acima, ficou sem canal (sem base que cubra a semana, sem população ou com o
+  quartil indefinido) não conta como abaixo: a curva pode não ter descido. O agravo sem canal em nenhuma SE completa
+  do ano anterior e do ano em análise (nunca importado, território sem população) não trava a contagem, porque não há
+  como conferi-lo.
+- **Volta ao canal endêmico**: as últimas SE completas do agravo, tantas quantas as semanas da desmobilização (4 no
+  modelo do MS), dentro do canal (abaixo do limite inferior, até o centro ou entre o centro e o limite superior). Uma
+  SE sem canal na janela não é volta ao canal. Com a curva de volta
+  ao canal, o acumulado do ano (percentuais e letalidade) deixa de segurar o estágio (item 7.2.3), e o detalhe diz o
+  que segue acima do limiar.
+- **Retrato do acionamento**: o critério do acumulado do ano que já estava atendido quando o estágio foi decidido só
+  deixa de fazer o estágio subir de novo quando valem as três condições: é o mesmo ano do acumulado; o numerador não
+  cresceu desde o retrato (graves e com sinais de alarme, óbitos pelo agravo, óbitos em investigação ou prováveis); e
+  a curva do agravo voltou ao canal. É o vai e volta depois da descida: óbito, grave ou caso novo, ou a curva fora do
+  canal, e o critério volta a contar para subir. Na virada do ano, as SE do ano anterior contam, cada uma no canal do
+  próprio ano.
 - **Conferência do plano**: a mesma na API e na tela; agravo sigiloso não entra no plano.
 - **Acionamento** (tabela `contingency_activations`): estágio, justificativa (20 caracteres ou mais), ato, retrato dos
-  indicadores; fecha o acionamento aberto na véspera (no próprio dia, se ele começou hoje) e cria a lista de ações do
-  estágio e dos anteriores ("manter e intensificar"), com situação, responsável e nota. Sem acionamento, vale a
-  normalidade.
+  indicadores; fecha o acionamento aberto na véspera (no próprio dia, se ele começou hoje; a migração 0031 recusa
+  acionamento que termina antes de começar) e cria a lista de ações do estágio e dos anteriores ("manter e
+  intensificar"), com situação, responsável e nota. O aviso diz "Estágio <nome> acionado em <território>; N ação(ões)
+  no checklist.". Sem acionamento, vale a normalidade.
 
 ### Notificação de surto
 
@@ -563,7 +595,12 @@ parte", com as SE cobertas.
   interna `AAAA/NNNN`. Cada etapa é validada (manual 5.3.1).
 - **Planilha de acompanhamento** (uma linha por caso): de uma notificação ou de um registro oficial, achados por
   busca própria (agravo, período e texto: número, nome, CNS ou CPF; a busca por texto é auditada), ou digitada. A
-  mesma notificação ou o mesmo registro não entram duas vezes, nem em envios simultâneos. Caso de agravo da lista sem
+  mesma notificação ou o mesmo registro não entram duas vezes, nem em envios simultâneos. O registro oficial
+  conciliado com uma notificação é o mesmo caso dela: não entra se o outro já está na planilha (409, na inclusão e na
+  criação do surto), sai das buscas do surto, e a lista de surtos de cada um mostra também os do par. O NU_CASO nunca
+  é reaproveitado: é 1 + o maior número já usado nas linhas e nos eventos de inclusão e retirada. A inclusão e a
+  retirada conferem, dentro da transação, que o surto continua aberto (409 SURTO_FECHADO se ele foi encerrado ou
+  descartado no meio); o encerramento e o descarte esperam a inclusão ou a retirada em curso. Caso de agravo da lista sem
   notificação individual gera aviso (o surto não substitui a notificação); na categoria "doença da lista", aviso
   quando as individuais não chegam a 10% dos casos. A linha de caso sigiloso aparece só com o número, na planilha, na
   linha do tempo e no espelho, para quem não pode abrir a origem; quem pode vê-la tem a leitura auditada.
@@ -578,10 +615,20 @@ parte", com as SE cobertas.
   bairro ou da localidade); varicela atendida em hospital (1 caso); síndrome gripal por covid-19 na mesma unidade
   (3 casos em 7 dias); evento inusitado (primeiro caso do agravo depois de 365 dias sem casos, ou nunca visto). As
   regras padrão ficam nas configurações da instituição. Violências, agravos do trabalho e condições crônicas ou
-  congênitas nunca viram sugestão. A dispensada volta quando aparece caso conhecido depois dela. Caso já ligado a um
-  surto (aberto, encerrado ou descartado) não volta como sugestão. No evento inusitado, a suspeita descartada não
-  conta como caso anterior; o caso já em surto e os casos de outras unidades contam. O caso sem início dos sintomas
-  entra no dia local da instituição.
+  congênitas nunca viram sugestão. Caso já ligado a um surto (aberto, encerrado ou descartado) não volta como
+  sugestão. No evento inusitado, a suspeita descartada não conta como caso anterior, e os casos de outras unidades
+  contam. O agravo com caso da janela já ligado a um surto, visto ou não por quem lê, fica fora do evento inusitado:
+  o caso em surto conta como anterior em qualquer data, e o caso índice achado depois pela busca ativa não reabre o
+  "primeiro caso". O caso sem início dos sintomas entra no dia local da instituição.
+- **Dispensa** com motivo: vale até o último caso que a tela mostrou (a tela manda o instante de conhecimento dele).
+  Se já há caso conhecido depois desse instante, a resposta é 409 "A sugestão mudou desde que a tela foi aberta: abra
+  de novo.", e a tela recarrega a lista. A dispensada volta quando aparece caso conhecido depois dela.
+- **Teto**: as sugestões leem até 5000 notificações da janela, e o teto vale só para os agravos que alguma regra de
+  vizinhança em vigor alcança (quarteirão, bairro e unidade, pelas regras da instituição ou pelas padrão); quando ele
+  corta, o aviso cita os agravos com casos de fora. Os agravos fora dessas regras (dengue, chikungunya e Zika, nas
+  padrão) entram só no evento inusitado, por uma consulta agregada: só o agravo sem histórico, ou com o último caso
+  anterior a mais de `diasInusitado` dias do primeiro caso da janela, tem as notificações lidas. O quarteirão é
+  localizado só para as notificações das regras de vizinhança, em lote.
 - O núcleo do estabelecimento só vê e cria surtos das unidades em que está lotado. A dispensa feita pelo núcleo só
   vale na visão dele; a da vigilância municipal vale para todos.
 
@@ -595,6 +642,11 @@ parte", com as SE cobertas.
   a busca dos lotados é pelo nome ou pelo CPF completo. A palavra "atesto" não está nas normas: é o bloco "Notificante"
   da ficha (nome, função e assinatura), que o Sinan Net não guarda. No OmniSaúde, o atesto é o registro identificado
   do responsável logado, que precisa continuar lotado na unidade num papel que atesta.
+- A designação só **vale** com o acesso ativo e a lotação ativa na unidade num papel que atesta. A que deixou de
+  valer (acesso desativado, lotação encerrada, papel trocado) aparece com a marca "Não vale" e o motivo, e o titular
+  inválido gera aviso na configuração. "Notificantes sem titular" e "Sem nenhum responsável" contam só designações
+  que valem. Designar novo titular quando o atual não vale encerra a designação antiga na mesma transação (com o
+  motivo na trilha); com titular válido, a nova designação de titular continua recusada.
 - **Atesto** (tabela `negative_reports`, tela *Notificação negativa*): só semana terminada e dentro das últimas 8;
   texto da declaração à vista, com a citação do art. 2º, IX, do Anexo V da PRC nº 4/2017; grava nome, função, CBO,
   data e hora e se foi **fora do prazo** (padrão: segunda-feira 14h da semana seguinte). Recusado se a unidade tem na
@@ -612,10 +664,21 @@ parte", com as SE cobertas.
   notificações de qualquer unidade (inclusive da vigilância), surtos, registros oficiais do município (pelo IBGE, pela
   unidade ou pelo CNES, mesmo fora do cadastro) e atestos. Semana sem nenhuma unidade notificante encerra a contagem
   ("A regularidade conta desde a SE..."). Epizootia e tracoma não são importados: a grade avisa para conferir no Sinan.
-- Desativar a unidade no cadastro encerra no mesmo dia o período de notificante e as designações de responsável: a SE
-  da desativação ainda conta, as seguintes ficam fora da grade e das silenciosas. Reativar não reabre: a vigilância
-  abre um novo período. Unidade inativa com período aberto (desativada antes desta versão) aparece com aviso na grade
-  e na configuração.
+- **Desativar a unidade** no cadastro (o botão pede confirmação, com o aviso) faz, na mesma transação e no fuso da
+  instituição:
+  - o período aberto, e o encerrado com fim depois de hoje, terminam hoje, com o motivo "Unidade desativada no
+    cadastro" (no encurtado, a trilha guarda o fim e o motivo anteriores);
+  - o período e as designações ativas que só começariam depois de hoje são apagados, com auditoria;
+  - as designações ativas terminam hoje.
+  A SE da desativação ainda conta; as seguintes ficam fora da grade e das silenciosas. A designação e o encerramento
+  feitos ao mesmo tempo esperam e são relidos. Unidade inativa com período aberto (desativada antes desta versão)
+  aparece com o aviso "Encerre o período na data da desativação" na grade e na configuração.
+- **Reativar** não reabre nada. A unidade ativa cujo último período terminou com o motivo da desativação entra como
+  "sem configuração", com o aviso "Unidade reativada: o período de notificante terminou na desativação. Abra um
+  período novo se ela voltou a notificar.", e não é cobrada como silenciosa. Abrir um período novo tira a marca.
+- **Prazos e parâmetros** (`PATCH /vigilancia/configuracoes`): a leitura, a mescla e a gravação ficam numa transação
+  do banco mestre, com a linha da instituição travada: salvamentos simultâneos de campos diferentes não se perdem, e
+  a trilha bate com o gravado. A gestão da vigilância (aba Plantão e contatos) tem um atalho para essa seção.
 - A importação casa o atesto com a negativa do NNEGANET (mesma unidade pelo CNES e mesma SE); se a negativa sai do
   Sinan, o atesto volta a "atestado e não digitado". A tarefa `vigilancia` (a cada 5 minutos) reconcilia os atestos,
   expira as prévias e roda a conciliação automática.
@@ -644,7 +707,12 @@ parte", com as SE cobertas.
   (grade, cartões, configuração das unidades notificantes e dos responsáveis, e *Prazos e parâmetros*).
 - Os horários das telas da semana saem no fuso da instituição. O seletor de agravo esconde os sigilosos de quem não
   pode vê-los. Cada lista de abas tem nome próprio para o leitor de tela, e os botões que se repetem em cada linha
-  dizem o objeto ("Vincular o registro N", "Desvincular o registro N").
+  dizem o objeto ("Vincular o registro N", "Desvincular o registro N", "Revogar a designação de <nome>").
+- *Desativar* no cadastro de unidades pede confirmação: "Encerra hoje o período de unidade notificante e as
+  designações de responsável pela notificação negativa (o que só começaria depois de hoje é apagado); reativar não os
+  reabre.". Reativar é direto, com o aviso de que a negativa não se reabre.
+- A aba *Notificação negativa* abre direto numa seção pelo endereço (`?aba=negativa&secao=unidades|parametros`), se a
+  pessoa pode vê-la; a gestão da vigilância usa isso no atalho para *Prazos e parâmetros*.
 - Envio cuja resposta se perdeu (0, 502, 503, 504 ou 524) aparece como aviso, "A resposta do envio não chegou", e não
   como erro. Em qualquer tela, uma página HTML de erro da borda (ou um corpo vazio ou longo) não vira mensagem. Para
   502, 503, 504 e 524, a mensagem é "O servidor demorou a responder. Tente de novo em instantes."; nos demais casos,
@@ -660,15 +728,18 @@ a prévia e sem auditoria), `.../aplicar` (200 ou 202 enquanto aplica), `.../des
 `/so-oficial`, `/so-omnisaude`, `/divergentes`, `/sugestoes`, `/vinculados`, `/bairros?pagina=`, `/vincular`,
 `/desvincular`, `/rejeitar` (os três podem responder 409 CONCILIACAO_OCUPADA), `/bairros/apelido`; `populacao`
 (GET, PUT), `populacao/:id` (DELETE); `diagrama`, `diagrama.csv`, `diagrama/congelar`, `diagrama/configuracao/:grupo`
-(GET, PUT), `diagrama/anos-epidemicos`; `contingencia`, `contingencia/planos` (GET, POST), `contingencia/planos/:id`
+(GET, PUT; agravo sigiloso: 403 AGRAVO_SIGILOSO fora da vigilância epidemiológica), `diagrama/anos-epidemicos`;
+`contingencia`, `contingencia/planos` (GET, POST), `contingencia/planos/:id`
 (GET, PUT), `.../vigencia`, `contingencia/respostas`, `contingencia/acionar`, `contingencia/acoes/:id` (PATCH);
-`surtos` (GET, POST), `surtos/sugestoes`, `surtos/sugestoes/dispensar`, `surtos/candidatas`, `surtos/registros`,
+`surtos` (GET, POST), `surtos/sugestoes`, `surtos/sugestoes/dispensar` (`{ assinatura, motivo, ultimoConhecimento }`;
+409 quando a sugestão mudou), `surtos/candidatas`, `surtos/registros`,
 `surtos/:id` (GET, PATCH), `.../casos` (POST),
 `.../casos/:caseId` (DELETE), `.../comunicacoes`, `.../encerrar`, `.../descartar`, `.../numero-oficial`,
 `.../espelho`; `negativas` (POST), `negativas/minhas`, `negativas/grade?semanas=&ate=`, `negativas/:id/espelho.pdf`,
 `negativas/:id/anular`; `unidades-notificantes` (GET, POST), `unidades-notificantes/:unitId/encerrar`,
-`.../responsaveis`, `.../lotados?busca=`, `responsaveis/:id/revogar`; `configuracoes` (PATCH, agora também com
-os blocos `negativa`, `consolidacao` e `surto.diasInusitado`, campo a campo).
+`.../responsaveis` (cada responsável com `valido` e `motivoInvalido`; o POST de titular troca o titular que não
+vale), `.../lotados?busca=`, `responsaveis/:id/revogar`; `configuracoes` (PATCH, agora também com os blocos
+`negativa`, `consolidacao` e `surto.diasInusitado`, campo a campo, numa transação com a linha travada).
 
 ### Demonstração
 
@@ -707,6 +778,12 @@ núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80;
   funções do Excel e exemplos publicados do diagrama, avaliação do plano, regras de surto e grade da negativa.
 - API contra PostgreSQL real (`apps/api/test/vigilancia-importacao.test.ts`, `-diagrama`, `-contingencia`, `-surto`,
   `-negativa` e `migracao-0031.test.ts`).
+- Correções das revisões adversariais, cada uma com teste de regressão que falha no código anterior: importação em
+  segundo plano, travas e memória (`vigilancia-importacao-r3*.test.ts`, com a API num processo filho limitado a
+  512 MB), conciliação (`vigilancia-conciliacao-travas`, `-cobertura` e `-regras`), base consolidada
+  (`vigilancia-consolidado-cobertura`), contingência (`vigilancia-contingencia-r3`), quarteirões em lote
+  (`vigilancia-diagrama-quarteiroes`), surto (`vigilancia-surto-r3`) e negativa (`vigilancia-negativa-r3`), além dos
+  testes das telas em `apps/web/test`.
 - Demonstração: `packages/database/test/seed-consolidacao.test.ts` refaz a sugestão do plano só com as funções
   compartilhadas em seis datas de 2026 (mobilização; alerta com 2024 excluído) e
   `apps/api/test/demo-consolidacao.test.ts` semeia a demonstração num dia fixo e confere pela API a sugestão de
@@ -741,6 +818,16 @@ núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80;
 - O código das síndromes do surto vem de fonte secundária: conferir no Sinan Net antes de digitar.
 - As **regras das sugestões de surto** (janelas e número de casos) não têm tela: valem os padrões das configurações.
   Só os dias do evento inusitado são editáveis, em *Prazos e parâmetros*.
+- **Desmobilização em 4 SE**: o item 7.2.3 do plano fala em "período superior a quatro semanas" para a curva
+  epidêmica. O modelo usa 4 (interpretação); 5 segue a letra e é só mudar as semanas da desmobilização no plano.
+- **Sigilo no diagrama**: tuberculose, hanseníase e hepatites são sigilosas só no diagrama e na contingência (Lei
+  14.289/2022). Nas notificações, na conciliação, no surto e no mapa de casos, vale a marca do catálogo, que a
+  instituição decide.
+- **Dispensa de sugestão de surto** vale pelo instante de conhecimento: um caso digitado depois, mas com conhecimento
+  retroativo até o último caso mostrado, fica coberto pela dispensa. Na tela, o 409 da dispensa fecha o diálogo, e o
+  motivo digitado precisa ser digitado de novo.
+- **Teto das sugestões**: um agravo fora das regras de vizinhança, sem histórico e com mais de 5000 notificações na
+  janela entra com as 5000 conhecidas primeiro, com aviso.
 
 ## Pendências e limites
 

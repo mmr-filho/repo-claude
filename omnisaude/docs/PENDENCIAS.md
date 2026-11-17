@@ -10,10 +10,11 @@ insumos de semanas futuras entram aqui quando a semana for planejada.
 
 ## Resumo
 
-- **157 ações** no total: 98 antes de usar com dados reais, 36 para homologar, 12 de semanas futuras e 11 opcionais
+- **159 ações** no total: 98 antes de usar com dados reais, 38 para homologar, 12 de semanas futuras e 11 opcionais
   (a semana 26 trouxe os 5 itens dela para *antes de usar*, reescritos com o que foi entregue, e acrescentou 3, em
   06/11/2026; a revisão da semana 26 acrescentou 2 decisões, em 07/11/2026; a semana 27 trouxe os 3 itens dela para
-  *antes de usar*, reescritos, e acrescentou 7, em 10/11/2026).
+  *antes de usar*, reescritos, e acrescentou 7, em 10/11/2026; a revisão da semana 27 acrescentou 2 decisões, em
+  17/11/2026).
 - **Por onde começar:** a seção *Publicação* (sem ela nada vai para o ar) e, em seguida, os itens *antes de usar* da Fase 1
   (dados da instituição, profissionais e unidades) e os da linha *Transversal*.
 - **O que trava a homologação com o Ministério:** certificado e-CNPJ A1, credenciamento na RNDS, acesso a um PEC do
@@ -198,6 +199,8 @@ Legenda de cada item: **ação** · semana e entrega · tipo · *quem* faz · *s
 - [ ] **Validar a receita do diagrama de cada agravo (5 anos do plano do MS de 2025, 7 da NT nº 1/2023 ou 10 do VigiEPI) e os anos epidêmicos a excluir, com o motivo.** semana 27 · VIG-1c Diagrama de controle · decisão. *Quem:* vigilância epidemiológica da SMS. *Sem isso:* Vale o modelo do MS de 2025 (mediana e quartis de 5 anos, sem excluir anos); o sistema só sugere os anos epidêmicos. *Onde:* Consolidação e surtos > Diagrama de controle > Receita. *Situação:* padrão em uso. <sub>Fonte: docs/VIGILANCIA.md (Semana 27: Diagrama de controle e receitas)</sub>
 - [ ] **Validar a população de bairro e localidade pela proporção do Censo 2022 sobre a estimativa do município.** semana 27 · VIG-1c Diagrama de controle · decisão. *Quem:* vigilância epidemiológica, com o planejamento. *Sem isso:* A regra está em uso por inferência nossa (marcada "estimada"); a alternativa é o diagrama por número de casos. *Onde:* decisão (nos avisar). *Situação:* a validar. <sub>Fonte: docs/VIGILANCIA.md (Semana 27: População)</sub>
 - [ ] **Confirmar com o encarregado de dados (LGPD) que as listas identificadas da importação e da conciliação ficam só com a vigilância municipal, com cada consulta auditada.** semana 27 · VIG-1c Importação e conciliação · aprovação jurídica. *Quem:* encarregado de dados, com a vigilância epidemiológica. *Sem isso:* Vale a regra do sistema: só a vigilância municipal (`vigilancia.importar`), agravo sigiloso sem identificação para quem não tem acesso ao sigilo, colunas de contato descartadas na leitura. *Onde:* papéis em Administração. *Situação:* regra padrão em uso. <sub>Fonte: docs/VIGILANCIA.md (Semana 27: Importação e conciliação)</sub>
+- [ ] **Decidir quantas SE abaixo do estágio em vigor fazem o plano de contingência sugerir a desmobilização: 4 (padrão do sistema) ou 5 (a letra do item 7.2.3 do plano do MS, que fala em "período superior a quatro semanas" para a curva epidêmica).** semana 27 · VIG-1c Contingência · decisão. *Quem:* vigilância epidemiológica e ambiental da SMS. *Sem isso:* Vale 4 SE completas seguidas (interpretação nossa). *Onde:* Consolidação e surtos > Contingência > Planos (semanas da desmobilização, no rascunho do plano). *Situação:* padrão em uso. <sub>Fonte: docs/VIGILANCIA.md (Semana 27: Plano de contingência; Pontos de atenção)</sub>
+- [ ] **Decidir se tuberculose, hanseníase e hepatites virais passam a ser agravos sigilosos em todo o sistema (Lei 14.289/2022), e não só no diagrama e na contingência.** semana 27 · VIG-1c Diagrama de controle (sigilo) · aprovação jurídica. *Quem:* encarregado de dados (LGPD), com a vigilância epidemiológica. *Sem isso:* Esses agravos ficam sigilosos só no diagrama e na contingência. Nas notificações, na ficha, no mapa de casos, na conciliação e no surto, vale o catálogo nacional, que não os marca como sigilosos. Marcar exige desenvolvimento nosso depois da decisão: o acesso às notificações desses agravos passa a exigir a permissão de sigilo em todos os módulos. *Onde:* decisão (registrar e nos avisar). *Situação:* a decidir. <sub>Fonte: docs/VIGILANCIA.md (Semana 27: Diagrama de controle e receitas; Pontos de atenção)</sub>
 
 ### Quando chegar a semana do cronograma
 
