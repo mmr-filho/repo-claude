@@ -4,12 +4,30 @@
  * `vigilancia.consolidacao`; do plano e dos acionamentos: `vigilancia.contingencia`. Datas em AAAA-MM-DD; instantes
  * em ISO 8601; semanas em AAAASS.
  *
- * Agravo sigiloso pelo catálogo (HIV, sífilis, violências; Lei 14.289/2022): o diagrama, o CSV e os anos epidêmicos só
- * saem para a vigilância municipal com `notificacao.sensivel` (os demais recebem 403 AGRAVO_SIGILOSO), e cada leitura
- * fica na auditoria (`vigilancia.diagrama_sigiloso`). O plano de contingência não aceita agravo sigiloso.
+ * Agravo sigiloso (`GRUPOS_SIGILOSOS_DIAGRAMA` ou linha sigilosa no catálogo do tenant): o diagrama, o CSV, os anos
+ * epidêmicos e a configuração (receita, anos excluídos com o motivo) só saem para a vigilância municipal com
+ * `notificacao.sensivel` (os demais recebem 403 AGRAVO_SIGILOSO), e cada leitura fica na auditoria
+ * (`vigilancia.diagrama_sigiloso`). O plano de contingência não aceita agravo sigiloso.
  */
 import type { AvaliacaoPlano, EixoAcao, IndicadoresAgravo, PlanoContingencia, StatusAcao } from './contingencia';
 import type { AnoExcluido, AnosEpidemicosSugeridos, CanalCalculado, ChaveReceitaModelo, PontoObservado, ReceitaCanal, StatusSemana } from './diagrama';
+import { LNNC_NACIONAL } from './lnnc-nacional';
+
+/**
+ * Grupos de agravo sigilosos no diagrama de controle, a lista única da API e da tela: os sigilosos do catálogo nacional
+ * (HIV, aids, sífilis, violências) e os que a Lei 14.289/2022 também protege (art. 1º e 2º: tuberculose, hanseníase e as
+ * hepatites crônicas, que no catálogo ficam nos grupos das hepatites virais e da hepatite B na gestante). A contagem
+ * semanal por território pode identificar a pessoa. Vale mesmo que o catálogo do tenant desmarque a linha. O campo
+ * `sensitive` do catálogo não muda por isto: ele governa o acesso às notificações nos outros módulos, e essa decisão é da
+ * instituição.
+ */
+export const GRUPOS_SIGILOSOS_DIAGRAMA: ReadonlySet<string> = new Set([
+  ...LNNC_NACIONAL.flatMap((v) => v.conditions.filter((c) => c.sensitive).map((c) => c.group)),
+  'tuberculose',
+  'hanseniase',
+  'hepatites-virais',
+  'hepatite-b-gestacao',
+]);
 
 // ───────────── Território e população ─────────────
 
@@ -275,12 +293,15 @@ export interface CorpoEditarPlano {
   definicao: PlanoContingencia;
 }
 
-/** POST /vigilancia/contingencia/planos/:id/vigencia: VIGENTE desde a data; o anterior do mesmo escopo é arquivado. */
+/**
+ * POST /vigilancia/contingencia/planos/:id/vigencia: VIGENTE desde a data; o anterior do mesmo escopo é arquivado com
+ * vigência até a véspera (ou até a própria data, se ele começou nela: vigorou só naquele dia).
+ */
 export interface CorpoVigenciaPlano {
   desde: string;
 }
 
-/** Acionamento de estágio (vigências sem sobreposição). */
+/** Acionamento de estágio. O próximo acionamento do território o fecha na véspera (ou no mesmo dia, se ele começou nesse dia). */
 export interface AcionamentoResumo {
   id: string;
   estagio: string;
@@ -352,7 +373,7 @@ export interface CorpoRespostaCriterio {
 
 /**
  * POST /vigilancia/contingencia/acionar: fecha o acionamento aberto do território, de qualquer versão do plano (fim =
- * véspera), e abre o novo com o checklist. O mesmo estágio do plano vigente já em vigor: 409.
+ * véspera, ou hoje se ele começou hoje), e abre o novo com o checklist. O mesmo estágio do plano vigente já em vigor: 409.
  */
 export interface CorpoAcionar {
   estagio: string;

@@ -2,7 +2,7 @@ import { crc32 } from 'node:zlib';
 import { Inflate } from 'fflate';
 import { decodificar } from './codepages';
 import { ErroArquivo } from './dbf';
-import { LIMITE_DESCOMPACTADO_BYTES, mensagemTetoBytes } from './limites';
+import { LIMITE_DESCOMPACTADO_BYTES, LIMITE_ENTRADAS_ZIP, mensagemTetoBytes, mensagemTetoEntradas } from './limites';
 import type { Ritmo } from './ritmo';
 
 /**
@@ -50,7 +50,10 @@ interface EntradaCentral {
   local: number;
 }
 
-/** Fim do diretório central (com o zip64, se houver): onde começa e quantas entradas tem. */
+/**
+ * Fim do diretório central (com o zip64, se houver): onde começa e quantas entradas tem. Acima de
+ * `LIMITE_ENTRADAS_ZIP`, recusa o envio antes de montar a lista (o zip64 declara até 2^64 entradas).
+ */
 function diretorio(b: Uint8Array): { inicio: number; entradas: number } {
   const piso = Math.max(0, b.length - 22 - 0xffff);
   let p = -1;
@@ -72,6 +75,7 @@ function diretorio(b: Uint8Array): { inicio: number; entradas: number } {
     inicio = u64(b, z + 48);
   }
   if (inicio > b.length) throw zipInvalido('diretório central fora do arquivo');
+  if (entradas > LIMITE_ENTRADAS_ZIP) throw new ErroArquivo(mensagemTetoEntradas(), true);
   return { inicio, entradas };
 }
 

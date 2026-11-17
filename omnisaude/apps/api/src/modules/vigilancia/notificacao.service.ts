@@ -1953,7 +1953,10 @@ export class NotificacaoService implements OnModuleInit {
     // 6. Vínculo automático da conciliação (VIG-1c, degraus 1 e 2) entre os registros oficiais e as notificações sem
     // vínculo: a notificação confirmada, ou que ganhou o número oficial, depois da importação casa com o registro já
     // importado sem esperar o próximo envio. Import dinâmico pelo mesmo motivo do passo 5. Só roda quando há registro e
-    // notificação sem vínculo; a trava da conciliação é tentada sem esperar (uma importação aplicando fica com a vez).
+    // notificação sem vínculo. As duas travas são tentadas sem esperar, na ordem da importação (a da importação, depois
+    // a da conciliação): com uma aplicação em andamento, devolve 0 e tenta na próxima vez. Esperar pela da conciliação
+    // com a importação no meio da gravação (registros com trava de linha) fechava um ciclo, e o banco derrubava a
+    // importação (40P01).
     try {
       const [pendente] = await sys.db.$queryRaw<{ ok: boolean }[]>`
         SELECT EXISTS (SELECT 1 FROM official_records r WHERE r.type = 'INDIVIDUAL' AND NOT r.excluded AND r.notification_id IS NULL)
@@ -1963,8 +1966,11 @@ export class NotificacaoService implements OnModuleInit {
         const conciliacao = this.moduleRef.get(ConciliacaoService, { strict: false });
         resultado.vinculadosAutomaticamente = await sys.db.$transaction(
           async (tx) => {
-            const [trava] = await tx.$queryRaw<{ ok: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtext('vigilancia:conciliacao')) AS ok`;
-            return trava?.ok ? conciliacao.conciliarAutomatico(tx, { timeZone: sys.tenant.timeZone }) : 0;
+            for (const chave of ['vigilancia:importacao', 'vigilancia:conciliacao']) {
+              const [trava] = await tx.$queryRaw<{ ok: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtext(${chave})) AS ok`;
+              if (!trava?.ok) return 0;
+            }
+            return conciliacao.conciliarAutomatico(tx, { timeZone: sys.tenant.timeZone });
           },
           { timeout: 120_000, maxWait: 10_000 },
         );

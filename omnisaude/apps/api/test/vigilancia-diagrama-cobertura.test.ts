@@ -136,7 +136,8 @@ describe.runIf(enabled)('Vigilância: cobertura da base consolidada por SE (VIG-
   });
 
   it('o ano em que o OmniSaúde entrou em uso: só as SE desde a primeira notificação ficam cobertas', async () => {
-    // Uma única notificação (de dengue) conhecida na SE 20/2016; nenhuma importação traz chikungunya.
+    // Uma única notificação (de dengue) conhecida e lançada no sistema na SE 20/2016 (o "em uso desde" é a entrada da
+    // ficha, createdAt, não a data de conhecimento); nenhuma importação traz chikungunya.
     const [paciente, unidade, condicao] = await Promise.all([
       db.patient.findFirstOrThrow({ where: { mergedIntoId: null }, select: { id: true } }),
       db.unit.findFirstOrThrow({ where: { name: 'UBS Centro' }, select: { id: true } }),
@@ -158,6 +159,7 @@ describe.runIf(enabled)('Vigilância: cobertura da base consolidada por SE (VIG-
         notifierId: autor,
         notifierRole: 'VIGILANCIA_EPIDEMIOLOGICA',
         knownAt: new Date(`${inicio}T15:00:00Z`),
+        createdAt: new Date(`${inicio}T15:00:00Z`),
         deadlineStart: 'CONHECIMENTO',
         deadlineKind: 'SEMANAL',
         targets: ['SMS'],

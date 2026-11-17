@@ -87,7 +87,7 @@ const detalhe = (p: PlanoRow): DetalhePlano => ({ ...resumo(p), definicao: defin
  * (`avaliarPlano`), respostas manuais, histórico de acionamentos e checklist do acionamento aberto. Escrita com
  * `vigilancia.contingencia`. O sistema sugere; a vigilância decide e registra o acionamento (Plano 2025, item 7.1).
  * O estágio em vigor é o do acionamento aberto do território, de qualquer versão do plano: trocar o plano não desfaz a
- * decisão, e o próximo acionamento fecha o aberto (vigências sem sobreposição).
+ * decisão, e o próximo acionamento fecha o aberto na véspera (ou no mesmo dia, se o aberto começou nesse dia).
  */
 @Injectable()
 export class ContingenciaService {
@@ -191,6 +191,8 @@ export class ContingenciaService {
       fonte = FONTE_MODELO;
     }
     return ctx.db.$transaction(async (tx) => {
+      // Uma versão por vez no escopo: dois pedidos ao mesmo tempo (duas abas, o pedido repetido) leriam o mesmo máximo.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`contingencia-plano:${ESCOPO}`}))`;
       const ultima = await tx.contingencyPlan.aggregate({ where: { scope: ESCOPO }, _max: { version: true } });
       const p = await tx.contingencyPlan.create({
         data: {
@@ -235,7 +237,11 @@ export class ContingenciaService {
     });
   }
 
-  /** POST /vigilancia/contingencia/planos/:id/vigencia: o anterior do mesmo escopo vira ARQUIVADO na véspera. */
+  /**
+   * POST /vigilancia/contingencia/planos/:id/vigencia: o anterior do mesmo escopo vira ARQUIVADO com vigência até a
+   * véspera de `desde`, ou até o próprio dia quando ele começou nesse dia (vigorou só naquele dia; nunca termina antes
+   * de começar), como no acionamento.
+   */
   async porEmVigencia(ctx: RequestContext, id: string, corpo: CorpoVigenciaPlano): Promise<DetalhePlano> {
     const hoje = localDateString(this.agora(), ctx.tenant.timeZone);
     if (corpo.desde > hoje) throw new DomainError('DATA_FUTURA', 'A vigência começa hoje ou numa data passada', HttpStatus.BAD_REQUEST);
@@ -251,13 +257,16 @@ export class ContingenciaService {
       const anterior = await tx.contingencyPlan.findFirst({ where: { scope: p.scope, status: 'VIGENTE' } });
       if (anterior?.validFrom && corpo.desde < dia(anterior.validFrom)!)
         throw new DomainError('VIGENCIA_INVALIDA', `O plano em vigor vale desde ${dia(anterior.validFrom)}: o novo não pode começar antes`, HttpStatus.UNPROCESSABLE_ENTITY);
-      if (anterior) await tx.contingencyPlan.update({ where: { id: anterior.id }, data: { status: 'ARQUIVADO', validTo: dataCivil(vespera(corpo.desde)), updatedBy: ctx.session.userId } });
+      // Fim do anterior: a véspera, ou o próprio início quando ele começou no mesmo dia do novo.
+      const inicioAnterior = dia(anterior?.validFrom ?? null);
+      const ate = inicioAnterior && inicioAnterior > vespera(corpo.desde) ? inicioAnterior : vespera(corpo.desde);
+      if (anterior) await tx.contingencyPlan.update({ where: { id: anterior.id }, data: { status: 'ARQUIVADO', validTo: dataCivil(ate), updatedBy: ctx.session.userId } });
       const novo = await tx.contingencyPlan.update({ where: { id }, data: { status: 'VIGENTE', validFrom: dataCivil(corpo.desde), validTo: null, updatedBy: ctx.session.userId } });
       await this.audit.record(ctx, tx, {
         action: 'vigilancia.plano_vigente',
         entityType: 'ContingencyPlan',
         entityId: id,
-        payload: { desde: corpo.desde, versao: novo.version, arquivado: anterior ? { id: anterior.id, versao: anterior.version, ate: vespera(corpo.desde) } : null },
+        payload: { desde: corpo.desde, versao: novo.version, arquivado: anterior ? { id: anterior.id, versao: anterior.version, ate } : null },
       });
       return detalhe(novo);
     });

@@ -313,6 +313,93 @@ describe('contingência: motor do estágio', () => {
     expect(avaliarPlano(PLANO_MODELO_MS_2025, [agora], [], 'NORMALIDADE', { semanaInicio: '202550', indicadores: [doAnoPassado] }).sugerido).toBe('EPIDEMIA');
   });
 
+  it('SE sem canal no fim da curva não é volta ao canal: o acumulado segura o estágio (DIAGRAMA-1)', () => {
+    // Chikungunya de 2016: SE 1 a 3 até o centro, 4 a 29 acima do LS e 30 a 34 sem canal (a importação para na SE 29).
+    // 3 óbitos em 2.000 prováveis (0,15%, acima do limiar da epidemia). Epidemia acionada na SE 31.
+    const chik = (fim: StatusSemana[]) => ({
+      ...ind('chikungunya', [], { provaveis: 2000, obitosAgravo: 3 }),
+      semanas: [...Array<StatusSemana>(3).fill(C), ...Array<StatusSemana>(26).fill(A), ...fim].map((status, i) => ({ semana: deslocarSemana('201601', i), status, completa: true })),
+    });
+    const r = avaliarPlano(PLANO_MODELO_MS_2025, [chik(Array<StatusSemana>(5).fill(S))], [], 'EPIDEMIA', { semanaInicio: '201631' });
+    // Antes, as SE sem canal soltavam o acumulado e a descida para a normalidade era sugerida citando o item 7.2.3.
+    expect(r).toMatchObject({ sugerido: 'EPIDEMIA', desmobilizacao: { sugerida: false, detalhe: '' } });
+    expect(item(r, 'epi-letalidade', 'chikungunya')).toMatchObject({ atendido: true, valor: 0.15 });
+    // Sem a data do acionamento, o mesmo.
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [chik(Array<StatusSemana>(5).fill(S))], [], 'EPIDEMIA').sugerido).toBe('EPIDEMIA');
+    // Uma SE sem canal entre as 4 últimas já basta para segurar.
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [chik([C, C, C, C, S])], [], 'EPIDEMIA', { semanaInicio: '201631' }).sugerido).toBe('EPIDEMIA');
+    // A volta de verdade (4 SE dentro do canal) solta o acumulado, como antes.
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [chik([S, C, C, C, C])], [], 'EPIDEMIA', { semanaInicio: '201631' })).toMatchObject({ sugerido: 'NORMALIDADE', desmobilizacao: { sugerida: true } });
+    // Todas as SE sem canal (bairro sem população): sem acionamento sugere a epidemia; com ela em vigor, mantém (sem vai e volta).
+    const semPopulacao = { ...chik([]), semanas: Array.from({ length: 34 }, (_, i) => ({ semana: deslocarSemana('201601', i), status: S, completa: true })) };
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [semPopulacao], [], null).sugerido).toBe('EPIDEMIA');
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [semPopulacao], [], 'EPIDEMIA', { semanaInicio: '201620' })).toMatchObject({ sugerido: 'EPIDEMIA', desmobilizacao: { sugerida: false } });
+  });
+
+  it('SE em que o critério de canal do estágio em vigor ficou sem canal não conta como abaixo (DIAGRAMA-1)', () => {
+    // Alerta pela curva (4 SE acima do LS) e as 4 últimas SE sem canal: nada diz que a curva desceu.
+    const r = avalia([ind('dengue', [A, A, A, A, S, S, S, S])], [], 'ALERTA');
+    expect(item(r, 'ale-canal', 'dengue').atendido).toBeNull();
+    expect(r.sugerido).toBe('ALERTA');
+    expect(r.desmobilizacao.sugerida).toBe(false);
+    expect(r.desmobilizacao.detalhe).toBe(
+      'Sugestão abaixo de Alerta há 0 de 4 SE completas seguidas: manter Alerta até completar 4. A SE sem canal (sem base que cubra a semana, sem população ou com o quartil indefinido) não conta como abaixo: a curva pode não ter descido.',
+    );
+    // A SE sem canal num agravo que nunca teve canal nos indicadores (sem como conferir) não trava a descida do outro.
+    const semCanalNunca = ind('chikungunya', Array<StatusSemana>(8).fill(S));
+    expect(avalia([ind('dengue', [A, A, A, A, C, C, C, C]), semCanalNunca], [], 'ALERTA')).toMatchObject({ sugerido: 'NORMALIDADE', desmobilizacao: { sugerida: true } });
+    // Já a chikungunya que teve canal e ficou sem ele nas últimas SE trava: ela pode estar acima do LS.
+    const semCanalAgora = ind('chikungunya', [C, C, C, C, S, S, S, S]);
+    expect(avalia([ind('dengue', [A, A, A, A, C, C, C, C]), semCanalAgora], [], 'ALERTA').sugerido).toBe('ALERTA');
+    // O critério de canal de estágio abaixo do em vigor sem canal não trava (a mobilização não segura o alerta).
+    const plano: PlanoContingencia = { ...PLANO_MODELO_MS_2025, criterios: PLANO_MODELO_MS_2025.criterios.map((c) => (c.id === 'mob-canal' ? { ...c, agravos: ['zika'] } : c)) };
+    const zika = ind('zika', [C, C, C, C, S, S, S, S]);
+    expect(avalia([ind('dengue', [A, A, A, A, C, C, C, C]), zika], [], 'ALERTA', plano)).toMatchObject({ sugerido: 'NORMALIDADE', desmobilizacao: { sugerida: true } });
+  });
+
+  it('o retrato do acionamento só segura o acumulado sem óbito ou caso novo e com a curva de volta ao canal (DIAGRAMA-2)', () => {
+    // Mobilização acionada na SE 5 com 20 prováveis, 1 grave e 1 óbito (5% e 5%: o retrato já passa dos limiares).
+    const retratoSE5 = ind('dengue', Array<StatusSemana>(5).fill(E), { provaveis: 20, graves: 1, obitosAgravo: 1 });
+    // Na SE 30: 5.000 prováveis, 150 graves (3%) e 25 óbitos (0,5%; 16,7% entre os graves), curva entre o centro e o LS.
+    const se30 = ind('dengue', Array<StatusSemana>(30).fill(E), { provaveis: 5000, graves: 150, obitosAgravo: 25 });
+    const r = avaliarPlano(PLANO_MODELO_MS_2025, [se30], [], 'MOBILIZACAO', { semanaInicio: '202605', indicadores: [retratoSE5] });
+    // Antes, o retrato com poucos casos congelava o acumulado pelo resto do ano e a sugestão ficava na mobilização.
+    expect(r.sugerido).toBe('EPIDEMIA');
+    for (const id of ['epi-graves', 'epi-letalidade', 'epi-letalidade-graves']) {
+      expect(item(r, id, 'dengue').atendido).toBe(true);
+      expect(item(r, id, 'dengue').detalhe).not.toContain('Já atendido');
+    }
+    // Curva acima do LS e alerta em vigor: o mesmo retrato não segura (antes, mantinha o alerta).
+    const acimaLs = ind('dengue', Array<StatusSemana>(30).fill(A), { provaveis: 5000, graves: 150, obitosAgravo: 25 });
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [acimaLs], [], 'ALERTA', { semanaInicio: '202605', indicadores: [retratoSE5] }).sugerido).toBe('EPIDEMIA');
+
+    // O vai e volta depois da descida: normalidade acionada na SE 29 com os mesmos 3 óbitos e a curva no canal; segura.
+    const curva = [...Array<StatusSemana>(10).fill(A), ...Array<StatusSemana>(20).fill(C)];
+    const retrato = ind('dengue', curva.slice(0, 28), { provaveis: 1990, obitosAgravo: 3 });
+    const desceu = { semanaInicio: '202629', indicadores: [retrato] };
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [ind('dengue', curva, { provaveis: 2000, obitosAgravo: 3 })], [], 'NORMALIDADE', desceu).sugerido).toBe('NORMALIDADE');
+    // Um óbito a mais depois da descida: a letalidade volta a contar e sobe.
+    const maisUm = avaliarPlano(PLANO_MODELO_MS_2025, [ind('dengue', curva, { provaveis: 2000, obitosAgravo: 4 })], [], 'NORMALIDADE', desceu);
+    expect(maisUm.sugerido).toBe('EPIDEMIA');
+    expect(item(maisUm, 'epi-letalidade', 'dengue').detalhe).not.toContain('Já atendido');
+    // Os mesmos 3 óbitos, mas a curva saiu do canal na última SE: o retrato não segura.
+    const saiu = [...Array<StatusSemana>(10).fill(A), ...Array<StatusSemana>(19).fill(C), A];
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [ind('dengue', saiu, { provaveis: 2000, obitosAgravo: 3 })], [], 'NORMALIDADE', desceu).sugerido).toBe('EPIDEMIA');
+    // Graves: o numerador é a soma de graves e sinais de alarme; caso provável novo sem grave a mais segura.
+    const graves = (g: number, s: number, prov: number) => ind('dengue', curva, { provaveis: prov, graves: g, sinaisAlarme: s });
+    const comGraves = { semanaInicio: '202629', indicadores: [ind('dengue', curva.slice(0, 28), { provaveis: 100, graves: 2, sinaisAlarme: 1 })] };
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [graves(1, 2, 120)], [], 'NORMALIDADE', comGraves).sugerido).toBe('NORMALIDADE');
+    expect(avaliarPlano(PLANO_MODELO_MS_2025, [graves(2, 2, 120)], [], 'NORMALIDADE', comGraves).sugerido).toBe('EPIDEMIA');
+  });
+
+  it('o texto da desmobilização diz o que a regra faz: 4 SE completas seguidas abaixo, ou a curva de volta ao canal (DIAGRAMA-6)', () => {
+    expect(PLANO_MODELO_MS_2025.desmobilizacao.descricao).toMatch(/^4 SE completas seguidas abaixo do estágio em vigor, ou volta da curva ao canal endêmico \(.*item 7\.2\.3, p\. 52\)$/);
+    const d = avalia([ind('dengue', [A, A, A, A, E, E, E, E])], [], 'ALERTA');
+    expect(d.desmobilizacao.sugerida).toBe(true);
+    expect(d.desmobilizacao.detalhe).toContain('pode desmobilizar para Mobilização. 4 SE completas seguidas abaixo do estágio em vigor, ou volta da curva ao canal endêmico');
+    expect(d.desmobilizacao.detalhe).not.toContain('por mais de 4');
+  });
+
   it('semanas completas: as incompletas contam a semana em curso', () => {
     expect(semanasCompletas('202610', 2)).toEqual({ incompletas: ['202609', '202610'], ultimaCompleta: '202608' });
     expect(semanasCompletas('202602', 2)).toEqual({ incompletas: ['202601', '202602'], ultimaCompleta: '202553' });

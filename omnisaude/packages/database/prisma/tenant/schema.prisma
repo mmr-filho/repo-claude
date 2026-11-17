@@ -3731,7 +3731,8 @@ model ControlChannel {
 }
 
 /// Plano de contingência (PlanoContingencia em definition). Um vigente por escopo (índice parcial
-/// contingency_plans_vigente, só no SQL).
+/// contingency_plans_vigente, só no SQL) e uma versão de cada número por escopo. A vigência nunca termina antes de
+/// começar (CHECK contingency_plans_vigencia, só no SQL).
 model ContingencyPlan {
   id         String                @id @default(uuid(7)) @db.Uuid
   scope      String                @default("ARBOVIROSES") @db.VarChar(40)
@@ -3750,11 +3751,13 @@ model ContingencyPlan {
   activations ContingencyActivation[]
   inputs      ContingencyInput[]
 
+  @@unique([scope, version], map: "contingency_plans_versao")
   @@map("contingency_plans")
 }
 
 /// Estágio acionado pela vigilância, com vigência (um aberto por plano e território: índice parcial
-/// contingency_activations_aberta, com COALESCE, só no SQL).
+/// contingency_activations_aberta, com COALESCE, só no SQL; o fim nunca antes do início: CHECK
+/// contingency_activations_vigencia, só no SQL).
 model ContingencyActivation {
   id            String         @id @default(uuid(7)) @db.Uuid
   planId        String         @map("plan_id") @db.Uuid

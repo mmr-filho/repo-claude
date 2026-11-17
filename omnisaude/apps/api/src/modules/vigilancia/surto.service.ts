@@ -294,16 +294,22 @@ export class SurtoService {
 
   /**
    * Quarteirão, bairro e localidade da residência de cada notificação: a posição do imóvel (ou o retrato da ficha), como
-   * no mapa de casos; posição precisa sem quarteirão ligado é localizada na malha.
+   * no mapa de casos; posição precisa sem quarteirão ligado é localizada na malha, em lote (um número fixo de consultas
+   * para todas as notificações, e não uma por notificação).
    */
   private async territorioDasNotificacoes(db: TenantClient, ns: { id: string; patientId: string; residenceLat: number | null; residenceLng: number | null; residencePrecision: string | null }[]) {
     const residencias = await this.mapa.residencias(db, ns);
     const quarteiroes = new Map<string, string | null>();
+    const aLocalizar: { id: string; lat: number; lng: number }[] = [];
     for (const n of ns) {
       const r = residencias.get(n.id);
       if (!r) quarteiroes.set(n.id, null);
-      else quarteiroes.set(n.id, r.blockId ?? (PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao) ? ((await this.localizador.quarteiraoDoPonto(db, r.lat, r.lng))?.id ?? null) : null));
+      else if (r.blockId) quarteiroes.set(n.id, r.blockId);
+      else if (PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao)) aLocalizar.push({ id: n.id, lat: r.lat, lng: r.lng });
+      else quarteiroes.set(n.id, null);
     }
+    const achados = await this.localizador.quarteiroesDosPontos(db, aLocalizar);
+    aLocalizar.forEach((p, i) => quarteiroes.set(p.id, achados[i]?.id ?? null));
     const ids = [...new Set([...quarteiroes.values()].filter((b): b is string => !!b))];
     const blocos = ids.length ? await db.block.findMany({ where: { id: { in: ids } }, select: { id: true, number: true, neighborhoodId: true, localityId: true } }) : [];
     const porId = new Map(blocos.map((b) => [b.id, b]));

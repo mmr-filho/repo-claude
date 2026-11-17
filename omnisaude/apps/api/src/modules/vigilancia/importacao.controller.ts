@@ -31,6 +31,7 @@ const envioSchema = z
     codificacao: z.enum(['CP850', 'CP437', 'CP860', 'CP1252', 'UTF8']).optional(),
   })
   .refine(periodoEmOrdem, { message: 'O início do período não pode ser depois do fim', path: ['ate'] });
+const detalheSchema = z.object({ acompanhar: z.enum(['0', '1']).optional() });
 const filtroSchema = z
   .object({
     sistema: sistema.optional(),
@@ -68,17 +69,18 @@ export class ImportacaoController {
   ) {}
 
   /**
-   * Envio do arquivo cru (zip, DBF ou CSV; até 95 MB) com `?nome=&de=&ate=&codificacao=`. A leitura roda em segundo
-   * plano: pronta dentro da espera, 201 com a prévia; senão, 202 com `{ id, status: 'PROCESSANDO', ... }` e a tela
-   * acompanha pelo detalhe. O mesmo arquivo já aplicado responde 200 com `{ jaImportado }` sem criar nada.
+   * Envio do arquivo cru (zip, DBF ou CSV; até 95 MB) com `?nome=&de=&ate=&codificacao=`. O corpo só é lido depois de o
+   * serviço conferir a vez (409 IMPORTACAO_OCUPADA antes, com o processo cheio ou outra importação do tenant em
+   * andamento). A leitura roda em segundo plano: pronta dentro da espera, 201 com a prévia; senão, 202 com
+   * `{ id, status: 'PROCESSANDO', ... }` e a tela acompanha pelo detalhe. O mesmo arquivo já aplicado (sem período, ou
+   * com o mesmo período declarado) responde 200 com `{ jaImportado }` sem criar nada.
    */
   @Post('importacoes')
   @RequirePermission('vigilancia.importar')
   async enviar(@Ctx() ctx: RequestContext, @Req() req: Request, @Res({ passthrough: true }) res: Response, @Query(zv(envioSchema)) q: z.infer<typeof envioSchema>) {
     const tipo = (req.headers['content-type'] ?? '').toLowerCase();
     if (/json|xml|text\/plain|form/.test(tipo)) throw new DomainError('FORMATO', 'Envie o arquivo cru (application/octet-stream, zip ou csv)', 415);
-    const arquivo = await rawBody(req, LIMITE_ENVIO_BYTES);
-    const r = await this.importacoes.enviar(ctx, arquivo, q);
+    const r = await this.importacoes.enviar(ctx, () => rawBody(req, LIMITE_ENVIO_BYTES), q);
     if ('jaImportado' in r) res.status(200);
     else if (r.status === 'PROCESSANDO') res.status(202);
     return r;
@@ -90,10 +92,14 @@ export class ImportacaoController {
     return this.importacoes.listar(ctx);
   }
 
+  /**
+   * Detalhe da importação. `?acompanhar=1` (a tela, enquanto o servidor lê ou aplica): a situação, o processamento, o
+   * erro e o resultado, sem a prévia nominal e sem ir para a auditoria.
+   */
   @Get('importacoes/:id')
   @RequirePermission('vigilancia.importar')
-  detalhe(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string) {
-    return this.importacoes.detalhe(ctx, id);
+  detalhe(@Ctx() ctx: RequestContext, @Param('id', ParseUUIDPipe) id: string, @Query(zv(detalheSchema)) q: z.infer<typeof detalheSchema>) {
+    return this.importacoes.detalhe(ctx, id, { acompanhar: q.acompanhar === '1' });
   }
 
   /** Aplica em segundo plano: terminou dentro da espera, 200 com o resultado; senão, 202 com `{ id, status: 'APLICANDO' }`. */
@@ -152,10 +158,11 @@ export class ImportacaoController {
     return this.conciliacao.vinculados(ctx, q);
   }
 
+  /** Nomes de bairro sem correspondência, 50 por página (`?pagina=`; os outros filtros não valem aqui). */
   @Get('conciliacao/bairros')
   @RequirePermission('vigilancia.importar')
-  bairros(@Ctx() ctx: RequestContext) {
-    return this.conciliacao.bairros(ctx);
+  bairros(@Ctx() ctx: RequestContext, @Query(zv(filtroSchema)) q: z.infer<typeof filtroSchema>) {
+    return this.conciliacao.bairros(ctx, { pagina: q.pagina });
   }
 
   @Post('conciliacao/vincular')

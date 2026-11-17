@@ -649,4 +649,46 @@ describe.runIf(enabled)('Vigilância: base consolidada, população e diagrama d
     expect(excessos.some((e) => e.grupo === 'dengue')).toBe(true);
     expect(excessos.some((e) => e.grupo === 'hiv')).toBe(false);
   });
+
+  it('tuberculose, hanseníase e hepatites crônicas (Lei 14.289/2022) também são sigilosas; a configuração do sigiloso também (tra-2)', async () => {
+    // Um caso de tuberculose, de hanseníase e de hepatite viral na SE 20/2016 do bairro.
+    for (const [agravo, grupo] of [
+      ['A169', 'tuberculose'],
+      ['A309', 'hanseniase'],
+      ['B19', 'hepatites-virais'],
+    ] as const)
+      await db.officialRecord.create({ data: { ...registro({ semana: '201620', bairro: 'Bairro Diagrama F3' }), agravo, groupKey: grupo } });
+    const nucleo = await t.login('nucleo', 'Hospital Municipal São Lucas', 'NUCLEO_VIGILANCIA');
+    const auditadas = (grupo: string) => db.auditEntry.count({ where: { action: 'vigilancia.diagrama_sigiloso', entityId: grupo } });
+    // Antes: 200 com casos = 1 para o gestor e o núcleo, sem auditoria.
+    for (const grupo of ['tuberculose', 'hanseniase', 'hepatites-virais', 'hepatite-b-gestacao'])
+      for (const tk of [gestora, nucleo]) {
+        const porBairro = `diagrama?grupo=${grupo}&ano=2016&nivel=BAIRRO&territorio=${ids.bairro}`;
+        expect((await t.http().get(`/api/vigilancia/${porBairro}`).set(auth(tk)).expect(403)).body.code).toBe('AGRAVO_SIGILOSO');
+        expect((await t.http().get(`/api/vigilancia/diagrama/configuracao/${grupo}`).set(auth(tk)).expect(403)).body.code).toBe('AGRAVO_SIGILOSO');
+      }
+    expect(await auditadas('tuberculose')).toBe(0);
+    // A vigilância municipal lê, e a leitura vai para a auditoria.
+    const r = await diagrama(`grupo=tuberculose&ano=2016&nivel=BAIRRO&territorio=${ids.bairro}`);
+    expect(r.pontos.find((p) => p.semana === 20)!.casos).toBe(1);
+    expect(await auditadas('tuberculose')).toBe(1);
+
+    // A configuração do HIV traz o motivo de cada ano excluído (texto livre) e quem gravou: antes, 200 ao gestor e ao núcleo.
+    const motivo = 'Surto de transmissão vertical na maternidade do bairro';
+    await t
+      .http()
+      .put('/api/vigilancia/diagrama/configuracao/hiv')
+      .set(auth(vig))
+      .send({ modelo: 'MS_2025', receita: { unidade: 'CASOS' }, anosExcluidos: [{ ano: 2013, motivo }], fontePopulacao: null, versaoPopulacao: null })
+      .expect(200);
+    const hiv = await auditadas('hiv');
+    for (const tk of [gestora, nucleo]) expect((await t.http().get('/api/vigilancia/diagrama/configuracao/hiv').set(auth(tk)).expect(403)).body.code).toBe('AGRAVO_SIGILOSO');
+    expect(await auditadas('hiv')).toBe(hiv);
+    const cfg = (await t.http().get('/api/vigilancia/diagrama/configuracao/hiv').set(auth(vig)).expect(200)).body;
+    expect(cfg.anosExcluidos).toEqual([{ ano: 2013, motivo }]);
+    expect(await auditadas('hiv')).toBe(hiv + 1);
+    // Agravo comum: o gestor lê a configuração, sem auditoria.
+    await t.http().get('/api/vigilancia/diagrama/configuracao/dengue').set(auth(gestora)).expect(200);
+    expect(await auditadas('dengue')).toBe(0);
+  });
 });

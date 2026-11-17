@@ -216,6 +216,9 @@ export function errosAcionamento(f: { estagio: string; justificativa: string; at
   return erros;
 }
 
+/** Aviso do acionamento gravado ("Estágio Mobilização acionado em Município; ..."): o nome do estágio pode ser feminino. */
+export const avisoDoAcionamento = (estagioNome: string, territorio: string, acoes: number) => `Estágio ${estagioNome} acionado em ${territorio}; ${acoes} ação(ões) no checklist.`;
+
 /** Justificativa proposta a partir dos critérios atendidos do estágio (a vigilância revisa antes de gravar). */
 export function justificativaSugerida(plano: PlanoContingencia, avaliacao: Pick<AvaliacaoPlano, 'criterios'> | null, estagio: string, semana: string): string {
   if (!avaliacao) return '';
@@ -277,10 +280,13 @@ export function patchAcao(original: Pick<AcaoChecklist, 'status' | 'responsavel'
 
 export const TOM_STATUS_PLANO: Record<StatusPlano, Tom> = { VIGENTE: 'green', RASCUNHO: 'amber', ARQUIVADO: 'slate' };
 
-/** Vigência do plano em texto. */
+/** Vigência do plano em texto (o substituído no mesmo dia em que entrou em vigor vigorou só naquele dia). */
 export function textoVigencia(p: Pick<PlanoResumo, 'status' | 'vigenteDesde' | 'vigenteAte'>): string {
   if (p.status === 'VIGENTE') return `Em vigor desde ${dataBr(p.vigenteDesde)}`;
-  if (p.status === 'ARQUIVADO') return p.vigenteDesde ? `Vigorou de ${dataBr(p.vigenteDesde)} a ${dataBr(p.vigenteAte)}` : 'Arquivado sem ter vigorado';
+  if (p.status === 'ARQUIVADO') {
+    if (!p.vigenteDesde) return 'Arquivado sem ter vigorado';
+    return p.vigenteAte === p.vigenteDesde ? `Vigorou só em ${dataBr(p.vigenteDesde)}` : `Vigorou de ${dataBr(p.vigenteDesde)} a ${dataBr(p.vigenteAte)}`;
+  }
   return 'Rascunho: ainda não vigorou';
 }
 

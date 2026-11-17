@@ -33,10 +33,13 @@ import { useDataHora } from './fuso';
 import {
   aplicacaoEmAndamento,
   avisoPeriodoLido,
+  caminhoDoAcompanhamento,
   codificacoesParaTrocar,
+  comPreviaCarregada,
   detalhesDoErroDeEnvio,
   fmtBytes,
   iniciarAcompanhamento,
+  lerAcompanhamento,
   linhasDasContagens,
   mensagemDoErro,
   motivosOrdenados,
@@ -48,7 +51,6 @@ import {
   textoExpiracao,
   textoPorTipo,
   type AlvoAcompanhamento,
-  type LeituraAcompanhamento,
   type PassoAcompanhamento,
 } from './importacao-regras';
 
@@ -159,8 +161,9 @@ function TabelaAmostras({ itens, alteracoes }: { itens: AmostraRegistro[]; alter
 }
 
 /**
- * Acompanha a leitura ou a aplicação que roda no servidor: consulta o detalhe a cada 2 s (com recuo até 5 s), tolera
- * falha de rede passageira e para ao desmontar ou quando o trabalho acaba (a regra está em `proximoPasso`).
+ * Acompanha a leitura ou a aplicação que roda no servidor: consulta o detalhe no modo de acompanhamento (sem a prévia
+ * nominal e sem auditoria) a cada 2 s (com recuo até 5 s), tolera falha de rede passageira e para ao desmontar ou
+ * quando o trabalho acaba (a regra está em `proximoPasso`).
  */
 export function useAcompanhamento(id: string, alvo: AlvoAcompanhamento | null, aoAvancar: (passo: PassoAcompanhamento) => void) {
   const avancar = useRef(aoAvancar);
@@ -171,12 +174,7 @@ export function useAcompanhamento(id: string, alvo: AlvoAcompanhamento | null, a
     let estado = iniciarAcompanhamento(alvo);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const consultar = async () => {
-      let leitura: LeituraAcompanhamento;
-      try {
-        leitura = { ok: true, detalhe: await api.get<DetalheImportacao>(`/vigilancia/importacoes/${id}`) };
-      } catch (err) {
-        leitura = { ok: false, status: err instanceof ApiError ? err.status : 0, mensagem: errorMessage(err) };
-      }
+      const leitura = await lerAcompanhamento(id);
       if (!vivo) return;
       const passo = proximoPasso(estado, leitura);
       if (passo.tipo === 'esperar') {
@@ -336,14 +334,22 @@ export function DetalheDaImportacao({
   const [aplicando, setAplicando] = useState(false);
   const [aviso, setAviso] = useState<string | null>(null);
 
-  const carregar = useCallback(async () => {
-    try {
-      setD(await api.get<DetalheImportacao>(`/vigilancia/importacoes/${id}`));
-      setErro(null);
-    } catch (err) {
-      setErro(errorMessage(err));
-    }
-  }, [id]);
+  /**
+   * Relê o detalhe. `acompanhar`: sem a prévia nominal e sem auditoria (depois do aplicar). A prévia que a tela já tem
+   * continua nela enquanto a importação for uma prévia (`comPreviaCarregada`).
+   */
+  const carregar = useCallback(
+    async (acompanhar = false) => {
+      try {
+        const novo = await api.get<DetalheImportacao>(acompanhar ? caminhoDoAcompanhamento(id) : `/vigilancia/importacoes/${id}`);
+        setD((atual) => comPreviaCarregada(atual, novo));
+        setErro(null);
+      } catch (err) {
+        setErro(errorMessage(err));
+      }
+    },
+    [id],
+  );
 
   useEffect(() => {
     if (!inicial && !lendo) void carregar();
@@ -353,7 +359,8 @@ export function DetalheDaImportacao({
   const alvo: AlvoAcompanhamento | null = d ? (d.status === 'PROCESSANDO' ? 'LEITURA' : d.processamento?.etapa === 'APLICANDO' || (aplicando && d.status === 'PREVIA') ? 'APLICACAO' : null) : lendo ? 'LEITURA' : null;
   useAcompanhamento(id, alvo, (passo) => {
     if (passo.tipo === 'esperar') {
-      if (passo.detalhe) setD(passo.detalhe);
+      const novo = passo.detalhe;
+      if (novo) setD((atual) => comPreviaCarregada(atual, novo));
       setAviso(passo.aviso);
       return;
     }
@@ -363,9 +370,13 @@ export function DetalheDaImportacao({
       setErro(passo.mensagem);
       return;
     }
-    if (passo.detalhe) setD(passo.detalhe);
-    if (passo.tipo === 'previa') toast.success(passo.detalhe.status === 'PREVIA' ? 'Prévia pronta: confira e aplique.' : 'A leitura terminou.');
-    else if (passo.tipo === 'aplicada') {
+    const novo = passo.detalhe;
+    if (novo) setD((atual) => comPreviaCarregada(atual, novo));
+    if (passo.tipo === 'previa') {
+      // A leitura terminou: a prévia nominal vem uma vez, pelo detalhe completo (fica na auditoria, como abrir a prévia).
+      if (passo.detalhe.status === 'PREVIA') void carregar();
+      toast.success(passo.detalhe.status === 'PREVIA' ? 'Prévia pronta: confira e aplique.' : 'A leitura terminou.');
+    } else if (passo.tipo === 'aplicada') {
       setResultado(passo.resultado);
       toast.success('Importação aplicada.');
     } else toast.error(passo.mensagem);
@@ -389,7 +400,8 @@ export function DetalheDaImportacao({
         toast.success(d?.status === 'FALHOU' ? 'Importação descartada.' : 'Prévia descartada.');
       }
       setConfirmar(null);
-      await carregar();
+      // Depois do aplicar, a releitura vem sem a prévia nominal (a tela já tem a prévia; não vai para a auditoria).
+      await carregar(acao === 'aplicar');
       onMudou();
     } catch (err) {
       const e = err instanceof ApiError ? err : null;
@@ -397,7 +409,7 @@ export function DetalheDaImportacao({
       // A resposta que não chegou pode ser de uma aplicação que começou: a releitura mostra a marca e o acompanhamento.
       if (acao === 'aplicar' && respostaPerdida(e?.status)) setAplicando(true);
       setConfirmar(null);
-      await carregar();
+      await carregar(acao === 'aplicar');
       onMudou();
     } finally {
       setBusy(false);

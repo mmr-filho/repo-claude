@@ -125,10 +125,26 @@ export function percentualVinculado(r: Pick<ResumoConciliacao, 'registros' | 'vi
   return r.registros ? arredondar((r.vinculados * 100) / r.registros, 1) : null;
 }
 
-/** Cobertura de uma importação aplicada em texto: "Sinan Online · dengue, chikungunya · 01/01/2025 a 31/12/2025". */
-export function textoCobertura(c: ResumoConciliacao['cobertura'][number]): string {
-  return [rotuloSistema(c.sistema), c.grupos?.length ? c.grupos.join(', ') : null, `${dataBr(c.de)} a ${dataBr(c.ate)}`].filter(Boolean).join(' · ');
+/**
+ * Cobertura de uma importação aplicada em texto: "Sinan Online · dengue, chikungunya · 01/01/2025 a 31/12/2025"; o
+ * arquivo de um estabelecimento só leva o CNES ("e-SUS Notifica · covid · só o CNES 9000036 · ...").
+ */
+export function textoCobertura(c: Pick<ResumoConciliacao['cobertura'][number], 'sistema' | 'grupos' | 'de' | 'ate'> & { cnes?: string | null }): string {
+  return [rotuloSistema(c.sistema), c.grupos?.length ? c.grupos.join(', ') : null, c.cnes ? `só o CNES ${c.cnes}` : null, `${dataBr(c.de)} a ${dataBr(c.ate)}`].filter(Boolean).join(' · ');
 }
+
+/**
+ * Nome acessível dos botões que se repetem em cada linha das listas: começa pelo texto do botão e diz de qual registro
+ * ou notificação é (o leitor de tela lista os botões sem a linha).
+ */
+export const rotuloAcao = {
+  vincularRegistro: (numero: string) => `Vincular o registro ${numero}`,
+  vincularNotificacao: (numero: string) => `Vincular a notificação ${numero}`,
+  desvincularRegistro: (numero: string) => `Desvincular o registro ${numero}`,
+  vincularPar: (registro: string, notificacao: string) => `Vincular o registro ${registro} à notificação ${notificacao}`,
+  rejeitarPar: (registro: string, notificacao: string) => `Não é o mesmo caso: registro ${registro} e notificação ${notificacao}`,
+  apelido: (nome: string) => `Adicionar apelido: ${nome}`,
+};
 
 /** O período do filtro: o início não pode vir depois do fim (a API responde 400). Devolve o problema ou null. */
 export function erroDoPeriodo(f: Pick<FiltroConciliacao, 'de' | 'ate'>): string | null {

@@ -197,12 +197,14 @@ describe('período lido das notificações (aviso-periodo-lido)', () => {
     expect(avisoPeriodoLido(detalhe({ arquivos: [arquivo('ESUS_SINAN_CSV')] }))).toBe(texto);
     // Dois agravos (dois DBFs de agravo) e a tabela ignorada no zip: continua valendo.
     expect(avisoPeriodoLido(detalhe({ arquivos: [arquivo('AGRAVO_NET'), arquivo('AGRAVO_NET'), arquivo('TABELA_SINAN', true)] }))).toBe(texto);
+    // O DENGON também é de um agravo só (a regra mudou na terceira rodada: o consolidado usa o período lido dele).
+    expect(avisoPeriodoLido(detalhe({ arquivos: [arquivo('DENGON')] }))).toBe(texto);
   });
 
   it('sem aviso: período declarado, NINDINET (todos os agravos) junto, outro tipo, sem período ou fora da prévia', () => {
     expect(avisoPeriodoLido(detalhe({ arquivos: [arquivo('AGRAVO_NET')], periodoDeclarado: true }))).toBeNull();
     expect(avisoPeriodoLido(detalhe({ arquivos: [arquivo('NINDINET'), arquivo('AGRAVO_NET')] }))).toBeNull();
-    expect(avisoPeriodoLido(detalhe({ arquivos: [arquivo('DENGON')] }))).toBeNull();
+    expect(avisoPeriodoLido(detalhe({ arquivos: [arquivo('NNEGANET')] }))).toBeNull();
     expect(avisoPeriodoLido(detalhe({ arquivos: [arquivo('AGRAVO_NET')], periodo: null }))).toBeNull();
     expect(avisoPeriodoLido(detalhe({ arquivos: [arquivo('AGRAVO_NET')], status: 'APLICADA' }))).toBeNull();
     expect(avisoPeriodoLido(detalhe({ arquivos: [arquivo('TABELA_SINAN', true)] }))).toBeNull();

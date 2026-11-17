@@ -1,4 +1,4 @@
-import { AGRAVOS_SINAN, LNNC_NACIONAL, type Permission, type Role } from '@omnisaude/shared';
+import { AGRAVOS_SINAN, GRUPOS_SIGILOSOS_DIAGRAMA, type Permission, type Role } from '@omnisaude/shared';
 
 /*
  * Agravos dos seletores do diagrama de controle e da conciliação, sem React (testados em
@@ -9,7 +9,10 @@ import { AGRAVOS_SINAN, LNNC_NACIONAL, type Permission, type Role } from '@omnis
 export interface OpcaoAgravo {
   grupo: string;
   nome: string;
-  /** Agravo sigiloso (HIV, aids, sífilis, violências; Lei 14.289/2022): só aparece no seletor de quem pode vê-lo. */
+  /**
+   * Agravo sigiloso no diagrama (HIV, aids, sífilis, violências, tuberculose, hanseníase e hepatites; Lei 14.289/2022):
+   * só aparece no seletor de quem pode vê-lo.
+   */
   sigiloso?: true;
 }
 
@@ -23,12 +26,9 @@ export interface CondicaoDoCatalogo {
   sensitive?: boolean;
 }
 
-/** Grupos sigilosos do catálogo nacional: valem mesmo que o catálogo do tenant os desmarque (a mesma regra da API). */
-export const GRUPOS_SIGILOSOS_NACIONAIS: ReadonlySet<string> = new Set(LNNC_NACIONAL.flatMap((v) => v.conditions.filter((c) => c.sensitive).map((c) => c.group)));
-
 /**
- * O diagrama, o CSV e os anos epidêmicos de agravo sigiloso só saem para a vigilância municipal com acesso ao sigilo
- * (a API responde 403 AGRAVO_SIGILOSO aos demais, inclusive ao gestor e ao núcleo da unidade).
+ * O diagrama, o CSV, os anos epidêmicos e a configuração de agravo sigiloso só saem para a vigilância municipal com
+ * acesso ao sigilo (a API responde 403 AGRAVO_SIGILOSO aos demais, inclusive ao gestor e ao núcleo da unidade).
  */
 export const podeVerDiagramaSigiloso = (papel: Role | null | undefined, permissoes: readonly Permission[]) => papel === 'VIGILANCIA_EPIDEMIOLOGICA' && permissoes.includes('notificacao.sensivel');
 
@@ -63,7 +63,8 @@ const opcao = (grupo: string, nome: string, sigiloso: boolean): OpcaoAgravo => (
  * Agravos do seletor. Com o catálogo vigente do tenant, um por grupo, com o nome que a API dá ao diagrama (a linha
  * do próprio grupo, senão a de casos, sem o " - Casos"). Sem acesso ao catálogo (o gestor só tem o resumo), os grupos
  * da tabela de agravos do Sinan. Dengue, chikungunya e zika primeiro; os demais em ordem alfabética. O grupo é
- * sigiloso quando alguma linha dele é sigilosa no catálogo do tenant ou no nacional.
+ * sigiloso quando está na lista única do diagrama (`GRUPOS_SIGILOSOS_DIAGRAMA`, a mesma da API) ou quando alguma linha
+ * dele é sigilosa no catálogo do tenant.
  */
 export function opcoesDeAgravo(condicoes?: CondicaoDoCatalogo[] | null): OpcaoAgravo[] {
   if (condicoes?.length) {
@@ -72,13 +73,13 @@ export function opcoesDeAgravo(condicoes?: CondicaoDoCatalogo[] | null): OpcaoAg
     return ordenar(
       [...porGrupo].map(([grupo, linhas]) => {
         const l = linhas.find((x) => x.key === grupo) ?? linhas.find((x) => x.context === 'CASO') ?? linhas[0]!;
-        return opcao(grupo, l.name.replace(/\s+-\s+Casos$/i, ''), GRUPOS_SIGILOSOS_NACIONAIS.has(grupo) || linhas.some((x) => x.sensitive === true));
+        return opcao(grupo, l.name.replace(/\s+-\s+Casos$/i, ''), GRUPOS_SIGILOSOS_DIAGRAMA.has(grupo) || linhas.some((x) => x.sensitive === true));
       }),
     );
   }
   const vistos = new Map<string, string>();
   for (const info of Object.values(AGRAVOS_SINAN)) if (info.grupo && !vistos.has(info.grupo)) vistos.set(info.grupo, NOME_DO_GRUPO_SINAN[info.grupo] ?? info.nome);
-  return ordenar([...vistos].map(([grupo, nome]) => opcao(grupo, nome, GRUPOS_SIGILOSOS_NACIONAIS.has(grupo))));
+  return ordenar([...vistos].map(([grupo, nome]) => opcao(grupo, nome, GRUPOS_SIGILOSOS_DIAGRAMA.has(grupo))));
 }
 
 /** Nome do agravo para a tela; o grupo quando não está na lista. */

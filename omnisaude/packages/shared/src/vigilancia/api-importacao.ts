@@ -42,6 +42,13 @@ export interface ArquivoDetectado {
    * gripal = covid, ESAVI...) sai daqui. Sem ele (envios anteriores), a conciliação usa os grupos dos registros gravados.
    */
   grupos?: string[];
+  /**
+   * CNES único dos registros do arquivo, quando há exatamente um (o arquivo de um estabelecimento só, como a exportação
+   * do autocadastro do e-SUS), pelo mesmo critério que restringe os ausentes ao estabelecimento: arquivo do e-SUS
+   * Notifica ou do e-SUS Sinan com todos os registros com CNES, e um CNES só. Nos demais casos (e no arquivo ignorado),
+   * null. Os envios anteriores não têm o campo: vale como null.
+   */
+  cnes: string | null;
   /** Menor e maior data de notificação do arquivo. */
   periodo: { de: string; ate: string } | null;
   /** O arquivo traz a identificação do paciente. */
@@ -211,7 +218,9 @@ export interface ErroImportacao {
 
 /**
  * POST /vigilancia/importacoes: o corpo é o arquivo cru (zip, dbf ou csv; até 95 MB). Estes são os parâmetros da
- * consulta. Para trocar a codificação, a tela envia o mesmo arquivo de novo com `codificacao`.
+ * consulta. Para trocar a codificação, a tela envia o mesmo arquivo de novo com `codificacao`. 409 IMPORTACAO_OCUPADA
+ * antes de o corpo ser lido: o servidor já tem dois arquivos de importação na memória (de qualquer município) ou o
+ * município tem outra importação lendo ou aplicando.
  */
 export interface ConsultaEnvioImportacao {
   nome: string;
@@ -251,18 +260,28 @@ export interface ResumoImportacao {
 
 export type ListaImportacoes = ResumoImportacao[];
 
-/** GET /vigilancia/importacoes/:id e resposta do envio quando a prévia é criada. */
+/**
+ * GET /vigilancia/importacoes/:id e resposta do envio quando a prévia é criada. Com `?acompanhar=1` (a tela, enquanto o
+ * servidor lê ou aplica), vem sem a prévia e não vai para a auditoria.
+ */
 export interface DetalheImportacao extends ResumoImportacao {
   sha256: string;
   arquivos: ArquivoDetectado[];
-  /** null enquanto lê, quando a leitura falhou e depois de aplicar, descartar ou expirar (as amostras saem com o payload). */
+  /**
+   * A prévia nominal (auditada a cada leitura). null enquanto lê, enquanto aplica, no modo de acompanhamento, quando a
+   * leitura falhou e depois de aplicar, descartar ou expirar (as amostras saem com o payload).
+   */
   previa: PreviaImportacao | null;
   avisos: string[];
   /** Prévia: até quando pode ser aplicada. */
   expiraEm: string | null;
 }
 
-/** Mesmo arquivo (SHA-256) já aplicado: nada é criado. */
+/**
+ * Mesmo arquivo (SHA-256) já aplicado: nada é criado. Vale para o reenvio sem período declarado (qualquer aplicação do
+ * arquivo) e para o reenvio com o mesmo período declarado de uma aplicação. Com outro período declarado, o envio gera
+ * uma prévia nova: é como se corrige o período depois de aplicado (os registros não duplicam).
+ */
 export interface ArquivoJaImportado {
   jaImportado: { id: string; aplicadoEm: string };
 }
@@ -410,9 +429,11 @@ export interface ResumoConciliacao {
    * Sistemas, grupos e períodos cobertos por importação aplicada (o "só no OmniSaúde" só vale dentro deles). Cada
    * arquivo cobre só o que traz: o DBF do agravo (Sinan Net) e o CSV do e-SUS Sinan, os agravos que vieram; o DENGON e
    * o CHIKON, a dengue e a chikungunya; o CSV do e-SUS Notifica, a ficha (síndrome gripal = covid). `grupos` null =
-   * todos os do sistema: só o NINDINET, que traz todas as notificações individuais do Sinan Net.
+   * todos os do sistema: só o NINDINET, que traz todas as notificações individuais do Sinan Net. Os grupos com o mesmo
+   * agravo do Sinan entram juntos (o DBF do Y09 cobre também a violência sexual e a tentativa de suicídio). `cnes`: o
+   * arquivo de um estabelecimento só cobre só a unidade com esse CNES (null = todas). `ate` nunca passa da data do envio.
    */
-  cobertura: { sistema: SistemaOficial; grupos: string[] | null; de: string; ate: string }[];
+  cobertura: { sistema: SistemaOficial; grupos: string[] | null; cnes: string | null; de: string; ate: string }[];
   ultimaImportacao: { id: string; sistema: SistemaOficial; aplicadoEm: string } | null;
 }
 
@@ -482,8 +503,11 @@ export interface BairroSemCorrespondencia {
   candidatos: { neighborhoodId: string; nome: string; localidade: string | null }[];
 }
 
-/** GET /vigilancia/conciliacao/bairros. */
-export type ListaBairrosSemCorrespondencia = BairroSemCorrespondencia[];
+/**
+ * GET /vigilancia/conciliacao/bairros (`?pagina=`): do nome com mais registros para o com menos, 50 por página; os
+ * bairros parecidos vêm calculados só para a página.
+ */
+export type ListaBairrosSemCorrespondencia = PaginaConciliacao<BairroSemCorrespondencia>;
 
 /** POST /vigilancia/conciliacao/vincular (vínculo manual, auditado). */
 export interface CorpoVincular {

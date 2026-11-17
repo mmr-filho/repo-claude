@@ -178,21 +178,30 @@ export class LeitorPayload {
     this.ritmo = ritmo ?? new Ritmo();
   }
 
+  /**
+   * Os registros em lotes de até `tamanho` registros e `2 × tamanho` partes (o registro que sozinho passa disso vai num
+   * lote só dele), como `LeituraEnvio.registros`.
+   */
   async *lotes(tamanho = 500): AsyncGenerator<RegistroDoEnvio[]> {
     let lote: RegistroDoEnvio[] = [];
+    let partes = 0;
     const prontos: RegistroDoEnvio[][] = [];
     let resto: Buffer | null = null;
+    const fecharLote = () => {
+      prontos.push(lote);
+      lote = [];
+      partes = 0;
+    };
     const linha = (texto: string) => {
       if (!texto) return;
       const x = JSON.parse(texto) as unknown;
       const r = this.interpretar(x);
       if (!r) return;
+      if (lote.length && partes + r.partes.length > tamanho * 2) fecharLote();
       lote.push(r);
+      partes += r.partes.length;
       this.registros++;
-      if (lote.length >= tamanho) {
-        prontos.push(lote);
-        lote = [];
-      }
+      if (lote.length >= tamanho) fecharLote();
     };
     const gunzip = new Gunzip((dados) => {
       const b = resto ? Buffer.concat([resto, dados]) : Buffer.from(dados.buffer, dados.byteOffset, dados.byteLength);

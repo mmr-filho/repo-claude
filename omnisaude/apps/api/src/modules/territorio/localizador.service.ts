@@ -27,6 +27,11 @@ export function posicaoExplicita(h: { geoPrecision: string | null; geoSource: st
 type Db = Pick<TenantClient, 'block' | 'household' | '$executeRaw'>;
 /** Para religar: a origem do imóvel (criado pelo ACE em campo) está na sincronização. */
 type DbVinculo = Db & Pick<TenantClient, 'fieldSyncOp'>;
+/** Para localizar em lote: o polígono dos candidatos vem numa consulta só (um parâmetro com a lista de ids). */
+type DbLote = Db & Pick<TenantClient, '$queryRaw'>;
+
+/** Quantos quarteirões a consulta de um ponto lê, no máximo (com mais candidatos, a resposta depende de quais vieram). */
+const CANDIDATOS_POR_PONTO = 200;
 
 interface QuarteiraoGeo {
   id: string;
@@ -40,10 +45,10 @@ interface QuarteiraoGeo {
 const caixaDoBloco = (b: { minLng: number; minLat: number; maxLng: number; maxLat: number }): Caixa => [b.minLng, b.minLat, b.maxLng, b.maxLat];
 
 /** Grade simples (células de ~550 m) para achar quarteirões candidatos sem PostGIS. */
-class Grade {
-  private readonly celulas = new Map<string, QuarteiraoGeo[]>();
+class Grade<T extends { id: string; caixa: Caixa } = QuarteiraoGeo> {
+  private readonly celulas = new Map<string, T[]>();
   constructor(
-    blocos: QuarteiraoGeo[],
+    blocos: T[],
     private readonly passo = 0.005,
   ) {
     for (const b of blocos) for (const k of this.chaves(b.caixa)) (this.celulas.get(k) ?? this.celulas.set(k, []).get(k)!).push(b);
@@ -53,9 +58,9 @@ class Grade {
     for (let i = Math.floor(x0 / this.passo); i <= Math.floor(x1 / this.passo); i++) for (let j = Math.floor(y0 / this.passo); j <= Math.floor(y1 / this.passo); j++) out.push(`${i}:${j}`);
     return out;
   }
-  candidatos(c: Caixa): QuarteiraoGeo[] {
+  candidatos(c: Caixa): T[] {
     const vistos = new Set<string>();
-    const out: QuarteiraoGeo[] = [];
+    const out: T[] = [];
     for (const k of this.chaves(c))
       for (const b of this.celulas.get(k) ?? [])
         if (!vistos.has(b.id) && caixasSeTocam(b.caixa, c)) {
@@ -92,8 +97,65 @@ export class LocalizadorService {
   async quarteiraoDoPonto(db: Db, lat: number, lng: number): Promise<{ id: string; number: string } | null> {
     const p: Posicao = [lng, lat];
     const caixa = ampliarCaixa([lng, lat, lng, lat], TOLERANCIA_QUARTEIRAO_M);
-    const b = escolher(p, await this.blocosNaCaixa(db, caixa, 200));
+    const b = escolher(p, await this.blocosNaCaixa(db, caixa, CANDIDATOS_POR_PONTO));
     return b ? { id: b.id, number: b.number } : null;
+  }
+
+  /**
+   * Quarteirão de muitos pontos de uma vez (base consolidada por território, sugestões de surto): para cada ponto, o
+   * mesmo de `quarteiraoDoPonto`, com um número fixo de consultas em vez de uma por ponto. Lê as caixas dos quarteirões
+   * ativos que encostam na caixa que envolve todos os pontos, acha numa grade em memória os candidatos de cada ponto (a
+   * mesma condição da consulta de um ponto: a caixa do quarteirão encosta na do ponto ampliada em 15 m) e lê o polígono
+   * só dos candidatos. O ponto dentro de um quarteirão (a borda conta como dentro) fica nele; fora de todos, no mais
+   * próximo até 15 m. Quando a resposta depende da ordem em que o banco devolve os quarteirões (o ponto na divisa de
+   * dois, dois à mesma distância, mais candidatos do que a consulta de um ponto lê), o ponto é resolvido por
+   * `quarteiraoDoPonto`, para dar o mesmo resultado. Devolve na ordem dos pontos.
+   */
+  async quarteiroesDosPontos(db: DbLote, pontos: readonly { lat: number; lng: number }[]): Promise<({ id: string; number: string } | null)[]> {
+    if (!pontos.length) return [];
+    // O mesmo imóvel em várias notificações: cada posição é resolvida uma vez.
+    const chave = (p: { lat: number; lng: number }) => `${p.lng}|${p.lat}`;
+    const unicos = new Map<string, { lat: number; lng: number; caixa: Caixa }>();
+    for (const p of pontos) if (!unicos.has(chave(p))) unicos.set(chave(p), { lat: p.lat, lng: p.lng, caixa: ampliarCaixa([p.lng, p.lat, p.lng, p.lat], TOLERANCIA_QUARTEIRAO_M) });
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const { caixa: c } of unicos.values()) [x0, y0, x1, y1] = [Math.min(x0, c[0]), Math.min(y0, c[1]), Math.max(x1, c[2]), Math.max(y1, c[3])];
+    const caixas = await db.block.findMany({
+      where: { active: true, minLng: { lte: x1 }, maxLng: { gte: x0 }, minLat: { lte: y1 }, maxLat: { gte: y0 } },
+      select: { id: true, minLng: true, minLat: true, maxLng: true, maxLat: true },
+    });
+    const grade = new Grade(caixas.map((b) => ({ id: b.id, caixa: caixaDoBloco(b) })));
+    const candidatos = new Map([...unicos].map(([k, u]) => [k, grade.candidatos(u.caixa).map((b) => b.id)]));
+    const ids = [...new Set([...candidatos.values()].flat())];
+    const poligonos = ids.length ? await db.$queryRaw<{ id: string; number: string; geometry: Area }[]>`SELECT id::text AS id, number, geometry FROM blocks WHERE id = ANY(${ids}::uuid[]) AND active` : [];
+    const porId = new Map(poligonos.map((b) => [b.id, b]));
+    const resolvidos = new Map<string, { id: string; number: string } | null>();
+    const ambiguos: string[] = [];
+    for (const [k, u] of unicos) {
+      const cands = candidatos.get(k)!.flatMap((id) => porId.get(id) ?? []);
+      if (cands.length > CANDIDATOS_POR_PONTO) {
+        ambiguos.push(k);
+        continue;
+      }
+      const p: Posicao = [u.lng, u.lat];
+      const dentro = cands.filter((b) => pontoNaArea(p, b.geometry));
+      if (dentro.length > 1) ambiguos.push(k);
+      else if (dentro.length === 1) resolvidos.set(k, { id: dentro[0]!.id, number: dentro[0]!.number });
+      else {
+        let menor = Infinity;
+        let maisPerto: typeof cands = [];
+        for (const b of cands) {
+          const d = distanciaAteArea(p, b.geometry);
+          if (d > TOLERANCIA_QUARTEIRAO_M) continue;
+          if (d < menor) [menor, maisPerto] = [d, [b]];
+          else if (d === menor) maisPerto.push(b);
+        }
+        if (maisPerto.length > 1) ambiguos.push(k);
+        else resolvidos.set(k, maisPerto[0] ? { id: maisPerto[0].id, number: maisPerto[0].number } : null);
+      }
+    }
+    // O empate (raro: a posição exata na divisa ou à mesma distância de dois) segue a consulta de um ponto.
+    for (const k of ambiguos) resolvidos.set(k, await this.quarteiraoDoPonto(db, unicos.get(k)!.lat, unicos.get(k)!.lng));
+    return pontos.map((p) => resolvidos.get(chave(p)) ?? null);
   }
 
   /**

@@ -20,7 +20,7 @@ import {
 import { MASTER_DB } from '../../core/database';
 import type { SystemContext } from '../integrations/messaging.service';
 import { LocalizadorService, PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
-import { arquivoCobre } from './cobertura-importacao';
+import { arquivoCobre, cnesDoArquivo, periodoCoberto } from './cobertura-importacao';
 import { MapaCasosService } from './mapa.service';
 
 /** Consulta da base consolidada. */
@@ -360,7 +360,6 @@ export class ConsolidadoService {
         residenceLat: true,
         residenceLng: true,
         residencePrecision: true,
-        form: resolver !== null,
         condition: { select: { context: true } },
         _count: { select: { officialRecords: true } },
       },
@@ -385,14 +384,33 @@ export class ConsolidadoService {
           casos.filter((c) => !c.outOfMunicipality),
         )
       : new Map();
+    // Quarteirão da residência: o do imóvel; a posição da ficha sem quarteirão ligado é localizada na malha, em lote (um
+    // número fixo de consultas, e não uma por notificação).
     const quarteiroes = new Map<string, string | null>();
+    const aLocalizar: { id: string; lat: number; lng: number }[] = [];
     for (const c of casos) {
       const r = residencias.get(c.id);
       if (!r) continue;
-      quarteiroes.set(c.id, r.blockId ?? (PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao) ? ((await this.localizador.quarteiraoDoPonto(sys.db, r.lat, r.lng))?.id ?? null) : null));
+      if (r.blockId) quarteiroes.set(c.id, r.blockId);
+      else if (PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao)) aLocalizar.push({ id: c.id, lat: r.lat, lng: r.lng });
+      else quarteiroes.set(c.id, null);
     }
-    const blocos = await sys.db.block.findMany({ where: { id: { in: [...new Set([...quarteiroes.values()].filter((b): b is string => !!b))] } }, select: { id: true, neighborhoodId: true, localityId: true } });
+    const achados = await this.localizador.quarteiroesDosPontos(sys.db, aLocalizar);
+    aLocalizar.forEach((p, i) => quarteiroes.set(p.id, achados[i]?.id ?? null));
+    const idsDosBlocos = [...new Set([...quarteiroes.values()].filter((b): b is string => !!b))];
+    const blocos = idsDosBlocos.length ? await sys.db.block.findMany({ where: { id: { in: idsDosBlocos } }, select: { id: true, neighborhoodId: true, localityId: true } }) : [];
     const doBloco = new Map(blocos.map((b) => [b.id, b]));
+    // Sem quarteirão, o bairro escrito na ficha: só o NM_BAIRRO (texto), não a ficha inteira de cada notificação.
+    const semQuarteirao = resolver ? casos.filter((c) => !c.outOfMunicipality && !doBloco.has(quarteiroes.get(c.id) ?? '')).map((c) => c.id) : [];
+    const bairroDaFicha = new Map(
+      semQuarteirao.length
+        ? (
+            await sys.db.$queryRaw<{ id: string; bairro: string | null }[]>`
+              SELECT id::text AS id, CASE WHEN jsonb_typeof(form->'NM_BAIRRO') = 'string' THEN form->>'NM_BAIRRO' END AS bairro
+              FROM notifications WHERE id = ANY(${semQuarteirao}::uuid[])`
+          ).map((r) => [r.id, r.bairro])
+        : [],
+    );
 
     const out: LinhaCasos[] = [];
     for (const c of casos) {
@@ -406,10 +424,7 @@ export class ConsolidadoService {
       if (resolver && !c.outOfMunicipality) {
         const bloco = doBloco.get(quarteiroes.get(c.id) ?? '');
         if (bloco) t = { bairroId: bloco.neighborhoodId, localidadeId: bloco.localityId, semCorrespondencia: null };
-        else {
-          const ficha = (c.form ?? {}) as Record<string, unknown>;
-          t = resolver(null, typeof ficha.NM_BAIRRO === 'string' ? ficha.NM_BAIRRO : null);
-        }
+        else t = resolver(null, bairroDaFicha.get(c.id) ?? null);
       }
       out.push({
         origem: 'OMNISAUDE',
@@ -475,16 +490,20 @@ export class ConsolidadoService {
 
   /**
    * Cobertura por SE (a pesquisa: "ano ou período sem base importada é nulo e fica fora do conjunto"). A SE está coberta
-   * quando cai no período de um arquivo de importação aplicada que cobre o agravo (`arquivoCobre`, o mesmo da
-   * conciliação; o período declarado no envio vale mais que o lido no arquivo), quando o OmniSaúde já estava em uso (da
-   * SE da primeira notificação em diante, de qualquer agravo) ou quando tem caso do agravo (o caso nunca se perde). O
-   * período lido no arquivo é a menor e a maior data de notificação: num DBF de agravo raro ele pode ser menor que o
-   * exportado, e as SE das pontas ficam fora (o envio com período declarado resolve).
+   * quando cai no período de um arquivo de importação aplicada que cobre o agravo (`arquivoCobre` e `periodoCoberto`,
+   * os mesmos da conciliação: o período declarado no envio vale mais que o lido no arquivo, e o fim não passa da data
+   * do envio), quando o OmniSaúde já estava em uso (da SE em que a primeira notificação notificada ou encerrada, de
+   * qualquer agravo, entrou no sistema em diante) ou quando tem caso do agravo (o caso nunca se perde). O arquivo de um
+   * CNES só (exportação de um estabelecimento) não cobre a SE do município nem a do território: os registros dele
+   * continuam contando. O período lido no arquivo é a menor e a maior data de notificação: num DBF de agravo raro ele
+   * pode ser menor que o exportado, e as SE das pontas ficam fora (o envio com período declarado resolve).
    */
   private async cobertura(sys: SystemContext, grupo: string, anos: number[], linhas: LinhaCasos[]): Promise<{ cobertura: CoberturaAno[]; semanas: Map<number, boolean[]> }> {
     const [importacoes, primeira] = await Promise.all([
-      sys.db.officialImport.findMany({ where: { status: 'APLICADA' }, select: { id: true, fileName: true, periodFrom: true, periodTo: true, declaredPeriod: true, files: true } }),
-      sys.db.notification.findFirst({ where: { status: { in: ['NOTIFICADA', 'ENCERRADA'] } }, orderBy: { knownAt: 'asc' }, select: { knownAt: true } }),
+      sys.db.officialImport.findMany({ where: { status: 'APLICADA' }, select: { id: true, fileName: true, periodFrom: true, periodTo: true, declaredPeriod: true, createdAt: true, files: true } }),
+      // Quando a ficha entrou no sistema (não a data de conhecimento, que aceita qualquer dia passado: uma carga
+      // retroativa cobriria com zeros anos inteiros de todo agravo).
+      sys.db.notification.findFirst({ where: { status: { in: ['NOTIFICADA', 'ENCERRADA'] } }, orderBy: { createdAt: 'asc' }, select: { createdAt: true } }),
     ]);
     const arquivos = (imp: (typeof importacoes)[number]) => (Array.isArray(imp.files) ? (imp.files as unknown as ArquivoDetectado[]) : []);
     const gravados = await this.gruposGravados(
@@ -494,11 +513,11 @@ export class ConsolidadoService {
     const periodos: { de: string; ate: string; nome: string }[] = [];
     for (const imp of importacoes)
       for (const a of arquivos(imp)) {
-        if (!arquivoCobre(a, grupo, gravados.get(imp.id))) continue;
-        const p = imp.declaredPeriod && imp.periodFrom && imp.periodTo ? { de: dia(imp.periodFrom), ate: dia(imp.periodTo) } : a.periodo;
+        if (cnesDoArquivo(a) || !arquivoCobre(a, grupo, gravados.get(imp.id))) continue;
+        const p = periodoCoberto(imp, a, sys.tenant.timeZone);
         if (p) periodos.push({ de: p.de, ate: p.ate, nome: imp.fileName });
       }
-    const omniDesde = primeira ? semanaEpidemiologica(primeira.knownAt, sys.tenant.timeZone).codigo : null;
+    const omniDesde = primeira ? semanaEpidemiologica(primeira.createdAt, sys.tenant.timeZone).codigo : null;
     const comCaso = new Set(linhas.map((l) => `${l.ano}${pad(l.semana)}`));
     const semanas = new Map<number, boolean[]>();
     const cobertura = anos.map((ano): CoberturaAno => {

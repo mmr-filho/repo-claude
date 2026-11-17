@@ -1,11 +1,14 @@
+import * as compartilhado from '@omnisaude/shared';
+import { GRUPOS_SIGILOSOS_DIAGRAMA } from '@omnisaude/shared';
 import { describe, expect, it } from 'vitest';
-import { GRUPOS_SIGILOSOS_NACIONAIS, opcoesDeAgravo, opcoesVisiveis, podeVerDiagramaSigiloso } from '../src/components/consolidacao/diagrama-agravos';
+import { opcoesDeAgravo, opcoesVisiveis, podeVerDiagramaSigiloso } from '../src/components/consolidacao/diagrama-agravos';
 import { congelamentoDoCanal, seloCobertura } from '../src/components/consolidacao/diagrama-dados';
 
 /*
  * Diagrama de controle (web), achados tel-2 e tra-2 e o contrato novo da cobertura:
  * - não oferecer "Congelar" quando a referência do canal inclui ano ainda incompleto (a API recusa com 422);
- * - não oferecer agravo sigiloso (HIV, aids, sífilis, violências) a quem não é da vigilância municipal (a API dá 403);
+ * - não oferecer agravo sigiloso (HIV, aids, sífilis, violências, tuberculose, hanseníase e hepatites) a quem não é da
+ *   vigilância municipal (a API dá 403);
  * - o ano coberto só em parte aparece como tal.
  */
 
@@ -38,8 +41,13 @@ describe('cobertura do ano', () => {
 });
 
 describe('agravo sigiloso no seletor (tra-2)', () => {
-  it('os grupos sigilosos do catálogo nacional são os de HIV, aids, sífilis e violências', () => {
-    expect([...GRUPOS_SIGILOSOS_NACIONAIS].sort()).toEqual(['aids', 'hiv', 'hiv-gestacao', 'sifilis', 'violencia', 'violencia-sexual-suicidio']);
+  it('os grupos sigilosos do diagrama: os do catálogo nacional e os da Lei 14.289/2022 (tuberculose, hanseníase e hepatites)', () => {
+    // Lista única do pacote compartilhado, a mesma da API (antes, a tela tinha a sua, só com os sigilosos do catálogo).
+    expect(GRUPOS_SIGILOSOS_DIAGRAMA).toBe(compartilhado.GRUPOS_SIGILOSOS_DIAGRAMA);
+    expect([...GRUPOS_SIGILOSOS_DIAGRAMA].sort()).toEqual(['aids', 'hanseniase', 'hepatite-b-gestacao', 'hepatites-virais', 'hiv', 'hiv-gestacao', 'sifilis', 'tuberculose', 'violencia', 'violencia-sexual-suicidio']);
+    // O catálogo nacional não muda: tuberculose, hanseníase e hepatites seguem sem a marca de sigilo nas notificações.
+    const marcadas = new Set(compartilhado.LNNC_NACIONAL.flatMap((v) => v.conditions.filter((c) => c.sensitive).map((c) => c.group)));
+    for (const g of ['tuberculose', 'hanseniase', 'hepatites-virais', 'hepatite-b-gestacao']) expect(marcadas.has(g)).toBe(false);
   });
 
   it('o catálogo marca o grupo sigiloso pelo nacional ou pela linha sigilosa do tenant', () => {
@@ -51,13 +59,15 @@ describe('agravo sigiloso no seletor (tra-2)', () => {
       { key: 'mun-local', groupKey: 'mun-local', name: 'Agravo local', context: 'CASO', sensitive: true },
       { key: 'hanseniase', groupKey: 'hanseniase', name: 'Hanseníase', context: 'CASO' },
     ]);
-    expect(o.filter((x) => x.sigiloso).map((x) => x.grupo)).toEqual(['mun-local', 'sifilis']);
+    // A hanseníase é sigilosa pela Lei 14.289/2022, mesmo sem a marca no catálogo.
+    expect(o.filter((x) => x.sigiloso).map((x) => x.grupo)).toEqual(['mun-local', 'hanseniase', 'sifilis']);
     expect(o.find((x) => x.grupo === 'dengue')).toEqual({ grupo: 'dengue', nome: 'Dengue' });
   });
 
   it('sem o catálogo (gestor), a tabela do Sinan também traz a marca', () => {
     const o = opcoesDeAgravo(null);
     expect(o.find((x) => x.grupo === 'sifilis')?.sigiloso).toBe(true);
+    for (const g of ['tuberculose', 'hanseniase', 'hepatites-virais']) expect(o.find((x) => x.grupo === g)?.sigiloso).toBe(true);
     expect(o.find((x) => x.grupo === 'dengue')?.sigiloso).toBeUndefined();
   });
 
@@ -72,7 +82,7 @@ describe('agravo sigiloso no seletor (tra-2)', () => {
   it('o seletor tira os sigilosos de quem não pode vê-los, mas mantém o já escolhido', () => {
     const o = opcoesDeAgravo(null);
     const sem = opcoesVisiveis(o, false, 'dengue');
-    expect(sem.some((x) => x.grupo === 'hiv' || x.grupo === 'sifilis' || x.grupo === 'violencia')).toBe(false);
+    expect(sem.some((x) => ['hiv', 'sifilis', 'violencia', 'tuberculose', 'hanseniase', 'hepatites-virais'].includes(x.grupo))).toBe(false);
     expect(sem.some((x) => x.grupo === 'dengue')).toBe(true);
     expect(opcoesVisiveis(o, false, 'sifilis').some((x) => x.grupo === 'sifilis')).toBe(true);
     expect(opcoesVisiveis(o, true, 'dengue')).toEqual(o);

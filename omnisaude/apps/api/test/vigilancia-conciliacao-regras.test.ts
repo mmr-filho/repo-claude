@@ -1,12 +1,13 @@
 import type { ArquivoDetectado } from '@omnisaude/shared';
 import { describe, expect, it } from 'vitest';
-import { arquivoCobre, gruposDoArquivo } from '../src/modules/vigilancia/cobertura-importacao';
+import { arquivoCobre, cnesDoArquivo, gruposDoArquivo, periodoCoberto } from '../src/modules/vigilancia/cobertura-importacao';
 import { divergenciasDoPar, evolucaoComparavel } from '../src/modules/vigilancia/conciliacao.service';
 
 /**
  * Regras da conciliação sem banco (VIG-1c, frente A2 da semana 27): a evolução traduzida pela ficha antes de comparar
- * o registro oficial com a notificação do OmniSaúde (achado imp-mpox-codigos) e a cobertura de cada arquivo por grupo
- * (achado imp-cobertura-so-omni).
+ * o registro oficial com a notificação do OmniSaúde (achado imp-mpox-codigos), a cobertura de cada arquivo por grupo
+ * (achado imp-cobertura-so-omni) e, na terceira rodada, os grupos do mesmo agravo do Sinan (conciliacao-2), o CNES
+ * único do arquivo (imp-cobertura-so-omni) e o fim do período na data do envio (conciliacao-3).
  */
 
 const arquivo = (a: Partial<ArquivoDetectado> & Pick<ArquivoDetectado, 'tipo' | 'sistema'>): ArquivoDetectado => ({
@@ -17,6 +18,7 @@ const arquivo = (a: Partial<ArquivoDetectado> & Pick<ArquivoDetectado, 'tipo' | 
   codificacao: 'CP850',
   origemCodificacao: 'CABECALHO',
   agravos: [],
+  cnes: null,
   periodo: { de: '2026-01-01', ate: '2026-01-31' },
   identificado: true,
   ignorado: false,
@@ -77,5 +79,49 @@ describe('Conciliação: cobertura de cada arquivo por grupo (imp-cobertura-so-o
     expect(arquivoCobre(sg, 'esavi', ['covid'])).toBe(false);
     expect(gruposDoArquivo(arquivo({ tipo: 'NINDINET', sistema: 'SINAN_NET', ignorado: true }))).toEqual([]);
     expect(gruposDoArquivo(arquivo({ tipo: 'NNEGANET', sistema: 'SINAN_NET', tipoRegistro: 'NEGATIVA' }))).toEqual([]);
+  });
+});
+
+describe('Conciliação: grupos do mesmo agravo do Sinan, CNES do arquivo e fim no envio (terceira rodada)', () => {
+  it('conciliacao-2: o DBF do Y09 cobre a violência sexual e a tentativa de suicídio na conciliação; no consolidado, só a violência', () => {
+    const y09 = arquivo({ tipo: 'AGRAVO_NET', sistema: 'SINAN_NET', agravos: ['Y09'] });
+    expect(gruposDoArquivo(y09)).toEqual(['violencia', 'violencia-sexual-suicidio']);
+    // Os registros do Y09 ficam todos no grupo "violencia": a base consolidada da violência sexual não os conta.
+    expect(arquivoCobre(y09, 'violencia')).toBe(true);
+    expect(arquivoCobre(y09, 'violencia-sexual-suicidio')).toBe(false);
+    // Os outros agravos não ganham grupo nenhum.
+    expect(gruposDoArquivo(arquivo({ tipo: 'AGRAVO_NET', sistema: 'SINAN_NET', agravos: ['A279', 'O981'] }))).toEqual(['leptospirose', 'sifilis']);
+    expect(gruposDoArquivo(arquivo({ tipo: 'ESUS_NOTIFICA_CSV', sistema: 'ESUS_NOTIFICA', grupos: ['covid'] }))).toEqual(['covid']);
+  });
+
+  it('imp-cobertura-so-omni: o CNES único do arquivo, lido com tolerância (arquivo antigo sem o campo vale null)', () => {
+    const sg = arquivo({ tipo: 'ESUS_NOTIFICA_CSV', sistema: 'ESUS_NOTIFICA', grupos: ['covid'] });
+    const { cnes: _, ...antigo } = sg;
+    expect(cnesDoArquivo(antigo as ArquivoDetectado)).toBeNull();
+    expect(cnesDoArquivo(sg)).toBeNull();
+    expect(cnesDoArquivo({ ...sg, cnes: '9000036' })).toBe('9000036');
+    expect(cnesDoArquivo({ ...sg, cnes: '  ' })).toBeNull();
+  });
+
+  it('conciliacao-3: o período coberto termina no menor entre o fim (declarado ou lido) e a data local do envio', () => {
+    const tz = 'America/Sao_Paulo';
+    const lido = { periodo: { de: '2026-01-05', ate: '2026-11-30' } };
+    const imp = (createdAt: string, declarado?: [string, string]) => ({
+      periodFrom: declarado ? new Date(`${declarado[0]}T00:00:00Z`) : null,
+      periodTo: declarado ? new Date(`${declarado[1]}T00:00:00Z`) : null,
+      declaredPeriod: !!declarado,
+      createdAt: new Date(createdAt),
+    });
+    // O ano inteiro declarado, enviado em 16/11 às 20h de Brasília: cobre até 16/11, não até 31/12.
+    expect(periodoCoberto(imp('2026-11-16T23:00:00Z', ['2026-01-01', '2026-12-31']), lido, tz)).toEqual({ de: '2026-01-01', ate: '2026-11-16' });
+    // A data do envio é a do fuso do tenant: 01h30 UTC de 17/11 ainda é 16/11 em Brasília (e 17/11 em Lisboa).
+    expect(periodoCoberto(imp('2026-11-17T01:30:00Z', ['2026-01-01', '2026-12-31']), lido, tz)!.ate).toBe('2026-11-16');
+    expect(periodoCoberto(imp('2026-11-17T01:30:00Z', ['2026-01-01', '2026-12-31']), lido, 'Europe/Lisbon')!.ate).toBe('2026-11-17');
+    // Sem período declarado, vale o lido no arquivo, também limitado ao envio; o fim antes do envio fica como está.
+    expect(periodoCoberto(imp('2026-11-16T15:00:00Z'), lido, tz)).toEqual({ de: '2026-01-05', ate: '2026-11-16' });
+    expect(periodoCoberto(imp('2026-12-20T15:00:00Z'), lido, tz)).toEqual({ de: '2026-01-05', ate: '2026-11-30' });
+    // Período que começa depois do envio não cobre nada; arquivo sem período também não.
+    expect(periodoCoberto(imp('2026-11-16T15:00:00Z', ['2026-12-01', '2026-12-31']), lido, tz)).toBeNull();
+    expect(periodoCoberto(imp('2026-11-16T15:00:00Z'), { periodo: null }, tz)).toBeNull();
   });
 });

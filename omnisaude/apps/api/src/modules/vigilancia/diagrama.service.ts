@@ -5,7 +5,7 @@ import {
   calcularCanal,
   csvDoCanal,
   curvaObservada,
-  LNNC_NACIONAL,
+  GRUPOS_SIGILOSOS_DIAGRAMA,
   RECEITAS_MODELO,
   roleHasPermission,
   ROTULO_FONTE_POPULACAO,
@@ -53,8 +53,6 @@ type Db = TenantPrisma.TransactionClient;
 const MODELO_PADRAO: ChaveReceitaModelo = 'MS_2025';
 const ANO_MINIMO = 2000;
 const pad = (n: number) => String(n).padStart(2, '0');
-/** Grupos sigilosos do catálogo nacional (HIV, sífilis, violências): valem mesmo que o catálogo do tenant os desmarque. */
-const SIGILOSOS_NACIONAIS = new Set(LNNC_NACIONAL.flatMap((v) => v.conditions.filter((c) => c.sensitive).map((c) => c.group)));
 
 /** Canal congelado gravado (control_channels). */
 interface CanalGravado {
@@ -257,10 +255,16 @@ export class DiagramaService {
     return { fileName: `diagrama-${consulta.grupo}-${lugar}-${consulta.ano}.csv`, content };
   }
 
-  /** GET /vigilancia/diagrama/configuracao/:grupo. */
+  /**
+   * GET /vigilancia/diagrama/configuracao/:grupo. A do agravo sigiloso tem o motivo de cada ano excluído (texto livre,
+   * que pode citar o caso) e quem gravou: só sai para quem lê o diagrama dele, e a leitura fica na auditoria.
+   */
   async configuracao(ctx: RequestContext, grupo: string): Promise<ConfiguracaoDiagrama> {
-    await this.nomeDoAgravo(ctx, grupo);
-    return this.configuracaoDe(ctx.db, grupo);
+    const { nome: agravo, sigiloso } = await this.agravo(ctx, grupo);
+    if (sigiloso) this.exigirAcessoSigiloso(ctx, agravo);
+    const configuracao = await this.configuracaoDe(ctx.db, grupo);
+    if (sigiloso) await this.auditarSigiloso(ctx, 'diagrama/configuracao', grupo, {});
+    return configuracao;
   }
 
   /** GET /vigilancia/diagrama/anos-epidemicos?grupo=&ano=: regra da SES-GO sobre a série do município. */
@@ -613,8 +617,9 @@ export class DiagramaService {
   }
 
   /**
-   * Nome do agravo pelo catálogo do tenant (a linha de casos do grupo) e se ele é sigiloso: alguma linha do grupo
-   * marcada no catálogo do tenant ou no nacional. Grupo fora do catálogo: 404.
+   * Nome do agravo pelo catálogo do tenant (a linha de casos do grupo) e se ele é sigiloso no diagrama: grupo da lista
+   * única (`GRUPOS_SIGILOSOS_DIAGRAMA`: os sigilosos do catálogo nacional e os da Lei 14.289/2022) ou com alguma linha
+   * marcada no catálogo do tenant. Grupo fora do catálogo: 404.
    */
   async agravo(sys: SystemContext, grupo: string): Promise<{ nome: string; sigiloso: boolean }> {
     // O catálogo nacional é gravado no banco do tenant na primeira consulta à vigilância.
@@ -622,7 +627,7 @@ export class DiagramaService {
     const linhas = await sys.db.notifiableCondition.findMany({ where: { groupKey: grupo }, select: { key: true, name: true, context: true, sensitive: true }, take: 50 });
     const l = linhas.find((x) => x.key === grupo) ?? linhas.find((x) => x.context === 'CASO') ?? linhas[0];
     if (!l) throw notFound('Agravo do catálogo');
-    return { nome: l.name.replace(/\s+-\s+Casos$/i, ''), sigiloso: SIGILOSOS_NACIONAIS.has(grupo) || linhas.some((x) => x.sensitive) };
+    return { nome: l.name.replace(/\s+-\s+Casos$/i, ''), sigiloso: GRUPOS_SIGILOSOS_DIAGRAMA.has(grupo) || linhas.some((x) => x.sensitive) };
   }
 
   /** Nome do agravo pelo catálogo do tenant (a linha de casos do grupo); grupo fora do catálogo: 404. */
@@ -630,19 +635,20 @@ export class DiagramaService {
     return (await this.agravo(sys, grupo)).nome;
   }
 
-  /** Grupos sigilosos entre os pedidos (catálogo nacional ou do tenant), na ordem pedida. */
+  /** Grupos sigilosos entre os pedidos (lista única do diagrama ou catálogo do tenant), na ordem pedida. */
   async gruposSigilosos(sys: SystemContext, grupos: string[]): Promise<string[]> {
     if (!grupos.length) return [];
     await this.catalogo.garantir(sys);
     const marcados = await sys.db.notifiableCondition.findMany({ where: { groupKey: { in: grupos }, sensitive: true }, select: { groupKey: true }, distinct: ['groupKey'] });
     const doTenant = new Set(marcados.map((m) => m.groupKey));
-    return [...new Set(grupos)].filter((g) => SIGILOSOS_NACIONAIS.has(g) || doTenant.has(g));
+    return [...new Set(grupos)].filter((g) => GRUPOS_SIGILOSOS_DIAGRAMA.has(g) || doTenant.has(g));
   }
 
   /**
-   * Agravo sigiloso (Lei 14.289/2022; LGPD, art. 11): a contagem semanal por território pode identificar a pessoa, e só
-   * sai para a vigilância municipal com acesso ao sigilo. O gestor não abre a ficha sigilosa; o núcleo só a da própria
-   * unidade, e o diagrama é do município inteiro.
+   * Agravo sigiloso (Lei 14.289/2022: HIV, hepatites crônicas, hanseníase e tuberculose; sífilis e violências pelo
+   * catálogo; LGPD, art. 11): a contagem semanal por território pode identificar a pessoa, e só sai para a vigilância
+   * municipal com acesso ao sigilo. O gestor não abre a ficha sigilosa; o núcleo só a da própria unidade, e o diagrama é
+   * do município inteiro.
    */
   private exigirAcessoSigiloso(ctx: RequestContext, agravo: string) {
     if (ctx.session.role === 'VIGILANCIA_EPIDEMIOLOGICA' && roleHasPermission(ctx.session.role, 'notificacao.sensivel')) return;
@@ -650,7 +656,7 @@ export class DiagramaService {
   }
 
   /** Leitura de agravo sigiloso fica na auditoria, como no mapa de casos. */
-  private auditarSigiloso(ctx: RequestContext, rota: string, grupo: string, onde: { nivel: NivelTerritorio; territorioId: string | null; ano: number; eixo?: string }) {
+  private auditarSigiloso(ctx: RequestContext, rota: string, grupo: string, onde: { nivel?: NivelTerritorio; territorioId?: string | null; ano?: number; eixo?: string }) {
     return this.audit.recordStandalone(ctx, { action: 'vigilancia.diagrama_sigiloso', entityType: 'Agravo', entityId: grupo, payload: { rota, grupo, ...onde } });
   }
 

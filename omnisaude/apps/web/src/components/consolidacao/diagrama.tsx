@@ -1,6 +1,16 @@
 'use client';
 
-import { descreverReceita, ROTULO_STATUS_SEMANA, semanaEpidemiologica, type EixoDiagrama, type NivelTerritorio, type RespostaCongelarCanal, type RespostaDiagrama } from '@omnisaude/shared';
+import {
+  descreverReceita,
+  ROTULO_STATUS_SEMANA,
+  semanaEpidemiologica,
+  type CoberturaAno,
+  type EixoDiagrama,
+  type NivelTerritorio,
+  type PopulacaoUsada,
+  type RespostaCongelarCanal,
+  type RespostaDiagrama,
+} from '@omnisaude/shared';
 import { Download, Snowflake } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
@@ -9,17 +19,33 @@ import { Card, CardBody, CardHeader, EmptyState } from '@/components/ui/card';
 import { Dialog } from '@/components/ui/dialog';
 import { Field, Select, Textarea } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
+import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { TabPanel, Tabs } from '@/components/ui/tabs';
 import { useToast } from '@/components/ui/toast';
 import { api, ApiError, errorMessage, saveBlob } from '@/lib/api';
 import { useSession } from '@/lib/session';
 import { recusaPorSigilo, useConsulta } from './consulta';
 import { nomeDoAgravo, podeVerDiagramaSigiloso } from './diagrama-agravos';
-import { anosDoSeletor, congelamentoDoCanal, consultaDiagrama, descricaoDoGrafico, linhasDoDiagrama, receitaDoGrafico, semanasAcimaDoLs, textoSemanas, TOM_STATUS, ultimaSemanaCompleta } from './diagrama-dados';
+import {
+  anosDoSeletor,
+  congelamentoDoCanal,
+  consultaDiagrama,
+  descricaoDoGrafico,
+  linhasDoDiagrama,
+  receitaDoGrafico,
+  ROTULO_ORIGEM_POPULACAO,
+  seloCobertura,
+  semanasAcimaDoLs,
+  textoFonte,
+  textoSemanas,
+  TOM_STATUS,
+  ultimaSemanaCompleta,
+  type UnidadeCanal,
+} from './diagrama-dados';
 import { DiagramaGrafico } from './diagrama-grafico';
 import { DiagramaReceita } from './diagrama-receita';
 import { nomeDoTerritorio, SeletorAgravo, SeletorTerritorio, useOpcoesDeAgravo, useTerritorios } from './diagrama-seletores';
-import { DiagramaPopulacaoUsada, DiagramaTabelaSemanas } from './diagrama-tabela';
+import { DiagramaTabelaSemanas } from './diagrama-tabela';
 import { useDataHora } from './fuso';
 import { PopulacaoEstimativas } from './populacao-estimativas';
 
@@ -32,6 +58,76 @@ interface FiltroDiagrama {
 }
 
 const ROTULO_EIXO: Record<EixoDiagrama, string> = { EPIDEMIOLOGICO: 'Ano epidemiológico (SE 1 a 52/53)', SAZONAL: 'Ano sazonal (SE 27 a SE 26)' };
+
+/**
+ * Fonte da população dos anos que têm população: `unica` quando é a mesma em todos (fonte e versão); `varia` quando há
+ * mais de uma. Sem nenhuma, nem uma nem outra.
+ */
+export function fonteDaPopulacao(populacao: Pick<PopulacaoUsada, 'fonte' | 'versao'>[]): { unica: string | null; varia: boolean } {
+  const textos = new Set(populacao.filter((p) => p.fonte).map((p) => textoFonte(p.fonte, p.versao)));
+  return { unica: textos.size === 1 ? [...textos][0]! : null, varia: textos.size > 1 };
+}
+
+/**
+ * População usada em cada ano do canal e cobertura de cada ano da série. A fonte da população, quando é a mesma em
+ * todos os anos, aparece uma vez acima da tabela; a coluna Fonte só aparece quando ela varia entre os anos (o texto
+ * longo repetido em todo ano alargava a tabela).
+ */
+export function PopulacaoECobertura({ populacao, cobertura, unidade }: { populacao: PopulacaoUsada[]; cobertura: CoberturaAno[]; unidade: UnidadeCanal }) {
+  const anos = [...new Set([...populacao.map((p) => p.ano), ...cobertura.map((c) => c.ano)])].sort((a, b) => a - b);
+  if (!anos.length) return <p className="px-5 py-4 text-sm text-slate-500">Sem anos na série.</p>;
+  const incidencia = unidade === 'INCIDENCIA';
+  const fonte = incidencia ? fonteDaPopulacao(populacao) : { unica: null, varia: false };
+  const colunas = 2 + (incidencia ? 2 : 0) + (fonte.varia ? 1 : 0);
+  return (
+    <div>
+      {fonte.unica && (
+        <p className="px-3 pt-3 text-xs text-slate-600">
+          Fonte da população em todos os anos: <span className="font-medium text-slate-700">{fonte.unica}</span>.
+        </p>
+      )}
+      <Table>
+        <caption className="sr-only">População e cobertura de cada ano da série</caption>
+        <THead>
+          <tr>
+            <TH>Ano</TH>
+            <TH>Cobertura</TH>
+            {incidencia && <TH className="text-right">População</TH>}
+            {fonte.varia && <TH>Fonte</TH>}
+            {incidencia && <TH>Origem</TH>}
+          </tr>
+        </THead>
+        <TBody>
+          {anos.map((ano) => {
+            const p = populacao.find((x) => x.ano === ano);
+            const c = cobertura.find((x) => x.ano === ano);
+            return (
+              <TR key={ano}>
+                <TD className="tabular-nums">{ano}</TD>
+                <TD className="text-xs">{c ? <Badge tone={seloCobertura(c).tom}>{seloCobertura(c).texto}</Badge> : '—'}</TD>
+                {incidencia && <TD className="text-right tabular-nums">{p?.populacao != null ? p.populacao.toLocaleString('pt-BR') : '—'}</TD>}
+                {fonte.varia && <TD className="text-xs">{p ? textoFonte(p.fonte, p.versao) : '—'}</TD>}
+                {incidencia && <TD className="text-xs">{p ? <Badge tone={p.origem === 'OFICIAL' ? 'green' : p.origem === 'AUSENTE' ? 'red' : 'amber'}>{ROTULO_ORIGEM_POPULACAO[p.origem]}</Badge> : '—'}</TD>}
+              </TR>
+            );
+          })}
+        </TBody>
+        {cobertura.some((c) => c.motivo) && (
+          <tfoot>
+            <tr>
+              <td colSpan={colunas} className="px-3 pt-2 text-xs text-slate-500">
+                {cobertura
+                  .filter((c) => c.motivo)
+                  .map((c) => `${c.ano}: ${c.motivo}`)
+                  .join(' · ')}
+              </td>
+            </tr>
+          </tfoot>
+        )}
+      </Table>
+    </div>
+  );
+}
 
 /**
  * Congelar o canal: a versão calculada agora passa a valer para o ano (a anterior fica guardada, inativa). Não se
@@ -243,7 +339,7 @@ function PainelDoDiagrama({ d, filtro, podeConfigurar, recarregar }: { d: Respos
           </Card>
           <Card>
             <CardHeader title="População e cobertura por ano" />
-            <DiagramaPopulacaoUsada populacao={d.populacao} cobertura={d.cobertura} unidade={receita.unidade} />
+            <PopulacaoECobertura populacao={d.populacao} cobertura={d.cobertura} unidade={receita.unidade} />
           </Card>
         </div>
       </div>
@@ -265,7 +361,8 @@ export function AbaDiagrama({ podeConfigurar }: { podeConfigurar: boolean }) {
   const tz = session.me?.tenant.timeZone ?? 'America/Sao_Paulo';
   const anoAtual = useMemo(() => semanaEpidemiologica(new Date(), tz).ano, [tz]);
   const { opcoes } = useOpcoesDeAgravo();
-  // Agravo sigiloso (HIV, sífilis, violências): só a vigilância municipal com acesso ao sigilo vê o diagrama.
+  // Agravo sigiloso (HIV, sífilis, violências, tuberculose, hanseníase, hepatites): só a vigilância municipal com acesso
+  // ao sigilo vê o diagrama.
   const sigilosos = podeVerDiagramaSigiloso(session.me?.context.role, session.me?.permissions ?? []);
   const [filtro, setFiltro] = useState<FiltroDiagrama>({ grupo: 'dengue', nivel: 'MUNICIPIO', territorio: null, ano: anoAtual, eixo: 'EPIDEMIOLOGICO' });
   const [secao, setSecao] = useState('diagrama');
@@ -318,7 +415,9 @@ export function AbaDiagrama({ podeConfigurar }: { podeConfigurar: boolean }) {
         <TabPanel value="diagrama">
           {restrito || (recusaPorSigilo(d.erro) && !d.loading) ? (
             <Alert tone="warn" title="Agravo de acesso restrito">
-              {recusaPorSigilo(d.erro) && !restrito ? `${d.erro!.mensagem} ` : 'O diagrama de agravo sigiloso (HIV, aids, sífilis, violências) só sai para a vigilância municipal. '}
+              {recusaPorSigilo(d.erro) && !restrito
+                ? `${d.erro!.mensagem} `
+                : 'O diagrama de agravo sigiloso (HIV, aids, sífilis, violências, tuberculose, hanseníase e hepatites virais) só sai para a vigilância municipal. '}
               Escolha outro agravo.
             </Alert>
           ) : !pronto ? (

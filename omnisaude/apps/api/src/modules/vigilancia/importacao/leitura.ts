@@ -2,6 +2,7 @@ import { closeSync, mkdtempSync, openSync, readSync, rmSync, writeSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  ROTULO_TIPO_ARQUIVO,
   SISTEMA_DO_ARQUIVO,
   TIPO_REGISTRO_DO_ARQUIVO,
   type AmostraDuplicado,
@@ -28,8 +29,10 @@ import { plana, Ritmo } from './ritmo';
  * Leitura de um envio inteiro (VIG-1c, frente F2), em fluxo: abre o zip pelo diretório central, lê cada DBF ou CSV em
  * pedaços, detecta o tipo pelo conteúdo, normaliza e grava cada parte num arquivo temporário. Na memória fica só o
  * índice das chaves. Dentro do mesmo arquivo, a chave repetida fica com a linha de mais campos preenchidos (empate: a
- * primeira), com aviso; entre arquivos (NINDINET + DBF do agravo), as partes se somam num registro só e são mescladas
- * campo a campo na aplicação. Não toca no banco. `fechar` apaga o arquivo temporário.
+ * primeira), com aviso; entre arquivos de tipos diferentes (NINDINET + DBF do agravo), as partes se somam num registro
+ * só e são mescladas campo a campo na aplicação. Uma parte por tipo de arquivo: a chave repetida em outro arquivo do
+ * mesmo tipo fica com a do último arquivo, com aviso (sem isso, o mesmo arquivo repetido no zip juntava milhares de
+ * partes num registro e derrubava o processo). Não toca no banco. `fechar` apaga o arquivo temporário.
  */
 
 export interface OpcoesLeitura extends Omit<ContextoNormalizacao, 'tipo' | 'arquivo'> {
@@ -55,6 +58,8 @@ const AMOSTRA_DETECCAO = 200;
 const MAX_LINHAS_REPETIDA = 50;
 /** Avisos de linha diferentes por arquivo (o resto soma em "outros avisos"). */
 const MAX_AVISOS_LINHA = 50;
+/** Arquivos ignorados guardados um a um (em `arquivos`, nos avisos e no erro sem registros); o resto vira "mais X". */
+export const MAX_IGNORADOS = 50;
 /** Pedaço máximo entregue de uma vez ao leitor do DBF ou do CSV. */
 const PASSO_LEITOR = 512 * 1024;
 
@@ -336,9 +341,14 @@ interface Leitor {
 interface EstadoArquivo {
   idx: number;
   nome: string;
+  tipo: TipoArquivoOficial;
   registros: number;
   agravos: Set<string>;
   grupos: Set<string>;
+  /** CNES dos registros (até 2: basta saber se há um só). */
+  cnes: Set<string>;
+  /** Algum registro sem CNES. */
+  cnesNulo: boolean;
   de: string | null;
   ate: string | null;
   identificado: boolean;
@@ -356,11 +366,15 @@ const ignorado = (nome: string, tamanho: number, tipo: TipoArquivoOficial, aviso
   codificacao: null,
   origemCodificacao: null,
   agravos: [],
+  cnes: null,
   periodo: null,
   identificado: false,
   ignorado: true,
   avisos: [aviso],
 });
+
+/** Sistemas em que o arquivo de um CNES só restringe os ausentes (e a cobertura) ao estabelecimento. */
+const SISTEMAS_POR_CNES: readonly SistemaOficial[] = ['ESUS_NOTIFICA', 'ESUS_SINAN'];
 
 /** Arquivo do envio como fica gravado (official_imports.files): o `ArquivoDetectado` e os grupos do catálogo presentes. */
 export type ArquivoLido = ArquivoDetectado & { grupos?: string[] };
@@ -380,6 +394,12 @@ export class LeituraEnvio {
   private readonly tabela = new TabelaColunas();
   private readonly amostraRepetidas = new Map<string, AmostraDuplicado>();
   private arquivosLidos = 0;
+  /** Tipo de cada arquivo lido, pelo índice (para achar a parte do mesmo tipo de arquivo na lista do registro). */
+  private readonly tiposDosArquivos: TipoArquivoOficial[] = [];
+  /** Chaves repetidas em outro arquivo do mesmo tipo, por tipo: quantas e o último arquivo (o que ficou). */
+  private readonly repetidasEntreArquivos = new Map<TipoArquivoOficial, { n: number; arquivo: string }>();
+  /** Arquivos ignorados (os primeiros `MAX_IGNORADOS` ficam na lista). */
+  private ignorados = 0;
 
   constructor(
     private readonly limite: number,
@@ -401,14 +421,27 @@ export class LeituraEnvio {
     this.spool.fechar();
   }
 
-  /** Os registros na ordem em que apareceram, em lotes, com as partes lidas do arquivo temporário. */
+  /**
+   * Os registros na ordem em que apareceram, em lotes, com as partes lidas do arquivo temporário. O lote fecha em
+   * `tamanho` registros ou em `2 × tamanho` partes (o registro que sozinho passa disso vai num lote só dele): o que fica
+   * na memória é medido pelas partes.
+   */
   async *registros(tamanho = 500): AsyncGenerator<RegistroDoEnvio[]> {
     this.spool.descarregar();
     const ix = this.indice;
-    for (let ini = 0; ini < ix.registros; ini += tamanho) {
-      const fim = Math.min(ix.registros, ini + tamanho);
+    const tetoPartes = tamanho * 2;
+    for (let ini = 0; ini < ix.registros; ) {
       const refs: number[] = [];
-      for (let r = ini; r < fim; r++) for (let p = ix.primeira[r]!; p >= 0; p = ix.prox[p]!) refs.push(p);
+      let fim = ini;
+      while (fim < ix.registros && fim - ini < tamanho) {
+        const antes = refs.length;
+        for (let p = ix.primeira[fim]!; p >= 0; p = ix.prox[p]!) refs.push(p);
+        if (refs.length > tetoPartes && fim > ini) {
+          refs.length = antes;
+          break;
+        }
+        fim++;
+      }
       const partes = this.lerPartes(refs);
       const lote: RegistroDoEnvio[] = [];
       for (let r = ini; r < fim; r++) {
@@ -418,6 +451,7 @@ export class LeituraEnvio {
         const p0 = doRegistro[0]!;
         lote.push({ sistema: p0.sistema, tipo: p0.tipo, chave: p0.chave, partes: doRegistro });
       }
+      ini = fim;
       yield lote;
       // Quem consome pode não esperar nada de fora entre um lote e outro: o laço de eventos respira aqui.
       await this.ritmo.ceder();
@@ -453,15 +487,37 @@ export class LeituraEnvio {
 
   // ── fase de leitura ──
 
+  /**
+   * Arquivo fora da importação: os primeiros `MAX_IGNORADOS` ficam na lista e nos avisos, um a um; os demais viram uma
+   * linha só no fim da leitura (`fecharIgnorados`). Sem o teto, um zip com centenas de entradas estranhas enchia a lista,
+   * os avisos e o erro sem registros.
+   */
+  private ignorar(arquivo: ArquivoLido, aviso: string) {
+    if (++this.ignorados > MAX_IGNORADOS) return;
+    this.arquivos.push(arquivo);
+    this.avisos.push(aviso);
+  }
+
+  /** Fecha a leitura dos arquivos: os ignorados além do teto e as chaves repetidas em arquivos do mesmo tipo. */
+  fecharArquivos() {
+    for (const [tipo, { n, arquivo }] of this.repetidasEntreArquivos)
+      this.avisos.push(
+        `${n.toLocaleString('pt-BR')} registro(s) repetido(s) em mais de um arquivo do mesmo tipo (${ROTULO_TIPO_ARQUIVO[tipo]}): ficou a versão do último arquivo lido (${arquivo}). Confira se o zip não traz a mesma exportação duas vezes.`,
+      );
+    const mais = this.ignorados - MAX_IGNORADOS;
+    if (mais <= 0) return;
+    const texto = `mais ${mais.toLocaleString('pt-BR')} arquivo(s) fora da importação`;
+    this.arquivos.push(ignorado(`(${texto})`, 0, 'DESCONHECIDO', `A lista mostra só os ${MAX_IGNORADOS} primeiros arquivos fora da importação.`));
+    this.avisos.push(`E ${texto}.`);
+  }
+
   async lerEntrada(e: EntradaEnvio, opcoes: OpcoesLeitura, ritmo: Ritmo, contador: ContadorBytes) {
     if (e.ignorado) {
-      this.arquivos.push(ignorado(e.nome, 0, 'DESCONHECIDO', `Fora da importação: ${e.ignorado}`));
-      this.avisos.push(`${e.nome}: fora da importação (${e.ignorado}).`);
+      this.ignorar(ignorado(e.nome, 0, 'DESCONHECIDO', `Fora da importação: ${e.ignorado}`), `${e.nome}: fora da importação (${e.ignorado}).`);
       return;
     }
     if (/\.dbc$/i.test(e.nome)) {
-      this.arquivos.push(ignorado(e.nome, e.tamanho, 'DESCONHECIDO', 'DBC do DATASUS (compactado) não é lido: use a exportação DBF do Sinan'));
-      this.avisos.push(`${e.nome}: DBC do DATASUS não é lido; use a exportação DBF do Sinan.`);
+      this.ignorar(ignorado(e.nome, e.tamanho, 'DESCONHECIDO', 'DBC do DATASUS (compactado) não é lido: use a exportação DBF do Sinan'), `${e.nome}: DBC do DATASUS não é lido; use a exportação DBF do Sinan.`);
       return;
     }
     // Estado do arquivo: preenchido quando o tipo é detectado (depois das primeiras linhas).
@@ -469,8 +525,7 @@ export class LeituraEnvio {
     try {
       const leitor = await this.abrir(e, opcoes, ritmo);
       if (!leitor) {
-        this.arquivos.push(ignorado(e.nome, e.tamanho, 'DESCONHECIDO', 'Formato não reconhecido (nem DBF nem CSV)'));
-        this.avisos.push(`${e.nome}: formato não reconhecido (nem DBF nem CSV).`);
+        this.ignorar(ignorado(e.nome, e.tamanho, 'DESCONHECIDO', 'Formato não reconhecido (nem DBF nem CSV)'), `${e.nome}: formato não reconhecido (nem DBF nem CSV).`);
         return;
       }
       const amostra: LinhaNumerada[] = [];
@@ -486,7 +541,7 @@ export class LeituraEnvio {
           return;
         }
         st.ctx = { ...opcoes, tipo, arquivo: e.nome };
-        st.estado = this.novoArquivo(e.nome);
+        st.estado = this.novoArquivo(e.nome, tipo);
         for (const a of amostra.splice(0)) this.linha(a.l, a.n, st.estado, st.ctx);
       };
       const consumir = async (linhas: LinhaNumerada[]) => {
@@ -516,8 +571,7 @@ export class LeituraEnvio {
             : tipoFora === 'PLANILHA_SURTO'
               ? 'Planilha de acompanhamento do surto (uma linha por caso): ignorada. O surto vem do NSURTNET'
               : `Arquivo não reconhecido como exportação do Sinan ou do e-SUS (colunas: ${colunas.slice(0, 8).join(', ')}${colunas.length > 8 ? '...' : ''})`;
-        this.arquivos.push(ignorado(e.nome, e.tamanho, tipoFora, aviso));
-        this.avisos.push(`${e.nome}: ${aviso}.`);
+        this.ignorar(ignorado(e.nome, e.tamanho, tipoFora, aviso), `${e.nome}: ${aviso}.`);
         return;
       }
       this.fecharArquivo(st.estado, st.tipo, leitor, e);
@@ -525,8 +579,7 @@ export class LeituraEnvio {
       if (!(x instanceof ErroArquivo) || x.recusaEnvio) throw x;
       // Erro do arquivo depois de linhas já lidas não tem volta: recusa o envio.
       if (st.estado) throw new ErroArquivo(`${e.nome}: ${x.message}`, true);
-      this.arquivos.push(ignorado(e.nome, e.tamanho, 'DESCONHECIDO', x.message));
-      this.avisos.push(`${e.nome}: ${x.message}.`);
+      this.ignorar(ignorado(e.nome, e.tamanho, 'DESCONHECIDO', x.message), `${e.nome}: ${x.message}.`);
     }
   }
 
@@ -582,21 +635,40 @@ export class LeituraEnvio {
     };
   }
 
-  private novoArquivo(nome: string): EstadoArquivo {
-    return { idx: this.arquivosLidos++, nome, registros: 0, agravos: new Set(), grupos: new Set(), de: null, ate: null, identificado: false, repetidas: 0, avisosLinha: new Map() };
+  private novoArquivo(nome: string, tipo: TipoArquivoOficial): EstadoArquivo {
+    const idx = this.arquivosLidos++;
+    this.tiposDosArquivos[idx] = tipo;
+    return {
+      idx,
+      nome,
+      tipo,
+      registros: 0,
+      agravos: new Set(),
+      grupos: new Set(),
+      cnes: new Set(),
+      cnesNulo: false,
+      de: null,
+      ate: null,
+      identificado: false,
+      repetidas: 0,
+      avisosLinha: new Map(),
+    };
   }
 
   private fecharArquivo(a: EstadoArquivo, tipo: TipoArquivoOficial, leitor: Leitor, e: EntradaEnvio) {
+    const sistema = SISTEMA_DO_ARQUIVO[tipo];
     const detectado: ArquivoLido = {
       nome: e.nome,
       tipo,
-      sistema: SISTEMA_DO_ARQUIVO[tipo],
+      sistema,
       tipoRegistro: TIPO_REGISTRO_DO_ARQUIVO[tipo],
       tamanhoBytes: e.tamanho,
       registros: a.registros,
       codificacao: leitor.codificacao(),
       origemCodificacao: leitor.origemCodificacao(),
       agravos: [...a.agravos].sort(),
+      // O mesmo critério da cobertura (os ausentes): e-SUS, todos os registros com CNES, e um só.
+      cnes: sistema && SISTEMAS_POR_CNES.includes(sistema) && a.cnes.size === 1 && !a.cnesNulo ? [...a.cnes][0]! : null,
       periodo: a.de && a.ate ? { de: a.de, ate: a.ate } : null,
       identificado: a.identificado,
       ignorado: false,
@@ -636,30 +708,57 @@ export class LeituraEnvio {
     const chave = plana(chaveDoEnvio(reg.sistema, reg.tipo, reg.chave));
     const pre = preenchidos(reg);
     const registro = ix.mapa.get(chave);
-    if (registro !== undefined && ix.arq[ix.ultima[registro]!] === a.idx) {
-      // Repetida no mesmo arquivo: fica a linha com mais campos preenchidos (empate: a primeira).
-      const ult = ix.ultima[registro]!;
-      this.duplicadosNoArquivo++;
-      if (!ix.repetida[ult]) {
-        ix.repetida[ult] = 1;
-        a.repetidas++;
+    // A parte deste arquivo e a de outro arquivo do mesmo tipo na lista do registro (uma por tipo de arquivo: a lista é
+    // curta).
+    let doArquivo = -1;
+    let doTipo = -1;
+    if (registro !== undefined)
+      for (let p = ix.primeira[registro]!; p >= 0; p = ix.prox[p]!) {
+        if (ix.arq[p] === a.idx) doArquivo = p;
+        else if (this.tiposDosArquivos[ix.arq[p]!] === a.tipo) doTipo = p;
       }
-      const k = `${a.idx}|${chave}`;
-      let d = this.amostraRepetidas.get(k);
-      if (!d && this.duplicados.length < MAX_AMOSTRAS) {
-        d = { chave: plana(reg.chave), arquivo: a.nome, linhas: [ix.linha[ult]!], mantida: ix.linha[ult]! };
-        this.duplicados.push(d);
-        this.amostraRepetidas.set(k, d);
+    if (doArquivo >= 0) {
+      // Repetida no mesmo arquivo: fica a linha com mais campos preenchidos (empate: a primeira). As linhas de caso do
+      // NSURTNET com a planilha junto (NU_CASO) repetem o surto de propósito: não contam como duplicadas.
+      const caso = a.tipo === 'NSURTNET' && 'nu_caso' in l;
+      let d: AmostraDuplicado | undefined;
+      if (!caso) {
+        this.duplicadosNoArquivo++;
+        if (!ix.repetida[doArquivo]) {
+          ix.repetida[doArquivo] = 1;
+          a.repetidas++;
+        }
+        const k = `${a.idx}|${chave}`;
+        d = this.amostraRepetidas.get(k);
+        if (!d && this.duplicados.length < MAX_AMOSTRAS) {
+          d = { chave: plana(reg.chave), arquivo: a.nome, linhas: [ix.linha[doArquivo]!], mantida: ix.linha[doArquivo]! };
+          this.duplicados.push(d);
+          this.amostraRepetidas.set(k, d);
+        }
+        if (d && d.linhas.length < MAX_LINHAS_REPETIDA) d.linhas.push(n);
       }
-      if (d && d.linhas.length < MAX_LINHAS_REPETIDA) d.linhas.push(n);
-      if (pre > ix.pre[ult]!) {
+      if (pre > ix.pre[doArquivo]!) {
         const [pos, len] = this.gravarParte(reg);
-        ix.pos[ult] = pos;
-        ix.len[ult] = len;
-        ix.pre[ult] = pre;
-        ix.linha[ult] = n;
+        ix.pos[doArquivo] = pos;
+        ix.len[doArquivo] = len;
+        ix.pre[doArquivo] = pre;
+        ix.linha[doArquivo] = n;
         if (d) d.mantida = n;
       }
+    } else if (doTipo >= 0) {
+      // A mesma chave num arquivo anterior do mesmo tipo: fica a deste arquivo (o último), no lugar da outra.
+      const [pos, len] = this.gravarParte(reg);
+      ix.pos[doTipo] = pos;
+      ix.len[doTipo] = len;
+      ix.arq[doTipo] = a.idx;
+      ix.pre[doTipo] = pre;
+      ix.linha[doTipo] = n;
+      ix.repetida[doTipo] = 0;
+      const rep = this.repetidasEntreArquivos.get(a.tipo);
+      if (rep) {
+        rep.n++;
+        rep.arquivo = a.nome;
+      } else this.repetidasEntreArquivos.set(a.tipo, { n: 1, arquivo: a.nome });
     } else {
       const [pos, len] = this.gravarParte(reg);
       const parte = ix.novaParte(pos, len, a.idx, pre, n);
@@ -668,6 +767,11 @@ export class LeituraEnvio {
     }
     if (reg.agravo && !a.agravos.has(reg.agravo)) a.agravos.add(plana(reg.agravo));
     if (reg.grupo && !a.grupos.has(reg.grupo)) a.grupos.add(plana(reg.grupo));
+    // CNES do arquivo (a ficha do e-SUS Notifica sem a síndrome gripal fica fora, como na cobertura).
+    if (reg.sistema !== 'ESUS_NOTIFICA' || reg.grupo) {
+      if (!reg.cnes) a.cnesNulo = true;
+      else if (a.cnes.size < 2 && !a.cnes.has(reg.cnes)) a.cnes.add(plana(reg.cnes));
+    }
     if (!a.de || reg.notificadoEm < a.de) a.de = reg.notificadoEm;
     if (!a.ate || reg.notificadoEm > a.ate) a.ate = reg.notificadoEm;
     const id = reg.identificacao;
@@ -696,6 +800,7 @@ export async function lerEnvio(nome: string, bytes: Uint8Array, opcoes: OpcoesLe
   try {
     const contador = new ContadorBytes();
     for (const e of abrirEnvio(nome, bytes)) await leitura.lerEntrada(e, opcoes, ritmo, contador);
+    leitura.fecharArquivos();
     return leitura;
   } catch (e) {
     leitura.fechar();

@@ -14,6 +14,7 @@ import {
   type TipoArquivoOficial,
   type TipoRegistroOficial,
 } from '@omnisaude/shared';
+import { api, ApiError, errorMessage } from '@/lib/api';
 
 /*
  * Regras da aba Importação (envio das exportações oficiais, prévia, aplicar e descartar), sem React (testadas em
@@ -112,6 +113,14 @@ export const MENSAGEM_IMPORTACAO_OCUPADA = 'Outra importação está sendo lida 
 export const respostaPerdida = (status: number | null | undefined) => status !== null && status !== undefined && STATUS_RESPOSTA_PERDIDA.includes(status);
 
 /**
+ * Título e tom do alerta do envio que deu erro. A resposta que não chegou é aviso, não erro: o arquivo pode ter sido
+ * recebido e a prévia aparecer no histórico.
+ */
+export function alertaDoErroDeEnvio(status: number | null | undefined): { tom: 'warn' | 'error'; titulo: string } {
+  return respostaPerdida(status) ? { tom: 'warn', titulo: 'A resposta do envio não chegou' } : { tom: 'error', titulo: 'O envio não gerou prévia' };
+}
+
+/**
  * Mensagem do erro do envio ou do aplicar: a resposta que não chegou, a vez ocupada por outra importação, ou a
  * mensagem da API.
  */
@@ -162,6 +171,31 @@ export type PassoAcompanhamento =
 
 export const iniciarAcompanhamento = (alvo: AlvoAcompanhamento): EstadoAcompanhamento => ({ alvo, intervaloMs: ACOMPANHAMENTO.inicialMs, falhas: 0 });
 
+/**
+ * O detalhe no modo de acompanhamento: a situação, o processamento, o erro e o resultado, sem a prévia nominal (que é
+ * auditada a cada leitura) e sem ir para a auditoria.
+ */
+export const caminhoDoAcompanhamento = (id: string) => `/vigilancia/importacoes/${id}?acompanhar=1`;
+
+/** Uma consulta do acompanhamento (a cada 2 a 5 s enquanto o servidor lê ou aplica). */
+export async function lerAcompanhamento(id: string): Promise<LeituraAcompanhamento> {
+  try {
+    return { ok: true, detalhe: await api.get<DetalheImportacao>(caminhoDoAcompanhamento(id)) };
+  } catch (err) {
+    return { ok: false, status: err instanceof ApiError ? err.status : 0, mensagem: errorMessage(err) };
+  }
+}
+
+/**
+ * O detalhe novo com a prévia que a tela já tem, quando ele vem sem ela (acompanhamento, aplicação em andamento) e a
+ * importação continua uma prévia (aplicando, ou a aplicação que não terminou). Aplicada, descartada ou expirada, a prévia
+ * sai da tela.
+ */
+export function comPreviaCarregada(anterior: DetalheImportacao | null, novo: DetalheImportacao): DetalheImportacao {
+  if (novo.previa || novo.status !== 'PREVIA' || !anterior?.previa || anterior.id !== novo.id) return novo;
+  return { ...novo, previa: anterior.previa };
+}
+
 const recuar = (ms: number) => Math.min(ACOMPANHAMENTO.tetoMs, Math.round(ms * 1.5));
 
 /**
@@ -196,8 +230,12 @@ export function proximoPasso(estado: EstadoAcompanhamento, leitura: LeituraAcomp
 
 // ───────────── período lido das notificações ─────────────
 
-/** Arquivos de um agravo só: o período lido das notificações pode ser bem menor que o da exportação. */
-const ARQUIVOS_DE_UM_AGRAVO: readonly TipoArquivoOficial[] = ['AGRAVO_NET', 'ESUS_SINAN_CSV'];
+/**
+ * Arquivos de um agravo ou de uma ficha só: o DBF do agravo do Sinan Net, o DENGON, o CHIKON e os CSV do e-SUS Sinan e
+ * do e-SUS Notifica. O período lido das notificações (a primeira e a última) pode ser bem menor que o da exportação, e o
+ * consolidado usa o período lido de qualquer arquivo sem período declarado.
+ */
+const ARQUIVOS_DE_UM_AGRAVO: readonly TipoArquivoOficial[] = ['AGRAVO_NET', 'DENGON', 'CHIKON', 'ESUS_SINAN_CSV', 'ESUS_NOTIFICA_CSV'];
 
 const dataBr = (iso: string) => {
   const [a, m, d] = iso.split('-');
@@ -205,14 +243,16 @@ const dataBr = (iso: string) => {
 };
 
 /**
- * Prévia de arquivo(s) de um agravo só (DBF do agravo do Sinan Net ou CSV do e-SUS Sinan) sem período declarado: o
- * período veio da primeira e da última notificação lidas. Se a exportação cobriu mais (o ano inteiro, por exemplo), as
- * semanas fora dele ficam fora do canal endêmico: melhor descartar e enviar de novo declarando o período.
+ * Prévia sem período declarado com arquivo de um agravo ou de uma ficha só: o período veio da primeira e da última
+ * notificação lidas. Se a exportação cobriu mais (o ano inteiro, por exemplo), as semanas fora dele ficam fora do canal
+ * endêmico: melhor descartar e enviar de novo declarando o período. O DBF do agravo junto com o NINDINET não avisa: o
+ * NINDINET traz todas as notificações do Sinan Net e cobre o agravo no período dele.
  */
 export function avisoPeriodoLido(d: Pick<DetalheImportacao, 'status' | 'periodo' | 'periodoDeclarado' | 'arquivos'>): string | null {
   if (d.status !== 'PREVIA' || d.periodoDeclarado || !d.periodo) return null;
   const validos = d.arquivos.filter((a) => !a.ignorado);
-  if (!validos.length || !validos.every((a) => ARQUIVOS_DE_UM_AGRAVO.includes(a.tipo))) return null;
+  const comNindinet = validos.some((a) => a.tipo === 'NINDINET');
+  if (!validos.some((a) => ARQUIVOS_DE_UM_AGRAVO.includes(a.tipo) && !(comNindinet && a.tipo === 'AGRAVO_NET'))) return null;
   return (
     `O período foi lido das notificações: de ${dataBr(d.periodo.de)} até ${dataBr(d.periodo.ate)}. Se a exportação cobriu mais, por exemplo o ano ` +
     'inteiro, descarte e envie de novo declarando o período: as semanas fora do período lido ficam fora do canal endêmico.'

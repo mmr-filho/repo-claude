@@ -220,6 +220,45 @@ const EXTRAS_DATA_SINAN = ['dt_invest', 'dt_digita'];
 /** Variáveis de identificação do paciente no Sinan e no e-SUS Sinan. */
 const IDENTIFICACAO_SINAN = ['nm_pacient', 'dt_nasc', 'cs_sexo', 'nm_mae_pac', 'id_cns_sus', 'cpf', 'nu_cpf'];
 const UNIDADE_IDADE: Record<string, string> = { '1': 'hora', '2': 'dia', '3': 'mês', '4': 'ano' };
+/**
+ * Campos de caso da planilha de acompanhamento do surto quando ela vem dentro do NSURTNET (com NU_CASO: uma linha por
+ * caso, com o surto repetido). No registro do surto, ficam de fora: a data dos primeiros sintomas do surto é a
+ * DT_PRIM_SI (a DT_SIN_PRI é a do caso), e a residência, o sexo, a idade, as iniciais (NM_LOCAL), o desfecho e o local
+ * de infecção são do caso.
+ */
+const CAMPOS_DE_CASO: ReadonlySet<string> = new Set([
+  ...IDENTIFICACAO_SINAN,
+  'dt_sin_pri',
+  'id_muni_re',
+  'id_mn_resi',
+  'id_bairro',
+  'nm_bairro',
+  'nu_idade_n',
+  'nm_local',
+  'ano_nasc',
+  'cs_gestant',
+  'cs_raca',
+  'cs_escol_n',
+  'id_ocupa_n',
+  'cs_zona',
+  'sg_uf',
+  'id_rg_resi',
+  'id_distrit',
+  'id_pais',
+  'dt_obito',
+  'evolucao',
+  'classi_fin',
+  'criterio',
+  'tpautocto',
+  'coufinf',
+  'copaisinf',
+  'comuninf',
+  'codisinf',
+  'co_bainfc',
+  'nobaiinf',
+  'doenca_tra',
+  'clinc_chik',
+]);
 
 function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoNormalizacao {
   const tipoArq = ctx.tipo;
@@ -227,8 +266,16 @@ function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoN
   const sinanDbf = tipoArq !== 'ESUS_SINAN_CSV';
   const avisos: string[] = [];
   const colunas: string[] = [];
+  // O surto não tem paciente. Com a planilha junto (NU_CASO), os campos de caso nem entram no registro do surto.
+  const surto = tipo === 'SURTO';
+  const linhaDeCaso = surto && tem(l, 'nu_caso');
+  const doRegistro = (col: string) => !(linhaDeCaso && CAMPOS_DE_CASO.has(col));
+  /** O valor da coluna, fora os campos de caso na linha de caso do surto. */
+  const valor = (col: string) => (doRegistro(col) ? texto(l, col) : null);
+  /** A coluna veio (e é do registro). */
+  const veio = (col: string) => doRegistro(col) && tem(l, col);
   const c = (campo: string, ...origens: string[]) => {
-    if (origens.some((o) => tem(l, o))) colunas.push(campo);
+    if (origens.some(veio)) colunas.push(campo);
   };
 
   const numero = (texto(l, 'nu_notific') ?? '').replace(/\s+/g, '');
@@ -253,14 +300,15 @@ function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoN
   const grupo = grupoDoAgravo(agravo, ctx);
 
   const semanaNotificacao = semanaValida(texto(l, 'sem_not')) ?? semanaDaData(dn.data).codigo;
-  const ds = lerData(texto(l, 'dt_sin_pri') ?? texto(l, 'dt_prim_si'));
+  // No surto, a data dos primeiros sintomas é a DT_PRIM_SI (a DT_SIN_PRI, quando vem, é a de um caso).
+  const ds = lerData(surto ? (texto(l, 'dt_prim_si') ?? valor('dt_sin_pri')) : (texto(l, 'dt_sin_pri') ?? texto(l, 'dt_prim_si')));
   if (ds.invalida) avisos.push('Data dos primeiros sintomas inválida');
   const inicioSintomas = ds.data;
   const semanaSintomas = semanaValida(texto(l, 'sem_pri')) ?? (inicioSintomas ? semanaDaData(inicioSintomas).codigo : null);
   // Conclusão: DT_ENCERRA (Sinan), DT_CONCLU (ficha de notificação/conclusão do e-SUS Sinan), DT_CONCLUSÃO (ficha de Mpox).
   const de = lerData(texto(l, 'dt_encerra') ?? texto(l, 'dt_conclu') ?? texto(l, 'dt_conclusao'));
   if (de.invalida) avisos.push('Data do encerramento inválida');
-  const dob = lerData(texto(l, 'dt_obito'));
+  const dob = lerData(valor('dt_obito'));
   if (dob.invalida) avisos.push('Data do óbito inválida');
   // Classificação, critério e evolução só na notificação individual (no surto, CLASSI_FIN e CRITERIO são dos casos
   // da planilha, com outra numeração; a negativa não tem).
@@ -296,7 +344,6 @@ function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoN
 
   // O surto não tem paciente: sexo, idade e iniciais de uma linha por caso (planilha de acompanhamento junto do
   // NSURTNET) não descrevem o surto.
-  const surto = tipo === 'SURTO';
   let identificacao: IdentificacaoRegistro | null = null;
   if (!surto && IDENTIFICACAO_SINAN.some((x) => tem(l, x))) {
     const dnasc = lerData(texto(l, 'dt_nasc'));
@@ -317,10 +364,8 @@ function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoN
   }
 
   const extras: RegistroOficialNormalizado['extras'] = {};
-  const planilhaJunto = surto && tem(l, 'nu_caso');
   for (const x of EXTRAS_SINAN) {
-    if (!tem(l, x)) continue;
-    if (surto && (x === 'nu_idade_n' || (planilhaJunto && x === 'nm_local'))) continue;
+    if (!veio(x) || (surto && x === 'nu_idade_n')) continue;
     extras[x] = texto(l, x);
     colunas.push(`extras.${x}`);
   }
@@ -353,9 +398,9 @@ function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoN
     grupo,
     inicioSintomas,
     semanaSintomas,
-    municipioResidencia: ibge(texto(l, 'id_mn_resi') ?? texto(l, 'id_muni_re')),
-    bairroCodigo: texto(l, 'id_bairro')?.slice(0, 20) ?? null,
-    bairroNome: texto(l, 'nm_bairro'),
+    municipioResidencia: ibge(valor('id_mn_resi') ?? valor('id_muni_re')),
+    bairroCodigo: valor('id_bairro')?.slice(0, 20) ?? null,
+    bairroNome: valor('nm_bairro'),
     classificacao,
     criterio,
     evolucao,

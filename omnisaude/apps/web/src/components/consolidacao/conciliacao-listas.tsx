@@ -37,6 +37,7 @@ import {
   MOTIVO_MINIMO,
   motivoValido,
   podePreencherNumero,
+  rotuloAcao,
   rotuloSistema,
   selosDoRegistro,
   temPaginaSeguinte,
@@ -104,7 +105,8 @@ function CelulaNotificacao({ n }: { n: NotificacaoParaConciliar }) {
   );
 }
 
-function Paginacao({ p, onPagina }: { p: PaginaConciliacao<unknown>; onPagina: (pagina: number) => void }) {
+/** Página das listas: "51 a 100 de 120" e os botões de anterior e próxima. */
+export function Paginacao({ p, onPagina }: { p: PaginaConciliacao<unknown>; onPagina: (pagina: number) => void }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 px-4 py-2 text-sm text-slate-600">
       <span>{textoDaPagina(p)}</span>
@@ -368,7 +370,7 @@ export function ListaSoNoOficial({ filtro, onMudou }: { filtro: FiltroConciliaca
                   </TD>
                   <TD className="text-right">
                     {r.tipo === 'INDIVIDUAL' && (
-                      <Button size="sm" variant="secondary" onClick={() => setVincular(r)}>
+                      <Button size="sm" variant="secondary" onClick={() => setVincular(r)} aria-label={rotuloAcao.vincularRegistro(r.numero)}>
                         <Link2 className="h-4 w-4" /> Vincular…
                       </Button>
                     )}
@@ -421,7 +423,7 @@ export function ListaSoNoOmnisaude({ filtro, onMudou }: { filtro: FiltroConcilia
                     <CelulaNotificacao n={n} />
                   </TD>
                   <TD className="text-right">
-                    <Button size="sm" variant="secondary" onClick={() => setVincular(n)}>
+                    <Button size="sm" variant="secondary" onClick={() => setVincular(n)} aria-label={rotuloAcao.vincularNotificacao(n.numero)}>
                       <Link2 className="h-4 w-4" /> Vincular…
                     </Button>
                   </TD>
@@ -523,7 +525,7 @@ export function ListaVinculadosConciliacao({ filtro, onMudou }: { filtro: Filtro
                     <Diferencas p={p} />
                   </TD>
                   <TD className="text-right">
-                    <Button size="sm" variant="ghost" onClick={() => setDesvincular(p.registro)}>
+                    <Button size="sm" variant="ghost" onClick={() => setDesvincular(p.registro)} aria-label={rotuloAcao.desvincularRegistro(p.registro.numero)}>
                       <Link2Off className="h-4 w-4" /> Desvincular…
                     </Button>
                   </TD>
@@ -580,7 +582,7 @@ export function ListaDivergentesConciliacao({ filtro, onMudou }: { filtro: Filtr
                     <Diferencas p={p} />
                   </TD>
                   <TD className="text-right">
-                    <Button size="sm" variant="ghost" onClick={() => setDesvincular(p.registro)}>
+                    <Button size="sm" variant="ghost" onClick={() => setDesvincular(p.registro)} aria-label={rotuloAcao.desvincularRegistro(p.registro.numero)}>
                       <Link2Off className="h-4 w-4" /> Desvincular…
                     </Button>
                   </TD>
@@ -640,10 +642,10 @@ export function ListaSugestoesConciliacao({ filtro, onMudou }: { filtro: FiltroC
                   </TD>
                   <TD>
                     <div className="flex flex-col items-end gap-1">
-                      <Button size="sm" onClick={() => setVincular(s)}>
+                      <Button size="sm" onClick={() => setVincular(s)} aria-label={rotuloAcao.vincularPar(s.registro.numero, s.notificacao.numero)}>
                         <Link2 className="h-4 w-4" /> Vincular
                       </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setRejeitar(s)}>
+                      <Button size="sm" variant="ghost" onClick={() => setRejeitar(s)} aria-label={rotuloAcao.rejeitarPar(s.registro.numero, s.notificacao.numero)}>
                         <ThumbsDown className="h-4 w-4" /> Não é o mesmo caso
                       </Button>
                     </div>

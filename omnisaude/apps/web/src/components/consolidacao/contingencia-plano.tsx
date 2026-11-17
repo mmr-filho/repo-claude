@@ -132,8 +132,8 @@ function Inclusao({ id, rotulo, minimo, onIncluir, children }: { id: string; rot
   );
 }
 
-/** Põe o rascunho em vigor; o plano em vigor do mesmo escopo é arquivado na véspera. */
-function PorEmVigor({ plano, onFechar, onFeito }: { plano: DetalhePlano; onFechar: () => void; onFeito: (p: DetalhePlano) => void }) {
+/** Põe o rascunho em vigor; o plano em vigor do mesmo escopo fica arquivado até a véspera (ou até a própria data, se começou nela). */
+export function PorEmVigor({ plano, onFechar, onFeito }: { plano: DetalhePlano; onFechar: () => void; onFeito: (p: DetalhePlano) => void }) {
   const toast = useToast();
   const session = useSession();
   // "Hoje" no fuso da instituição, como a API confere.
@@ -147,7 +147,7 @@ function PorEmVigor({ plano, onFechar, onFeito }: { plano: DetalhePlano; onFecha
       open
       onOpenChange={(o) => !o && onFechar()}
       title={`Pôr em vigor: ${plano.nome}`}
-      description="O plano passa a valer na data escolhida (hoje ou antes). O plano em vigor hoje é arquivado na véspera. O estágio acionado continua até o próximo acionamento."
+      description="O plano passa a valer na data escolhida (hoje ou antes). O plano em vigor hoje fica arquivado até a véspera dessa data, ou até a própria data se começou nela. O estágio acionado continua até o próximo acionamento."
       footer={
         <Button
           disabled={invalida}

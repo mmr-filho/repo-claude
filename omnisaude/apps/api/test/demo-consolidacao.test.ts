@@ -170,8 +170,11 @@ describe.runIf(enabled)('Demonstração da semana 27: consolidação, diagrama, 
     expect(div.itens.map((p) => p.notificacao.paciente?.nome)).toEqual(['Maria Aparecida da Silva']);
     const sug = (await http().get('/api/vigilancia/conciliacao/sugestoes').set(auth('vig')).expect(200)).body as ListaSugestoesVinculo;
     expect(sug.itens.map((p) => [p.notificacao.paciente?.nome, p.degrau])).toEqual([['Thiago Nascimento', 3]]);
+    // A lista de bairros vem em páginas de 50, como as outras (a demonstração cabe numa).
     const bairros = (await http().get('/api/vigilancia/conciliacao/bairros').set(auth('vig')).expect(200)).body as ListaBairrosSemCorrespondencia;
-    expect(bairros.map((b) => b.nome)).toEqual(expect.arrayContaining(['JD DAS FLORES', 'VL NOVA']));
-    expect(bairros.map((b) => b.nome)).not.toContain('VILA NOVA');
+    expect(bairros.total).toBe(bairros.itens.length);
+    expect(resumo.bairrosSemCorrespondencia).toBe(bairros.total);
+    expect(bairros.itens.map((b) => b.nome)).toEqual(expect.arrayContaining(['JD DAS FLORES', 'VL NOVA']));
+    expect(bairros.itens.map((b) => b.nome)).not.toContain('VILA NOVA');
   });
 });

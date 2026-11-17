@@ -65,8 +65,14 @@ CREATE TABLE official_imports (
 );
 CREATE INDEX official_imports_status_created_at_idx ON official_imports (status, created_at);
 CREATE INDEX official_imports_sha256_idx ON official_imports (sha256);
--- O mesmo arquivo não é aplicado duas vezes.
-CREATE UNIQUE INDEX official_imports_sha_aplicado ON official_imports (sha256) WHERE status = 'APLICADA';
+-- O mesmo arquivo não é aplicado duas vezes com o mesmo período declarado. "Sem período declarado" é um valor próprio
+-- (a data 0001-01-01 nas duas pontas, nunca nulo: nulos não se repetem num índice único). Reenviar o arquivo aplicado
+-- com outro período declarado corrige o período (o lido das notificações, ou um declarado errado) sem duplicar nada.
+CREATE UNIQUE INDEX official_imports_sha_aplicado ON official_imports (
+  sha256,
+  (COALESCE(CASE WHEN declared_period THEN period_from END, DATE '0001-01-01')),
+  (COALESCE(CASE WHEN declared_period THEN period_to END, DATE '0001-01-01'))
+) WHERE status = 'APLICADA';
 
 -- Registro consolidado de um sistema oficial, pela chave natural do sistema.
 CREATE TABLE official_records (
@@ -225,12 +231,17 @@ CREATE TABLE contingency_plans (
   created_by uuid,
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_by uuid,
-  updated_at timestamp(3) NOT NULL
+  updated_at timestamp(3) NOT NULL,
+  -- O plano arquivado no mesmo dia em que entrou em vigor vigorou só naquele dia: nunca termina antes de começar.
+  CONSTRAINT contingency_plans_vigencia CHECK (valid_to IS NULL OR valid_to >= valid_from)
 );
 -- Um plano vigente por escopo.
 CREATE UNIQUE INDEX contingency_plans_vigente ON contingency_plans (scope) WHERE status = 'VIGENTE';
+-- Uma versão de cada número por escopo (a criação também trava o escopo antes de ler a última versão).
+CREATE UNIQUE INDEX contingency_plans_versao ON contingency_plans (scope, version);
 
--- Histórico de estágios acionados pela vigilância (vigências sem sobreposição: um aberto por território).
+-- Histórico de estágios acionados pela vigilância (um aberto por território; o próximo fecha o aberto na véspera, ou no
+-- mesmo dia se ele começou nesse dia).
 CREATE TABLE contingency_activations (
   id uuid PRIMARY KEY,
   plan_id uuid NOT NULL REFERENCES contingency_plans(id),
@@ -247,7 +258,8 @@ CREATE TABLE contingency_activations (
   indicators jsonb NOT NULL,
   decided_by uuid NOT NULL,
   decided_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT contingency_activations_territorio CHECK ((level = 'MUNICIPIO') = (territory_id IS NULL))
+  CONSTRAINT contingency_activations_territorio CHECK ((level = 'MUNICIPIO') = (territory_id IS NULL)),
+  CONSTRAINT contingency_activations_vigencia CHECK (ended_on IS NULL OR ended_on >= started_on)
 );
 CREATE UNIQUE INDEX contingency_activations_aberta ON contingency_activations (plan_id, level, COALESCE(territory_id, '00000000-0000-0000-0000-000000000000'::uuid)) WHERE ended_on IS NULL;
 

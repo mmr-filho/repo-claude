@@ -42,6 +42,24 @@ export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
 }
 
+/** Respostas do proxy e da borda (502, 503, 504 e a 524 da Cloudflare): a API não chegou a responder a tempo. */
+const STATUS_DA_BORDA: readonly number[] = [502, 503, 504, 524];
+export const MENSAGEM_SERVIDOR_DEMOROU = 'O servidor demorou a responder. Tente de novo em instantes.';
+/** Texto maior que isto não é mensagem para a tela (página de erro, pilha). */
+const TEXTO_MAXIMO = 300;
+
+/**
+ * Mensagem do erro que não veio em JSON. Texto curto sem HTML vale como mensagem; a página HTML (da borda, do proxy, do
+ * Worker) e o corpo vazio, não: 502, 503, 504 e 524 dizem que o servidor demorou; os demais, `Erro <status>`. A 503 da
+ * partida do Worker ("está iniciando") vem em JSON e mantém a mensagem dela.
+ */
+export function mensagemSemJson(status: number, tipo: string, corpo: string): string {
+  const texto = corpo.trim();
+  const html = /text\/html/i.test(tipo) || texto.startsWith('<');
+  if (texto && !html && texto.length <= TEXTO_MAXIMO) return texto;
+  return STATUS_DA_BORDA.includes(status) ? MENSAGEM_SERVIDOR_DEMOROU : `Erro ${status}`;
+}
+
 async function request<T>(method: string, path: string, body?: Body, opts: RequestOptions = {}): Promise<T> {
   const token = opts.token === undefined ? tokenStore.get() : opts.token;
   const headers: Record<string, string> = { Accept: 'application/json', ...opts.headers };
@@ -66,7 +84,7 @@ async function request<T>(method: string, path: string, body?: Body, opts: Reque
   const data = type.includes('application/json') ? await res.json().catch(() => null) : await res.text();
   if (!res.ok) {
     const b = (data && typeof data === 'object' ? data : {}) as { message?: string; code?: string; details?: unknown };
-    throw new ApiError(res.status, b.message ?? (typeof data === 'string' && data ? data : `Erro ${res.status}`), b.code, b.details);
+    throw new ApiError(res.status, b.message ?? mensagemSemJson(res.status, type, typeof data === 'string' ? data : ''), b.code, b.details);
   }
   return data as T;
 }

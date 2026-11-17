@@ -9,12 +9,12 @@ import { Field, Input, Select, Textarea } from '@/components/ui/input';
 import { Alert } from '@/components/ui/misc';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
-import { errosAcionamento, estagiosOrdenados, justificativaSugerida, MINIMO_JUSTIFICATIVA, type TerritorioDaContingencia } from './contingencia-regras';
+import { avisoDoAcionamento, errosAcionamento, estagiosOrdenados, justificativaSugerida, MINIMO_JUSTIFICATIVA, type TerritorioDaContingencia } from './contingencia-regras';
 
 /**
- * Acionamento de estágio: fecha o acionamento em vigor do território (fim na véspera), abre o novo com o retrato dos
- * indicadores e cria o checklist com as ações do estágio e dos anteriores. A decisão é da vigilância (Plano 2025,
- * item 7.1); a justificativa tem pelo menos 20 caracteres e o ato (decreto, portaria) é opcional.
+ * Acionamento de estágio: fecha o acionamento em vigor do território (fim na véspera, ou hoje se ele começou hoje),
+ * abre o novo com o retrato dos indicadores e cria o checklist com as ações do estágio e dos anteriores. A decisão é da
+ * vigilância (Plano 2025, item 7.1); a justificativa tem pelo menos 20 caracteres e o ato (decreto, portaria) é opcional.
  */
 export function ContingenciaAcionar({ s, territorio, onFechar, onAcionado }: { s: SituacaoContingencia; territorio: TerritorioDaContingencia; onFechar: () => void; onAcionado: () => void }) {
   const toast = useToast();
@@ -44,7 +44,7 @@ export function ContingenciaAcionar({ s, territorio, onFechar, onAcionado }: { s
         nivel: territorio.nivel,
         territorio: territorio.nivel === 'MUNICIPIO' ? null : territorio.territorio,
       });
-      toast.success(`${r.acionamento.estagioNome} acionado em ${s.territorio.nome}; ${r.acoesCriadas} ação(ões) no checklist.`);
+      toast.success(avisoDoAcionamento(r.acionamento.estagioNome, s.territorio.nome, r.acoesCriadas));
       onFechar();
       onAcionado();
     } catch (err) {
@@ -60,7 +60,7 @@ export function ContingenciaAcionar({ s, territorio, onFechar, onAcionado }: { s
       size="lg"
       onOpenChange={(o) => !o && onFechar()}
       title={`Acionar estágio · ${s.territorio.nome}`}
-      description="O estágio em vigor é encerrado na véspera e o novo começa hoje, com o checklist de ações do plano em vigor."
+      description="O estágio em vigor é encerrado na véspera (ou hoje, se começou hoje) e o novo começa hoje, com o checklist de ações do plano em vigor."
       footer={
         <Button onClick={acionar} loading={busy} disabled={tocado && erros.length > 0}>
           <Siren className="h-4 w-4" /> Acionar

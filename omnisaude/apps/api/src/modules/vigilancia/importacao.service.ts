@@ -49,7 +49,9 @@ import { NegativaService } from './negativa.service';
  *
  * Memória (container de 1 GiB): o envio é lido em fluxo e comparado em lotes; o payload vai para um arquivo temporário
  * com gzip e daí para o banco em fatias; a aplicação o lê em fatias e em lotes. Uma prévia ou aplicação por vez neste
- * processo: a outra recebe 409.
+ * processo: a outra recebe 409. O envio recebe 409 antes de o corpo ser lido quando o processo já tem `LIMITE_CARGAS`
+ * arquivos na memória (corpo sendo lido ou leitura em segundo plano, de qualquer tenant) ou quando o tenant tem outra
+ * importação lendo ou aplicando (sinal de vida recente, em qualquer processo).
  *
  * Tempo (container de 1/4 de vCPU; a borda da Cloudflare corta com 524 a resposta que não começa em ~100 s): a leitura
  * e a aplicação rodam em segundo plano no próprio processo, com a vez do processo presa até acabarem. O pedido espera
@@ -62,8 +64,14 @@ import { NegativaService } from './negativa.service';
 
 type Db = TenantPrisma.TransactionClient;
 const HORA = 3_600_000;
-/** Sinal de vida mais velho que isto, sem o trabalho neste processo: o trabalho foi interrompido. */
-const SINAL_PARADO_MS = 2 * 60_000;
+/**
+ * Arquivos de importação na memória do processo, de qualquer tenant: o corpo sendo lido e o arquivo da leitura em
+ * segundo plano (até 95 MB cada, e o dobro por um instante enquanto o corpo é juntado). No teto, o envio seguinte
+ * recebe 409 antes de o corpo ser lido (o Node descarta o corpo não lido, sem juntar).
+ */
+const LIMITE_CARGAS = 2;
+const MSG_OCUPADA = 'Outra importação está sendo processada agora. Tente de novo em alguns minutos.';
+const MSG_CARGAS = 'Outro envio está sendo recebido ou processado. Tente de novo em instantes.';
 const ERRO_LEITURA_INTERROMPIDA: ErroImportacao = {
   codigo: 'LEITURA_INTERROMPIDA',
   mensagem: 'A leitura do arquivo foi interrompida (o servidor reiniciou). Envie o arquivo de novo.',
@@ -122,6 +130,45 @@ function uuidv7(): string {
 
 const diaIso = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : null);
 
+/** Colunas do registro como linha do jsonb_to_recordset (datas em AAAA-MM-DD), para o INSERT e o UPDATE em lote. */
+function colunasSql(c: Comparado, sensiveis: ReadonlySet<string>) {
+  const v = colunasDoEstado(c.r.sistema, c.depois, sensiveis);
+  return {
+    system: c.r.sistema,
+    number: v.number,
+    notified_on: diaIso(v.notifiedOn),
+    epi_week_notified: v.epiWeekNotified,
+    municipality_ibge: v.municipalityIbge,
+    unit_cnes: v.unitCnes,
+    agravo: v.agravo,
+    suspected_type: v.suspectedType,
+    group_key: v.groupKey,
+    symptoms_onset: diaIso(v.symptomsOnset),
+    epi_week_onset: v.epiWeekOnset,
+    residence_ibge: v.residenceIbge,
+    neighborhood_code: v.neighborhoodCode,
+    neighborhood_name: v.neighborhoodName,
+    final_class: v.finalClass,
+    criterion: v.criterion,
+    evolution: v.evolution,
+    closed_on: diaIso(v.closedOn),
+    death_on: diaIso(v.deathOn),
+    situation: v.situation,
+    severity: v.severity,
+    excluded: v.excluded,
+    sensitive: v.sensitive,
+    patient_name: v.patientName,
+    patient_name_norm: v.patientNameNorm,
+    birth_date: diaIso(v.birthDate),
+    sex: v.sex,
+    mother_name_norm: v.motherNameNorm,
+    cns: v.cns,
+    cpf: v.cpf,
+    data: v.data,
+    content_hash: c.hash,
+  };
+}
+
 /** Data de calendário que existe (ida e volta pelo Date.UTC: 2025-13-01 e 2025-02-30 não passam). */
 function dataExiste(s: string): boolean {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
@@ -130,9 +177,6 @@ function dataExiste(s: string): boolean {
   const t = new Date(Date.UTC(a, mes - 1, d));
   return a >= 1900 && t.getUTCFullYear() === a && t.getUTCMonth() === mes - 1 && t.getUTCDate() === d;
 }
-
-/** Uma prévia ou aplicação por vez neste processo (o envio grande ocupa a memória e a CPU do container). */
-let ocupado = false;
 
 /** Leitura ou aplicação rodando em segundo plano neste processo. */
 interface Trabalho {
@@ -144,8 +188,21 @@ interface Trabalho {
   fim: Promise<void>;
 }
 
-/** Trabalhos deste processo, pelo id da importação: o sinal de vida parado de um deles não é trabalho interrompido. */
-const trabalhos = new Map<string, Trabalho>();
+/** Estado deste processo (cada réplica da API e o worker dos jobs têm o seu). */
+class Processo {
+  /** Uma prévia ou aplicação por vez (o envio grande ocupa a memória e a CPU do container). */
+  ocupado = false;
+  /** Arquivos de importação na memória (`LIMITE_CARGAS`). */
+  cargas = 0;
+  /** Trabalhos em segundo plano, pelo id da importação: o sinal de vida parado de um deles não é trabalho interrompido. */
+  readonly trabalhos = new Map<string, Trabalho>();
+}
+
+/** Fim de todos os trabalhos em segundo plano, de qualquer `Processo` (os testes esperam antes de fechar a API). */
+const fins = new Set<Promise<void>>();
+
+/** Momento do trabalho em que o gancho dos testes roda: no começo, ou na aplicação depois de gravar os registros. */
+export type MomentoDoGancho = 'INICIO' | 'GRAVADO';
 
 type Desfecho<T> = { ok: true; valor: T } | { ok: false; erro: unknown };
 
@@ -157,11 +214,16 @@ export class ImportacaoService {
   static esperaMs = 20_000;
   /** Intervalo do sinal de vida do trabalho em segundo plano (os testes diminuem). */
   static sinalMs = 15_000;
+  /** Sinal de vida mais velho que isto, sem o trabalho neste processo: o trabalho foi interrompido (os testes diminuem). */
+  static sinalParadoMs = 2 * 60_000;
   /**
-   * Só para os testes: roda no trabalho em segundo plano (no começo da leitura; na aplicação, no começo da transação),
-   * para segurá-lo ou simular uma falha.
+   * Só para os testes: roda no trabalho em segundo plano (no começo da leitura; na aplicação, no começo da transação e
+   * depois de gravar os registros, com a linha da importação presa pelas chaves estrangeiras), para segurá-lo ou simular
+   * uma falha.
    */
-  static ganchoDeTeste: ((etapa: EtapaImportacao, id: string) => Promise<void>) | null = null;
+  static ganchoDeTeste: ((etapa: EtapaImportacao, id: string, momento: MomentoDoGancho) => Promise<void>) | null = null;
+  /** O estado deste processo (só os testes trocam, por `comoOutroProcesso`). */
+  private static processo = new Processo();
   private readonly logger = new Logger('Importacao');
 
   constructor(
@@ -178,28 +240,70 @@ export class ImportacaoService {
   }
 
   /** Toma a vez do processo; com outra prévia ou aplicação em andamento, 409. */
-  private tomarVez(): void {
-    if (ocupado) throw new DomainError('IMPORTACAO_OCUPADA', 'Outra importação está sendo processada agora. Tente de novo em alguns minutos.', HttpStatus.CONFLICT);
-    ocupado = true;
+  private tomarVez(p: Processo): void {
+    if (p.ocupado) throw new DomainError('IMPORTACAO_OCUPADA', MSG_OCUPADA, HttpStatus.CONFLICT);
+    p.ocupado = true;
   }
 
-  private devolverVez(): void {
-    ocupado = false;
+  private devolverVez(p: Processo): void {
+    p.ocupado = false;
   }
 
-  /** Roda `fn` sozinho neste processo; com outra prévia ou aplicação em andamento, 409. */
+  /** Roda `fn` sozinho neste processo; com outra prévia ou aplicação em andamento, 409 (os testes seguram a vez assim). */
   private async exclusivo<T>(fn: () => Promise<T>): Promise<T> {
-    this.tomarVez();
+    const p = ImportacaoService.processo;
+    this.tomarVez(p);
     try {
       return await fn();
     } finally {
-      this.devolverVez();
+      this.devolverVez(p);
     }
   }
 
-  /** Espera os trabalhos em segundo plano deste processo acabarem (os testes, antes de fechar a API). */
+  /**
+   * Reserva uma carga na memória do processo antes de ler o corpo; no teto, 409. Devolve a liberação (pode ser chamada
+   * mais de uma vez).
+   */
+  private reservarCarga(p: Processo): () => void {
+    if (p.cargas >= LIMITE_CARGAS) throw new DomainError('IMPORTACAO_OCUPADA', MSG_CARGAS, HttpStatus.CONFLICT);
+    p.cargas++;
+    let solta = false;
+    return () => {
+      if (solta) return;
+      solta = true;
+      p.cargas--;
+    };
+  }
+
+  /** Outra importação do tenant lendo ou aplicando agora (sinal de vida recente, em qualquer processo): 409. */
+  private async conferirEmAndamento(db: Db): Promise<void> {
+    const viva = await db.officialImport.findFirst({
+      where: { workingStep: { not: null }, workingAt: { gte: new Date(Date.now() - ImportacaoService.sinalParadoMs) } },
+      select: { id: true },
+    });
+    if (viva) throw new DomainError('IMPORTACAO_OCUPADA', MSG_OCUPADA, HttpStatus.CONFLICT);
+  }
+
+  /** Espera os trabalhos em segundo plano acabarem (os testes, antes de fechar a API). */
   static async aguardarTrabalhos(): Promise<void> {
-    await Promise.allSettled([...trabalhos.values()].map((t) => t.fim));
+    await Promise.allSettled([...fins]);
+  }
+
+  /** Arquivos de importação na memória deste processo agora (os testes esperam por aqui). */
+  static get cargas(): number {
+    return ImportacaoService.processo.cargas;
+  }
+
+  /**
+   * Só para os testes: daqui em diante este processo faz o papel de outro (outra réplica da API ou o worker dos jobs),
+   * sem a vez, as cargas nem os trabalhos de antes, que seguem no estado antigo até acabar. Devolve a volta.
+   */
+  static comoOutroProcesso(): () => void {
+    const antes = ImportacaoService.processo;
+    ImportacaoService.processo = new Processo();
+    return () => {
+      ImportacaoService.processo = antes;
+    };
   }
 
   // ───────────────────────────── segundo plano ─────────────────────────────
@@ -208,22 +312,25 @@ export class ImportacaoService {
    * Roda `trabalho` em segundo plano, com a vez do processo (tomada por quem chama) presa até ele acabar, o sinal de vida
    * da linha e o registro deste processo, e espera até `esperaMs`. Devolve o desfecho quando o trabalho acaba dentro da
    * espera (falhou: `falha.desfazer` já rodou), ou null quando continua: o pedido responde 202 e, se falhar depois,
-   * `falha.registrar` grava a falha na linha. O que vem do pedido e é usado depois (sessão, IP, configurações do tenant,
-   * banco) é um objeto comum, sem nada que o fim da resposta feche (não há interceptor nem provedor por pedido): o banco
-   * é o pool do tenant no processo, que o sinal de vida mantém entre os abertos.
+   * `falha.registrar` grava a falha na linha. `aoTerminar` roda uma vez, quando o trabalho acaba de vez (a leitura solta
+   * a carga do arquivo na memória). O que vem do pedido e é usado depois (sessão, IP, configurações do tenant, banco) é
+   * um objeto comum, sem nada que o fim da resposta feche (não há interceptor nem provedor por pedido): o banco é o pool
+   * do tenant no processo, que o sinal de vida mantém entre os abertos.
    */
   private async emSegundoPlano<T>(
+    p: Processo,
     db: Db,
     tenantId: string,
     id: string,
     etapa: EtapaImportacao,
     trabalho: () => Promise<T>,
     falha: { desfazer: () => Promise<unknown>; registrar: (erro: ErroImportacao) => Promise<unknown> },
+    aoTerminar?: () => void,
   ): Promise<Desfecho<T> | null> {
     // `as`: o desfecho é escrito pelas funções de baixo (sem ele, o TypeScript o daria como sempre null).
     let desfecho = null as Desfecho<T> | null;
     const t: Trabalho = { id, etapa, abandonado: false, fim: Promise.resolve() };
-    trabalhos.set(id, t);
+    p.trabalhos.set(id, t);
     const sinal = this.sinalDeVida(db, tenantId, id, etapa);
     const terminou = (async () => {
       try {
@@ -246,9 +353,12 @@ export class ImportacaoService {
       })
       .finally(() => {
         sinal.parar();
-        trabalhos.delete(id);
-        this.devolverVez();
+        p.trabalhos.delete(id);
+        this.devolverVez(p);
+        aoTerminar?.();
+        fins.delete(t.fim);
       });
+    fins.add(t.fim);
     let espera: NodeJS.Timeout | undefined;
     await Promise.race([terminou, new Promise<void>((ok) => (espera = setTimeout(ok, ImportacaoService.esperaMs)))]);
     clearTimeout(espera);
@@ -265,6 +375,12 @@ export class ImportacaoService {
    * trabalho (nunca na linha já concluída) e sem esperar a linha travada pela transação do próprio trabalho. Também usa o
    * banco do tenant pelo gerenciador de conexões: o pool usado há mais tempo é o que fecha quando passa do teto de
    * tenants abertos, e o do trabalho não pode fechar no meio dele.
+   *
+   * A trava é FOR NO KEY UPDATE: a transação da aplicação, a partir do primeiro INSERT ou UPDATE em official_records,
+   * segura a linha da importação com FOR KEY SHARE (as chaves estrangeiras first_import_id e last_import_id), que só
+   * conflita com FOR UPDATE. Com FOR UPDATE SKIP LOCKED o sinal parava ali, e outro processo (a outra réplica, o worker
+   * dos jobs) dava a aplicação longa como interrompida. O UPDATE de working_at não muda chave, então também não espera.
+   * A linha só fica pulada no fim da transação do próprio trabalho, quando ele muda o status dela.
    */
   private sinalDeVida(db: Db, tenantId: string, id: string, etapa: EtapaImportacao): { parar(): void } {
     let parado = false;
@@ -283,7 +399,7 @@ export class ImportacaoService {
             SELECT id FROM official_imports
             WHERE id = ${id}::uuid AND working_step = ${etapa}
               AND (CASE WHEN working_step = 'LENDO' THEN status = 'PROCESSANDO' ELSE status IN ('PREVIA', 'APLICADA') END)
-            FOR UPDATE SKIP LOCKED)`;
+            FOR NO KEY UPDATE SKIP LOCKED)`;
       } catch (e) {
         this.logger.warn(`Sinal de vida da importação ${id}: ${(e as Error).message}`);
       }
@@ -305,8 +421,8 @@ export class ImportacaoService {
    * aplicar e descartar, e no job das prévias vencidas.
    */
   private async recuperarInterrompidos(db: Db, id?: string): Promise<number> {
-    const limite = new Date(Date.now() - SINAL_PARADO_MS).toISOString();
-    const meus = [...trabalhos.keys()];
+    const limite = new Date(Date.now() - ImportacaoService.sinalParadoMs).toISOString();
+    const meus = [...ImportacaoService.processo.trabalhos.keys()];
     const so = id ? TenantPrisma.sql`AND id = ${id}::uuid` : TenantPrisma.empty;
     const leitura = await db.$executeRaw`
       UPDATE official_imports SET status = 'FALHOU', error = ${JSON.stringify(ERRO_LEITURA_INTERROMPIDA)}::jsonb, working_step = NULL, working_since = NULL,
@@ -494,12 +610,31 @@ export class ImportacaoService {
   }
 
   /**
-   * POST /vigilancia/importacoes (corpo cru). Mesmo SHA-256 já aplicado: `{ jaImportado }`, sem criar nada. Senão, cria a
-   * linha PROCESSANDO e lê o arquivo em segundo plano: a prévia pronta dentro da espera volta como sempre (201); a falha
-   * dentro da espera apaga a linha e volta como sempre (nada fica gravado); senão, 202 com o que já se sabe.
+   * A aplicação do mesmo arquivo que já vale para este envio: sem período declarado, qualquer aplicação do arquivo; com
+   * período declarado, só a aplicação com o mesmo período declarado. Outro período gera prévia nova: é como se corrige o
+   * período depois de aplicado (o lido das notificações, ou um declarado errado). O índice único
+   * official_imports_sha_aplicado (SHA-256 e período declarado, "sem período" como valor próprio) segura a corrida.
    */
-  async enviar(ctx: RequestContext, arquivo: Buffer, consulta: ConsultaEnvioImportacao): Promise<RespostaEnvioImportacao> {
-    if (!arquivo.length) throw new DomainError('ARQUIVO_VAZIO', 'Arquivo vazio', HttpStatus.BAD_REQUEST);
+  private jaAplicada(db: Db, sha256: string, declarado: { de: string; ate: string } | null) {
+    return db.officialImport.findFirst({
+      where: {
+        sha256,
+        status: 'APLICADA',
+        ...(declarado ? { declaredPeriod: true, periodFrom: new Date(`${declarado.de}T00:00:00Z`), periodTo: new Date(`${declarado.ate}T00:00:00Z`) } : {}),
+      },
+      orderBy: { appliedAt: 'desc' },
+      select: { id: true, appliedAt: true },
+    });
+  }
+
+  /**
+   * POST /vigilancia/importacoes (corpo cru, lido por `lerCorpo`). Antes de ler o corpo: 409 com o processo no teto de
+   * arquivos na memória ou com outra importação do tenant lendo ou aplicando (o Node descarta o corpo não lido). O mesmo
+   * arquivo já aplicado (sem período declarado, ou com o mesmo período declarado): `{ jaImportado }`, sem criar nada.
+   * Senão, cria a linha PROCESSANDO e lê o arquivo em segundo plano: a prévia pronta dentro da espera volta como sempre
+   * (201); a falha dentro da espera apaga a linha e volta como sempre (nada fica gravado); senão, 202 com o que já se sabe.
+   */
+  async enviar(ctx: RequestContext, lerCorpo: () => Promise<Buffer>, consulta: ConsultaEnvioImportacao): Promise<RespostaEnvioImportacao> {
     if (!!consulta.de !== !!consulta.ate) throw new DomainError('PERIODO_INVALIDO', 'Informe o início e o fim do período, ou nenhum dos dois', HttpStatus.BAD_REQUEST);
     for (const [rotulo, valor] of [
       ['início', consulta.de],
@@ -507,56 +642,78 @@ export class ImportacaoService {
     ] as const)
       if (valor !== undefined && !dataExiste(valor)) throw new DomainError('PERIODO_INVALIDO', `O ${rotulo} do período não é uma data válida (${valor}). Use AAAA-MM-DD.`, HttpStatus.BAD_REQUEST);
     if (consulta.de && consulta.ate && consulta.de > consulta.ate) throw new DomainError('PERIODO_INVALIDO', 'O início do período vem depois do fim', HttpStatus.BAD_REQUEST);
-    const ritmo = new Ritmo();
-    const sha256 = await this.sha256(arquivo, ritmo);
-    const aplicada = await ctx.db.officialImport.findFirst({ where: { sha256, status: 'APLICADA' }, select: { id: true, appliedAt: true } });
-    if (aplicada) return { jaImportado: { id: aplicada.id, aplicadoEm: (aplicada.appliedAt ?? new Date()).toISOString() } };
-    this.tomarVez();
-    let comVez = true;
+    const p = ImportacaoService.processo;
+    await this.conferirEmAndamento(ctx.db);
+    // A carga é reservada logo depois, sem espera no meio (sem corrida entre envios simultâneos), e solta quando o
+    // arquivo deixa a memória: no erro ou na resposta sem trabalho; com o trabalho em segundo plano, quando ele acaba.
+    const soltarCarga = this.reservarCarga(p);
+    let comCarga = true;
     try {
-      const id = uuidv7();
-      const agora = new Date();
-      const nome = consulta.nome.slice(0, 255);
+      const arquivo = await lerCorpo();
+      if (!arquivo.length) throw new DomainError('ARQUIVO_VAZIO', 'Arquivo vazio', HttpStatus.BAD_REQUEST);
+      const ritmo = new Ritmo();
+      const sha256 = await this.sha256(arquivo, ritmo);
       const declarado = consulta.de && consulta.ate ? { de: consulta.de, ate: consulta.ate } : null;
-      await ctx.db.officialImport.create({
-        data: {
+      const aplicada = await this.jaAplicada(ctx.db, sha256, declarado);
+      if (aplicada) return { jaImportado: { id: aplicada.id, aplicadoEm: (aplicada.appliedAt ?? new Date()).toISOString() } };
+      this.tomarVez(p);
+      let comVez = true;
+      try {
+        const id = uuidv7();
+        const agora = new Date();
+        const nome = consulta.nome.slice(0, 255);
+        await ctx.db.officialImport.create({
+          data: {
+            id,
+            status: 'PROCESSANDO',
+            fileName: nome,
+            sha256,
+            sizeBytes: arquivo.length,
+            periodFrom: declarado ? new Date(`${declarado.de}T00:00:00Z`) : null,
+            periodTo: declarado ? new Date(`${declarado.ate}T00:00:00Z`) : null,
+            declaredPeriod: !!declarado,
+            createdBy: ctx.session.userId,
+            createdAt: agora,
+            workingStep: 'LENDO',
+            workingSince: agora,
+            workingAt: agora,
+          },
+          select: { id: true },
+        });
+        comVez = false;
+        comCarga = false;
+        const desfecho = await this.emSegundoPlano(
+          p,
+          ctx.db,
+          ctx.tenant.id,
           id,
-          status: 'PROCESSANDO',
-          fileName: nome,
-          sha256,
-          sizeBytes: arquivo.length,
-          periodFrom: declarado ? new Date(`${declarado.de}T00:00:00Z`) : null,
-          periodTo: declarado ? new Date(`${declarado.ate}T00:00:00Z`) : null,
-          declaredPeriod: !!declarado,
-          createdBy: ctx.session.userId,
-          createdAt: agora,
-          workingStep: 'LENDO',
-          workingSince: agora,
-          workingAt: agora,
-        },
-        select: { id: true },
-      });
-      comVez = false;
-      const desfecho = await this.emSegundoPlano(ctx.db, ctx.tenant.id, id, 'LENDO', () => this.criarPrevia(ctx, id, arquivo, consulta, sha256, ritmo), {
-        // Dentro da espera, como antes: nada fica gravado.
-        desfazer: () => ctx.db.officialImport.deleteMany({ where: { id, status: 'PROCESSANDO' } }),
-        registrar: (erro) =>
-          ctx.db.officialImport.updateMany({
-            where: { id, status: 'PROCESSANDO' },
-            data: { status: 'FALHOU', error: erro as unknown as TenantPrisma.InputJsonValue, workingStep: null, workingSince: null, workingAt: null, payload: null, preview: TenantPrisma.DbNull },
-          }),
-      });
-      if (!desfecho) return { id, status: 'PROCESSANDO', arquivo: nome, tamanhoBytes: arquivo.length, desde: agora.toISOString() };
-      if (!desfecho.ok) throw desfecho.erro;
-      return this.detalhe(ctx, id, { auditar: false });
+          'LENDO',
+          () => this.criarPrevia(ctx, id, arquivo, consulta, sha256, ritmo),
+          {
+            // Dentro da espera, como antes: nada fica gravado.
+            desfazer: () => ctx.db.officialImport.deleteMany({ where: { id, status: 'PROCESSANDO' } }),
+            registrar: (erro) =>
+              ctx.db.officialImport.updateMany({
+                where: { id, status: 'PROCESSANDO' },
+                data: { status: 'FALHOU', error: erro as unknown as TenantPrisma.InputJsonValue, workingStep: null, workingSince: null, workingAt: null, payload: null, preview: TenantPrisma.DbNull },
+              }),
+          },
+          soltarCarga,
+        );
+        if (!desfecho) return { id, status: 'PROCESSANDO', arquivo: nome, tamanhoBytes: arquivo.length, desde: agora.toISOString() };
+        if (!desfecho.ok) throw desfecho.erro;
+        return this.detalhe(ctx, id, { auditar: false });
+      } finally {
+        if (comVez) this.devolverVez(p);
+      }
     } finally {
-      if (comVez) this.devolverVez();
+      if (comCarga) soltarCarga();
     }
   }
 
   /** Lê o envio e transforma a linha PROCESSANDO em PREVIA (em segundo plano, com a vez do processo). */
   private async criarPrevia(ctx: RequestContext, id: string, arquivo: Buffer, consulta: ConsultaEnvioImportacao, sha256: string, ritmo: Ritmo): Promise<void> {
-    await ImportacaoService.ganchoDeTeste?.('LENDO', id);
+    await ImportacaoService.ganchoDeTeste?.('LENDO', id, 'INICIO');
     const { ibge } = await municipioDoTenant(this.master, ctx.tenant.id);
     const [sensiveis, grupoDoCid, porNome] = await Promise.all([gruposSigilosos(ctx.db), grupoDoCidFabrica(ctx.db), municipiosPorNome(ctx.db)]);
     const hoje = localDateString(new Date(), ctx.tenant.timeZone);
@@ -663,7 +820,7 @@ export class ImportacaoService {
           // A prévia anterior do mesmo arquivo (troca de codificação, reenvio) é descartada; a que está sendo aplicada
           // agora (marca com sinal de vida), não. A marca de uma aplicação interrompida sai junto.
           await tx.officialImport.updateMany({
-            where: { sha256, status: 'PREVIA', OR: [{ workingStep: null }, { workingAt: { lt: new Date(agora.getTime() - SINAL_PARADO_MS) } }] },
+            where: { sha256, status: 'PREVIA', OR: [{ workingStep: null }, { workingAt: { lt: new Date(agora.getTime() - ImportacaoService.sinalParadoMs) } }] },
             data: {
               status: 'DESCARTADA',
               payload: null,
@@ -721,46 +878,7 @@ export class ImportacaoService {
 
   /** Registros novos num INSERT só (SQL com um parâmetro JSON: o Prisma não guarda os dados no histórico do debug). */
   private async inserir(tx: Db, novos: Comparado[], sensiveis: ReadonlySet<string>, importacao: string, agora: Date) {
-    const linhas = novos.map((c) => {
-      const v = colunasDoEstado(c.r.sistema, c.depois, sensiveis);
-      return {
-        id: uuidv7(),
-        system: c.r.sistema,
-        type: c.r.tipo,
-        natural_key: c.r.chave,
-        number: v.number,
-        notified_on: diaIso(v.notifiedOn),
-        epi_week_notified: v.epiWeekNotified,
-        municipality_ibge: v.municipalityIbge,
-        unit_cnes: v.unitCnes,
-        agravo: v.agravo,
-        suspected_type: v.suspectedType,
-        group_key: v.groupKey,
-        symptoms_onset: diaIso(v.symptomsOnset),
-        epi_week_onset: v.epiWeekOnset,
-        residence_ibge: v.residenceIbge,
-        neighborhood_code: v.neighborhoodCode,
-        neighborhood_name: v.neighborhoodName,
-        final_class: v.finalClass,
-        criterion: v.criterion,
-        evolution: v.evolution,
-        closed_on: diaIso(v.closedOn),
-        death_on: diaIso(v.deathOn),
-        situation: v.situation,
-        severity: v.severity,
-        excluded: v.excluded,
-        sensitive: v.sensitive,
-        patient_name: v.patientName,
-        patient_name_norm: v.patientNameNorm,
-        birth_date: diaIso(v.birthDate),
-        sex: v.sex,
-        mother_name_norm: v.motherNameNorm,
-        cns: v.cns,
-        cpf: v.cpf,
-        data: v.data,
-        content_hash: c.hash,
-      };
-    });
+    const linhas = novos.map((c) => ({ id: uuidv7(), type: c.r.tipo, natural_key: c.r.chave, ...colunasSql(c, sensiveis) }));
     const quando = agora.toISOString();
     await tx.$executeRaw`
       INSERT INTO official_records (id, system, type, natural_key, number, notified_on, epi_week_notified, municipality_ibge, unit_cnes, agravo,
@@ -778,6 +896,47 @@ export class ImportacaoService {
         epi_week_onset text, residence_ibge text, neighborhood_code text, neighborhood_name text, final_class text, criterion text, evolution text,
         closed_on text, death_on text, situation text, severity text, excluded boolean, sensitive boolean, patient_name text, patient_name_norm text,
         birth_date text, sex text, mother_name_norm text, cns text, cpf text, data jsonb, content_hash text)`;
+  }
+
+  /**
+   * Registros alterados num UPDATE só (SQL com um parâmetro JSON, como o INSERT; antes era um UPDATE por registro dentro
+   * da transação): as colunas do estado, o sistema (o mesmo registro gravado no outro sistema do Sinan muda de sistema;
+   * a chave natural é a mesma), o hash, a última importação, a volta dos ausentes e o updated_at, com o instante da
+   * aplicação (o mesmo de last_seen_at).
+   */
+  private async atualizar(tx: Db, alterados: Comparado[], sensiveis: ReadonlySet<string>, importacao: string, agora: Date) {
+    const linhas = alterados.map((c) => ({ id: c.linha!.id, ...colunasSql(c, sensiveis) }));
+    const quando = agora.toISOString();
+    await tx.$executeRaw`
+      UPDATE official_records r SET system = x.system::"OfficialSystem", number = x.number, notified_on = x.notified_on::date,
+        epi_week_notified = x.epi_week_notified, municipality_ibge = x.municipality_ibge, unit_cnes = x.unit_cnes, agravo = x.agravo,
+        suspected_type = x.suspected_type, group_key = x.group_key, symptoms_onset = x.symptoms_onset::date, epi_week_onset = x.epi_week_onset,
+        residence_ibge = x.residence_ibge, neighborhood_code = x.neighborhood_code, neighborhood_name = x.neighborhood_name,
+        final_class = x.final_class, criterion = x.criterion, evolution = x.evolution, closed_on = x.closed_on::date, death_on = x.death_on::date,
+        situation = x.situation, severity = x.severity, excluded = x.excluded, sensitive = x.sensitive, patient_name = x.patient_name,
+        patient_name_norm = x.patient_name_norm, birth_date = x.birth_date::date, sex = x.sex, mother_name_norm = x.mother_name_norm,
+        cns = x.cns, cpf = x.cpf, data = x.data, content_hash = x.content_hash, last_import_id = ${importacao}::uuid,
+        last_seen_at = ${quando}::timestamptz AT TIME ZONE 'UTC', absent_since = NULL, updated_at = ${quando}::timestamptz AT TIME ZONE 'UTC'
+      FROM jsonb_to_recordset(${JSON.stringify(linhas)}::jsonb) AS x(id text, system text, number text, notified_on text, epi_week_notified text,
+        municipality_ibge text, unit_cnes text, agravo text, suspected_type text, group_key text, symptoms_onset text, epi_week_onset text,
+        residence_ibge text, neighborhood_code text, neighborhood_name text, final_class text, criterion text, evolution text, closed_on text,
+        death_on text, situation text, severity text, excluded boolean, sensitive boolean, patient_name text, patient_name_norm text,
+        birth_date text, sex text, mother_name_norm text, cns text, cpf text, data jsonb, content_hash text)
+      WHERE r.id = x.id::uuid`;
+  }
+
+  /**
+   * Registros iguais cuja origem dos campos mudou (o NINDINET depois do NINDINET com o DBF do agravo, e o contrário):
+   * só `data` (com `_fontes`), a última importação, a volta dos ausentes e o updated_at, num UPDATE só.
+   */
+  private async atualizarFontes(tx: Db, iguais: Comparado[], sensiveis: ReadonlySet<string>, importacao: string, agora: Date) {
+    const linhas = iguais.map((c) => ({ id: c.linha!.id, data: colunasDoEstado(c.r.sistema, c.depois, sensiveis).data }));
+    const quando = agora.toISOString();
+    await tx.$executeRaw`
+      UPDATE official_records r SET data = x.data, last_import_id = ${importacao}::uuid, last_seen_at = ${quando}::timestamptz AT TIME ZONE 'UTC',
+        absent_since = NULL, updated_at = ${quando}::timestamptz AT TIME ZONE 'UTC'
+      FROM jsonb_to_recordset(${JSON.stringify(linhas)}::jsonb) AS x(id text, data jsonb)
+      WHERE r.id = x.id::uuid`;
   }
 
   /** Payload do arquivo temporário para o banco, em fatias (nenhuma cópia inteira dele na memória). */
@@ -908,16 +1067,21 @@ export class ImportacaoService {
   }
 
   /**
-   * GET /vigilancia/importacoes/:id (a tela acompanha a leitura e a aplicação em segundo plano por aqui). Sem
-   * `notificacao.sensivel`, o nome do registro sigiloso não aparece na prévia.
+   * GET /vigilancia/importacoes/:id. Sem `notificacao.sensivel`, o nome do registro sigiloso não aparece na prévia. A
+   * prévia (lista nominal, auditada a cada leitura) não vem no modo de acompanhamento (`?acompanhar=1`, a tela acompanha
+   * a leitura e a aplicação em segundo plano por ele) nem enquanto a importação é aplicada (a linha continua PREVIA até
+   * o fim da transação): nesses casos, nada vai para a auditoria.
    */
-  async detalhe(ctx: RequestContext, id: string, opts: { auditar?: boolean } = {}): Promise<DetalheImportacao> {
+  async detalhe(ctx: RequestContext, id: string, opts: { auditar?: boolean; acompanhar?: boolean } = {}): Promise<DetalheImportacao> {
     await this.recuperarInterrompidos(ctx.db, id);
-    const imp = await ctx.db.officialImport.findUnique({ where: { id }, select: { ...this.selectResumo, sha256: true, files: true, preview: true, warnings: true } });
+    const imp = await ctx.db.officialImport.findUnique({ where: { id }, select: { ...this.selectResumo, sha256: true, files: true, warnings: true } });
     if (!imp) throw notFound('Importação');
+    const comPrevia = !opts.acompanhar && imp.status === 'PREVIA' && imp.workingStep !== 'APLICANDO';
+    const lida = comPrevia ? await ctx.db.officialImport.findUnique({ where: { id }, select: { preview: true, workingStep: true } }) : null;
     const nomes = await this.nomes(ctx, [imp.createdBy, imp.appliedBy, imp.discardedBy]);
     const sensivel = roleHasPermission(ctx.session.role, 'notificacao.sensivel');
-    const bruta = imp.preview as PreviaImportacao | null;
+    // A aplicação pode ter começado entre as duas leituras: a prévia só vale se a linha continuar sem a marca.
+    const bruta = lida && lida.workingStep !== 'APLICANDO' ? (lida.preview as PreviaImportacao | null) : null;
     const mascarar = <T extends AmostraRegistro>(a: T): T => (a.sigiloso && !sensivel ? { ...a, paciente: null } : a);
     const previa: PreviaImportacao | null = bruta
       ? {
@@ -966,7 +1130,7 @@ export class ImportacaoService {
     await this.recuperarInterrompidos(ctx.db, id);
     const imp = await ctx.db.officialImport.findUnique({
       where: { id },
-      select: { id: true, status: true, sha256: true, counts: true, createdAt: true, discardedBy: true, fileName: true, workingStep: true },
+      select: { id: true, status: true, sha256: true, counts: true, createdAt: true, discardedBy: true, fileName: true, workingStep: true, declaredPeriod: true, periodFrom: true, periodTo: true },
     });
     if (!imp) throw notFound('Importação');
     if (imp.status === 'PROCESSANDO') throw conflict('A prévia ainda está sendo preparada: aguarde a leitura do arquivo terminar.');
@@ -981,18 +1145,19 @@ export class ImportacaoService {
     }
     const [tem] = await ctx.db.$queryRaw<{ n: number | null }[]>`SELECT octet_length(payload)::int AS n FROM official_imports WHERE id = ${id}::uuid`;
     if (!tem?.n) throw conflict('A prévia não tem mais os registros: envie o arquivo de novo');
-    this.tomarVez();
+    const p = ImportacaoService.processo;
+    this.tomarVez(p);
     let comVez = true;
     try {
       // Reivindicação atômica: só a PREVIA sem marca, ou com a marca de uma aplicação interrompida (sinal parado).
       const agora = new Date();
       const { count } = await ctx.db.officialImport.updateMany({
-        where: { id, status: 'PREVIA', OR: [{ workingStep: null }, { workingAt: { lt: new Date(agora.getTime() - SINAL_PARADO_MS) } }] },
+        where: { id, status: 'PREVIA', OR: [{ workingStep: null }, { workingAt: { lt: new Date(agora.getTime() - ImportacaoService.sinalParadoMs) } }] },
         data: { workingStep: 'APLICANDO', workingSince: agora, workingAt: agora, error: TenantPrisma.DbNull },
       });
       if (count !== 1) throw conflict('A importação já está sendo aplicada (ou mudou): abra de novo.');
       comVez = false;
-      const desfecho = await this.emSegundoPlano(ctx.db, ctx.tenant.id, id, 'APLICANDO', () => this.aplicarPrevia(ctx, imp), {
+      const desfecho = await this.emSegundoPlano(p, ctx.db, ctx.tenant.id, id, 'APLICANDO', () => this.aplicarPrevia(ctx, imp), {
         // Dentro da espera, a falha volta ao pedido: a linha continua PREVIA, sem erro gravado.
         desfazer: () => this.limparMarcaDaAplicacao(ctx.db, id, null),
         registrar: (erro) => this.limparMarcaDaAplicacao(ctx.db, id, erro),
@@ -1001,11 +1166,14 @@ export class ImportacaoService {
       if (!desfecho.ok) throw desfecho.erro;
       return desfecho.valor;
     } finally {
-      if (comVez) this.devolverVez();
+      if (comVez) this.devolverVez(p);
     }
   }
 
-  private async aplicarPrevia(ctx: RequestContext, imp: { id: string; sha256: string; counts: unknown; fileName: string }): Promise<ResultadoAplicacao> {
+  private async aplicarPrevia(
+    ctx: RequestContext,
+    imp: { id: string; sha256: string; counts: unknown; fileName: string; declaredPeriod: boolean; periodFrom: Date | null; periodTo: Date | null },
+  ): Promise<ResultadoAplicacao> {
     const id = imp.id;
     const sensiveis = await gruposSigilosos(ctx.db);
     const agora = new Date();
@@ -1015,12 +1183,18 @@ export class ImportacaoService {
     const resultado = await ctx.db
       .$transaction(
         async (tx) => {
-          // Uma aplicação por vez (a mesma chave pode vir em dois envios ao mesmo tempo).
+          // Uma aplicação por vez (a mesma chave pode vir em dois envios ao mesmo tempo). Logo depois, e antes de qualquer
+          // escrita em official_records, a trava da conciliação: as ações da conciliação (a tarefa e as manuais) não
+          // mexem nos registros no meio da aplicação. A ordem é sempre a mesma (importação, depois conciliação), e a
+          // trava é reentrante na mesma sessão (a conciliação automática, dentro desta transação, pega de novo).
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('vigilancia:importacao'))`;
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('vigilancia:conciliacao'))`;
           const atual = await tx.officialImport.findUnique({ where: { id }, select: { status: true } });
           if (atual?.status !== 'PREVIA') throw conflict('A importação mudou: abra de novo');
-          if (await tx.officialImport.findFirst({ where: { sha256: imp.sha256, status: 'APLICADA' }, select: { id: true } })) throw conflict('Este arquivo já foi aplicado');
-          await ImportacaoService.ganchoDeTeste?.('APLICANDO', id);
+          // O mesmo arquivo com o mesmo período declarado (ou, sem período declarado, com qualquer um) já aplicado.
+          const declarado = imp.declaredPeriod && imp.periodFrom && imp.periodTo ? { de: dia(imp.periodFrom)!, ate: dia(imp.periodTo)! } : null;
+          if (await this.jaAplicada(tx, imp.sha256, declarado)) throw conflict('Este arquivo já foi aplicado');
+          await ImportacaoService.ganchoDeTeste?.('APLICANDO', id, 'INICIO');
 
           let novos = 0;
           let alterados = 0;
@@ -1031,6 +1205,8 @@ export class ImportacaoService {
             const comparados = this.comparar(lote, (await this.existentes(tx, lote)).mapa);
             const vinculadosAlterados: string[] = [];
             const criar: Comparado[] = [];
+            const mudar: Comparado[] = [];
+            const fontes: Comparado[] = [];
             const tocar: string[] = [];
             for (const c of comparados) {
               if (!c.linha) {
@@ -1041,25 +1217,15 @@ export class ImportacaoService {
               if (c.hash !== c.linha.contentHash) {
                 alterados++;
                 if (c.linha.notificationId) vinculadosAlterados.push(c.linha.id);
-                await tx.officialRecord.update({
-                  where: { id: c.linha.id },
-                  data: {
-                    // O mesmo registro gravado no outro sistema do Sinan muda de sistema (a chave natural é a mesma).
-                    ...(c.linha.system !== c.r.sistema ? { system: c.r.sistema } : {}),
-                    ...colunasDoEstado(c.r.sistema, c.depois, sensiveis),
-                    contentHash: c.hash,
-                    lastImportId: id,
-                    lastSeenAt: agora,
-                    absentSince: null,
-                  },
-                });
+                mudar.push(c);
               } else {
                 iguais++;
-                if (!mesmasFontes(c.antes.fontes, c.depois.fontes))
-                  await tx.officialRecord.update({ where: { id: c.linha.id }, data: { data: colunasDoEstado(c.r.sistema, c.depois, sensiveis).data, lastImportId: id, lastSeenAt: agora, absentSince: null } });
+                if (!mesmasFontes(c.antes.fontes, c.depois.fontes)) fontes.push(c);
                 else tocar.push(c.linha.id);
               }
             }
+            for (let i = 0; i < mudar.length; i += LOTE) await this.atualizar(tx, mudar.slice(i, i + LOTE), sensiveis, id, agora);
+            for (let i = 0; i < fontes.length; i += LOTE) await this.atualizarFontes(tx, fontes.slice(i, i + LOTE), sensiveis, id, agora);
             if (tocar.length) await tx.officialRecord.updateMany({ where: { id: { in: tocar } }, data: { lastImportId: id, lastSeenAt: agora, absentSince: null } });
             for (let i = 0; i < criar.length; i += LOTE) {
               const parte = criar.slice(i, i + LOTE);
@@ -1070,6 +1236,7 @@ export class ImportacaoService {
             if (vinculadosAlterados.length) await this.conciliacao.atualizarDivergencias(tx, vinculadosAlterados);
             await ritmo.ceder();
           }
+          await ImportacaoService.ganchoDeTeste?.('APLICANDO', id, 'GRAVADO');
           const cobertura = leitor.cobertura!;
 
           // Ausentes: só dentro da cobertura do envio (sistema, tipo, agravos, período, municípios, ficha e CNES), entre

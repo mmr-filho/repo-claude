@@ -307,7 +307,7 @@ export const PLANO_MODELO_MS_2025: PlanoContingencia = {
   acoes: Object.entries(ACOES_MS_2025).flatMap(([estagio, eixos]) => Object.entries(eixos).flatMap(([eixo, lista]) => lista!.map((descricao) => ({ estagio, eixo: eixo as EixoAcao, descricao })))),
   desmobilizacao: {
     semanas: 4,
-    descricao: `Redução sustentada da incidência e dos óbitos por mais de 4 SE consecutivas, ou volta da curva ao canal endêmico (${PLANO_2025}, item 7.2.3, p. 52)`,
+    descricao: `4 SE completas seguidas abaixo do estágio em vigor, ou volta da curva ao canal endêmico (${PLANO_2025}, item 7.2.3, p. 52)`,
   },
 };
 
@@ -356,7 +356,11 @@ export interface AvaliacaoPlano {
 export interface AcionamentoEmVigor {
   /** SE de início (AAAASS). A desmobilização só conta as SE completas desde ela. */
   semanaInicio: string;
-  /** Retrato dos indicadores no acionamento. O acumulado do ano já atendido nele não faz o estágio subir de novo. */
+  /**
+   * Retrato dos indicadores no acionamento. O critério do acumulado do ano já atendido nele não faz o estágio subir de
+   * novo enquanto o numerador não cresce (nenhum óbito, caso grave, óbito em investigação ou caso provável a mais) e a
+   * curva do agravo está de volta ao canal endêmico.
+   */
   indicadores?: IndicadoresAgravo[] | null;
 }
 
@@ -373,6 +377,8 @@ const CANAL: TipoCriterio[] = ['CANAL_ACIMA_CENTRO', 'CANAL_ENTRE_CENTRO_E_LS', 
 const PERCENTUAIS: TipoCriterio[] = ['PERCENTUAL_GRAVES', 'LETALIDADE', 'LETALIDADE_GRAVES', 'OBITOS_INVESTIGACAO_PERCENTUAL'];
 /** Critérios sobre o acumulado do ano: só sobem ao longo do ano, nunca refletem a volta da curva. */
 const ACUMULADOS: TipoCriterio[] = [...PERCENTUAIS, 'INCIDENCIA_ACUMULADA'];
+/** SE dentro do canal endêmico. SEM_CANAL (sem base que cubra a SE, sem população, quartil indefinido) não é volta ao canal. */
+const DENTRO_DO_CANAL: StatusSemana[] = ['ABAIXO_LI', 'ATE_CENTRO', 'ENTRE_CENTRO_E_LS'];
 
 /** Número em português, com 2 casas (3 abaixo de 1). */
 const br = (x: number) => String(arredondar(x, Math.abs(x) < 1 ? 3 : 2)).replace('.', ',');
@@ -475,11 +481,22 @@ function anoDoAcumulado(ind: IndicadoresAgravo): number | null {
   return ultima ? Number(ultima.semana.slice(0, 4)) : null;
 }
 
+/** Numerador do critério do acumulado do ano: o que só cresce quando chega óbito, caso grave ou caso provável novo. */
+function numeradorDoAcumulado(c: CriterioPlano, ind: IndicadoresAgravo): number {
+  if (c.tipo === 'PERCENTUAL_GRAVES') return ind.graves + ind.sinaisAlarme;
+  if (c.tipo === 'LETALIDADE' || c.tipo === 'LETALIDADE_GRAVES') return ind.obitosAgravo;
+  if (c.tipo === 'OBITOS_INVESTIGACAO_PERCENTUAL') return ind.obitosInvestigacao;
+  return ind.provaveis;
+}
+
 /**
- * Critérios do acumulado do ano (critério|agravo) já atendidos no retrato do acionamento em vigor, no mesmo ano do
- * acumulado de agora. Vira o ano, o acumulado recomeça e o retrato não vale mais.
+ * Critérios do acumulado do ano (critério|agravo) já atendidos no retrato do acionamento em vigor que ainda valem como
+ * conhecidos: o mesmo ano do acumulado de agora (vira o ano, o acumulado recomeça), o numerador sem crescer desde o
+ * retrato (óbitos, graves e com sinais de alarme, óbitos em investigação ou prováveis iguais ou menores) e a curva do
+ * agravo de volta ao canal endêmico (`noCanal`). É o vai e volta depois da descida: a vigilância desceu com aquele
+ * acumulado na mão. Óbito ou caso novo, ou a curva fora do canal, e o critério volta a contar para subir.
  */
-function acumuladosDoAcionamento(plano: PlanoContingencia, acionamento: AcionamentoEmVigor | null, atuais: Map<string, IndicadoresAgravo>): Set<string> {
+function acumuladosDoAcionamento(plano: PlanoContingencia, acionamento: AcionamentoEmVigor | null, atuais: Map<string, IndicadoresAgravo>, noCanal: ReadonlySet<string>): Set<string> {
   const conhecidos = new Set<string>();
   const retrato = acionamento?.indicadores;
   if (!Array.isArray(retrato) || !retrato.length) return conhecidos;
@@ -489,8 +506,8 @@ function acumuladosDoAcionamento(plano: PlanoContingencia, acionamento: Acioname
     for (const agravo of c.agravos.length ? c.agravos : plano.agravos) {
       const a = antes.get(agravo);
       const b = atuais.get(agravo);
-      if (!a || !b || anoDoAcumulado(a) === null || anoDoAcumulado(a) !== anoDoAcumulado(b)) continue;
-      if (avaliarNumero(c, a).atendido === true) conhecidos.add(`${c.id}|${agravo}`);
+      if (!a || !b || !noCanal.has(agravo) || anoDoAcumulado(a) === null || anoDoAcumulado(a) !== anoDoAcumulado(b)) continue;
+      if (avaliarNumero(c, a).atendido === true && numeradorDoAcumulado(c, b) <= numeradorDoAcumulado(c, a)) conhecidos.add(`${c.id}|${agravo}`);
     }
   }
   return conhecidos;
@@ -513,14 +530,20 @@ function acumuladosAltos(plano: PlanoContingencia, criterios: AvaliacaoCriterio[
  * Estágio sugerido pelos critérios. Só semanas completas contam; critério MANUAL sem resposta fica null (nunca
  * "atendido").
  *
- * Subir não espera. O acumulado do ano (percentuais, letalidade, incidência acumulada) já atendido quando o estágio em
- * vigor foi decidido (retrato do `acionamento`) não faz subir de novo: a vigilância já decidiu com ele.
+ * Curva de volta ao canal endêmico: as últimas N (`desmobilizacao.semanas`) SE completas do agravo dentro do canal
+ * (abaixo do LI, até o centro ou entre o centro e o LS). SE sem canal não é volta ao canal: sem dado, a curva pode estar
+ * em qualquer lugar.
  *
- * Descer só depois de `desmobilizacao.semanas` (N) SE completas seguidas com a sugestão abaixo do estágio em vigor,
- * contadas desde o início do acionamento em vigor. O acumulado do ano quase nunca volta a cair no mesmo ano: o do
- * agravo cuja curva voltou ao canal endêmico (nenhuma das últimas N SE completas acima do limite superior) deixa de
- * segurar o estágio, como manda o Plano 2025 (item 7.2.3), e o detalhe o cita. Com a curva ainda acima do limite, ele
- * segura. Nas semanas passadas, só os critérios de canal são refeitos; as respostas manuais da semana valem como estão.
+ * Subir não espera. O acumulado do ano (percentuais, letalidade, incidência acumulada) já atendido quando o estágio em
+ * vigor foi decidido (retrato do `acionamento`) não faz subir de novo enquanto o numerador não cresce e a curva do
+ * agravo está de volta ao canal: a vigilância já decidiu com ele (o vai e volta depois da descida).
+ *
+ * Descer só depois de N SE completas seguidas com a sugestão abaixo do estágio em vigor, contadas desde o início do
+ * acionamento em vigor. A SE em que um critério de canal do estágio em vigor ou de um acima dele ficou sem canal não
+ * conta como abaixo (o agravo sem canal em nenhuma SE completa dos indicadores não tem como ser conferido e não trava
+ * a contagem). O acumulado do ano quase nunca volta a cair no mesmo ano: o do agravo cuja curva voltou ao canal deixa
+ * de segurar o estágio, como manda o Plano 2025 (item 7.2.3), e o detalhe o cita. Com a curva fora do canal, ele segura.
+ * Nas semanas passadas, só os critérios de canal são refeitos; as respostas manuais da semana valem como estão.
  */
 export function avaliarPlano(plano: PlanoContingencia, indicadores: IndicadoresAgravo[], respostas: RespostaCriterio[], estagioAtual: string | null, acionamento: AcionamentoEmVigor | null = null): AvaliacaoPlano {
   const porGrupo = new Map(indicadores.map((i) => [i.grupo, i]));
@@ -539,7 +562,18 @@ export function avaliarPlano(plano: PlanoContingencia, indicadores: IndicadoresA
 
   const tipo = new Map(plano.criterios.map((c) => [c.id, c.tipo]));
   const acumulado = (a: AvaliacaoCriterio) => ACUMULADOS.includes(tipo.get(a.id)!);
-  const conhecidos = acumuladosDoAcionamento(plano, acionamento, porGrupo);
+  const n = Math.max(1, Math.trunc(plano.desmobilizacao.semanas));
+  const completas = (i: IndicadoresAgravo) => i.semanas.filter((s) => s.completa);
+  // Agravos com a curva de volta ao canal: as N últimas SE completas dentro dele (SE sem canal não conta como volta).
+  const noCanal = new Set(
+    indicadores
+      .filter((i) => {
+        const ultimas = completas(i).slice(-n);
+        return ultimas.length >= n && ultimas.every((s) => DENTRO_DO_CANAL.includes(s.status));
+      })
+      .map((i) => i.grupo),
+  );
+  const conhecidos = acumuladosDoAcionamento(plano, acionamento, porGrupo, noCanal);
   const conhecido = (a: AvaliacaoCriterio) => a.atendido === true && acumulado(a) && conhecidos.has(`${a.id}|${a.agravo ?? ''}`);
   const criterios = avaliadas.map((a) => (conhecido(a) ? { ...a, detalhe: `${a.detalhe}. Já atendido quando o estágio em vigor foi decidido: não faz subir` } : a));
   const sem = (avs: AvaliacaoCriterio[], tirar: (a: AvaliacaoCriterio) => boolean) => avs.map((a) => (a.atendido === true && tirar(a) ? { ...a, atendido: false } : a));
@@ -548,34 +582,31 @@ export function avaliarPlano(plano: PlanoContingencia, indicadores: IndicadoresA
   if (ord(bruto) > ord(atual)) return { sugerido: bruto, criterios, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
 
   // Manter ou descer: o acumulado do agravo cuja curva voltou ao canal endêmico não segura o estágio.
-  const n = Math.max(1, Math.trunc(plano.desmobilizacao.semanas));
-  const completas = (i: IndicadoresAgravo) => i.semanas.filter((s) => s.completa);
-  const noCanal = new Set(
-    indicadores
-      .filter((i) => {
-        const ultimas = completas(i).slice(-n);
-        return ultimas.length >= n && !ultimas.some((s) => s.status === 'ACIMA_LS');
-      })
-      .map((i) => i.grupo),
-  );
   const solto = (a: AvaliacaoCriterio) => acumulado(a) && noCanal.has(a.agravo ?? '');
-  const sugestaoNa = (recuo: number) => estagioSugerido(plano, sem(recuo === 0 ? avaliadas : avaliarCriterios(plano, porGrupo, resp, recuo), solto));
+  // Critério de canal sem canal na janela (null de um agravo com indicadores e com canal em alguma SE completa), do
+  // estágio em vigor ou de um acima: a SE não diz se a curva desceu.
+  const comCanal = new Set(indicadores.filter((i) => completas(i).some((s) => s.status !== 'SEM_CANAL')).map((i) => i.grupo));
+  const semCanalAcima = (avs: AvaliacaoCriterio[]) => avs.some((a) => a.atendido === null && CANAL.includes(tipo.get(a.id)!) && ord(a.estagio) >= ord(atual) && comCanal.has(a.agravo ?? ''));
+  const sugestaoNa = (recuo: number) => {
+    const avs = recuo === 0 ? avaliadas : avaliarCriterios(plano, porGrupo, resp, recuo);
+    return { estagio: estagioSugerido(plano, sem(avs, solto)), semCanal: semCanalAcima(avs) };
+  };
   const agora = sugestaoNa(0);
-  if (ord(agora) >= ord(atual)) return { sugerido: atual, criterios, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
+  if (ord(agora.estagio) >= ord(atual)) return { sugerido: atual, criterios, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
 
   const disponiveis = Math.max(0, ...indicadores.map((i) => completas(i).length));
   const inicio = acionamento?.semanaInicio ?? null;
   // SE completas desde o início do acionamento (sem indicadores não há como contar: vale a semana de referência).
   const desdeInicio = inicio === null || disponiveis === 0 ? Infinity : Math.max(0, ...indicadores.map((i) => completas(i).filter((s) => s.semana >= inicio).length));
   const limite = Math.min(n, Math.max(1, disponiveis), desdeInicio);
-  const anteriores: string[] = [];
+  const anteriores: { estagio: string; semCanal: boolean }[] = [];
   for (let recuo = 0; recuo < limite; recuo++) anteriores.push(recuo === 0 ? agora : sugestaoNa(recuo));
-  const seguidas = anteriores.findIndex((s) => ord(s) >= ord(atual));
+  const seguidas = anteriores.findIndex((s) => ord(s.estagio) >= ord(atual) || s.semCanal);
   const abaixo = seguidas === -1 ? anteriores.length : seguidas;
   const altos = acumuladosAltos(plano, avaliadas);
   const notaAcumulado = altos.length ? ` No acumulado do ano, segue acima do limiar: ${altos.join('; ')}.` : '';
   if (abaixo >= n) {
-    const destino = anteriores.reduce((m, s) => (ord(s) > ord(m) ? s : m));
+    const destino = anteriores.reduce((m, s) => (ord(s.estagio) > ord(m) ? s.estagio : m), anteriores[0]!.estagio);
     return {
       sugerido: destino,
       criterios,
@@ -588,11 +619,18 @@ export function avaliarPlano(plano: PlanoContingencia, indicadores: IndicadoresA
   }
   // A contagem parou no início do acionamento: as SE de antes dele não contam.
   const notaInicio = inicio !== null && seguidas === -1 && desdeInicio < n && desdeInicio < disponiveis ? ` Só contam as SE completas desde o acionamento em vigor (SE ${ss(inicio)}).` : '';
+  // A contagem parou numa SE sem canal (a sugestão dela estava abaixo só porque o critério de canal não foi avaliado).
+  const parada = seguidas === -1 ? null : anteriores[seguidas]!;
+  const notaSemCanal =
+    parada && parada.semCanal && ord(parada.estagio) < ord(atual) ? ' A SE sem canal (sem base que cubra a semana, sem população ou com o quartil indefinido) não conta como abaixo: a curva pode não ter descido.' : '';
   return {
     sugerido: atual,
     criterios,
     porEstagio,
-    desmobilizacao: { sugerida: false, detalhe: `Sugestão abaixo de ${nomes.get(atual)} há ${abaixo} de ${n} SE completas seguidas: manter ${nomes.get(atual)} até completar ${n}.${notaInicio}${notaAcumulado}` },
+    desmobilizacao: {
+      sugerida: false,
+      detalhe: `Sugestão abaixo de ${nomes.get(atual)} há ${abaixo} de ${n} SE completas seguidas: manter ${nomes.get(atual)} até completar ${n}.${notaInicio}${notaSemCanal}${notaAcumulado}`,
+    },
   };
 }
 

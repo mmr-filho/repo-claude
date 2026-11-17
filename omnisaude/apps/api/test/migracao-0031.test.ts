@@ -125,6 +125,19 @@ describe.runIf(enabled)('Migração 0031: unidades notificantes semeadas e restr
     expect(await falha(envio, [randomUUID(), 'APLICADA', sha, randomUUID()])).toBeNull();
     expect(await falha(envio, [randomUUID(), 'APLICADA', sha, randomUUID()])).toEqual({ code: '23505', constraint: 'official_imports_sha_aplicado' });
     expect(await falha(envio, [randomUUID(), 'PREVIA', sha, randomUUID()])).toBeNull();
+    // Com o período declarado: outro período é a correção do período (vale); o mesmo período, não. "Sem período
+    // declarado" é um valor próprio: dois sem período não valem, mesmo com as datas lidas diferentes.
+    const periodo = `INSERT INTO official_imports (id, system, status, file_name, sha256, size_bytes, created_by, declared_period, period_from, period_to)
+      VALUES ($1, 'SINAN_NET', 'APLICADA', 'DENGON.DBF', $2, 10, $3, $4, $5::date, $6::date)`;
+    const sha2 = 'c'.repeat(64);
+    const aplicada = (declarado: boolean, de: string, ate: string) => falha(periodo, [randomUUID(), sha2, randomUUID(), declarado, de, ate]);
+    const repetida = { code: '23505', constraint: 'official_imports_sha_aplicado' };
+    expect(await aplicada(false, '2025-03-04', '2025-03-18')).toBeNull();
+    expect(await aplicada(false, '2025-01-01', '2025-12-31')).toEqual(repetida);
+    expect(await aplicada(true, '2025-01-01', '2025-12-31')).toBeNull();
+    expect(await aplicada(true, '2025-01-01', '2025-12-31')).toEqual(repetida);
+    expect(await aplicada(true, '2025-01-01', '2025-06-30')).toBeNull();
+    expect(await aplicada(true, '2025-03-04', '2025-03-18')).toBeNull();
   });
 
   it('importação em segundo plano: etapa, sinal de vida, erro e sistema coerentes com o status', async () => {

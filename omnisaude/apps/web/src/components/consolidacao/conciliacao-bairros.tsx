@@ -12,6 +12,8 @@ import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
 import { useApi } from '@/lib/hooks';
+import { Paginacao } from './conciliacao-listas';
+import { consultaConciliacao, rotuloAcao } from './conciliacao-regras';
 import { useTerritorios } from './diagrama-seletores';
 
 /** Escolher o bairro do território que recebe o nome como apelido (os parecidos primeiro). */
@@ -86,15 +88,21 @@ function DialogoApelido({ bairro, onFechar, onFeito }: { bairro: BairroSemCorres
 }
 
 /**
- * Nomes de bairro dos registros oficiais sem correspondência no território (residência no município). Adicionar apelido
- * exige também `territorio.editar`.
+ * Nomes de bairro dos registros oficiais sem correspondência no território (residência no município), 50 por página
+ * como as outras listas, do que tem mais registros para o que tem menos. Adicionar apelido exige também
+ * `territorio.editar`.
  */
 export function ListaBairrosConciliacao({ podeEditarTerritorio, onMudou }: { podeEditarTerritorio: boolean; onMudou: () => void }) {
-  const lista = useApi<ListaBairrosSemCorrespondencia>('/vigilancia/conciliacao/bairros');
+  const [pagina, setPagina] = useState(1);
+  const lista = useApi<ListaBairrosSemCorrespondencia>(`/vigilancia/conciliacao/bairros${consultaConciliacao({ pagina })}`);
   const [apelido, setApelido] = useState<BairroSemCorrespondencia | null>(null);
   if (lista.loading && !lista.data) return <Spinner />;
   if (lista.error) return <Alert tone="error">{lista.error}</Alert>;
-  if (!lista.data?.length) return <EmptyState title="Todos os nomes de bairro têm correspondência no território" />;
+  if (!lista.data?.itens.length) {
+    // A página que esvaziou (os nomes dela ganharam apelido) volta para a anterior.
+    if (lista.data && lista.data.total > 0 && pagina > 1) return <Paginacao p={lista.data} onPagina={setPagina} />;
+    return <EmptyState title="Todos os nomes de bairro têm correspondência no território" />;
+  }
   return (
     <>
       {!podeEditarTerritorio && <p className="px-4 pt-3 text-xs text-slate-500">Adicionar apelido a um bairro exige a permissão de editar o território.</p>}
@@ -109,7 +117,7 @@ export function ListaBairrosConciliacao({ podeEditarTerritorio, onMudou }: { pod
           </tr>
         </THead>
         <TBody>
-          {lista.data.map((b) => (
+          {lista.data.itens.map((b) => (
             <TR key={b.nomeNormalizado}>
               <TD className="text-sm font-medium">{b.nome}</TD>
               <TD className="tabular-nums text-sm">{b.codigo ?? '—'}</TD>
@@ -117,7 +125,7 @@ export function ListaBairrosConciliacao({ podeEditarTerritorio, onMudou }: { pod
               <TD className="text-sm text-slate-600">{b.candidatos.length ? b.candidatos.map((c) => c.nome).join(', ') : '—'}</TD>
               {podeEditarTerritorio && (
                 <TD className="text-right">
-                  <Button size="sm" variant="secondary" onClick={() => setApelido(b)}>
+                  <Button size="sm" variant="secondary" onClick={() => setApelido(b)} aria-label={rotuloAcao.apelido(b.nome)}>
                     <Tag className="h-4 w-4" /> Adicionar apelido…
                   </Button>
                 </TD>
@@ -126,6 +134,7 @@ export function ListaBairrosConciliacao({ podeEditarTerritorio, onMudou }: { pod
           ))}
         </TBody>
       </Table>
+      <Paginacao p={lista.data} onPagina={setPagina} />
       {apelido && (
         <DialogoApelido
           bairro={apelido}

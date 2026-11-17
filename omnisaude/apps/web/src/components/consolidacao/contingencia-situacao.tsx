@@ -228,7 +228,7 @@ function Historico({ s, opcoes }: { s: SituacaoContingencia; opcoes: OpcaoAgravo
   if (!s.historico.length) return null;
   return (
     <Card>
-      <CardHeader title="Histórico de acionamentos" description="Vigências sem sobreposição: cada acionamento fecha o anterior na véspera." />
+      <CardHeader title="Histórico de acionamentos" description="Cada acionamento fecha o anterior na véspera, ou no mesmo dia se o anterior começou nesse dia." />
       <Table>
         <THead>
           <tr>

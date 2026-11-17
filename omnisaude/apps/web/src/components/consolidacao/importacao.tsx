@@ -25,6 +25,7 @@ import { useApi } from '@/lib/hooks';
 import { useDataHora } from './fuso';
 import { ArquivosDetectados, DetalheDaImportacao } from './importacao-previa';
 import {
+  alertaDoErroDeEnvio,
   conferirArquivo,
   conferirPeriodo,
   consultaDoEnvio,
@@ -46,6 +47,8 @@ const RECARGA_HISTORICO_MS = 5000;
 interface ErroDoEnvio {
   mensagem: string;
   detalhes: ReturnType<typeof detalhesDoErroDeEnvio>;
+  /** Título e tom do alerta: a resposta que não chegou é aviso (o arquivo pode ter sido recebido). */
+  alerta: ReturnType<typeof alertaDoErroDeEnvio>;
 }
 
 /** Arquivo enviado nesta tela: fica guardado para refazer a prévia com outra codificação. */
@@ -199,7 +202,11 @@ export function AbaImportacao() {
       void lista.reload();
     } catch (err) {
       const e = err instanceof ApiError ? err : null;
-      setErro({ mensagem: mensagemDoErro('enviar', { status: e?.status, code: e?.code, message: errorMessage(err) }), detalhes: detalhesDoErroDeEnvio(e?.details ?? null) });
+      setErro({
+        mensagem: mensagemDoErro('enviar', { status: e?.status, code: e?.code, message: errorMessage(err) }),
+        detalhes: detalhesDoErroDeEnvio(e?.details ?? null),
+        alerta: alertaDoErroDeEnvio(e?.status),
+      });
       // A resposta pode ter se perdido com o arquivo já recebido: o histórico mostra a leitura em andamento.
       if (respostaPerdida(e?.status)) void lista.reload();
     } finally {
@@ -254,7 +261,7 @@ export function AbaImportacao() {
             </Alert>
           )}
           {erro && (
-            <Alert tone="error" title="O envio não gerou prévia">
+            <Alert tone={erro.alerta.tom} title={erro.alerta.titulo}>
               <p>{erro.mensagem}</p>
               {erro.detalhes.motivos.length > 0 && (
                 <ul className="mt-1 list-inside list-disc">

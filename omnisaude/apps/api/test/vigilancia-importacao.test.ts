@@ -710,7 +710,8 @@ describe.runIf(enabled)('Vigilância: importação das exportações oficiais e 
     it('bairro sem correspondência no território vira apelido (exige territorio.editar), sem duplicar', async () => {
       const localidade = await db.locality.create({ data: { code: 'IMP', name: 'Localidade da Importação' } });
       const bairro = await db.neighborhood.create({ data: { localityId: localidade.id, name: 'Vila São José do Teste' } });
-      const lista = async () => (await t.http().get('/api/vigilancia/conciliacao/bairros').set(auth(vig)).expect(200)).body as { nomeNormalizado: string; registros: number }[];
+      // A lista vem em páginas de 50 (conciliacao-1): aqui cabe na primeira.
+      const lista = async () => ((await t.http().get('/api/vigilancia/conciliacao/bairros').set(auth(vig)).expect(200)).body as { itens: { nomeNormalizado: string; registros: number }[] }).itens;
       // "VILA SÃO JOSÉ" veio do primeiro arquivo e saiu na segunda versão; o registro 6100003 traz "CENTRO" (bairro da demonstração).
       const arquivo = escreverDbf(CAMPOS_NINDINET, [nindinet({ NU_NOTIFIC: '6300001', DT_NOTIFIC: '2025-09-01', NM_BAIRRO: hex(PY.cp850['VILA SÃO JOSÉ']) })]);
       await aplicar(((await enviar(arquivo, 'bairro.dbf')) as Detalhe).id);
