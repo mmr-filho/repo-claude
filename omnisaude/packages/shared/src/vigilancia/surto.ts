@@ -318,27 +318,30 @@ export interface OpcoesDeteccaoSurto {
    */
   outrosCasosPorGrupo?: Record<string, string[]>;
   /**
-   * Datas (AAAA-MM-DD) dos outros casos do grupo na janela que quem lê não vê e que já estão ligados a surto: contam
-   * como caso anterior no evento inusitado qualquer que seja a data (como o `jaEmSurto` dos casos que ele vê).
+   * Grupos com caso da janela já ligado a surto entre os que quem lê não vê (de outra unidade, na visão do núcleo, sob
+   * sigilo ou além do teto): o grupo fica fora do evento inusitado, como quando o caso em surto é dos que ele vê.
    */
-  outrosEmSurtoPorGrupo?: Record<string, string[]>;
+  outrosEmSurto?: string[];
 }
 
 /**
- * Grupos que as regras de vizinhança alcançam. Com uma regra para qualquer grupo (['*']), todos menos `exceto`; sem
- * ela, só `grupos`. Quem lê as notificações para as regras deixa os demais de fora (eles só entram no evento inusitado).
+ * Grupos que as regras de vizinhança (quarteirão, bairro e unidade) alcançam. Com uma regra para qualquer grupo
+ * (['*']), todos menos `exceto`; sem ela, só `grupos`. Quem lê as notificações para as regras deixa os demais de fora:
+ * eles só entram no evento inusitado.
  */
 export type AlcanceRegrasSurto = { todos: true; exceto: string[] } | { todos: false; grupos: string[] };
 
+/** A regra olha o grupo (a mesma conferência de `detectarAglomerados`). */
+const regraAlcanca = (r: RegraSurto, grupo: string) => (r.grupos.includes('*') || r.grupos.includes(grupo)) && !r.excetoGrupos?.includes(grupo);
+
 /** Alcance das regras em vigor (as da instituição ou as padrão): ver `AlcanceRegrasSurto`. */
 export function alcanceDasRegras(regras: RegraSurto[]): AlcanceRegrasSurto {
-  const alcanca = (r: RegraSurto, grupo: string) => (r.grupos.includes('*') || r.grupos.includes(grupo)) && !r.excetoGrupos?.includes(grupo);
   if (regras.some((r) => r.grupos.includes('*'))) {
-    // Só o grupo de fora de todas as regras gerais (e de nenhuma específica) fica sem regra.
+    // Só fica sem regra o grupo que todas as regras gerais deixam de fora e que nenhuma outra regra olha.
     const candidatos = new Set(regras.flatMap((r) => r.excetoGrupos ?? []));
-    return { todos: true, exceto: [...candidatos].filter((g) => !regras.some((r) => alcanca(r, g))).sort() };
+    return { todos: true, exceto: [...candidatos].filter((g) => !regras.some((r) => regraAlcanca(r, g))).sort() };
   }
-  return { todos: false, grupos: [...new Set(regras.flatMap((r) => r.grupos.filter((g) => alcanca(r, g))))].sort() };
+  return { todos: false, grupos: [...new Set(regras.flatMap((r) => r.grupos.filter((g) => regraAlcanca(r, g))))].sort() };
 }
 
 /** O grupo é alcançado por alguma regra (pelo resultado de `alcanceDasRegras`). */
@@ -405,11 +408,12 @@ function sugestao(regra: string, descricao: string, fonte: string, grupo: string
  * entram; uma sugestão por (regra, vínculo, grupo), com o aglomerado mais recente; a dispensada volta quando aparece
  * caso conhecido depois do `ateConhecimento`, e a do núcleo só esconde sugestão com todos os casos da unidade dele.
  * Evento inusitado: o primeiro caso de um grupo depois de `diasInusitado` dias sem casos (ou nunca visto) vira sugestão
- * própria; caso anterior é o do histórico, o de `outrosCasosPorGrupo` com data até a do primeiro e todo caso da janela
- * já ligado a surto (`jaEmSurto` e `outrosEmSurtoPorGrupo`), qualquer que seja a data: o evento que já virou surto não
- * volta como "primeiro caso", nem quando a busca ativa acha depois um caso com início anterior. Grupo fora de
- * `historicoPorGrupo` não é avaliado. A data do caso é o início dos sintomas ou, sem ele, o dia (no `fuso`) em que foi
- * conhecido; caso com data depois de `hoje` (erro de digitação) fica de fora das sugestões.
+ * própria; caso anterior é o do histórico e o de `outrosCasosPorGrupo` com data até a do primeiro. O grupo com caso da
+ * janela já ligado a surto (`jaEmSurto` ou `outrosEmSurto`) não é avaliado: o caso em surto conta como anterior em
+ * qualquer data, e o evento que já virou surto não volta como "primeiro caso", nem quando a busca ativa acha depois um
+ * caso com início anterior ao dele. Grupo fora de `historicoPorGrupo` não é avaliado. A data do caso é o início dos
+ * sintomas ou, sem ele, o dia (no `fuso`) em que foi conhecido; caso com data depois de `hoje` (erro de digitação) fica
+ * de fora das sugestões.
  */
 export function detectarAglomerados(casos: CasoParaSurto[], regras: RegraSurto[], opcoes: OpcoesDeteccaoSurto): SugestaoSurto[] {
   const hoje = dia(opcoes.hoje);
@@ -422,7 +426,7 @@ export function detectarAglomerados(casos: CasoParaSurto[], regras: RegraSurto[]
   for (const regra of regras) {
     const grupos = new Map<string, { id: string; grupo: string; casos: CasoParaSurto[] }>();
     for (const c of validos) {
-      if (!(regra.grupos.includes('*') || regra.grupos.includes(c.grupo)) || regra.excetoGrupos?.includes(c.grupo)) continue;
+      if (!regraAlcanca(regra, c.grupo)) continue;
       if (regra.soUnidadeHospitalar && !c.unidadeHospitalar) continue;
       const id = regra.vinculo === 'QUARTEIRAO' ? c.blockId : regra.vinculo === 'BAIRRO' ? c.neighborhoodId : c.unitId;
       if (!id) continue;
@@ -436,23 +440,17 @@ export function detectarAglomerados(casos: CasoParaSurto[], regras: RegraSurto[]
       if (aglomerado) sugestoes.push(sugestao(regra.id, regra.descricao, regra.fonte, g.grupo, { tipo: regra.vinculo, id: g.id }, aglomerado));
     }
   }
-  // Evento inusitado: o caso já ligado a surto não vira sugestão, mas é caso anterior em qualquer data (sur-4): o caso
-  // seguinte não é o "primeiro", e o achado depois com início anterior ao do surto também não.
+  // Evento inusitado: o caso já ligado a surto não vira sugestão, e o grupo dele fica fora (sur-4): o caso seguinte não
+  // é o "primeiro", nem o achado depois com início anterior ao do caso em surto.
+  const comSurto = new Set([...casos.filter((c) => c.jaEmSurto).map((c) => c.grupo), ...(opcoes.outrosEmSurto ?? [])]);
   const porGrupo = new Map<string, CasoParaSurto[]>();
-  for (const c of datados) if (!c.jaEmSurto && !GRUPOS_SEM_SUGESTAO_DE_SURTO.includes(c.grupo)) porGrupo.set(c.grupo, [...(porGrupo.get(c.grupo) ?? []), c]);
-  const emSurtoPorGrupo = new Map<string, number[]>();
-  for (const c of casos) if (c.jaEmSurto) emSurtoPorGrupo.set(c.grupo, [...(emSurtoPorGrupo.get(c.grupo) ?? []), data(c)]);
+  for (const c of validos) if (!GRUPOS_SEM_SUGESTAO_DE_SURTO.includes(c.grupo) && !comSurto.has(c.grupo)) porGrupo.set(c.grupo, [...(porGrupo.get(c.grupo) ?? []), c]);
   for (const [grupo, lista] of porGrupo) {
     if (!(grupo in opcoes.historicoPorGrupo)) continue;
     const candidatos = lista.sort((a, b) => data(a) - data(b) || Date.parse(a.conhecidoEm) - Date.parse(b.conhecidoEm));
     const primeiro = data(candidatos[0]!);
     const historico = opcoes.historicoPorGrupo[grupo];
-    const anteriores = [
-      ...(historico ? [dia(historico)] : []),
-      ...(emSurtoPorGrupo.get(grupo) ?? []),
-      ...(opcoes.outrosEmSurtoPorGrupo?.[grupo] ?? []).map(dia),
-      ...(opcoes.outrosCasosPorGrupo?.[grupo] ?? []).map(dia).filter((d) => d <= primeiro),
-    ];
+    const anteriores = [...(historico ? [dia(historico)] : []), ...(opcoes.outrosCasosPorGrupo?.[grupo] ?? []).map(dia).filter((d) => d <= primeiro)];
     const ultimo = anteriores.length ? Math.max(...anteriores) : null;
     const intervalo = ultimo === null ? Infinity : (primeiro - ultimo) / DIA;
     if (intervalo > opcoes.diasInusitado)

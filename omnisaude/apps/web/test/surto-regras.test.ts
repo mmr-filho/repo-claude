@@ -5,6 +5,7 @@ import {
   candidatasParaPlanilha,
   comunicacoesDoSurto,
   corpoComunicacao,
+  corpoDispensa,
   corpoEdicao,
   corpoEncerramento,
   corpoLinhaCaso,
@@ -356,6 +357,15 @@ describe('encerramento, comunicação e planilha', () => {
       { id: 'n3', status: 'RASCUNHO' },
     ];
     expect(candidatasParaPlanilha(lista, [{ notificationId: 'n1' }, { notificationId: null }]).map((n) => n.id)).toEqual(['n3']);
+  });
+});
+
+describe('dispensa da sugestão (SURTO-1)', () => {
+  it('leva o último caso conhecido que a tela mostrou, com o motivo sem espaços nas pontas', () => {
+    const s = sugestao('BAIRRO');
+    // Antes: só a assinatura e o motivo; a API gravava o último caso recalculado na hora do clique (o que chegou depois).
+    expect(corpoDispensa(s, '  Casos sem vínculo entre si.  ')).toEqual({ assinatura: s.assinatura, motivo: 'Casos sem vínculo entre si.', ultimoConhecimento: '2026-11-08T14:00:00.000Z' });
+    expect(corpoDispensa(sugestao('UNIDADE', { ultimoConhecimento: '2026-11-09T10:00:00.000Z' }), 'Mesma família.').ultimoConhecimento).toBe('2026-11-09T10:00:00.000Z');
   });
 });
 

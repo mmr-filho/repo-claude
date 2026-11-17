@@ -1759,27 +1759,32 @@ export class NotificacaoService implements OnModuleInit {
   /**
    * Plantão e escalonamento, e os parâmetros da semana 27 (negativa, consolidação e os dias do evento inusitado do
    * surto, campo a campo): gravados nas configurações da instituição (banco mestre), como a política de MFA. As regras
-   * de sugestão de surto não se editam por aqui.
+   * de sugestão de surto não se editam por aqui. Lê, mescla e grava numa transação, com a linha da instituição travada
+   * (FOR UPDATE): dois salvamentos ao mesmo tempo entram em fila, e o segundo mescla sobre o que o primeiro gravou.
    */
   async salvarConfiguracoes(ctx: RequestContext, input: MudancaVigilancia) {
     const telefones = input.onCallPhones?.map((t) => normalizeBrazilPhone(t));
     if (telefones?.some((t) => !t)) throw new DomainError('TELEFONE_INVALIDO', 'Informe celulares com DDD', HttpStatus.BAD_REQUEST);
-    const t = await this.master.tenant.findUniqueOrThrow({ where: { id: ctx.tenant.id } });
-    const atual = tenantSettings(t.settings);
-    const vigilancia: VigilanciaSettings = {
-      ...atual.vigilancia,
-      ...mesclarBlocosVigilancia(atual.vigilancia, input),
-      ackMinutes: input.ackMinutes ?? atual.vigilancia.ackMinutes,
-      onCallPhones: telefones ? [...new Set(telefones as string[])] : atual.vigilancia.onCallPhones,
-      whatsappAlerts: input.whatsappAlerts ?? atual.vigilancia.whatsappAlerts,
-      relEnabled: input.relEnabled ?? atual.vigilancia.relEnabled,
-      prazosEncerramento: input.prazosEncerramento
-        ? Object.fromEntries(Object.entries(input.prazosEncerramento).filter(([grupo, dias]) => /^[a-z0-9-]{2,40}$/.test(grupo) && Number.isInteger(dias) && dias > 0 && dias <= 365))
-        : atual.vigilancia.prazosEncerramento,
-      modeloPolicial: input.modeloPolicial !== undefined ? input.modeloPolicial?.trim() || null : atual.vigilancia.modeloPolicial,
-    };
-    // Só a chave "vigilancia", de forma atômica: não desfaz uma mudança simultânea da política de MFA.
-    await this.master.$executeRaw`UPDATE tenants SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{vigilancia}', ${JSON.stringify(vigilancia)}::jsonb) WHERE id = ${ctx.tenant.id}::uuid`;
+    const { vigilancia, atual } = await this.master.$transaction(async (tx) => {
+      const [linha] = await tx.$queryRaw<{ settings: unknown }[]>`SELECT settings FROM tenants WHERE id = ${ctx.tenant.id}::uuid FOR UPDATE`;
+      if (!linha) throw notFound('Instituição');
+      const atual = tenantSettings(linha.settings);
+      const vigilancia: VigilanciaSettings = {
+        ...atual.vigilancia,
+        ...mesclarBlocosVigilancia(atual.vigilancia, input),
+        ackMinutes: input.ackMinutes ?? atual.vigilancia.ackMinutes,
+        onCallPhones: telefones ? [...new Set(telefones as string[])] : atual.vigilancia.onCallPhones,
+        whatsappAlerts: input.whatsappAlerts ?? atual.vigilancia.whatsappAlerts,
+        relEnabled: input.relEnabled ?? atual.vigilancia.relEnabled,
+        prazosEncerramento: input.prazosEncerramento
+          ? Object.fromEntries(Object.entries(input.prazosEncerramento).filter(([grupo, dias]) => /^[a-z0-9-]{2,40}$/.test(grupo) && Number.isInteger(dias) && dias > 0 && dias <= 365))
+          : atual.vigilancia.prazosEncerramento,
+        modeloPolicial: input.modeloPolicial !== undefined ? input.modeloPolicial?.trim() || null : atual.vigilancia.modeloPolicial,
+      };
+      // Só a chave "vigilancia", de forma atômica: não desfaz uma mudança simultânea da política de MFA.
+      await tx.$executeRaw`UPDATE tenants SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{vigilancia}', ${JSON.stringify(vigilancia)}::jsonb) WHERE id = ${ctx.tenant.id}::uuid`;
+      return { vigilancia, atual };
+    });
     this.tenants.connections.invalidate(ctx.tenant.slug);
     this.tenants.connections.invalidate(ctx.tenant.id);
     await this.audit.recordStandalone(ctx, {

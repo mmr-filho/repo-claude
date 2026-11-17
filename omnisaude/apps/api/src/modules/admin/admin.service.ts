@@ -92,9 +92,10 @@ export class AdminService {
   }
 
   /**
-   * Desativar uma unidade ativa encerra, na mesma transação, a unidade notificante da negativa: o período aberto e as
-   * designações de responsável terminam hoje, no fuso da instituição (nunca antes do início de cada um). Reativar não
-   * reabre nada: a vigilância abre um novo período na tela das unidades notificantes.
+   * Desativar uma unidade ativa encerra, na mesma transação, a unidade notificante da negativa (encerrarUnidadeNotificante):
+   * o período aberto, o encerrado com fim depois de hoje e as designações ativas de responsável terminam hoje, no fuso
+   * da instituição; o período e as designações que só começariam depois de hoje são apagados. Tudo com auditoria.
+   * Reativar não reabre nada: a lista das unidades notificantes e a grade avisam, e a vigilância abre um período novo.
    */
   async updateUnit(ctx: RequestContext, id: string, input: Partial<UnitInput>) {
     const current = await ctx.db.unit.findUnique({ where: { id } });
@@ -105,10 +106,13 @@ export class AdminService {
     const desativar = input.active === false && current.active;
     return ctx.db.$transaction(async (tx) => {
       const unit = await tx.unit.update({ where: { id }, data: { ...this.unitData(input), ...(input.active === undefined ? {} : { active: input.active }) } });
-      await this.audit(tx, ctx, 'unidade.atualizar', 'Unit', id, input);
+      // A negativa antes da trilha: as travas da unidade notificante vêm antes da trava da cadeia da auditoria (a
+      // designação feita ao mesmo tempo trava a unidade e depois audita; a ordem inversa fecharia um ciclo). A trilha
+      // fica na ordem de sempre: a atualização da unidade e, depois, o que ela encerrou ou apagou.
+      const daNegativa: { action: string; entityType: string; entityId: string; payload: unknown }[] = [];
       if (desativar) {
         const agora = this.agora();
-        await encerrarUnidadeNotificante(tx, (e) => this.audit(tx, ctx, e.action, e.entityType, e.entityId, e.payload), {
+        await encerrarUnidadeNotificante(tx, async (e) => daNegativa.push(e), {
           unitId: id,
           cnes: unit.cnes,
           ate: localDateString(agora, ctx.tenant.timeZone),
@@ -117,6 +121,8 @@ export class AdminService {
           agora,
         });
       }
+      await this.audit(tx, ctx, 'unidade.atualizar', 'Unit', id, input);
+      for (const e of daNegativa) await this.audit(tx, ctx, e.action, e.entityType, e.entityId, e.payload);
       return unit;
     });
   }

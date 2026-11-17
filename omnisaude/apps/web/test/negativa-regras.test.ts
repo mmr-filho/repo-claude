@@ -1,12 +1,14 @@
 import { analisarGrade, type CelulaGrade, type ColunaGrade, type LinhaGradeNegativa, type RespostaGradeNegativa, type SituacaoUnidadeSemana, type UnidadeNotificante } from '@omnisaude/shared';
 import { describe, expect, it } from 'vitest';
 import {
+  avisoTitularSubstituido,
   CELULA,
   cartoesDaGrade,
   DESCRICAO_SITUACAO,
   filtrarLinhas,
   filtrarUnidades,
   LEGENDA_GRADE,
+  LINK_PARAMETROS_NEGATIVA,
   pendenciasAbrirPeriodo,
   pendenciasDesignacao,
   pendenciasEncerrarPeriodo,
@@ -15,7 +17,10 @@ import {
   resumoMinhas,
   resumoUnidades,
   rotuloColuna,
+  rotuloRevogar,
+  secaoInicial,
   semanasParaSeletor,
+  semResponsavel,
   semTitular,
   situacaoDaUnidade,
   textoCancelamento,
@@ -219,6 +224,59 @@ describe('unidades notificantes e responsáveis', () => {
       'Escolha um usuário lotado na unidade.',
       'Informe o início da designação.',
     ]);
+  });
+});
+
+describe('designação que não vale (NEGATIVA-4) e reativada sem período (sur-7)', () => {
+  // A API marca cada designação ativa: vale só com usuário ativo e lotação ativa na unidade em papel que atesta.
+  const titularSemLotacao = { ...titular, valido: false, motivoInvalido: 'Sem lotação ativa na unidade' };
+  const substitutoValido = { ...titular, id: 'r2', userId: 'us2', nome: 'Carla Menezes', tipo: 'SUBSTITUTO' as const, valido: true, motivoInvalido: null };
+  const lista = [
+    unidade('1', { periodoAtual: aberto, periodos: [aberto], responsaveis: [titularSemLotacao] }),
+    unidade('2', { periodoAtual: aberto, periodos: [aberto], responsaveis: [titularSemLotacao, substitutoValido] }),
+    unidade('3', { periodoAtual: aberto, periodos: [aberto], responsaveis: [{ ...titular, valido: true, motivoInvalido: null }] }),
+    // Reativada: o último período terminou na desativação; a API marca "sem configuração" e manda o aviso.
+    unidade('4', {
+      periodos: [{ id: 'p4', desde: '2026-01-01', ate: '2026-06-17', motivoFim: 'Unidade desativada no cadastro' }],
+      semConfiguracao: true,
+      avisos: ['Unidade reativada: o período de notificante terminou na desativação. Abra um período novo se ela voltou a notificar.'],
+    }),
+  ];
+
+  it('o titular que não vale não conta como titular nem como responsável', () => {
+    expect(lista.map((u) => [semTitular(u), semResponsavel(u)])).toEqual([
+      [true, true],
+      // O substituto que vale ainda atesta: sem titular, mas com responsável.
+      [true, false],
+      [false, false],
+      [false, false],
+    ]);
+    expect(resumoUnidades(lista)).toEqual({ notificantes: 3, semConfiguracao: 1, semTitular: 2, semResponsavel: 1 });
+    expect(filtrarUnidades(lista, 'SEM_TITULAR', '').map((u) => u.unidade.id)).toEqual(['1', '2']);
+    expect(filtrarUnidades(lista, 'SEM_CONFIGURACAO', '').map((u) => u.unidade.id)).toEqual(['4']);
+    expect(situacaoDaUnidade(lista[3]!)).toEqual({ texto: 'Sem configuração', tom: 'red' });
+  });
+
+  it('o novo titular substitui o que não vale (a API encerra a designação dele); o que vale continua travando a vaga', () => {
+    expect(pendenciasDesignacao(lista[0]!, { userId: 'us9', tipo: 'TITULAR', desde: '2026-06-17' }, 'Joana', { podeAtestar: true })).toEqual([]);
+    expect(avisoTitularSubstituido(lista[0]!, 'TITULAR')).toBe('A designação de Bruno Almeida como titular não vale (sem lotação ativa na unidade): ao designar o novo titular, ela termina hoje.');
+    expect(avisoTitularSubstituido(lista[0]!, 'SUBSTITUTO')).toBeNull();
+    expect(pendenciasDesignacao(lista[2]!, { userId: 'us9', tipo: 'TITULAR', desde: '2026-06-17' }, 'Joana', { podeAtestar: true })).toEqual(['A unidade já tem titular (Bruno Almeida): revogue a designação antes.']);
+    expect(avisoTitularSubstituido(lista[2]!, 'TITULAR')).toBeNull();
+  });
+
+  it('o botão Revogar diz de quem é a designação (TELAS-7)', () => {
+    expect(rotuloRevogar(substitutoValido)).toBe('Revogar a designação de Carla Menezes');
+  });
+});
+
+describe('seções da aba e o atalho dos parâmetros (K3)', () => {
+  it('abre a seção pedida na URL só se a pessoa pode vê-la', () => {
+    expect(LINK_PARAMETROS_NEGATIVA).toBe('/vigilancia/consolidacao?aba=negativa&secao=parametros');
+    expect(secaoInicial('parametros', ['grade', 'unidades', 'parametros'])).toBe('parametros');
+    expect(secaoInicial('parametros', ['grade', 'unidades'])).toBe('grade');
+    expect(secaoInicial(null, ['grade'])).toBe('grade');
+    expect(secaoInicial('qualquer', ['grade', 'parametros'])).toBe('grade');
   });
 });
 

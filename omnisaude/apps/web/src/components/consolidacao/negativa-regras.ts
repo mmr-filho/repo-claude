@@ -199,12 +199,38 @@ export function semanasParaSeletor(semanasAteHoje: string[]): { valor: string; r
   return [...semanasAteHoje].reverse().map((s, i) => ({ valor: s, rotulo: `SE ${rotuloSemana(s)}${i === 0 ? ' (em curso)' : ''}` }));
 }
 
+// ───────────── Seções e atalhos ─────────────
+
+/** Seções da aba Notificação negativa; `?secao=` na URL abre uma delas (a da permissão de quem abre). */
+export type SecaoNegativa = 'grade' | 'unidades' | 'parametros';
+
+/** Atalho para Consolidação e surtos > Notificação negativa > Prazos e parâmetros (usado na gestão da vigilância). */
+export const LINK_PARAMETROS_NEGATIVA = '/vigilancia/consolidacao?aba=negativa&secao=parametros';
+
+/** A seção pedida na URL, se a pessoa pode vê-la; senão, a grade. */
+export function secaoInicial(pedida: string | null | undefined, disponiveis: string[]): string {
+  return pedida && disponiveis.includes(pedida) ? pedida : 'grade';
+}
+
 // ───────────── Unidades notificantes e responsáveis ─────────────
 
 export const responsaveisAtivos = (u: Pick<UnidadeNotificante, 'responsaveis'>): ResponsavelNegativa[] => u.responsaveis.filter((r) => r.ate === null);
+/**
+ * A designação ativa vale (a API marca `valido`: usuário ativo, com lotação ativa na unidade em papel que atesta). A que
+ * não vale não deixa ninguém atestar: não conta como titular nem como responsável.
+ */
+export const designacaoValida = (r: Pick<ResponsavelNegativa, 'valido'>) => r.valido !== false;
+export const responsaveisValidos = (u: Pick<UnidadeNotificante, 'responsaveis'>): ResponsavelNegativa[] => responsaveisAtivos(u).filter(designacaoValida);
 /** Período aberto (sem fim): a condição da API para designar responsáveis. */
 export const periodoAberto = (u: Pick<UnidadeNotificante, 'periodos'>): PeriodoNotificante | null => u.periodos.find((p) => p.ate === null) ?? null;
-export const semTitular = (u: UnidadeNotificante) => !!periodoAberto(u) && !responsaveisAtivos(u).some((r) => r.tipo === 'TITULAR');
+/** Notificante sem titular cuja designação vale. */
+export const semTitular = (u: UnidadeNotificante) => !!periodoAberto(u) && !responsaveisValidos(u).some((r) => r.tipo === 'TITULAR');
+/** Notificante sem nenhuma designação que valha: ninguém pode atestar a negativa. */
+export const semResponsavel = (u: UnidadeNotificante) => !!periodoAberto(u) && !responsaveisValidos(u).length;
+/** O titular ativo cuja designação não vale: designar outro titular encerra a dele hoje (a API faz na mesma transação). */
+export const titularQueNaoVale = (u: Pick<UnidadeNotificante, 'responsaveis'>): ResponsavelNegativa | null => responsaveisAtivos(u).find((r) => r.tipo === 'TITULAR' && !designacaoValida(r)) ?? null;
+/** Nome acessível do botão "Revogar" de cada responsável (o leitor de tela diz de quem é a designação). */
+export const rotuloRevogar = (r: Pick<ResponsavelNegativa, 'nome'>) => `Revogar a designação de ${r.nome}`;
 
 /** Situação da unidade na configuração. */
 export function situacaoDaUnidade(u: UnidadeNotificante): { texto: string; tom: Tom } {
@@ -229,12 +255,16 @@ export function filtrarUnidades(lista: UnidadeNotificante[], filtro: FiltroUnida
   });
 }
 
+/**
+ * Contadores da configuração. "Sem configuração" é a marca da API (a ativa que nunca teve período e a reativada cujo
+ * período terminou na desativação); titular e responsável contam só com designação que vale.
+ */
 export function resumoUnidades(lista: UnidadeNotificante[]): { notificantes: number; semConfiguracao: number; semTitular: number; semResponsavel: number } {
   return {
     notificantes: lista.filter((u) => !!periodoAberto(u)).length,
     semConfiguracao: lista.filter((u) => u.semConfiguracao).length,
     semTitular: lista.filter(semTitular).length,
-    semResponsavel: lista.filter((u) => !!periodoAberto(u) && !responsaveisAtivos(u).length).length,
+    semResponsavel: lista.filter(semResponsavel).length,
   };
 }
 
@@ -282,9 +312,17 @@ export function pendenciasDesignacao(
   const ativos = responsaveisAtivos(u);
   const ja = ativos.find((r) => r.userId === f.userId);
   if (f.userId && ja) erros.push(`${nomeDoUsuario ?? ja.nome} já é ${ja.tipo === 'TITULAR' ? 'titular' : 'substituto(a)'} desta unidade.`);
+  // O titular cuja designação não vale não trava a vaga: a API encerra a designação dele ao designar o novo.
   const titular = ativos.find((r) => r.tipo === 'TITULAR');
-  if (f.tipo === 'TITULAR' && titular && titular.userId !== f.userId) erros.push(`A unidade já tem titular (${titular.nome}): revogue a designação antes.`);
+  if (f.tipo === 'TITULAR' && titular && titular.userId !== f.userId && designacaoValida(titular)) erros.push(`A unidade já tem titular (${titular.nome}): revogue a designação antes.`);
   return erros;
+}
+
+/** Aviso do diálogo de designação quando o novo titular substitui o titular cuja designação não vale; null se não for o caso. */
+export function avisoTitularSubstituido(u: Pick<UnidadeNotificante, 'responsaveis'>, tipo: 'TITULAR' | 'SUBSTITUTO'): string | null {
+  const antigo = tipo === 'TITULAR' ? titularQueNaoVale(u) : null;
+  if (!antigo) return null;
+  return `A designação de ${antigo.nome} como titular não vale${antigo.motivoInvalido ? ` (${antigo.motivoInvalido.toLowerCase()})` : ''}: ao designar o novo titular, ela termina hoje.`;
 }
 
 // ───────────── Tela do responsável ─────────────

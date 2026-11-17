@@ -31,6 +31,7 @@ import {
   type ListaUnidadesNotificantes,
   type ListaUsuariosLotados,
   type PeriodoNotificante,
+  type ResponsavelNegativa,
   type RespostaGradeNegativa,
   type RespostaMinhasNegativas,
   type RespostaOk,
@@ -65,6 +66,8 @@ const intervalo = (s: string) => intervaloDaSemana(Number(s.slice(0, 4)), Number
 const listaNumeros = (refs: { numero: string }[]) => refs.map((r) => r.numero).join(', ');
 /** O papel atesta a negativa (abre a tela e passa no guarda do atesto). */
 const atestaNegativa = (role: string) => roleHasPermission(role as Role, 'notificacao.negativa');
+/** Por que a designação do usuário desativado no cadastro não vale (ele não entra para atestar). */
+const MOTIVO_ACESSO_DESATIVADO = 'Acesso desativado no cadastro';
 /** Nomes numa frase: "A", "A e B", "A, B e C". */
 const emFrase = (nomes: string[]) => (nomes.length <= 1 ? (nomes[0] ?? '') : `${nomes.slice(0, -1).join(', ')} e ${nomes[nomes.length - 1]}`);
 
@@ -80,40 +83,88 @@ function exigirSemana(semana: string) {
 /** Motivo do fim do período de notificante e das designações quando a unidade é desativada no cadastro. */
 export const MOTIVO_UNIDADE_DESATIVADA = 'Unidade desativada no cadastro';
 
+/** Aviso da unidade reativada cujo período de notificante terminou na desativação (lista das unidades notificantes). */
+export const AVISO_UNIDADE_REATIVADA = 'Unidade reativada: o período de notificante terminou na desativação. Abra um período novo se ela voltou a notificar.';
+
 /**
- * Encerra a unidade notificante em `ate` (AAAA-MM-DD, no fuso da instituição), na transação de quem chama: o período
- * aberto e as designações ativas de responsável, cada um nunca antes do próprio início (como na revogação), com as
- * auditorias das ações da tela (`vigilancia.notificante_encerrar` e `vigilancia.negativa_revogar`). Usado na
- * desativação da unidade no cadastro (AdminService.updateUnit). Na grade, a SE do fim continua notificante (o período
- * alcança parte dela); as seguintes ficam "não notificante", fora das silenciosas e do percentual.
+ * Unidade ativa reativada depois da desativação no cadastro: o último período terminou na desativação (motivo
+ * `MOTIVO_UNIDADE_DESATIVADA`) e não há período aberto nem com fim depois de hoje. Nada se reabre sozinho: a lista e a
+ * grade avisam, e a unidade conta como "sem configuração" até a vigilância abrir um período novo.
+ */
+function reativadaSemPeriodo(ativa: boolean, periodos: { desde: string; ate: string | null; motivoFim: string | null }[], hoje: string): boolean {
+  if (!ativa || !periodos.length || periodos.some((p) => p.ate === null || p.ate > hoje)) return false;
+  const ultimo = periodos.reduce((a, b) => (b.desde > a.desde ? b : a));
+  return ultimo.motivoFim === MOTIVO_UNIDADE_DESATIVADA;
+}
+
+/**
+ * Encerra a unidade notificante em `ate` (AAAA-MM-DD, no fuso da instituição), na transação de quem chama, com as
+ * auditorias das ações da tela. Usado na desativação da unidade no cadastro (AdminService.updateUnit).
+ * - O período aberto e o encerrado com fim depois de `ate` (a vigilância pode encerrar com data futura) terminam em
+ *   `ate`, com o motivo, quem e quando (`vigilancia.notificante_encerrar`; no encurtado, a trilha guarda o fim e o
+ *   motivo anteriores).
+ * - O período que só começaria depois de `ate` é apagado (`vigilancia.notificante_excluir`, com o que ele tinha).
+ * - As designações ativas de responsável terminam em `ate` (`vigilancia.negativa_revogar`); a que só começaria depois,
+ *   é apagada (`vigilancia.negativa_designacao_excluir`).
+ * Travas, nesta ordem: a da designação da unidade (a designação feita ao mesmo tempo espera e encontra a unidade sem
+ * período aberto), as linhas dos períodos (o encerramento feito ao mesmo tempo pela vigilância espera e é relido) e,
+ * por último, a da trilha: as auditorias saem no fim, e quem chama não deve gravar auditoria antes (a cadeia da trilha
+ * presa antes das outras travas fecharia um ciclo com a designação, que trava a unidade e depois audita).
+ * Na grade, a SE do fim continua notificante (o período alcança parte dela); as seguintes ficam "não notificante",
+ * fora das silenciosas e do percentual.
  */
 export async function encerrarUnidadeNotificante(
   tx: Db,
   auditar: (entrada: { action: string; entityType: string; entityId: string; payload: unknown }) => Promise<unknown>,
   p: { unitId: string; cnes: string; ate: string; motivo: string; userId: string; agora: Date },
-): Promise<{ periodo: string | null; designacoes: string[] }> {
-  const fimDe = (inicio: Date) => (p.ate < dataIso(inicio)! ? dataIso(inicio)! : p.ate);
-  let periodo: string | null = null;
-  const aberto = await tx.notifyingUnit.findFirst({ where: { unitId: p.unitId, until: null }, select: { id: true, since: true } });
-  if (aberto) {
-    const ate = fimDe(aberto.since);
-    // Só o que ainda está aberto: o que a vigilância encerrou ao mesmo tempo fica como ela deixou.
-    const { count } = await tx.notifyingUnit.updateMany({ where: { id: aberto.id, until: null }, data: { until: comoData(ate), endReason: p.motivo, endedBy: p.userId, endedAt: p.agora } });
-    if (count === 1) {
-      periodo = aberto.id;
-      await auditar({ action: 'vigilancia.notificante_encerrar', entityType: 'NotifyingUnit', entityId: aberto.id, payload: { unidade: p.cnes, ate, motivo: p.motivo } });
+): Promise<{ periodos: string[]; periodosExcluidos: string[]; designacoes: string[]; designacoesExcluidas: string[] }> {
+  const fim = comoData(p.ate);
+  const r = { periodos: [] as string[], periodosExcluidos: [] as string[], designacoes: [] as string[], designacoesExcluidas: [] as string[] };
+  const trilha: { action: string; entityType: string; entityId: string; payload: unknown }[] = [];
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`negativa-responsavel:${p.unitId}`}))`;
+  await tx.$queryRaw`SELECT id FROM notifying_units WHERE unit_id = ${p.unitId}::uuid FOR UPDATE`;
+  const periodos = await tx.notifyingUnit.findMany({
+    where: { unitId: p.unitId, OR: [{ until: null }, { until: { gt: fim } }] },
+    select: { id: true, since: true, until: true, endReason: true },
+    orderBy: { since: 'asc' },
+  });
+  for (const x of periodos) {
+    const desde = dataIso(x.since)!;
+    const fimAnterior = dataIso(x.until);
+    if (desde > p.ate) {
+      const { count } = await tx.notifyingUnit.deleteMany({ where: { id: x.id, since: x.since, until: x.until } });
+      if (count !== 1) continue;
+      r.periodosExcluidos.push(x.id);
+      trilha.push({ action: 'vigilancia.notificante_excluir', entityType: 'NotifyingUnit', entityId: x.id, payload: { unidade: p.cnes, desde, ate: fimAnterior, motivoFim: x.endReason, motivo: p.motivo } });
+      continue;
     }
-  }
-  const designacoes: string[] = [];
-  const ativas = await tx.notifyingUnitResponsible.findMany({ where: { unitId: p.unitId, until: null }, select: { id: true, userId: true, kind: true, since: true }, orderBy: [{ designatedAt: 'asc' }, { id: 'asc' }] });
-  for (const r of ativas) {
-    const ate = fimDe(r.since);
-    const { count } = await tx.notifyingUnitResponsible.updateMany({ where: { id: r.id, until: null }, data: { until: comoData(ate), revokedBy: p.userId, revokedAt: p.agora } });
+    const { count } = await tx.notifyingUnit.updateMany({ where: { id: x.id, until: x.until }, data: { until: fim, endReason: p.motivo, endedBy: p.userId, endedAt: p.agora } });
     if (count !== 1) continue;
-    designacoes.push(r.id);
-    await auditar({ action: 'vigilancia.negativa_revogar', entityType: 'NotifyingUnitResponsible', entityId: r.id, payload: { unidade: p.unitId, usuario: r.userId, tipo: r.kind, ate, motivo: p.motivo } });
+    r.periodos.push(x.id);
+    trilha.push({
+      action: 'vigilancia.notificante_encerrar',
+      entityType: 'NotifyingUnit',
+      entityId: x.id,
+      payload: fimAnterior ? { unidade: p.cnes, ate: p.ate, motivo: p.motivo, fimAnterior, motivoAnterior: x.endReason } : { unidade: p.cnes, ate: p.ate, motivo: p.motivo },
+    });
   }
-  return { periodo, designacoes };
+  const ativas = await tx.notifyingUnitResponsible.findMany({ where: { unitId: p.unitId, until: null }, select: { id: true, userId: true, kind: true, since: true }, orderBy: [{ designatedAt: 'asc' }, { id: 'asc' }] });
+  for (const d of ativas) {
+    const desde = dataIso(d.since)!;
+    if (desde > p.ate) {
+      const { count } = await tx.notifyingUnitResponsible.deleteMany({ where: { id: d.id, until: null } });
+      if (count !== 1) continue;
+      r.designacoesExcluidas.push(d.id);
+      trilha.push({ action: 'vigilancia.negativa_designacao_excluir', entityType: 'NotifyingUnitResponsible', entityId: d.id, payload: { unidade: p.unitId, usuario: d.userId, tipo: d.kind, desde, motivo: p.motivo } });
+      continue;
+    }
+    const { count } = await tx.notifyingUnitResponsible.updateMany({ where: { id: d.id, until: null }, data: { until: fim, revokedBy: p.userId, revokedAt: p.agora } });
+    if (count !== 1) continue;
+    r.designacoes.push(d.id);
+    trilha.push({ action: 'vigilancia.negativa_revogar', entityType: 'NotifyingUnitResponsible', entityId: d.id, payload: { unidade: p.unitId, usuario: d.userId, tipo: d.kind, ate: p.ate, motivo: p.motivo } });
+  }
+  for (const e of trilha) await auditar(e);
+  return r;
 }
 
 interface Ref {
@@ -715,11 +766,35 @@ export class NegativaService {
       return { unidade: ref, tipoUnidade: u.type, ativa: u.active, celulas: celulas.slice(desloc) };
     });
     if (!linhas.length) avisos.push('Nenhuma unidade notificante no período: configure as unidades notificantes.');
-    const semConfiguracao = await ctx.db.unit.count({ where: { active: true, type: { notIn: [...TIPOS_FORA_DA_NEGATIVA] }, notifyingPeriods: { none: {} } } });
+    // Sem configuração: a ativa que atende e nunca teve período, e a reativada cujo último período terminou na
+    // desativação no cadastro (a mesma regra da lista das unidades notificantes).
+    const [nuncaTiveram, comFimNaDesativacao] = await Promise.all([
+      ctx.db.unit.count({ where: { active: true, type: { notIn: [...TIPOS_FORA_DA_NEGATIVA] }, notifyingPeriods: { none: {} } } }),
+      ctx.db.unit.findMany({
+        where: {
+          active: true,
+          AND: [{ notifyingPeriods: { some: { endReason: MOTIVO_UNIDADE_DESATIVADA } } }, { notifyingPeriods: { none: { OR: [{ until: null }, { until: { gt: comoData(hoje) } }] } } }],
+        },
+        select: { name: true, notifyingPeriods: { select: { since: true, until: true, endReason: true } } },
+        orderBy: { name: 'asc' },
+      }),
+    ]);
+    const reativadas = comFimNaDesativacao
+      .filter((u) =>
+        reativadaSemPeriodo(
+          true,
+          u.notifyingPeriods.map((p) => ({ desde: dataIso(p.since)!, ate: dataIso(p.until), motivoFim: p.endReason })),
+          hoje,
+        ),
+      )
+      .map((u) => u.name);
+    const semConfiguracao = nuncaTiveram + reativadas.length;
     if (semConfiguracao) avisos.push(`${semConfiguracao} unidade(s) ativa(s) sem período de unidade notificante: confira a configuração.`);
-    // Unidade desativada com o período ainda aberto: continua na grade (silenciosa e no denominador) até a vigilância
-    // encerrar o período na data da desativação.
-    const inativas = exibidas.filter((l) => !l.u.active && l.doPeriodo.some((p) => !p.until || dataIso(p.until)! > hoje)).map((l) => l.u.name);
+    if (reativadas.length === 1) avisos.push(`Unidade reativada: o período de notificante de ${reativadas[0]} terminou na desativação. Abra um período novo se ela voltou a notificar.`);
+    else if (reativadas.length) avisos.push(`Unidades reativadas: o período de notificante de ${emFrase(reativadas)} terminou na desativação. Abra um período novo se elas voltaram a notificar.`);
+    // Unidade inativa com o período ainda aberto (a desativação no cadastro já o encerra): continua na grade (silenciosa e
+    // no denominador) até a vigilância encerrar o período na data da desativação. Sem período aberto, não há o que encerrar.
+    const inativas = exibidas.filter((l) => !l.u.active && l.doPeriodo.some((p) => !p.until)).map((l) => l.u.name);
     if (inativas.length === 1) avisos.push(`${inativas[0]} está inativa e com período de notificante aberto: entra como silenciosa e no percentual. Encerre o período na data da desativação.`);
     else if (inativas.length) avisos.push(`${emFrase(inativas)} estão inativas e com período de notificante aberto: entram como silenciosas e no percentual. Encerre o período na data da desativação.`);
     const regularidade = regularidadeDoMunicipio(doMunicipio, cfg.semanasRegularidadeMunicipal);
@@ -734,8 +809,20 @@ export class NegativaService {
   // ───────────────────────────── unidades notificantes e responsáveis ─────────────────────────────
 
   /**
-   * Monta as unidades (todas as ativas e as que já tiveram período) com os períodos e os responsáveis. "Sem
-   * configuração": unidade ativa que atende (fora farmácia central, almoxarifado e vigilância) e nunca teve período.
+   * Por que a designação ativa não vale, ou nulo: o usuário precisa estar ativo e ter lotação ativa na unidade num papel
+   * que atesta a negativa (o mesmo que o atesto exige).
+   */
+  private motivoDesignacaoInvalida(usuarioAtivo: boolean, lotacoesNaUnidade: { role: string }[]): string | null {
+    if (!usuarioAtivo) return MOTIVO_ACESSO_DESATIVADO;
+    if (!lotacoesNaUnidade.length) return 'Sem lotação ativa na unidade';
+    return lotacoesNaUnidade.some((l) => atestaNegativa(l.role)) ? null : 'Papel nesta unidade não atesta a negativa';
+  }
+
+  /**
+   * Monta as unidades (todas as ativas e as que já tiveram período) com os períodos e os responsáveis (cada ativo com a
+   * marca de válido). "Sem configuração": unidade ativa que atende (fora farmácia central, almoxarifado e vigilância) e
+   * nunca teve período, ou a reativada cujo último período terminou na desativação no cadastro, sem período aberto nem
+   * com fim depois de hoje (com aviso; nada se reabre sozinho).
    */
   private async montarUnidades(db: Db, timeZone: string, unitIds?: string[]): Promise<UnidadeNotificante[]> {
     const hoje = localDateString(this.agora(), timeZone);
@@ -748,7 +835,7 @@ export class NegativaService {
         type: true,
         active: true,
         notifyingPeriods: { orderBy: { since: 'desc' } },
-        notifyingResponsibles: { include: { user: { select: { name: true, socialName: true } } }, orderBy: [{ designatedAt: 'desc' }] },
+        notifyingResponsibles: { include: { user: { select: { name: true, socialName: true, active: true } } }, orderBy: [{ designatedAt: 'desc' }] },
       },
       orderBy: { name: 'asc' },
     });
@@ -757,25 +844,54 @@ export class NegativaService {
       select: { id: true, name: true, socialName: true },
     });
     const nomeDe = new Map(designadores.map((u) => [u.id, u.socialName ?? u.name]));
+    // Lotações ativas dos responsáveis ativos nas unidades da lista (a validade de cada designação).
+    const ativos = unidades.flatMap((u) => u.notifyingResponsibles.filter((r) => r.until === null).map((r) => ({ unitId: u.id, userId: r.userId })));
+    const lotacoes = ativos.length
+      ? await db.userAssignment.findMany({
+          where: { active: true, unitId: { in: [...new Set(ativos.map((a) => a.unitId))] }, userId: { in: [...new Set(ativos.map((a) => a.userId))] } },
+          select: { userId: true, unitId: true, role: true },
+        })
+      : [];
     return unidades.map((u) => {
       const periodos: PeriodoNotificante[] = u.notifyingPeriods.map((p) => ({ id: p.id, desde: dataIso(p.since)!, ate: dataIso(p.until), motivoFim: p.endReason }));
       const atual = periodos.find((p) => p.ate === null) ?? periodos.find((p) => p.desde <= hoje && (p.ate ?? '9999-12-31') >= hoje) ?? null;
       // Ativos primeiro; depois o histórico, do mais recente para o mais antigo.
-      const responsaveis = [...u.notifyingResponsibles]
+      const responsaveis: ResponsavelNegativa[] = [...u.notifyingResponsibles]
         .sort((a, b) => Number(a.until !== null) - Number(b.until !== null) || b.designatedAt.getTime() - a.designatedAt.getTime())
-        .map((r) => ({
-          id: r.id,
-          userId: r.userId,
-          nome: r.user.socialName ?? r.user.name,
-          tipo: r.kind as TipoResponsavelNegativa,
-          desde: dataIso(r.since)!,
-          ate: dataIso(r.until),
-          designadoEm: r.designatedAt.toISOString(),
-          designadoPor: nomeDe.get(r.designatedBy) ?? null,
-        }));
+        .map((r) => {
+          const motivoInvalido =
+            r.until === null
+              ? this.motivoDesignacaoInvalida(
+                  r.user.active,
+                  lotacoes.filter((l) => l.userId === r.userId && l.unitId === u.id),
+                )
+              : null;
+          return {
+            id: r.id,
+            userId: r.userId,
+            nome: r.user.socialName ?? r.user.name,
+            tipo: r.kind as TipoResponsavelNegativa,
+            desde: dataIso(r.since)!,
+            ate: dataIso(r.until),
+            designadoEm: r.designatedAt.toISOString(),
+            designadoPor: nomeDe.get(r.designatedBy) ?? null,
+            valido: r.until === null ? motivoInvalido === null : null,
+            motivoInvalido,
+          };
+        });
       const avisos: string[] = [];
-      // A desativação no cadastro não fecha o período: a unidade seguiria silenciosa na grade e no percentual.
-      if (!u.active && periodos.some((p) => p.ate === null || p.ate > hoje)) avisos.push('Unidade inativa com período de notificante aberto. Encerre o período na data da desativação.');
+      // A desativação no cadastro já encerra o período; o aviso fica para a unidade inativa que ainda tenha um aberto
+      // (o único que a tela deixa encerrar).
+      if (!u.active && periodos.some((p) => p.ate === null)) avisos.push('Unidade inativa com período de notificante aberto. Encerre o período na data da desativação.');
+      const reativada = reativadaSemPeriodo(u.active, periodos, hoje);
+      if (reativada) avisos.push(AVISO_UNIDADE_REATIVADA);
+      const titularInvalido = responsaveis.find((r) => r.tipo === 'TITULAR' && r.valido === false);
+      if (titularInvalido)
+        avisos.push(
+          titularInvalido.motivoInvalido === MOTIVO_ACESSO_DESATIVADO
+            ? 'Titular com o acesso desativado no cadastro: a designação não vale.'
+            : 'Titular sem lotação ativa na unidade em papel que atesta: a designação não vale.',
+        );
       return {
         unidade: { id: u.id, nome: u.name, cnes: u.cnes },
         tipoUnidade: u.type,
@@ -783,7 +899,7 @@ export class NegativaService {
         periodoAtual: atual,
         periodos,
         responsaveis,
-        semConfiguracao: u.active && periodos.length === 0 && !(TIPOS_FORA_DA_NEGATIVA as readonly string[]).includes(u.type),
+        semConfiguracao: reativada || (u.active && periodos.length === 0 && !(TIPOS_FORA_DA_NEGATIVA as readonly string[]).includes(u.type)),
         avisos,
       };
     });
@@ -880,7 +996,8 @@ export class NegativaService {
    * POST /vigilancia/unidades-notificantes/:unitId/responsaveis: o usuário precisa de lotação ativa na unidade, com
    * papel que atesta a negativa (`notificacao.negativa`: quem não tem esse papel não abre a tela nem atesta, e
    * travaria a vaga de titular), e a unidade precisa ser notificante; um titular ativo por unidade (substitutos,
-   * quantos forem precisos).
+   * quantos forem precisos). O titular cuja designação não vale (sem lotação ativa na unidade em papel que atesta, ou
+   * com o acesso desativado) não trava a vaga: a designação dele termina hoje na mesma transação, com auditoria.
    */
   async designarResponsavel(ctx: RequestContext, unitId: string, corpo: CorpoDesignarResponsavel): Promise<UnidadeNotificante> {
     const unidade = await ctx.db.unit.findUnique({ where: { id: unitId }, select: { id: true, cnes: true } });
@@ -895,19 +1012,38 @@ export class NegativaService {
         `O papel de ${usuario.socialName ?? usuario.name} nesta unidade (${emFrase([...new Set(lotacoes.map((l) => ROLE_LABELS[l.role as Role] ?? l.role))])}) não atesta a negativa. Escolha alguém com papel que atesta.`,
         HttpStatus.UNPROCESSABLE_ENTITY,
       );
-    const periodo = await ctx.db.notifyingUnit.count({ where: { unitId, until: null } });
-    if (!periodo) throw new DomainError('NAO_NOTIFICANTE', 'A unidade não é notificante: abra o período antes de designar responsáveis', HttpStatus.UNPROCESSABLE_ENTITY);
+    const naoNotificante = () => new DomainError('NAO_NOTIFICANTE', 'A unidade não é notificante: abra o período antes de designar responsáveis', HttpStatus.UNPROCESSABLE_ENTITY);
+    if (!(await ctx.db.notifyingUnit.count({ where: { unitId, until: null } }))) throw naoNotificante();
+    const agora = this.agora();
+    const hoje = localDateString(agora, ctx.tenant.timeZone);
     try {
       await ctx.db.$transaction(async (tx) => {
-        // Um titular ativo por unidade: a trava da unidade põe em fila as designações simultâneas (sem índice para isso).
+        // Um titular ativo por unidade: a trava da unidade põe em fila as designações simultâneas (sem índice para isso)
+        // e a desativação da unidade no cadastro, que encerra o período (relido aqui, depois da trava).
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`negativa-responsavel:${unitId}`}))`;
-        const ativos = await tx.notifyingUnitResponsible.findMany({ where: { unitId, until: null }, include: { user: { select: { name: true } } } });
+        if (!(await tx.notifyingUnit.count({ where: { unitId, until: null } }))) throw naoNotificante();
+        const ativos = await tx.notifyingUnitResponsible.findMany({ where: { unitId, until: null }, include: { user: { select: { name: true, active: true } } } });
         const jaE = ativos.find((a) => a.userId === usuario.id);
         if (jaE) throw conflict(`${usuario.name} já é ${jaE.kind === 'TITULAR' ? 'titular' : 'substituto(a)'} desta unidade`);
         const titular = ativos.find((a) => a.kind === 'TITULAR');
-        if (corpo.tipo === 'TITULAR' && titular) throw conflict(`A unidade já tem titular (${titular.user.name}): revogue a designação antes`);
+        if (corpo.tipo === 'TITULAR' && titular) {
+          const lotacoesDoTitular = await tx.userAssignment.findMany({ where: { userId: titular.userId, unitId, active: true }, select: { role: true } });
+          const invalida = this.motivoDesignacaoInvalida(titular.user.active, lotacoesDoTitular);
+          if (!invalida) throw conflict(`A unidade já tem titular (${titular.user.name}): revogue a designação antes`);
+          // O titular atual não vale (sem lotação ativa na unidade em papel que atesta, ou sem acesso): a designação
+          // dele termina hoje (no próprio início, se ainda não começou), como na revogação, e o novo titular entra.
+          const ate = hoje < dataIso(titular.since)! ? dataIso(titular.since)! : hoje;
+          const { count } = await tx.notifyingUnitResponsible.updateMany({ where: { id: titular.id, until: null }, data: { until: comoData(ate), revokedBy: ctx.session.userId, revokedAt: agora } });
+          if (count !== 1) throw conflict('A designação mudou desde a leitura; abra de novo');
+          await this.audit.record(ctx, tx, {
+            action: 'vigilancia.negativa_revogar',
+            entityType: 'NotifyingUnitResponsible',
+            entityId: titular.id,
+            payload: { unidade: unitId, usuario: titular.userId, tipo: titular.kind, ate, motivo: `Novo titular designado: a designação não valia (${invalida.toLowerCase()})` },
+          });
+        }
         const r = await tx.notifyingUnitResponsible.create({
-          data: { unitId, userId: usuario.id, kind: corpo.tipo, since: comoData(corpo.desde), designatedBy: ctx.session.userId, designatedAt: this.agora() },
+          data: { unitId, userId: usuario.id, kind: corpo.tipo, since: comoData(corpo.desde), designatedBy: ctx.session.userId, designatedAt: agora },
           select: { id: true },
         });
         await this.audit.record(ctx, tx, {

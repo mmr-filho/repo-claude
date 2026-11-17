@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  alcanceDasRegras,
   CAMPOS_DTA,
   CRITERIO_CASO_SURTO,
   DELIMITACAO_SURTO,
   detectarAglomerados,
   errosDta,
   GRUPOS_SEM_SUGESTAO_DE_SURTO,
+  grupoNoAlcance,
   idadeValida,
   LOCAL_INICIAL_SURTO,
   MODO_TRANSMISSAO,
@@ -158,7 +160,7 @@ describe('surto: sugestões de aglomerado', () => {
   });
 });
 
-describe('surto: correções da revisão (sur-1, sur-4, sur-9)', () => {
+describe('surto: correções da revisão (sur-1, sur-4, sur-9, SURTO-2)', () => {
   it('sur-9: o caso sem início dos sintomas conhecido à noite (horário de Brasília) conta no dia local, não no dia UTC', () => {
     const manha = caso('leptospirose', null, { ...doQuarteirao(), conhecidoEm: '2026-11-10T12:00:00.000Z' });
     // 21h30 de 10/11 em Brasília = 00h30 de 11/11 em UTC: antes, ficava "depois de hoje" e saía das regras.
@@ -184,7 +186,9 @@ describe('surto: correções da revisão (sur-1, sur-4, sur-9)', () => {
     expect(detecta([{ ...c1, jaEmSurto: false }, c2], { historicoPorGrupo: { colera: null } })).toMatchObject([{ regra: 'inusitado', casos: [c1.id, c2.id] }]);
     const depois = caso('colera', '2026-11-08', { jaEmSurto: true });
     expect(detecta([c2, { ...depois, inicioSintomas: '2026-11-03' }], { historicoPorGrupo: { colera: null } })).toEqual([]);
-    expect(detecta([caso('colera', '2026-11-02'), depois], { historicoPorGrupo: { colera: null } })).toMatchObject([{ regra: 'inusitado', descricao: expect.stringContaining('Primeiro caso do agravo registrado') }]);
+    // O caso com início antes do caso em surto também não é o "primeiro" (r3: antes, virava "Primeiro caso do agravo
+    // registrado no município", a variante do sur-4).
+    expect(detecta([caso('colera', '2026-11-02'), depois], { historicoPorGrupo: { colera: null } })).toEqual([]);
     // Caso que quem lê não vê (de outra unidade, na visão do núcleo) também é caso anterior.
     expect(detecta([c2], { historicoPorGrupo: { colera: null }, outrosCasosPorGrupo: { colera: ['2026-11-05'] } })).toEqual([]);
     expect(detecta([c2], { historicoPorGrupo: { colera: null }, outrosCasosPorGrupo: { colera: ['2026-11-12'] } })).toHaveLength(1);
@@ -192,6 +196,46 @@ describe('surto: correções da revisão (sur-1, sur-4, sur-9)', () => {
     expect(detecta([c2], { historicoPorGrupo: { colera: '2024-01-10' }, outrosCasosPorGrupo: { colera: ['2025-01-10'] } })).toMatchObject([
       { regra: 'inusitado', descricao: 'Primeiro caso do agravo depois de 365 dias sem casos: evento inusitado' },
     ]);
+  });
+
+  it('sur-4 (r3): o caso índice achado pela busca ativa, com início antes do caso já em surto, não reabre o "primeiro caso"', () => {
+    // c1 entrou no surto (início em 03/11); a busca ativa achou depois o c0 (início em 01/11), e chegou o c2 (09/11).
+    const c1 = caso('colera', '2026-11-03', { jaEmSurto: true, conhecidoEm: '2026-11-04T12:00:00.000Z' });
+    const c0 = caso('colera', '2026-11-01', { conhecidoEm: '2026-11-10T12:00:00.000Z' });
+    const c2 = caso('colera', '2026-11-09', { conhecidoEm: '2026-11-10T13:00:00.000Z' });
+    // Antes: a sugestão "Primeiro caso do agravo registrado no município" voltava com [c0, c2].
+    expect(detecta([c1, c0, c2], { historicoPorGrupo: { colera: null } })).toEqual([]);
+    expect(detecta([c1, c0, c2], { historicoPorGrupo: { colera: '2024-01-10' } })).toEqual([]);
+    // Na visão do núcleo, o caso em surto é de outra unidade (não aparece nos casos): vale o mesmo, por `outrosEmSurto`.
+    expect(detecta([c0, c2], { historicoPorGrupo: { colera: null }, outrosCasosPorGrupo: { colera: ['2026-11-03'] }, outrosEmSurto: ['colera'] })).toEqual([]);
+    // Sem caso em surto, o c0 é o primeiro e a sugestão traz os dois casos; o caso em surto de outro grupo não muda nada.
+    expect(detecta([c0, c2], { historicoPorGrupo: { colera: null }, outrosCasosPorGrupo: { colera: ['2026-11-03'] }, outrosEmSurto: ['difteria'] })).toMatchObject([
+      { regra: 'inusitado', casos: [c0.id, c2.id], descricao: 'Primeiro caso do agravo registrado no município: evento inusitado' },
+    ]);
+    // O caso em surto com início muito antes (notificado com atraso) também tira o grupo do evento inusitado.
+    const antigoEmSurto = caso('colera', '2025-06-01', { jaEmSurto: true, conhecidoEm: '2026-10-20T12:00:00.000Z' });
+    expect(detecta([antigoEmSurto, c2], { historicoPorGrupo: { colera: null } })).toEqual([]);
+    expect(detecta([{ ...antigoEmSurto, jaEmSurto: false }, c2], { historicoPorGrupo: { colera: null } })).toMatchObject([{ regra: 'inusitado', casos: [antigoEmSurto.id, c2.id] }]);
+  });
+
+  it('SURTO-2: alcance das regras de vizinhança, calculado das regras em vigor', () => {
+    const padrao = alcanceDasRegras(REGRAS_SURTO_PADRAO);
+    expect(padrao).toEqual({ todos: true, exceto: [...new Set(['dengue', 'chikungunya', 'zika', ...GRUPOS_SEM_SUGESTAO_DE_SURTO])].sort() });
+    for (const g of ['esquistossomose', 'leptospirose', 'varicela', 'covid', 'colera']) expect(grupoNoAlcance(padrao, g), g).toBe(true);
+    for (const g of ['dengue', 'chikungunya', 'zika', 'violencia', 'tuberculose']) expect(grupoNoAlcance(padrao, g), g).toBe(false);
+    // Regra da instituição que olha a dengue no quarteirão: a dengue entra no alcance.
+    const comDengue = alcanceDasRegras([...REGRAS_SURTO_PADRAO, { ...REGRAS_SURTO_PADRAO[0]!, id: 'dengue-quarteirao', grupos: ['dengue'], excetoGrupos: undefined, minimo: 5 }]);
+    expect(grupoNoAlcance(comDengue, 'dengue')).toBe(true);
+    expect(grupoNoAlcance(comDengue, 'zika')).toBe(false);
+    // Sem regra para qualquer grupo: só os grupos citados (menos os excetuados).
+    const so = alcanceDasRegras([{ ...REGRAS_SURTO_PADRAO[2]!, grupos: ['varicela', 'caxumba'], excetoGrupos: ['caxumba'] }, { ...REGRAS_SURTO_PADRAO[3]! }]);
+    expect(so).toEqual({ todos: false, grupos: ['covid', 'varicela'] });
+    expect(grupoNoAlcance(so, 'caxumba')).toBe(false);
+    expect(alcanceDasRegras([])).toEqual({ todos: false, grupos: [] });
+    // O alcance é o mesmo das regras: o grupo fora dele nunca vira sugestão de vizinhança, só evento inusitado.
+    const dengue = [caso('dengue', '2026-11-02', doQuarteirao()), caso('dengue', '2026-11-03', doQuarteirao())];
+    expect(detecta(dengue)).toEqual([]);
+    expect(detectarAglomerados(dengue, [{ ...REGRAS_SURTO_PADRAO[0]!, grupos: ['dengue'], excetoGrupos: undefined }], OPCOES).map((s) => s.regra)).toEqual(['quarteirao-7d']);
   });
 
   it('sur-1: a dispensa do núcleo só esconde sugestão com todos os casos da unidade dele; a municipal vale para todos', () => {

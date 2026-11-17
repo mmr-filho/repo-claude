@@ -26,7 +26,9 @@ import { cn } from '@/lib/cn';
 import { useApi } from '@/lib/hooks';
 import { useDataHora, useFuso } from './fuso';
 import {
+  avisoTitularSubstituido,
   dataBr,
+  designacaoValida,
   filtrarUnidades,
   MINIMO_MOTIVO_FIM,
   motivoNaoAtesta,
@@ -36,8 +38,10 @@ import {
   periodoAberto,
   responsaveisAtivos,
   resumoUnidades,
+  rotuloRevogar,
   rotuloTipoUnidade,
   situacaoDaUnidade,
+  titularQueNaoVale,
   type FiltroUnidades,
 } from './negativa-regras';
 
@@ -160,11 +164,14 @@ function EncerrarPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFe
   );
 }
 
-/** Designa o responsável pela negativa entre os usuários lotados na unidade. */
+/**
+ * Designa o responsável pela negativa entre os usuários lotados na unidade. O titular cuja designação não vale não trava
+ * a vaga: designar outro titular encerra a dele hoje (a API faz na mesma transação).
+ */
 function Designar({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: () => void; onFeito: () => void }) {
   const toast = useToast();
   const hojeNoFuso = useHoje();
-  const temTitular = responsaveisAtivos(u).some((r) => r.tipo === 'TITULAR');
+  const temTitular = responsaveisAtivos(u).some((r) => r.tipo === 'TITULAR' && designacaoValida(r));
   const [busca, setBusca] = useState('');
   const [termo, setTermo] = useState('');
   const [userId, setUserId] = useState('');
@@ -180,6 +187,8 @@ function Designar({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: (
   const lotados = useApi<ListaUsuariosLotados>(`/vigilancia/unidades-notificantes/${u.unidade.id}/lotados${termo ? `?${new URLSearchParams({ busca: termo })}` : ''}`);
   const escolhido = lotados.data?.find((l) => l.userId === userId) ?? null;
   const pend = pendenciasDesignacao(u, { userId, tipo, desde }, escolhido?.nome, escolhido);
+  const substituido = avisoTitularSubstituido(u, tipo);
+  const antigo = tipo === 'TITULAR' ? titularQueNaoVale(u) : null;
   return (
     <Dialog
       open
@@ -196,7 +205,7 @@ function Designar({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: (
             setErro(null);
             try {
               await api.post(`/vigilancia/unidades-notificantes/${u.unidade.id}/responsaveis`, { userId, tipo, desde });
-              toast.success(`${escolhido?.nome ?? 'Responsável'} designado(a) ${tipo === 'TITULAR' ? 'titular' : 'substituto(a)'}.`);
+              toast.success(`${escolhido?.nome ?? 'Responsável'} designado(a) ${tipo === 'TITULAR' ? 'titular' : 'substituto(a)'}.${antigo ? ` A designação de ${antigo.nome} terminou hoje.` : ''}`);
               onFeito();
             } catch (err) {
               setErro(errorMessage(err));
@@ -255,6 +264,7 @@ function Designar({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: (
             <Input id="neg-designar-desde" type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
           </Field>
         </div>
+        {substituido && <Alert tone="warn">{substituido}</Alert>}
         {userId && <Pendencias itens={pend} />}
         {erro && <Alert tone="error">{erro}</Alert>}
       </div>
@@ -320,9 +330,14 @@ export function NegativaUnidades() {
       {resumo && (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Stat label="Unidades notificantes" value={resumo.notificantes} />
-          <Stat label="Sem configuração" value={resumo.semConfiguracao} tone={resumo.semConfiguracao ? 'warn' : 'good'} hint="Unidades ativas que atendem e nunca tiveram período" />
-          <Stat label="Notificantes sem titular" value={resumo.semTitular} tone={resumo.semTitular ? 'warn' : 'good'} />
-          <Stat label="Sem nenhum responsável" value={resumo.semResponsavel} tone={resumo.semResponsavel ? 'bad' : 'good'} hint="Ninguém pode atestar a negativa" />
+          <Stat
+            label="Sem configuração"
+            value={resumo.semConfiguracao}
+            tone={resumo.semConfiguracao ? 'warn' : 'good'}
+            hint="Unidades ativas que atendem sem período: nunca tiveram ou foram reativadas depois da desativação"
+          />
+          <Stat label="Notificantes sem titular" value={resumo.semTitular} tone={resumo.semTitular ? 'warn' : 'good'} hint="Sem titular cuja designação vale" />
+          <Stat label="Sem nenhum responsável" value={resumo.semResponsavel} tone={resumo.semResponsavel ? 'bad' : 'good'} hint="Ninguém com designação que vale pode atestar a negativa" />
         </div>
       )}
       <Card>
@@ -397,7 +412,13 @@ export function NegativaUnidades() {
                               <Badge tone={r.tipo === 'TITULAR' ? 'blue' : 'slate'}>{ROTULO_TIPO_RESPONSAVEL[r.tipo]}</Badge>
                               <span>{r.nome}</span>
                               <span className="text-xs text-slate-500">desde {dataBr(r.desde)}</span>
-                              <Button size="sm" variant="link" className="h-auto" onClick={() => setAcao({ tipo: 'revogar', u, r })}>
+                              {!designacaoValida(r) && (
+                                <span className="flex flex-wrap items-center gap-1 text-xs text-red-800">
+                                  <Badge tone="red">Não vale</Badge>
+                                  {r.motivoInvalido}
+                                </span>
+                              )}
+                              <Button size="sm" variant="link" className="h-auto" aria-label={rotuloRevogar(r)} onClick={() => setAcao({ tipo: 'revogar', u, r })}>
                                 Revogar
                               </Button>
                             </li>

@@ -21,12 +21,20 @@ const H = 3_600_000;
 const DIA = 24 * H;
 const TZ = 'America/Sao_Paulo';
 const MOTIVO = 'Unidade desativada no cadastro';
+const AVISO_REATIVADA = 'Unidade reativada: o período de notificante terminou na desativação. Abra um período novo se ela voltou a notificar.';
 const dia = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
 const hash = (payload: unknown) => sha256(canonicalJson(payload));
 
 type Celula = { semana: string; situacao: string };
 type Grade = { linhas: { unidade: { id: string; nome: string }; ativa: boolean; celulas: Celula[] }[]; analise: { silenciosas: { unitId: string }[] }; avisos: string[] };
-type UnidadeNotificante = { unidade: { id: string }; ativa: boolean; periodoAtual: unknown; periodos: { desde: string; ate: string | null; motivoFim: string | null }[]; avisos: string[] };
+type UnidadeNotificante = {
+  unidade: { id: string };
+  ativa: boolean;
+  periodoAtual: unknown;
+  periodos: { desde: string; ate: string | null; motivoFim: string | null }[];
+  semConfiguracao: boolean;
+  avisos: string[];
+};
 type Caso = { id: string; numero: number; restrito: boolean; iniciais: string | null };
 type Detalhe = { id: string; numero: string; planilha: Caso[]; espelho: { planilha: { NU_CASO: string; NM_CASO: string | null }[] } };
 
@@ -69,7 +77,7 @@ describe.runIf(enabled)('Vigilância: pendências entre frentes da semana 27 (se
     await t?.close();
   });
 
-  it('sur-7: desativar a unidade encerra o período de notificante e as designações no dia da instituição, com auditoria; reativar não reabre', async () => {
+  it('sur-7: desativar a unidade encerra o período de notificante e as designações no dia da instituição, com auditoria; o que começaria depois é apagado; reativar não reabre e avisa', async () => {
     const admin = t.app.get(AdminService);
     const negativas = t.app.get(NegativaService);
     const novaUnidade = async (name: string, cnes: string) =>
@@ -98,6 +106,9 @@ describe.runIf(enabled)('Vigilância: pendências entre frentes da semana 27 (se
     const medica = await designacao('medica');
     await t.http().post(`/api/vigilancia/responsaveis/${medica.id}/revogar`).set(auth('vig')).expect(200);
 
+    // O que só começaria depois da desativação (o período da outra unidade e a designação da técnica) é apagado.
+    const periodoFutura = await db.notifyingUnit.findFirstOrThrow({ where: { unitId: futura.id } });
+    const tecnica = await designacao('tecnica');
     // Quarta-feira, 17/06/2026, 23h30 em Brasília (já 18/06 em UTC): o fim é o dia da instituição.
     const desativadaEm = new Date('2026-06-18T02:30:00Z');
     admin.agora = () => desativadaEm;
@@ -111,24 +122,23 @@ describe.runIf(enabled)('Vigilância: pendências entre frentes da semana 27 (se
       por: usuario.gestora,
       em: desativadaEm.toISOString(),
     });
-    const periodoFutura = await db.notifyingUnit.findFirstOrThrow({ where: { unitId: futura.id } });
-    // Nunca antes do início do período.
-    expect([dia(periodoFutura.since), dia(periodoFutura.until), periodoFutura.endReason]).toEqual(['2026-07-01', '2026-07-01', MOTIVO]);
-    const [enfermeiro, tecnica, medicaDepois] = await Promise.all([designacao('enfermeiro'), designacao('tecnica'), designacao('medica')]);
+    // Terceira rodada (NEGATIVA-3): apagados, em vez de virarem período e designação de um dia depois da desativação.
+    expect(await db.notifyingUnit.count({ where: { unitId: futura.id } })).toBe(0);
+    expect(await db.notifyingUnitResponsible.findUnique({ where: { id: tecnica.id } })).toBeNull();
+    const [enfermeiro, medicaDepois] = await Promise.all([designacao('enfermeiro'), designacao('medica')]);
     expect([dia(enfermeiro.until), enfermeiro.revokedBy, enfermeiro.revokedAt?.toISOString()]).toEqual(['2026-06-17', usuario.gestora, desativadaEm.toISOString()]);
-    expect([dia(tecnica.until), tecnica.revokedBy]).toEqual(['2026-06-20', usuario.gestora]);
     expect([dia(medicaDepois.until), medicaDepois.revokedBy]).toEqual(['2026-03-10', usuario.vigilancia]);
 
     // Trilha: as ações da tela da negativa, com o motivo, na conta de quem desativou.
     expect(await trilha('vigilancia.notificante_encerrar', periodo.id)).toEqual([{ userId: usuario.gestora, entityType: 'NotifyingUnit', payloadHash: hash({ unidade: u.cnes, ate: '2026-06-17', motivo: MOTIVO }) }]);
-    expect(await trilha('vigilancia.notificante_encerrar', periodoFutura.id)).toEqual([
-      { userId: usuario.gestora, entityType: 'NotifyingUnit', payloadHash: hash({ unidade: futura.cnes, ate: '2026-07-01', motivo: MOTIVO }) },
+    expect(await trilha('vigilancia.notificante_excluir', periodoFutura.id)).toEqual([
+      { userId: usuario.gestora, entityType: 'NotifyingUnit', payloadHash: hash({ unidade: futura.cnes, desde: '2026-07-01', ate: null, motivoFim: null, motivo: MOTIVO }) },
     ]);
     expect(await trilha('vigilancia.negativa_revogar', enfermeiro.id)).toEqual([
       { userId: usuario.gestora, entityType: 'NotifyingUnitResponsible', payloadHash: hash({ unidade: u.id, usuario: usuario.enfermeiro, tipo: 'TITULAR', ate: '2026-06-17', motivo: MOTIVO }) },
     ]);
-    expect(await trilha('vigilancia.negativa_revogar', tecnica.id)).toEqual([
-      { userId: usuario.gestora, entityType: 'NotifyingUnitResponsible', payloadHash: hash({ unidade: u.id, usuario: usuario.tecnica, tipo: 'SUBSTITUTO', ate: '2026-06-20', motivo: MOTIVO }) },
+    expect(await trilha('vigilancia.negativa_designacao_excluir', tecnica.id)).toEqual([
+      { userId: usuario.gestora, entityType: 'NotifyingUnitResponsible', payloadHash: hash({ unidade: u.id, usuario: usuario.tecnica, tipo: 'SUBSTITUTO', desde: '2026-06-20', motivo: MOTIVO }) },
     ]);
     expect((await trilha('vigilancia.negativa_revogar', medica.id)).map((a) => a.userId)).toEqual([usuario.vigilancia]);
 
@@ -172,17 +182,28 @@ describe.runIf(enabled)('Vigilância: pendências entre frentes da semana 27 (se
     const minhas = (await t.http().get('/api/vigilancia/negativas/minhas').set(auth('enfermeiro')).expect(200)).body as { unidades: { unidade: { id: string } }[] };
     expect(minhas.unidades.map((x) => x.unidade.id)).not.toContain(u.id);
 
-    // Reativar não reabre o período nem as designações (a vigilância abre um período novo se quiser).
+    // Reativar não reabre o período nem as designações (a vigilância abre um período novo se quiser): a lista avisa e a
+    // unidade conta em "sem configuração" (terceira rodada, sur-7).
     admin.agora = () => new Date('2026-07-08T15:00:00Z');
     await t.http().patch(`/api/admin/units/${u.id}`).set(auth('gestora')).send({ active: true }).expect(200);
     expect(await db.notifyingUnit.count({ where: { unitId: u.id, until: null } })).toBe(0);
     expect(await db.notifyingUnitResponsible.count({ where: { unitId: u.id, until: null } })).toBe(0);
     const lista = (await t.http().get('/api/vigilancia/unidades-notificantes').set(auth('vig')).expect(200)).body as UnidadeNotificante[];
-    expect(lista.find((x) => x.unidade.id === u.id)).toMatchObject({ ativa: true, periodoAtual: null, periodos: [{ desde: '2026-01-01', ate: '2026-06-17', motivoFim: MOTIVO }], avisos: [] });
+    expect(lista.find((x) => x.unidade.id === u.id)).toMatchObject({
+      ativa: true,
+      periodoAtual: null,
+      periodos: [{ desde: '2026-01-01', ate: '2026-06-17', motivoFim: MOTIVO }],
+      semConfiguracao: true,
+      avisos: [AVISO_REATIVADA],
+    });
     // Desativar de novo (sem nada aberto) não grava mais nada; nem a unidade já inativa.
     await t.http().patch(`/api/admin/units/${u.id}`).set(auth('gestora')).send({ active: false }).expect(200);
     await t.http().patch(`/api/admin/units/${u.id}`).set(auth('gestora')).send({ active: false }).expect(200);
-    expect(await db.auditEntry.count({ where: { action: { in: ['vigilancia.notificante_encerrar', 'vigilancia.negativa_revogar'] }, userId: usuario.gestora } })).toBe(4);
+    expect(
+      await db.auditEntry.count({
+        where: { action: { in: ['vigilancia.notificante_encerrar', 'vigilancia.negativa_revogar', 'vigilancia.notificante_excluir', 'vigilancia.negativa_designacao_excluir'] }, userId: usuario.gestora },
+      }),
+    ).toBe(4);
     expect(dia((await db.notifyingUnit.findUniqueOrThrow({ where: { id: periodo.id } })).until)).toBe('2026-06-17');
   });
 

@@ -20,7 +20,7 @@ const hoje = () => localDateString(new Date(), TZ);
 const diasAtras = (n: number) => localDateString(new Date(Date.now() - n * DIA), TZ);
 const ddmm = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 
-type Sugestao = { assinatura: string; regra: string; grupo: string; descricao: string; vinculo: { tipo: string; id: string }; casos: string[] };
+type Sugestao = { assinatura: string; regra: string; grupo: string; descricao: string; vinculo: { tipo: string; id: string }; casos: string[]; ultimoConhecimento: string };
 type Caso = {
   id: string;
   numero: number;
@@ -215,24 +215,27 @@ describe.runIf(enabled)('Vigilância: correções do surto (semana 27, revisão 
     const u1 = await casoNoQuarteirao('medica', 'Ugo Lepto Ubs Um', 'leptospirose', 'G2', 2, 3);
     const h2 = await casoNoQuarteirao('medicaHosp', 'Helio Lepto Hospital Dois', 'leptospirose', 'G3', 1, 2);
     const a = `bairro-7d|BAIRRO:${B['Bairro Gama']}|leptospirose`;
-    expect([...assinatura(await sugestoes(), a)!.casos].sort()).toEqual([h1, u1, h2].sort());
-    expect([...assinatura(await sugestoes('nucleo'), a)!.casos].sort()).toEqual([h1, h2].sort());
+    const naVig = assinatura(await sugestoes(), a)!;
+    const noNucleo = assinatura(await sugestoes('nucleo'), a)!;
+    expect([...naVig.casos].sort()).toEqual([h1, u1, h2].sort());
+    expect([...noNucleo.casos].sort()).toEqual([h1, h2].sort());
     const motivoNucleo = 'Casos do hospital sem vínculo entre si.';
     const motivoVig = 'Investigado: casos sem fonte comum.';
-    await t.http().post('/api/vigilancia/surtos/sugestoes/dispensar').set(auth('nucleo')).send({ assinatura: a, motivo: motivoNucleo }).expect(200);
+    // A dispensa leva o último caso conhecido que a tela mostrou (SURTO-1, rodada 3).
+    await t.http().post('/api/vigilancia/surtos/sugestoes/dispensar').set(auth('nucleo')).send({ assinatura: a, motivo: motivoNucleo, ultimoConhecimento: noNucleo.ultimoConhecimento }).expect(200);
     // Antes: a sugestão sumia também da vigilância municipal, com o caso da UBS junto.
     expect([...assinatura(await sugestoes(), a)!.casos].sort()).toEqual([h1, u1, h2].sort());
     expect(assinatura(await sugestoes('nucleo'), a)).toBeUndefined();
     expect(await db.outbreakDismissal.findFirstOrThrow({ where: { signature: a } })).toMatchObject({ unitId: U.hosp!.id, dismissedBy: usuario.nucleo });
     // A dispensa da vigilância municipal fica sem unidade e vale para todos.
-    await t.http().post('/api/vigilancia/surtos/sugestoes/dispensar').set(auth('vig')).send({ assinatura: a, motivo: motivoVig }).expect(200);
+    await t.http().post('/api/vigilancia/surtos/sugestoes/dispensar').set(auth('vig')).send({ assinatura: a, motivo: motivoVig, ultimoConhecimento: naVig.ultimoConhecimento }).expect(200);
     expect(assinatura(await sugestoes(), a)).toBeUndefined();
     expect((await db.outbreakDismissal.findMany({ where: { signature: a }, orderBy: { dismissedAt: 'asc' } })).map((d) => d.unitId)).toEqual([U.hosp!.id, null]);
-    // A trilha guarda o hash do conteúdo: a unidade (escopo) entra nele.
+    // A trilha guarda o hash do conteúdo: a unidade (escopo) entra nele, e o limite da dispensa (o último caso mostrado).
     const auditoria = await db.auditEntry.findMany({ where: { action: 'vigilancia.surto_sugestao_dispensar' }, orderBy: { seq: 'asc' }, select: { userId: true, payloadHash: true } });
     expect(auditoria).toEqual([
-      { userId: usuario.nucleo, payloadHash: sha256(canonicalJson({ assinatura: a, casos: 2, motivo: motivoNucleo, unidade: U.hosp!.id })) },
-      { userId: usuario.vigilancia, payloadHash: sha256(canonicalJson({ assinatura: a, casos: 3, motivo: motivoVig, unidade: null })) },
+      { userId: usuario.nucleo, payloadHash: sha256(canonicalJson({ assinatura: a, casos: 2, ateConhecimento: noNucleo.ultimoConhecimento, motivo: motivoNucleo, unidade: U.hosp!.id })) },
+      { userId: usuario.vigilancia, payloadHash: sha256(canonicalJson({ assinatura: a, casos: 3, ateConhecimento: naVig.ultimoConhecimento, motivo: motivoVig, unidade: null })) },
     ]);
   });
 

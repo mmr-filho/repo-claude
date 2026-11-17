@@ -2,7 +2,9 @@ import 'reflect-metadata';
 import type { INestApplication } from '@nestjs/common';
 import { applyMigrations, createMasterClient, demoFixtures, envCredentials, seedDemo } from '@omnisaude/database';
 import type {
+  DetalheImportacao,
   ListaDivergentes,
+  ListaImportacoes,
   ListaSoOmnisaude,
   ListaSugestoesVinculo,
   ListaBairrosSemCorrespondencia,
@@ -176,5 +178,15 @@ describe.runIf(enabled)('Demonstração da semana 27: consolidação, diagrama, 
     expect(resumo.bairrosSemCorrespondencia).toBe(bairros.total);
     expect(bairros.itens.map((b) => b.nome)).toEqual(expect.arrayContaining(['JD DAS FLORES', 'VL NOVA']));
     expect(bairros.itens.map((b) => b.nome)).not.toContain('VILA NOVA');
+  });
+
+  it('importação da demonstração: os arquivos do detalhe seguem o contrato da importação (cnes null nos DBF do Sinan)', async () => {
+    const lista = (await http().get('/api/vigilancia/importacoes').set(auth('vig')).expect(200)).body as ListaImportacoes;
+    const demo = lista.find((i) => i.arquivo === demoFixtures.IMPORTACAO_DEMO);
+    expect(demo?.status).toBe('APLICADA');
+    const detalhe = (await http().get(`/api/vigilancia/importacoes/${demo!.id}`).set(auth('vig')).expect(200)).body as DetalheImportacao;
+    expect(detalhe.arquivos.map((a) => a.tipo)).toEqual(expect.arrayContaining(['DENGON', 'CHIKON', 'NNEGANET']));
+    // O campo vem em todo arquivo, como a importação grava (a conciliação e a base consolidada leem o CNES daqui).
+    for (const a of detalhe.arquivos) expect(a).toHaveProperty('cnes', null);
   });
 });

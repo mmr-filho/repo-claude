@@ -16,6 +16,7 @@ import {
   type CategoriaSurto,
   type ConsultaCandidatasSurto,
   type CorpoComunicacaoSurto,
+  type CorpoDispensarSugestao,
   type CorpoEditarSurto,
   type CorpoEncerrarSurto,
   type CorpoNovoSurto,
@@ -477,6 +478,14 @@ export function corpoEncerramento(f: FormEncerramento): CorpoEncerrarSurto {
 
 export const MINIMO_MOTIVO = 10;
 export const faltaNoMotivo = (motivo: string) => Math.max(0, MINIMO_MOTIVO - motivo.trim().length);
+
+/**
+ * Corpo do POST /vigilancia/surtos/sugestoes/dispensar: a dispensa vale até o último caso que a tela mostrou (o
+ * `ultimoConhecimento` da sugestão carregada). Se chegou caso conhecido depois, a API responde 409 e a lista é recarregada.
+ */
+export function corpoDispensa(s: Pick<SugestaoSurtoTela, 'assinatura' | 'ultimoConhecimento'>, motivo: string): CorpoDispensarSugestao {
+  return { assinatura: s.assinatura, motivo: motivo.trim(), ultimoConhecimento: s.ultimoConhecimento };
+}
 export const numeroSinanValido = (n: string) => /^\d{1,7}$/.test(n.trim());
 
 export interface FormComunicacao {

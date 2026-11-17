@@ -2,6 +2,7 @@ import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { TenantPrisma, type TenantClient, type TenantModels } from '@omnisaude/database';
 import {
   AGRAVOS_SINAN,
+  alcanceDasRegras,
   CAMPOS_DTA,
   CLASSIFICACAO_CASO_SURTO,
   CRITERIO_CASO_SURTO,
@@ -9,6 +10,7 @@ import {
   detectarAglomerados,
   errosDta,
   fromZonedParts,
+  GRUPOS_SEM_SUGESTAO_DE_SURTO,
   idadeSinan,
   infoAgravoSinan,
   LOCAL_INICIAL_SURTO,
@@ -151,7 +153,7 @@ type DadosCaso = Omit<OutbreakCase, 'id' | 'outbreakId' | 'caseNumber' | 'create
 type InfoGrupo = { nome: string; sinanCode: string | null };
 type ValorEvento = string | number | boolean | null;
 /** Origem da linha da planilha (para conferir a repetição na transação e dar a mensagem certa). */
-type OrigemCaso = { tipo: 'notificacao' | 'registro'; id: string; numero: string };
+type OrigemCaso = { tipo: 'notificacao' | 'registro'; id: string; numero: string; notificacaoConciliada?: string | null };
 /** Linha da planilha pronta para gravar, com os avisos, o que vai para o evento e a origem (nula na linha manual). */
 type CasoPreparado = { dados: DadosCaso; avisos: string[]; evento: Record<string, ValorEvento>; origem: OrigemCaso | null };
 /** Linha da planilha com notificação ou registro oficial sigiloso que quem lê abre (vai sem máscara na resposta). */
@@ -727,7 +729,7 @@ export class SurtoService {
         },
         avisos,
         evento: { registro: r.number, sistema: r.system, officialRecordId: r.id },
-        origem: { tipo: 'registro', id: r.id, numero: r.number },
+        origem: { tipo: 'registro', id: r.id, numero: r.number, notificacaoConciliada: r.notificationId },
       };
     }
     const l = corpo.linha;
@@ -829,6 +831,10 @@ export class SurtoService {
       vistos.add(k);
       preparados.push(await this.prepararCaso(ctx, { id: null, grupo, grupoDaLista, categoria: corpo.categoria }, c.notificationId ? { notificationId: c.notificationId } : { officialRecordId: c.officialRecordId! }));
     }
+    // O registro oficial conciliado com uma notificação indicada é o mesmo caso dela (SURTO-5): só um dos dois entra.
+    const indicadas = new Set(preparados.filter((p) => p.origem?.tipo === 'notificacao').map((p) => p.origem!.id));
+    const doisDoMesmoCaso = preparados.find((p) => p.origem?.tipo === 'registro' && !!p.origem.notificacaoConciliada && indicadas.has(p.origem.notificacaoConciliada));
+    if (doisDoMesmoCaso) throw conflict(`O registro ${doisDoMesmoCaso.origem!.numero} é o mesmo caso de uma das notificações indicadas (conciliada com ele): indique só um dos dois`);
     const ano = Number(hoje.slice(0, 4));
     const sinal = corpo.assinatura ? { assinatura: corpo.assinatura, regra: corpo.assinatura.split('|')[0] ?? null, casos: [...vistos] } : null;
     const o = await ctx.db.$transaction(async (tx) => {
@@ -965,7 +971,49 @@ export class SurtoService {
     return this.montarDetalhe(ctx, id, 'PATCH /vigilancia/surtos/:id');
   }
 
-  /** POST /vigilancia/surtos/:id/casos: notificação, registro oficial ou linha manual (NU_CASO sequencial). */
+  /**
+   * Prende a linha do surto até o fim da transação e confere que ele continua aberto (SURTO-3): o encerramento e o
+   * descarte (UPDATE da mesma linha) esperam a inclusão ou a retirada terminar, e a que chega depois deles recebe 409.
+   */
+  private async travarAberto(tx: TenantPrisma.TransactionClient, id: string) {
+    const [linha] = await tx.$queryRaw<{ status: string }[]>`SELECT status::text AS status FROM outbreaks WHERE id = ${id}::uuid FOR UPDATE`;
+    if (!linha) throw notFound('Surto');
+    if (linha.status !== 'ABERTO') throw new DomainError('SURTO_FECHADO', `O surto foi ${linha.status === 'DESCARTADO' ? 'descartado' : 'encerrado'} enquanto a planilha mudava: abra de novo`, HttpStatus.CONFLICT);
+  }
+
+  /**
+   * NU_CASO da próxima linha (SURTO-4): 1 + o maior número já usado no surto, nas linhas e nos eventos de inclusão e de
+   * retirada, para que o número de uma linha retirada não volte com outra pessoa. Chamado sob a trava surto-caso.
+   */
+  private async proximoNumeroCaso(tx: TenantPrisma.TransactionClient, outbreakId: string): Promise<number> {
+    const [r] = await tx.$queryRaw<{ ultimo: number | null }[]>`
+      SELECT GREATEST(
+        (SELECT max(case_number) FROM outbreak_cases WHERE outbreak_id = ${outbreakId}::uuid),
+        (SELECT max((payload->>'caso')::int) FROM outbreak_events
+          WHERE outbreak_id = ${outbreakId}::uuid AND kind IN ('CASO_VINCULADO', 'CASO_RETIRADO') AND payload->>'caso' ~ '^[0-9]{1,9}$')
+      ) AS ultimo`;
+    return Number(r?.ultimo ?? 0) + 1;
+  }
+
+  /**
+   * O registro oficial conciliado com uma notificação (official_records.notification_id) é o mesmo caso dela (SURTO-5):
+   * o registro cuja notificação já está na planilha não entra, nem a notificação cujo registro já está nela. Conferido
+   * sob a trava surto-caso, junto da repetição; a mensagem cita a linha, e não o outro lado (que pode ser sigiloso).
+   */
+  private async conferirPar(tx: TenantPrisma.TransactionClient, outbreakId: string, origem: OrigemCaso) {
+    const linha = await tx.outbreakCase.findFirst({
+      where: { outbreakId, ...(origem.tipo === 'registro' ? { notification: { officialRecords: { some: { id: origem.id } } } } : { officialRecord: { notificationId: origem.id } }) },
+      select: { caseNumber: true },
+    });
+    if (!linha) return;
+    throw conflict(
+      origem.tipo === 'registro'
+        ? `O registro ${origem.numero} é o mesmo caso da notificação conciliada com ele, que já está na planilha deste surto (caso ${linha.caseNumber})`
+        : `A notificação ${origem.numero} é o mesmo caso do registro oficial conciliado com ela, que já está na planilha deste surto (caso ${linha.caseNumber})`,
+    );
+  }
+
+  /** POST /vigilancia/surtos/:id/casos: notificação, registro oficial ou linha manual (NU_CASO sequencial, sem reaproveitar). */
   async incluirCaso(ctx: RequestContext, id: string, corpo: CorpoCasoSurto): Promise<RespostaCasoSurto> {
     const o = await this.carregar(ctx, id);
     this.exigirAberto(o);
@@ -976,13 +1024,15 @@ export class SurtoService {
     try {
       casoId = await ctx.db.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`surto-caso:${o.id}`}))`;
+        // O surto pode ter sido encerrado ou descartado depois da leitura (SURTO-3).
+        await this.travarAberto(tx, o.id);
         // Conferida depois da trava: os envios simultâneos do mesmo caso passam aqui um de cada vez.
         if (p.origem) {
           const ja = await tx.outbreakCase.count({ where: { outbreakId: o.id, ...(p.origem.tipo === 'registro' ? { officialRecordId: p.origem.id } : { notificationId: p.origem.id }) } });
           if (ja) throw repetido(p.origem);
+          await this.conferirPar(tx, o.id, p.origem);
         }
-        const ultimo = await tx.outbreakCase.findFirst({ where: { outbreakId: o.id }, orderBy: { caseNumber: 'desc' }, select: { caseNumber: true } });
-        const numero = (ultimo?.caseNumber ?? 0) + 1;
+        const numero = await this.proximoNumeroCaso(tx, o.id);
         const c = await tx.outbreakCase.create({ data: { ...p.dados, outbreakId: o.id, caseNumber: numero, createdBy: ctx.session.userId }, select: { id: true } });
         await tx.outbreakEvent.create({ data: { outbreakId: o.id, kind: 'CASO_VINCULADO', payload: { caso: numero, ...p.evento }, byUser: ctx.session.userId, at: this.agora() } });
         await this.audit.record(ctx, tx, { action: 'vigilancia.surto_caso', entityType: 'Outbreak', entityId: o.id, payload: { numero: o.number, caso: numero, ...p.evento } });
@@ -1002,14 +1052,17 @@ export class SurtoService {
     return { caso: detalhe.planilha.find((c) => c.id === casoId)!, avisos: p.avisos };
   }
 
-  /** DELETE /vigilancia/surtos/:id/casos/:caseId (o número do caso não é reaproveitado). */
+  /** DELETE /vigilancia/surtos/:id/casos/:caseId (o número do caso não é reaproveitado: ver `proximoNumeroCaso`). */
   async retirarCaso(ctx: RequestContext, id: string, caseId: string): Promise<RespostaOk> {
     const o = await this.carregar(ctx, id);
     this.exigirAberto(o);
     const c = await ctx.db.outbreakCase.findFirst({ where: { id: caseId, outbreakId: o.id }, include: { notification: { select: { number: true } }, officialRecord: { select: { number: true, system: true } } } });
     if (!c) throw notFound('Caso do surto');
     await ctx.db.$transaction(async (tx) => {
-      await tx.outbreakCase.delete({ where: { id: c.id } });
+      // O surto pode ter sido encerrado ou descartado depois da leitura (SURTO-3); a linha pode ter saído ao mesmo tempo.
+      await this.travarAberto(tx, o.id);
+      const { count } = await tx.outbreakCase.deleteMany({ where: { id: c.id, outbreakId: o.id } });
+      if (!count) throw notFound('Caso do surto');
       const payload = {
         caso: c.caseNumber,
         notificacao: c.notification?.number ?? null,
@@ -1104,14 +1157,36 @@ export class SurtoService {
 
   // ───────────────────────────── sugestões ─────────────────────────────
 
+  /** Grupos com notificação de fora de uma leitura limitada: o total na janela, com o mesmo filtro, passa do que foi lido. */
+  private async gruposCortados(ctx: RequestContext, where: TenantPrisma.NotificationWhereInput, lidas: { groupKey: string }[]): Promise<string[]> {
+    const total = await ctx.db.notification.groupBy({ by: ['groupKey'], where, _count: { _all: true } });
+    const lidasPorGrupo = new Map<string, number>();
+    for (const r of lidas) lidasPorGrupo.set(r.groupKey, (lidasPorGrupo.get(r.groupKey) ?? 0) + 1);
+    return total.filter((t) => t._count._all > (lidasPorGrupo.get(t.groupKey) ?? 0)).map((t) => t.groupKey);
+  }
+
+  /** Nomes dos agravos (do catálogo), em ordem, para os avisos: "Esquistossomose, Hepatites virais e Leptospirose". */
+  private async nomesDosGrupos(ctx: RequestContext, grupos: string[]): Promise<string> {
+    const info = await this.grupos(ctx.db, grupos);
+    const nomes = grupos.map((g) => info.get(g)?.nome ?? g).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    return nomes.length > 1 ? `${nomes.slice(0, -1).join(', ')} e ${nomes.at(-1)}` : (nomes[0] ?? '');
+  }
+
   /**
    * Casos para as regras: notificações não descartadas (nem encerradas como descartadas) conhecidas nos últimos 30 dias,
-   * sem agravo sigiloso, com quarteirão e bairro pela residência e a unidade (hospitalar ou não). O caso já ligado a
-   * surto, de qualquer situação, não volta a ser sugerido. O histórico do evento inusitado olha as notificações e os
-   * registros oficiais anteriores à janela que são caso (sem os descartados); sem nenhum histórico, não é avaliado. Os
-   * outros casos da janela que quem lê não vê (de outra unidade, na visão do núcleo, ou sob sigilo) contam só como caso
-   * anterior no evento inusitado. As dispensas são as da visão de quem lê: as da vigilância municipal (valem para todos)
-   * e, para o núcleo, as da unidade dele.
+   * sem agravo sigiloso, com quarteirão e bairro pela residência e a unidade (hospitalar ou não). As regras de vizinhança
+   * leem só os grupos que alguma regra em vigor alcança (`alcanceDasRegras` das regras da instituição ou das padrão), até
+   * 5000 notificações, as mais recentes; com o teto, o aviso diz os agravos que ficaram com casos de fora (SURTO-2). Os
+   * grupos fora do alcance (dengue, chikungunya e Zika nas regras padrão) só entram no evento inusitado: uma consulta
+   * agregada dá a data do primeiro caso de cada um na janela, e só os que podem ser inusitados (sem histórico, ou com o
+   * histórico a mais de `diasInusitado` dias desse primeiro caso) têm as notificações lidas. O território (quarteirão e
+   * bairro) é resolvido só para as notificações das regras de vizinhança. O caso já ligado a surto, de qualquer situação,
+   * não volta a ser sugerido, e o grupo dele fica fora do evento inusitado. O histórico do evento inusitado olha as
+   * notificações e os registros oficiais anteriores à janela que são caso (sem os descartados); sem nenhum histórico, não
+   * é avaliado. Os outros casos da janela que quem lê não vê (de outra unidade, na visão do núcleo, sob sigilo ou além do
+   * teto) contam só no evento inusitado: como caso anterior e, quando já estão em surto, tirando o grupo dele do evento.
+   * As dispensas são as da visão de quem lê: as da vigilância municipal (valem para todos) e, para o núcleo, as da
+   * unidade dele.
    */
   private async calcularSugestoes(ctx: RequestContext) {
     const agora = this.agora();
@@ -1119,38 +1194,103 @@ export class SurtoService {
     const hoje = localDateString(agora, tz);
     const desde = new Date(agora.getTime() - JANELA_SUGESTOES_DIAS * DIA);
     const avisos: string[] = [];
-    const rows = await ctx.db.notification.findMany({
-      where: {
-        ...this.escopo(ctx),
-        status: { in: ['RASCUNHO', 'NOTIFICADA', 'ENCERRADA'] },
-        NOT: { status: 'ENCERRADA', finalClass: '2' },
-        sensitive: false,
-        knownAt: { gte: desde, lte: agora },
-      },
-      select: {
-        id: true,
-        number: true,
-        groupKey: true,
-        knownAt: true,
-        symptomsOnset: true,
-        unitId: true,
-        patientId: true,
-        residenceLat: true,
-        residenceLng: true,
-        residencePrecision: true,
-        condition: { select: { name: true } },
-      },
-      orderBy: { knownAt: 'desc' },
-      take: LIMITE_SUGESTOES,
-    });
-    if (rows.length === LIMITE_SUGESTOES) avisos.push(`Mais de ${LIMITE_SUGESTOES} notificações nos últimos ${JANELA_SUGESTOES_DIAS} dias: só as mais recentes entraram nas sugestões.`);
+    const cfg = ctx.tenant.settings.vigilancia.surto;
+    const regras = cfg.regras ?? REGRAS_SURTO_PADRAO;
+    const alcance = alcanceDasRegras(regras);
+    const escopo = this.escopo(ctx);
+    const naJanela: TenantPrisma.NotificationWhereInput = {
+      ...escopo,
+      status: { in: ['RASCUNHO', 'NOTIFICADA', 'ENCERRADA'] },
+      NOT: { status: 'ENCERRADA', finalClass: '2' },
+      sensitive: false,
+      knownAt: { gte: desde, lte: agora },
+    };
+    const campos = {
+      id: true,
+      number: true,
+      groupKey: true,
+      knownAt: true,
+      symptomsOnset: true,
+      unitId: true,
+      patientId: true,
+      residenceLat: true,
+      residenceLng: true,
+      residencePrecision: true,
+      condition: { select: { name: true } },
+    } satisfies TenantPrisma.NotificationSelect;
+    // Regras de vizinhança: só os grupos que alguma regra alcança, das mais recentes às mais antigas, até o teto.
+    const daVizinhanca: TenantPrisma.NotificationWhereInput = {
+      ...naJanela,
+      groupKey: alcance.todos ? (alcance.exceto.length ? { notIn: alcance.exceto } : undefined) : { in: alcance.grupos },
+    };
+    const vizinhanca = alcance.todos || alcance.grupos.length ? await ctx.db.notification.findMany({ where: daVizinhanca, select: campos, orderBy: { knownAt: 'desc' }, take: LIMITE_SUGESTOES }) : [];
+    if (vizinhanca.length === LIMITE_SUGESTOES) {
+      const cortados = await this.gruposCortados(ctx, daVizinhanca, vizinhanca);
+      avisos.push(
+        `Mais de ${LIMITE_SUGESTOES} notificações nos últimos ${JANELA_SUGESTOES_DIAS} dias: só as mais recentes entraram nas regras de quarteirão, bairro e unidade${cortados.length ? `, e ficaram de fora casos de ${await this.nomesDosGrupos(ctx, cortados)}` : ''}.`,
+      );
+    }
+    const temHistorico = (await ctx.db.notification.count({ where: { knownAt: { lt: desde }, status: { not: 'DESCARTADA' } } })) > 0 || (await ctx.db.officialRecord.count({ where: { type: 'INDIVIDUAL' } })) > 0;
+    if (!temHistorico) avisos.push(`Sem histórico anterior aos últimos ${JANELA_SUGESTOES_DIAS} dias: o evento inusitado (agravo ausente há muito tempo) não é avaliado.`);
+    // Grupos fora do alcance (só o evento inusitado): a data do primeiro caso fora de surto na janela, por grupo, numa
+    // consulta agregada (o mesmo filtro de `naJanela`), sem ler as notificações.
+    const fora = alcance.todos
+      ? TenantPrisma.sql`n.group_key = ANY(${alcance.exceto.filter((g) => !GRUPOS_SEM_SUGESTAO_DE_SURTO.includes(g))}::text[])`
+      : TenantPrisma.sql`NOT (n.group_key = ANY(${[...alcance.grupos, ...GRUPOS_SEM_SUGESTAO_DE_SURTO]}::text[]))`;
+    const primeiroFora = temHistorico
+      ? await ctx.db.$queryRaw<{ grupo: string; primeiro: Date }[]>`
+          SELECT n.group_key AS grupo, min(COALESCE(n.symptoms_onset, (n.known_at AT TIME ZONE 'UTC' AT TIME ZONE ${tz})::date)) AS primeiro
+          FROM notifications n
+          WHERE ${fora} AND n.status IN ('RASCUNHO', 'NOTIFICADA', 'ENCERRADA') AND NOT (n.status = 'ENCERRADA' AND n.final_class = '2') AND NOT n.sensitive
+            AND n.known_at >= ${desde} AND n.known_at <= ${agora} ${escopo.unitId ? TenantPrisma.sql`AND n.unit_id = ${escopo.unitId}::uuid` : TenantPrisma.empty}
+            AND COALESCE(n.symptoms_onset, (n.known_at AT TIME ZONE 'UTC' AT TIME ZONE ${tz})::date) <= ${hoje}::date
+            AND NOT EXISTS (SELECT 1 FROM outbreak_cases oc WHERE oc.notification_id = n.id)
+          GROUP BY n.group_key`
+      : [];
+    const historicoPorGrupo: Record<string, string | null> = {};
+    const gruposComHistorico = [...new Set([...vizinhanca.map((r) => r.groupKey), ...primeiroFora.map((r) => r.grupo)])];
+    if (temHistorico && gruposComHistorico.length) {
+      const limite = localDateString(desde, tz);
+      // Caso anterior é caso: a suspeita descartada (notificação encerrada com classificação 2, registro DESCARTADO) não conta.
+      const [omni, oficiais] = await Promise.all([
+        ctx.db.$queryRaw<{ grupo: string; ultimo: Date | null }[]>`
+          SELECT group_key AS grupo, max(COALESCE(symptoms_onset, (known_at AT TIME ZONE 'UTC' AT TIME ZONE ${tz})::date)) AS ultimo
+          FROM notifications
+          WHERE group_key = ANY(${gruposComHistorico}::text[]) AND status <> 'DESCARTADA' AND (status <> 'ENCERRADA' OR final_class IS DISTINCT FROM '2') AND known_at < ${desde}
+          GROUP BY group_key`,
+        ctx.db.$queryRaw<{ grupo: string; ultimo: Date | null }[]>`
+          SELECT group_key AS grupo, max(COALESCE(symptoms_onset, notified_on)) AS ultimo
+          FROM official_records
+          WHERE type = 'INDIVIDUAL' AND NOT excluded AND situation <> 'DESCARTADO' AND group_key = ANY(${gruposComHistorico}::text[]) AND COALESCE(symptoms_onset, notified_on) < ${limite}::date
+          GROUP BY group_key`,
+      ]);
+      for (const g of gruposComHistorico) {
+        const datas = [...omni, ...oficiais].filter((x) => x.grupo === g && x.ultimo).map((x) => dataIso(x.ultimo)!);
+        historicoPorGrupo[g] = datas.length ? datas.sort().at(-1)! : null;
+      }
+    }
+    // Fora do alcance, só o grupo que pode ser inusitado tem as notificações lidas (com o histórico a até `diasInusitado`
+    // dias do primeiro caso, nunca é); na epidemia de dengue, a dengue tem histórico e fica de fora.
+    const candidatos = primeiroFora
+      .filter((r) => {
+        const h = historicoPorGrupo[r.grupo];
+        return !h || (Date.parse(dataIso(r.primeiro)!) - Date.parse(h)) / DIA > cfg.diasInusitado;
+      })
+      .map((r) => r.grupo);
+    const doInusitado: TenantPrisma.NotificationWhereInput = { ...naJanela, groupKey: { in: candidatos } };
+    const inusitados = candidatos.length ? await ctx.db.notification.findMany({ where: doInusitado, select: campos, orderBy: { knownAt: 'asc' }, take: LIMITE_SUGESTOES }) : [];
+    if (inusitados.length === LIMITE_SUGESTOES) {
+      const cortados = await this.gruposCortados(ctx, doInusitado, inusitados);
+      avisos.push(`Evento inusitado: mais de ${LIMITE_SUGESTOES} notificações de ${await this.nomesDosGrupos(ctx, cortados)} nos últimos ${JANELA_SUGESTOES_DIAS} dias; só as primeiras entraram.`);
+    }
+    const rows = [...vizinhanca, ...inusitados];
     const [territorio, unidades, emSurto] = await Promise.all([
-      this.territorioDasNotificacoes(ctx.db, rows),
+      this.territorioDasNotificacoes(ctx.db, vizinhanca),
       ctx.db.unit.findMany({ where: { id: { in: [...new Set(rows.map((r) => r.unitId))] } }, select: { id: true, name: true, type: true } }),
       // Surto aberto, encerrado ou descartado: o caso já foi tratado e não volta como sugestão.
       ctx.db.outbreakCase.findMany({ where: { notificationId: { in: rows.map((r) => r.id) } }, select: { notificationId: true } }),
     ]);
-    const semPosicao = rows.filter((r) => !territorio.get(r.id)?.temPosicao).length;
+    const semPosicao = vizinhanca.filter((r) => !territorio.get(r.id)?.temPosicao).length;
     if (semPosicao) avisos.push(`${semPosicao} notificação(ões) sem posição da residência ficaram fora das regras de quarteirão e bairro.`);
     const unidadePorId = new Map(unidades.map((u) => [u.id, u]));
     const jaEmSurto = new Set(emSurto.map((c) => c.notificationId));
@@ -1167,50 +1307,34 @@ export class SurtoService {
       jaEmSurto: jaEmSurto.has(r.id),
     }));
     const grupos = [...new Set(casos.map((c) => c.grupo))];
-    const historicoPorGrupo: Record<string, string | null> = {};
     const outrosCasosPorGrupo: Record<string, string[]> = {};
-    const temHistorico = (await ctx.db.notification.count({ where: { knownAt: { lt: desde }, status: { not: 'DESCARTADA' } } })) > 0 || (await ctx.db.officialRecord.count({ where: { type: 'INDIVIDUAL' } })) > 0;
-    if (!temHistorico) avisos.push(`Sem histórico anterior aos últimos ${JANELA_SUGESTOES_DIAS} dias: o evento inusitado (agravo ausente há muito tempo) não é avaliado.`);
-    else if (grupos.length) {
-      const limite = localDateString(desde, tz);
-      const vistos = rows.map((r) => r.id);
-      // Caso anterior é caso: a suspeita descartada (notificação encerrada com classificação 2, registro DESCARTADO) não conta.
-      const [omni, oficiais, outros] = await Promise.all([
-        ctx.db.$queryRaw<{ grupo: string; ultimo: Date | null }[]>`
-          SELECT group_key AS grupo, max(COALESCE(symptoms_onset, (known_at AT TIME ZONE 'UTC' AT TIME ZONE ${tz})::date)) AS ultimo
-          FROM notifications
-          WHERE group_key = ANY(${grupos}::text[]) AND status <> 'DESCARTADA' AND (status <> 'ENCERRADA' OR final_class IS DISTINCT FROM '2') AND known_at < ${desde}
-          GROUP BY group_key`,
-        ctx.db.$queryRaw<{ grupo: string; ultimo: Date | null }[]>`
-          SELECT group_key AS grupo, max(COALESCE(symptoms_onset, notified_on)) AS ultimo
-          FROM official_records
-          WHERE type = 'INDIVIDUAL' AND NOT excluded AND situation <> 'DESCARTADO' AND group_key = ANY(${grupos}::text[]) AND COALESCE(symptoms_onset, notified_on) < ${limite}::date
-          GROUP BY group_key`,
-        // Os outros casos da janela (de outra unidade, sob sigilo ou além do teto): só as datas, por grupo.
-        ctx.db.$queryRaw<{ grupo: string; data: Date }[]>`
-          SELECT DISTINCT group_key AS grupo, COALESCE(symptoms_onset, (known_at AT TIME ZONE 'UTC' AT TIME ZONE ${tz})::date) AS data
-          FROM notifications
-          WHERE group_key = ANY(${grupos}::text[]) AND status IN ('RASCUNHO', 'NOTIFICADA', 'ENCERRADA') AND (status <> 'ENCERRADA' OR final_class IS DISTINCT FROM '2')
-            AND known_at >= ${desde} AND known_at <= ${agora} AND NOT (id = ANY(${vistos}::uuid[]))`,
-      ]);
-      for (const g of grupos) {
-        const datas = [...omni, ...oficiais].filter((x) => x.grupo === g && x.ultimo).map((x) => dataIso(x.ultimo)!);
-        historicoPorGrupo[g] = datas.length ? datas.sort().at(-1)! : null;
+    const outrosEmSurto = new Set<string>();
+    if (temHistorico && grupos.length) {
+      // Os outros casos da janela (de outra unidade, sob sigilo ou além do teto): só as datas, por grupo, e se o caso já
+      // está em surto (o grupo então fica fora do evento inusitado).
+      const outros = await ctx.db.$queryRaw<{ grupo: string; data: Date; emSurto: boolean }[]>`
+        SELECT DISTINCT n.group_key AS grupo, COALESCE(n.symptoms_onset, (n.known_at AT TIME ZONE 'UTC' AT TIME ZONE ${tz})::date) AS data,
+          EXISTS (SELECT 1 FROM outbreak_cases oc WHERE oc.notification_id = n.id) AS "emSurto"
+        FROM notifications n
+        WHERE n.group_key = ANY(${grupos}::text[]) AND n.status IN ('RASCUNHO', 'NOTIFICADA', 'ENCERRADA') AND (n.status <> 'ENCERRADA' OR n.final_class IS DISTINCT FROM '2')
+          AND n.known_at >= ${desde} AND n.known_at <= ${agora} AND NOT (n.id = ANY(${rows.map((r) => r.id)}::uuid[]))`;
+      for (const o of outros) {
+        if (o.emSurto) outrosEmSurto.add(o.grupo);
+        else (outrosCasosPorGrupo[o.grupo] ??= []).push(dataIso(o.data)!);
       }
-      for (const o of outros) (outrosCasosPorGrupo[o.grupo] ??= []).push(dataIso(o.data)!);
     }
     const dispensas = await ctx.db.outbreakDismissal.findMany({
       where: this.vigilanciaMunicipal(ctx) ? { unitId: null } : { OR: [{ unitId: null }, { unitId: ctx.session.unitId }] },
       select: { signature: true, untilKnownAt: true, unitId: true },
     });
-    const cfg = ctx.tenant.settings.vigilancia.surto;
-    const sugestoes = detectarAglomerados(casos, cfg.regras ?? REGRAS_SURTO_PADRAO, {
+    const sugestoes = detectarAglomerados(casos, regras, {
       hoje,
       fuso: tz,
       dispensas: dispensas.map((d) => ({ assinatura: d.signature, ateConhecimento: d.untilKnownAt.toISOString(), unitId: d.unitId })),
       diasInusitado: cfg.diasInusitado,
       historicoPorGrupo,
       outrosCasosPorGrupo,
+      outrosEmSurto: [...outrosEmSurto],
     });
     return { sugestoes, rows, territorio, unidadePorId, avisos, hoje };
   }
@@ -1228,6 +1352,11 @@ export class SurtoService {
   /** GET /vigilancia/surtos/sugestoes: `detectarAglomerados` + excessos do diagrama por território. */
   async sugestoes(ctx: RequestContext): Promise<RespostaSugestoesSurto> {
     const { sugestoes, rows, territorio, unidadePorId, avisos, hoje } = await this.calcularSugestoes(ctx);
+    // O caso do evento inusitado de grupo fora das regras de vizinhança chega sem território: o bairro dele, para a tela,
+    // é resolvido só aqui, e só para os casos das sugestões.
+    const nasSugestoes = new Set(sugestoes.flatMap((s) => s.casos));
+    const semTerritorio = rows.filter((r) => nasSugestoes.has(r.id) && !territorio.has(r.id));
+    if (semTerritorio.length) for (const [id, t] of await this.territorioDasNotificacoes(ctx.db, semTerritorio)) territorio.set(id, t);
     const blocosIds = [...new Set(sugestoes.filter((s) => s.vinculo.tipo === 'QUARTEIRAO').map((s) => s.vinculo.id))];
     const bairrosIds = [...new Set([...sugestoes.filter((s) => s.vinculo.tipo === 'BAIRRO').map((s) => s.vinculo.id), ...[...territorio.values()].map((t) => t.neighborhoodId).filter((x): x is string => !!x)])];
     const [blocos, bairros] = await Promise.all([
@@ -1265,17 +1394,23 @@ export class SurtoService {
   }
 
   /**
-   * POST /vigilancia/surtos/sugestoes/dispensar: vale até aparecer caso conhecido depois do último da sugestão. A da
-   * vigilância municipal (unidade nula) vale para todos; a do núcleo grava a unidade dele e só vale na visão dele, para
-   * sugestão com todos os casos da unidade (detectarAglomerados).
+   * POST /vigilancia/surtos/sugestoes/dispensar: vale até o último caso conhecido que a tela mostrou (`ultimoConhecimento`
+   * do corpo, gravado como veio); com caso conhecido depois dele, 409 (a sugestão mudou desde que a tela foi aberta, e o
+   * caso novo não foi visto). A da vigilância municipal (unidade nula) vale para todos; a do núcleo grava a unidade dele
+   * e só vale na visão dele, para sugestão com todos os casos da unidade (detectarAglomerados).
    */
   async dispensarSugestao(ctx: RequestContext, corpo: CorpoDispensarSugestao): Promise<RespostaOk> {
+    const mostrado = new Date(corpo.ultimoConhecimento);
+    // O caso é conhecido até agora: um valor futuro esconderia os casos que ainda vão chegar.
+    if (Number.isNaN(mostrado.getTime()) || mostrado.getTime() > this.agora().getTime() + 60_000)
+      throw new DomainError('DATA_INVALIDA', 'Último caso conhecido da sugestão inválido: abra a sugestão de novo', HttpStatus.BAD_REQUEST);
     const { sugestoes, rows } = await this.calcularSugestoes(ctx);
     const s = sugestoes.find((x) => x.assinatura === corpo.assinatura);
     if (!s) throw new DomainError('NAO_ENCONTRADO', 'Sugestão não encontrada: já dispensada, já virou surto ou ficou sem casos', HttpStatus.NOT_FOUND);
     const unitId = this.vigilanciaMunicipal(ctx) ? null : ctx.session.unitId;
     const unidadeDe = new Map(rows.map((r) => [r.id, r.unitId]));
     if (unitId && s.casos.some((id) => unidadeDe.get(id) !== unitId)) throw forbidden('O núcleo dispensa só sugestão com todos os casos da unidade em que está lotado');
+    if (Date.parse(s.ultimoConhecimento) > mostrado.getTime()) throw conflict('A sugestão mudou desde que a tela foi aberta: abra de novo.');
     const motivo = corpo.motivo.trim();
     await ctx.db.$transaction(async (tx) => {
       const d = await tx.outbreakDismissal.create({
@@ -1286,7 +1421,7 @@ export class SurtoService {
           groupKey: s.grupo.slice(0, 40),
           linkKind: s.vinculo.tipo,
           linkId: s.vinculo.id,
-          untilKnownAt: new Date(s.ultimoConhecimento),
+          untilKnownAt: mostrado,
           reason: motivo,
           dismissedBy: ctx.session.userId,
           dismissedAt: this.agora(),
@@ -1297,7 +1432,7 @@ export class SurtoService {
         action: 'vigilancia.surto_sugestao_dispensar',
         entityType: 'OutbreakDismissal',
         entityId: d.id,
-        payload: { assinatura: s.assinatura, casos: s.casos.length, motivo, unidade: unitId },
+        payload: { assinatura: s.assinatura, casos: s.casos.length, ateConhecimento: mostrado.toISOString(), motivo, unidade: unitId },
       });
     });
     return { ok: true };
@@ -1337,7 +1472,8 @@ export class SurtoService {
         ...(q.grupo ? { groupKey: q.grupo } : {}),
         ...(q.de || q.ate ? { knownAt: { ...(q.de ? { gte: inicioDoDia(q.de, tz) } : {}), ...(q.ate ? { lt: inicioDoDia(diaSeguinte(q.ate), tz) } : {}) } } : {}),
         ...(ou.length ? { OR: ou } : {}),
-        ...(q.surtoId ? { outbreakCases: { none: { outbreakId: q.surtoId } } } : {}),
+        // Nem a notificação cujo registro oficial conciliado já está na planilha (é o mesmo caso: SURTO-5).
+        ...(q.surtoId ? { outbreakCases: { none: { outbreakId: q.surtoId } }, officialRecords: { none: { outbreakCases: { some: { outbreakId: q.surtoId } } } } } : {}),
       },
       select: {
         id: true,
@@ -1353,6 +1489,7 @@ export class SurtoService {
         unit: { select: { id: true, name: true } },
         patient: { select: { name: true, socialName: true } },
         outbreakCases: { where: { outbreak: { status: 'ABERTO' } }, select: { outbreak: { select: { number: true } } } },
+        officialRecords: { select: { outbreakCases: { where: { outbreak: { status: 'ABERTO' } }, select: { outbreak: { select: { number: true } } } } } },
       },
       orderBy: [{ knownAt: 'desc' }, { id: 'desc' }],
       take: LIMITE_CANDIDATOS + 1,
@@ -1370,7 +1507,8 @@ export class SurtoService {
       conhecidoEm: n.knownAt.toISOString(),
       inicioSintomas: dataIso(n.symptomsOnset),
       sigilosa: n.sensitive,
-      emSurtos: [...new Set(n.outbreakCases.map((c) => c.outbreak.number))].sort(),
+      // O surto em que está a notificação ou o registro oficial conciliado com ela (o mesmo caso).
+      emSurtos: [...new Set([...n.outbreakCases, ...n.officialRecords.flatMap((r) => r.outbreakCases)].map((c) => c.outbreak.number))].sort(),
     }));
     const sigilosas = itens.filter((i) => i.sigilosa).map((i) => i.id);
     if (busca || sigilosas.length)
@@ -1400,6 +1538,8 @@ export class SurtoService {
       if (digitos.length === 15) ou.push({ cns: digitos });
       e.push({ OR: ou });
     }
+    // Nem o registro cuja notificação conciliada já está na planilha (é o mesmo caso: SURTO-5).
+    if (q.surtoId) e.push({ OR: [{ notificationId: null }, { notification: { outbreakCases: { none: { outbreakId: q.surtoId } } } }] });
     const rows = await ctx.db.officialRecord.findMany({
       where: {
         type: 'INDIVIDUAL',
@@ -1428,6 +1568,7 @@ export class SurtoService {
         situation: true,
         absentSince: true,
         outbreakCases: { where: { outbreak: { status: 'ABERTO' } }, select: { outbreak: { select: { number: true } } } },
+        notification: { select: { outbreakCases: { where: { outbreak: { status: 'ABERTO' } }, select: { outbreak: { select: { number: true } } } } } },
       },
       orderBy: [{ notifiedOn: 'desc' }, { number: 'desc' }, { id: 'desc' }],
       take: LIMITE_CANDIDATOS + 1,
@@ -1451,7 +1592,8 @@ export class SurtoService {
       sigiloso: r.sensitive,
       situacao: r.situation as RegistroCandidatoSurto['situacao'],
       ausenteDesde: r.absentSince?.toISOString() ?? null,
-      emSurtos: [...new Set(r.outbreakCases.map((c) => c.outbreak.number))].sort(),
+      // O surto em que está o registro ou a notificação conciliada com ele (o mesmo caso).
+      emSurtos: [...new Set([...r.outbreakCases, ...(r.notification?.outbreakCases ?? [])].map((c) => c.outbreak.number))].sort(),
     }));
     if (busca || itens.length)
       await this.audit.recordStandalone(ctx, {

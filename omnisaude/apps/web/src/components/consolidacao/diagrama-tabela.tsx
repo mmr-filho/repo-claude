@@ -1,9 +1,9 @@
 'use client';
 
-import { ROTULO_STATUS_SEMANA, type CoberturaAno, type PopulacaoUsada } from '@omnisaude/shared';
+import { ROTULO_STATUS_SEMANA } from '@omnisaude/shared';
 import { Badge } from '@/components/ui/badge';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
-import { fmtCasos, fmtValor, ROTULO_ORIGEM_POPULACAO, rotulosDoCanal, seloCobertura, textoFonte, TOM_STATUS, type LinhaDiagrama, type MetodoCanal, type UnidadeCanal } from './diagrama-dados';
+import { fmtCasos, fmtValor, rotulosDoCanal, TOM_STATUS, type LinhaDiagrama, type MetodoCanal, type UnidadeCanal } from './diagrama-dados';
 
 /** Tabela por semana com os mesmos números do gráfico (o caminho até o valor sem depender da dica nem da cor). */
 export function DiagramaTabelaSemanas({ linhas, unidade, metodo, k }: { linhas: LinhaDiagrama[]; unidade: UnidadeCanal; metodo: MetodoCanal; k: number }) {
@@ -43,60 +43,5 @@ export function DiagramaTabelaSemanas({ linhas, unidade, metodo, k }: { linhas: 
         </TBody>
       </Table>
     </div>
-  );
-}
-
-/** População usada em cada ano do canal e cobertura de cada ano da série. */
-export function DiagramaPopulacaoUsada({ populacao, cobertura, unidade }: { populacao: PopulacaoUsada[]; cobertura: CoberturaAno[]; unidade: UnidadeCanal }) {
-  const anos = [...new Set([...populacao.map((p) => p.ano), ...cobertura.map((c) => c.ano)])].sort((a, b) => a - b);
-  if (!anos.length) return <p className="text-sm text-slate-500">Sem anos na série.</p>;
-  return (
-    <Table>
-      <caption className="sr-only">População e cobertura de cada ano da série</caption>
-      <THead>
-        <tr>
-          <TH>Ano</TH>
-          <TH>Cobertura</TH>
-          {unidade === 'INCIDENCIA' && (
-            <>
-              <TH className="text-right">População</TH>
-              <TH>Fonte</TH>
-              <TH>Origem</TH>
-            </>
-          )}
-        </tr>
-      </THead>
-      <TBody>
-        {anos.map((ano) => {
-          const p = populacao.find((x) => x.ano === ano);
-          const c = cobertura.find((x) => x.ano === ano);
-          return (
-            <TR key={ano}>
-              <TD className="tabular-nums">{ano}</TD>
-              <TD className="text-xs">{c ? <Badge tone={seloCobertura(c).tom}>{seloCobertura(c).texto}</Badge> : '—'}</TD>
-              {unidade === 'INCIDENCIA' && (
-                <>
-                  <TD className="text-right tabular-nums">{p?.populacao != null ? p.populacao.toLocaleString('pt-BR') : '—'}</TD>
-                  <TD className="text-xs">{p ? textoFonte(p.fonte, p.versao) : '—'}</TD>
-                  <TD className="text-xs">{p ? <Badge tone={p.origem === 'OFICIAL' ? 'green' : p.origem === 'AUSENTE' ? 'red' : 'amber'}>{ROTULO_ORIGEM_POPULACAO[p.origem]}</Badge> : '—'}</TD>
-                </>
-              )}
-            </TR>
-          );
-        })}
-      </TBody>
-      {cobertura.some((c) => c.motivo) && (
-        <tfoot>
-          <tr>
-            <td colSpan={unidade === 'INCIDENCIA' ? 5 : 2} className="px-3 pt-2 text-xs text-slate-500">
-              {cobertura
-                .filter((c) => c.motivo)
-                .map((c) => `${c.ano}: ${c.motivo}`)
-                .join(' · ')}
-            </td>
-          </tr>
-        </tfoot>
-      )}
-    </Table>
   );
 }

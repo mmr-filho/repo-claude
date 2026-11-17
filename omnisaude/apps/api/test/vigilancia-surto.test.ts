@@ -24,6 +24,7 @@ type Sugestao = {
   vinculoNome: string;
   casos: string[];
   primeiroSintoma: string | null;
+  ultimoConhecimento: string;
   casosDetalhe: { id: string; numero: string; unidade: string; bairro: string | null }[];
 };
 type Prazo = { esfera: string; venceEm: string; cumpridoEm: string | null; situacao: string };
@@ -209,9 +210,19 @@ describe.runIf(enabled)('Vigilância: notificação de surto e sugestões (VIG-1
 
   it('dispensa: a sugestão some até aparecer caso conhecido depois; motivo e assinatura são conferidos', async () => {
     const q = achar((await sugestoes()).sugestoes, 'quarteirao-7d', 'leptospirose', T.q1!.id)!;
-    await t.http().post('/api/vigilancia/surtos/sugestoes/dispensar').set(auth('vig')).send({ assinatura: q.assinatura, motivo: 'curto' }).expect(400);
-    await t.http().post('/api/vigilancia/surtos/sugestoes/dispensar').set(auth('vig')).send({ assinatura: 'regra|QUARTEIRAO:x|grupo', motivo: 'Mesma família, já investigado pela UBS.' }).expect(404);
-    expect((await t.http().post('/api/vigilancia/surtos/sugestoes/dispensar').set(auth('vig')).send({ assinatura: q.assinatura, motivo: 'Mesma família, já investigado pela UBS.' }).expect(200)).body).toEqual({
+    // A dispensa leva o último caso conhecido que a tela mostrou (SURTO-1, rodada 3).
+    const visto = q.ultimoConhecimento;
+    await t.http().post('/api/vigilancia/surtos/sugestoes/dispensar').set(auth('vig')).send({ assinatura: q.assinatura, motivo: 'curto', ultimoConhecimento: visto }).expect(400);
+    await t
+      .http()
+      .post('/api/vigilancia/surtos/sugestoes/dispensar')
+      .set(auth('vig'))
+      .send({ assinatura: 'regra|QUARTEIRAO:x|grupo', motivo: 'Mesma família, já investigado pela UBS.', ultimoConhecimento: visto })
+      .expect(404);
+    expect(
+      (await t.http().post('/api/vigilancia/surtos/sugestoes/dispensar').set(auth('vig')).send({ assinatura: q.assinatura, motivo: 'Mesma família, já investigado pela UBS.', ultimoConhecimento: visto }).expect(200))
+        .body,
+    ).toEqual({
       ok: true,
     });
     const depois = await sugestoes();

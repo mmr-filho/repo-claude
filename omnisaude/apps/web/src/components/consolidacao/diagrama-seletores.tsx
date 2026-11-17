@@ -23,7 +23,8 @@ export function useOpcoesDeAgravo(): { opcoes: OpcaoAgravo[]; carregando: boolea
 
 /**
  * Seletor de agravo (arboviroses no topo). `vazio` acrescenta a opção "Todos". `sigilosos` mostra os agravos
- * sigilosos (HIV, aids, sífilis, violências); sem ele, ficam de fora (o já escolhido continua, para não sumir).
+ * sigilosos (a lista única `GRUPOS_SIGILOSOS_DIAGRAMA`: HIV, aids, sífilis, violências, tuberculose, hanseníase e
+ * hepatites); sem ele, ficam de fora (o já escolhido continua, para não sumir).
  */
 export function SeletorAgravo({
   id,

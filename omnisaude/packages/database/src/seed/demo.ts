@@ -31,6 +31,7 @@ import {
   textoDoAtesto,
   versaoNaData,
   type Area,
+  type ArquivoDetectado,
   type Role,
 } from '@omnisaude/shared';
 import type { PrismaClient as MasterClient } from '../generated/master/client';
@@ -628,23 +629,29 @@ async function consolidacaoDemo(db: TenantClient, c: ContextoConsolidacao) {
   };
   for (const r of registros) somar(`${r.grupo === 'dengue' ? 'DENGON' : 'CHIKON'}${r.notificadoEm.slice(0, 4)}.DBF`, r.grupo === 'dengue' ? 'DENGON' : 'CHIKON', r.notificadoEm);
   for (const n of negativasSinan) somar('NNEGANET.DBF', 'NNEGANET', intervaloDaSemana(Number(n.semana.slice(0, 4)), Number(n.semana.slice(4))).fim);
+  // O mesmo formato que a importação grava em official_imports.files (ArquivoDetectado). Os DBF do Sinan não têm CNES
+  // único (só o arquivo do e-SUS de um estabelecimento só tem): cnes null, cobrindo todas as unidades.
   const files = [...arquivos.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([nome, a]) => ({
-      nome,
-      tipo: a.tipo,
-      sistema: a.tipo === 'NNEGANET' ? 'SINAN_NET' : 'SINAN_ONLINE',
-      tipoRegistro: a.tipo === 'NNEGANET' ? 'NEGATIVA' : 'INDIVIDUAL',
-      tamanhoBytes: 4_000 + a.registros * (a.tipo === 'NNEGANET' ? 120 : 1_180),
-      registros: a.registros,
-      codificacao: 'CP850',
-      origemCodificacao: 'CABECALHO',
-      agravos: a.tipo === 'DENGON' ? ['A90'] : a.tipo === 'CHIKON' ? ['A920'] : [],
-      periodo: { de: a.de, ate: a.ate },
-      identificado: a.tipo !== 'NNEGANET',
-      ignorado: false,
-      avisos: [],
-    }));
+    .map(
+      ([nome, a]) =>
+        ({
+          nome,
+          tipo: a.tipo,
+          sistema: a.tipo === 'NNEGANET' ? 'SINAN_NET' : 'SINAN_ONLINE',
+          tipoRegistro: a.tipo === 'NNEGANET' ? 'NEGATIVA' : 'INDIVIDUAL',
+          tamanhoBytes: 4_000 + a.registros * (a.tipo === 'NNEGANET' ? 120 : 1_180),
+          registros: a.registros,
+          codificacao: 'CP850',
+          origemCodificacao: 'CABECALHO',
+          agravos: a.tipo === 'DENGON' ? ['A90'] : a.tipo === 'CHIKON' ? ['A920'] : [],
+          cnes: null,
+          periodo: { de: a.de, ate: a.ate },
+          identificado: a.tipo !== 'NNEGANET',
+          ignorado: false,
+          avisos: [],
+        }) satisfies ArquivoDetectado,
+    );
   const lidos = registros.length + negativasSinan.length;
   const imp = await db.officialImport.create({
     data: {

@@ -307,10 +307,14 @@ export interface RespostaSugestoesSurto {
 /**
  * POST /vigilancia/surtos/sugestoes/dispensar (motivo com pelo menos 10 caracteres). A dispensa da vigilância
  * municipal vale para todos; a do núcleo vale só na visão dele e só para sugestão com todos os casos da unidade dele.
+ * Vale até o `ultimoConhecimento` que a tela mostrou: com caso conhecido depois dele, a resposta é 409 (a sugestão
+ * mudou desde que a tela foi aberta).
  */
 export interface CorpoDispensarSugestao {
   assinatura: string;
   motivo: string;
+  /** O `ultimoConhecimento` da sugestão que a tela mostrou (ISO). */
+  ultimoConhecimento: string;
 }
 
 /**
@@ -534,6 +538,13 @@ export interface ResponsavelNegativa {
   ate: string | null;
   designadoEm: string;
   designadoPor: string | null;
+  /**
+   * A designação ativa vale: o usuário está ativo e tem lotação ativa na unidade num papel que atesta a negativa
+   * (`notificacao.negativa`). Nulo na designação encerrada.
+   */
+  valido: boolean | null;
+  /** Por que a designação ativa não vale (ex.: "Sem lotação ativa na unidade"); nulo quando vale ou já terminou. */
+  motivoInvalido: string | null;
 }
 
 export interface UnidadeNotificante {
@@ -542,10 +553,14 @@ export interface UnidadeNotificante {
   ativa: boolean;
   periodoAtual: PeriodoNotificante | null;
   periodos: PeriodoNotificante[];
+  /** Ativas primeiro (cada uma com a marca de válida), depois o histórico. */
   responsaveis: ResponsavelNegativa[];
-  /** Unidade ativa sem nenhum período de notificante. */
+  /**
+   * Unidade ativa sem período de notificante: a que atende e nunca teve período, ou a reativada cujo último período
+   * terminou na desativação no cadastro (sem período aberto nem com fim depois de hoje).
+   */
   semConfiguracao: boolean;
-  /** Problemas da configuração (ex.: unidade inativa com período de notificante aberto). */
+  /** Problemas da configuração (ex.: unidade reativada sem período, titular cuja designação não vale). */
   avisos: string[];
 }
 
@@ -566,7 +581,9 @@ export interface CorpoEncerrarPeriodoNotificante {
 
 /**
  * POST /vigilancia/unidades-notificantes/:unitId/responsaveis. O usuário precisa de lotação ativa na unidade
- * (SEM_LOTACAO, 422) com papel que atesta a negativa, `notificacao.negativa` (PAPEL_SEM_NEGATIVA, 422).
+ * (SEM_LOTACAO, 422) com papel que atesta a negativa, `notificacao.negativa` (PAPEL_SEM_NEGATIVA, 422). Um titular
+ * ativo por unidade (409); o titular cuja designação não vale (`valido: false`) é substituído: a designação dele
+ * termina hoje, na mesma transação.
  */
 export interface CorpoDesignarResponsavel {
   userId: string;

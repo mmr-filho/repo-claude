@@ -11,13 +11,16 @@ import { Field, Textarea } from '@/components/ui/input';
 import { Alert, Spinner } from '@/components/ui/misc';
 import { Table, TBody, TD, TH, THead, TR } from '@/components/ui/table';
 import { useToast } from '@/components/ui/toast';
-import { api, errorMessage } from '@/lib/api';
+import { api, ApiError, errorMessage } from '@/lib/api';
 import { useApi } from '@/lib/hooks';
 import { nomeDoAgravo, type OpcaoAgravo } from './diagrama-agravos';
 import { useDataHora } from './fuso';
-import { dataBr, faltaNoMotivo, MINIMO_MOTIVO, ROTULO_VINCULO, textoValorExcesso } from './surto-regras';
+import { corpoDispensa, dataBr, faltaNoMotivo, MINIMO_MOTIVO, ROTULO_VINCULO, textoValorExcesso } from './surto-regras';
 
-/** Dispensa a sugestão: volta só se aparecer caso conhecido depois do último caso dela. */
+/**
+ * Dispensa a sugestão: volta só se aparecer caso conhecido depois do último caso que a tela mostrou. Se a sugestão
+ * mudou desde que a lista carregou (caso novo), a API responde 409: o aviso aparece e a lista é recarregada.
+ */
 function Dispensar({ s, onFechar, onFeito }: { s: SugestaoSurtoTela; onFechar: () => void; onFeito: () => void }) {
   const toast = useToast();
   const [motivo, setMotivo] = useState('');
@@ -39,11 +42,15 @@ function Dispensar({ s, onFechar, onFeito }: { s: SugestaoSurtoTela; onFechar: (
             setBusy(true);
             setErro(null);
             try {
-              await api.post('/vigilancia/surtos/sugestoes/dispensar', { assinatura: s.assinatura, motivo: motivo.trim() });
+              await api.post('/vigilancia/surtos/sugestoes/dispensar', { ...corpoDispensa(s, motivo) });
               toast.success('Sugestão dispensada.');
               onFeito();
             } catch (err) {
-              setErro(errorMessage(err));
+              if (err instanceof ApiError && err.status === 409) {
+                // Chegou caso depois de a lista carregar: a vigilância vê a sugestão nova antes de dispensar.
+                toast.error(errorMessage(err));
+                onFeito();
+              } else setErro(errorMessage(err));
             } finally {
               setBusy(false);
             }

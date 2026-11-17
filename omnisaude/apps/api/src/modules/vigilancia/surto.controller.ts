@@ -111,7 +111,8 @@ const comunicacaoSchema = z.object({
 const encerrarSchema = z.object({ delimitacao: texto(2), texto: texto(200).nullish(), data: dia, notas: texto(4000).nullish() });
 const descartarSchema = z.object({ motivo: z.string().trim().min(10).max(1000) });
 const numeroSchema = z.object({ numero: z.string().trim().min(1).max(20) });
-const dispensarSchema = z.object({ assinatura: z.string().trim().min(3).max(300), motivo: z.string().trim().min(10).max(1000) });
+/** A dispensa leva o último caso conhecido da sugestão que a tela mostrou (SURTO-1). */
+const dispensarSchema = z.object({ assinatura: z.string().trim().min(3).max(300), motivo: z.string().trim().min(10).max(1000), ultimoConhecimento: instante });
 const listarSchema = z.object({ status: z.enum(['ABERTO', 'ENCERRADO', 'DESCARTADO']).optional() });
 /** Busca das notificações e dos registros oficiais para a planilha: grupo, período, texto e o surto (para tirar os que já estão nele). */
 const candidatasSchema = z
