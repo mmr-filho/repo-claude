@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
 import { DomainError } from '../../core/errors';
-import { rawBody } from '../../core/raw-body';
+import { conferirTamanhoDeclarado, rawBody } from '../../core/raw-body';
 import { zv } from '../../core/zod';
 import { ConciliacaoService } from './conciliacao.service';
 import { ImportacaoService } from './importacao.service';
@@ -69,9 +69,10 @@ export class ImportacaoController {
   ) {}
 
   /**
-   * Envio do arquivo cru (zip, DBF ou CSV; até 95 MB) com `?nome=&de=&ate=&codificacao=`. O corpo só é lido depois de o
-   * serviço conferir a vez (409 IMPORTACAO_OCUPADA antes, com o processo cheio ou outra importação do tenant em
-   * andamento). A leitura roda em segundo plano: pronta dentro da espera, 201 com a prévia; senão, 202 com
+   * Envio do arquivo cru (zip, DBF ou CSV; até 95 MB) com `?nome=&de=&ate=&codificacao=`. Antes de ler o corpo: 413
+   * com o Content-Length acima do teto; 409 IMPORTACAO_OCUPADA com outra importação do tenant lendo ou aplicando; 409
+   * IMPORTACAO_SERVIDOR_OCUPADO com o processo cheio ou outro envio do tenant ainda chegando. O corpo parado por 30 s dá
+   * 408 (e solta a carga). A leitura roda em segundo plano: pronta dentro da espera, 201 com a prévia; senão, 202 com
    * `{ id, status: 'PROCESSANDO', ... }` e a tela acompanha pelo detalhe. O mesmo arquivo já aplicado (sem período, ou
    * com o mesmo período declarado) responde 200 com `{ jaImportado }` sem criar nada.
    */
@@ -80,6 +81,7 @@ export class ImportacaoController {
   async enviar(@Ctx() ctx: RequestContext, @Req() req: Request, @Res({ passthrough: true }) res: Response, @Query(zv(envioSchema)) q: z.infer<typeof envioSchema>) {
     const tipo = (req.headers['content-type'] ?? '').toLowerCase();
     if (/json|xml|text\/plain|form/.test(tipo)) throw new DomainError('FORMATO', 'Envie o arquivo cru (application/octet-stream, zip ou csv)', 415);
+    conferirTamanhoDeclarado(req, LIMITE_ENVIO_BYTES);
     const r = await this.importacoes.enviar(ctx, () => rawBody(req, LIMITE_ENVIO_BYTES), q);
     if ('jaImportado' in r) res.status(200);
     else if (r.status === 'PROCESSANDO') res.status(202);

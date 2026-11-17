@@ -7,6 +7,7 @@ import {
   type ContagensImportacao,
   type DetalheImportacao,
   type EnvioEmProcessamento,
+  type ImportacaoDoMesmoArquivo,
   type RespostaAplicacao,
   type RespostaEnvioImportacao,
   type ResultadoAplicacao,
@@ -78,16 +79,32 @@ export const envioEmProcessamento = (r: RespostaEnvioImportacao): r is EnvioEmPr
 export const aplicacaoEmAndamento = (r: RespostaAplicacao): r is AplicacaoEmAndamento => 'status' in r && r.status === 'APLICANDO';
 
 /**
- * Situação da importação na lista e no detalhe: a leitura e a aplicação em andamento no servidor, a que falhou e a
- * prévia descartada pelo tempo ("Expirada").
+ * Situação da importação na lista e no detalhe: a leitura e a aplicação em andamento no servidor, a que falhou, a
+ * aplicada que outra aplicação do mesmo arquivo substituiu ("Substituída") e a prévia descartada pelo tempo
+ * ("Expirada").
  */
 export function situacaoImportacao(r: Pick<ResumoImportacao, 'status' | 'expirada'> & Partial<Pick<ResumoImportacao, 'processamento'>>): { rotulo: string; tom: 'blue' | 'green' | 'amber' | 'slate' | 'red' | 'violet' } {
   if (r.status === 'PROCESSANDO' || r.processamento?.etapa === 'LENDO') return { rotulo: 'Lendo o arquivo…', tom: 'violet' };
+  if (r.status === 'SUBSTITUIDA') return { rotulo: 'Substituída', tom: 'slate' };
   if (r.processamento?.etapa === 'APLICANDO') return { rotulo: 'Aplicando…', tom: 'violet' };
   if (r.status === 'FALHOU') return { rotulo: 'Falhou', tom: 'red' };
   if (r.status === 'PREVIA') return { rotulo: 'Prévia', tom: 'blue' };
   if (r.status === 'APLICADA') return { rotulo: 'Aplicada', tom: 'green' };
   return r.expirada ? { rotulo: 'Expirada', tom: 'amber' } : { rotulo: 'Descartada', tom: 'slate' };
+}
+
+const periodoBr = (p: ImportacaoDoMesmoArquivo['periodo'], declarado: boolean) =>
+  p ? `período ${dataBr(p.de)} a ${dataBr(p.ate)}, ${declarado ? 'declarado' : 'lido das notificações'}` : 'sem período';
+
+/**
+ * Detalhe da SUBSTITUIDA: por qual aplicação do mesmo arquivo foi substituída, com a data. `dataHora` formata o instante
+ * no fuso do município.
+ */
+export function textoSubstituidaPor(r: Pick<ResumoImportacao, 'status' | 'substituidaPor'>, dataHora: (iso: string) => string): string | null {
+  const s = r.substituidaPor;
+  if (r.status !== 'SUBSTITUIDA' || !s) return null;
+  const quando = s.aplicadaEm ? `aplicado em ${dataHora(s.aplicadaEm)}` : `enviado em ${dataHora(s.enviadaEm)}`;
+  return `Substituída pelo envio do mesmo arquivo de ${dataHora(s.enviadaEm)} (${periodoBr(s.periodo, s.periodoDeclarado)}), ${quando}. A cobertura e os ausentes passaram a ser os dele.`;
 }
 
 /**
@@ -107,7 +124,10 @@ export const STATUS_RESPOSTA_PERDIDA: readonly number[] = [0, 502, 503, 504, 524
 
 export const MENSAGEM_ENVIO_SEM_RESPOSTA = 'A resposta não chegou. Se o arquivo foi recebido, a prévia aparece no histórico em instantes.';
 export const MENSAGEM_APLICAR_SEM_RESPOSTA = 'A resposta não chegou. Se a aplicação começou, ela aparece nesta tela em instantes.';
+/** 409 IMPORTACAO_OCUPADA: outra importação do próprio município lendo ou aplicando (aparece no histórico). */
 export const MENSAGEM_IMPORTACAO_OCUPADA = 'Outra importação está sendo lida ou aplicada agora (uma por vez). Acompanhe no histórico e tente de novo quando ela terminar.';
+/** 409 IMPORTACAO_SERVIDOR_OCUPADO sem mensagem da API (a API sempre manda a dela: o servidor ocupado com outros envios). */
+export const MENSAGEM_SERVIDOR_OCUPADO = 'O servidor está recebendo ou processando outros envios agora. Tente de novo em instantes.';
 
 /** A resposta do pedido se perdeu no caminho (rede, proxy ou borda): o trabalho pode estar rodando no servidor. */
 export const respostaPerdida = (status: number | null | undefined) => status !== null && status !== undefined && STATUS_RESPOSTA_PERDIDA.includes(status);
@@ -121,12 +141,14 @@ export function alertaDoErroDeEnvio(status: number | null | undefined): { tom: '
 }
 
 /**
- * Mensagem do erro do envio ou do aplicar: a resposta que não chegou, a vez ocupada por outra importação, ou a
- * mensagem da API.
+ * Mensagem do erro do envio ou do aplicar: a resposta que não chegou, outra importação do município em andamento (a
+ * tela manda acompanhar no histórico), o servidor ocupado com outros envios (a mensagem da API: pode ser de outro
+ * município, que não aparece no histórico) ou a mensagem da API.
  */
 export function mensagemDoErro(acao: 'enviar' | 'aplicar', erro: { status?: number | null; code?: string | null; message: string }): string {
   if (respostaPerdida(erro.status)) return acao === 'enviar' ? MENSAGEM_ENVIO_SEM_RESPOSTA : MENSAGEM_APLICAR_SEM_RESPOSTA;
   if (erro.code === 'IMPORTACAO_OCUPADA') return MENSAGEM_IMPORTACAO_OCUPADA;
+  if (erro.code === 'IMPORTACAO_SERVIDOR_OCUPADO') return erro.message.trim() || MENSAGEM_SERVIDOR_OCUPADO;
   return erro.message;
 }
 
@@ -223,7 +245,8 @@ export function proximoPasso(estado: EstadoAcompanhamento, leitura: LeituraAcomp
     return { tipo: 'previa', detalhe: d };
   }
   if (d.processamento?.etapa === 'APLICANDO') return continuar();
-  if (d.status === 'APLICADA') return { tipo: 'aplicada', detalhe: d, resultado: d.resultadoAplicacao };
+  // A SUBSTITUIDA foi aplicada (e outra aplicação do mesmo arquivo veio depois): o resultado dela continua valendo.
+  if (d.status === 'APLICADA' || d.status === 'SUBSTITUIDA') return { tipo: 'aplicada', detalhe: d, resultado: d.resultadoAplicacao };
   if (d.status === 'PREVIA') return { tipo: 'falhou', detalhe: d, mensagem: d.erro?.mensagem ?? 'A aplicação não terminou. Confira a prévia e aplique de novo.' };
   return { tipo: 'falhou', detalhe: d, mensagem: 'A importação mudou enquanto era aplicada: confira a situação abaixo.' };
 }
@@ -325,10 +348,18 @@ export function codificacoesParaTrocar(arquivos: Pick<ArquivoDetectado, 'nome' |
   return out;
 }
 
-/** Resumo da aplicação, uma frase por resultado que aconteceu. */
-export function resumoDaAplicacao(r: ResultadoAplicacao): string[] {
+/**
+ * Resumo da aplicação, uma frase por resultado que aconteceu. `dataHora` formata o instante no fuso do município (o
+ * envio substituído).
+ */
+export function resumoDaAplicacao(r: ResultadoAplicacao, dataHora: (iso: string) => string = (iso) => dataBr(iso.slice(0, 10))): string[] {
   const n = (x: number) => x.toLocaleString('pt-BR');
   const out = [`${n(r.contagens.novos)} registro(s) novo(s) e ${n(r.contagens.alterados)} alterado(s) gravados.`];
+  for (const s of r.substituidas ?? [])
+    out.push(
+      `Substituiu a aplicação do mesmo arquivo enviada em ${dataHora(s.enviadaEm)} (${periodoBr(s.periodo, s.periodoDeclarado)}): a cobertura passou a ser a deste envio` +
+        (s.voltaram ? ` e ${n(s.voltaram)} registro(s) que ela deu como ausentes voltaram.` : '.'),
+    );
   if (r.ausentesMarcados) out.push(`${n(r.ausentesMarcados)} registro(s) do mesmo período não vieram e ficaram marcados como ausentes.`);
   if (r.voltaram) out.push(`${n(r.voltaram)} registro(s) ausentes voltaram.`);
   if (r.unidadesLigadas) out.push(`${n(r.unidadesLigadas)} registro(s) ligados à unidade pelo CNES.`);

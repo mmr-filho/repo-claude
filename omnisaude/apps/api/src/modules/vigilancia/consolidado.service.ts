@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { MasterClient, TenantPrisma } from '@omnisaude/database';
+import { TenantPrisma, type MasterClient } from '@omnisaude/database';
 import {
   faixasDeSemanas,
   infoAgravoSinan,
@@ -20,7 +20,7 @@ import {
 import { MASTER_DB } from '../../core/database';
 import type { SystemContext } from '../integrations/messaging.service';
 import { LocalizadorService, PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
-import { arquivoCobre, cnesDoArquivo, periodoCoberto } from './cobertura-importacao';
+import { arquivoCobre, cnesDoArquivo, gruposDoMesmoAgravo, periodoCoberto, primeirosEnvios } from './cobertura-importacao';
 import { MapaCasosService } from './mapa.service';
 
 /** Consulta da base consolidada. */
@@ -93,6 +93,7 @@ export interface FiltroAgregacao {
 
 type Territorio = { bairroId: string | null; localidadeId: string | null; semCorrespondencia: string | null };
 type Db = TenantPrisma.TransactionClient;
+const { sql } = TenantPrisma;
 
 const semZeros = (s: string | null | undefined) => (s ?? '').trim().replace(/^0+(?=\d)/, '');
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -103,7 +104,6 @@ const codigo = (v: string | null | undefined) => {
   return /^\d+$/.test(t) ? String(Number(t)) : t;
 };
 const SEMANA = /^(\d{4})(\d{2})$/;
-const dia = (d: Date) => d.toISOString().slice(0, 10);
 /** Último dia (sábado) do ano epidemiológico. */
 const fimDoAno = (ano: number) => new Date(inicioAnoEpidemiologico(ano + 1) - 86_400_000).toISOString().slice(0, 10);
 const inicioDoAno = (ano: number) => new Date(inicioAnoEpidemiologico(ano)).toISOString().slice(0, 10);
@@ -129,7 +129,8 @@ function obitoOficial(agravo: string | null, evolucao: string | null): LinhaCaso
 /**
  * Base consolidada sem dupla contagem (VIG-1c, §4.2; frente F3): registros oficiais INDIVIDUAL não excluídos e não
  * ausentes + notificações do OmniSaúde NOTIFICADA/ENCERRADA, não descartadas, sem vínculo com registro oficial (o par
- * vinculado conta uma vez, pelo registro oficial). Semana = SE de início dos sintomas; sem ela, a da notificação
+ * vinculado conta uma vez, pelo registro oficial: no grupo da notificação quando os dois são do mesmo agravo do Sinan,
+ * senão no grupo do registro). Semana = SE de início dos sintomas; sem ela, a da notificação
  * (contada à parte, como aviso). A notificação do óbito ligada ao caso (linha de óbito do catálogo) não é outro caso:
  * só diz se houve óbito. Território: o município pela residência; bairro e localidade pelo código ou pelo nome/apelido
  * do bairro (registro oficial) e pelo quarteirão da residência (notificação; sem quarteirão, o bairro da ficha).
@@ -259,8 +260,17 @@ export class ConsolidadoService {
     return `Ano ${ano} coberto só nas SE ${faixasDeSemanas(marcas.flatMap((m, i) => (m ? [i + 1] : [])))}: as SE sem base importada nem OmniSaúde em uso ficam fora do canal.`;
   }
 
-  /** Registros oficiais agrupados no banco (o volume do Sinan pede agregação: dengue passa de dezenas de milhares). */
+  /**
+   * Registros oficiais agrupados no banco (o volume do Sinan pede agregação: dengue passa de dezenas de milhares). O
+   * registro ligado a uma notificação conta no grupo dela quando os dois grupos são do mesmo agravo do Sinan
+   * (`gruposDoMesmoAgravo`: o Y09 ligado à violência sexual ou à tentativa de suicídio fica na série dela, e não na da
+   * violência interpessoal); nos demais casos, no grupo do registro, que é a verdade oficial (a dengue reclassificada
+   * como chikungunya conta em chikungunya).
+   */
   private async oficiais(sys: SystemContext, grupo: string, de: string, ate: string, anos: number[], municipio: string, resolver: ((codigo: string | null, nome: string | null) => Territorio) | null) {
+    const familia = gruposDoMesmoAgravo(grupo);
+    // O registro só entra na série de um grupo da própria família; dentro dela, vale o grupo da notificação ligada.
+    const doGrupo = sql`r.group_key = ANY(${familia}::text[]) AND (CASE WHEN n.group_key = ANY(${familia}::text[]) THEN n.group_key ELSE r.group_key END) = ${grupo}`;
     const grupos = await sys.db.$queryRaw<
       {
         semana: string;
@@ -275,38 +285,34 @@ export class ConsolidadoService {
         n: number;
       }[]
     >`
-      SELECT COALESCE(epi_week_onset, epi_week_notified) AS semana, (epi_week_onset IS NULL) AS "pelaNotificacao", situation AS situacao,
-             severity AS gravidade, evolution AS evolucao, agravo, left(residence_ibge, 6) AS residencia,
-             neighborhood_code AS "bairroCodigo", neighborhood_name AS "bairroNome", count(*)::int AS n
-      FROM official_records
-      WHERE type = 'INDIVIDUAL' AND group_key = ${grupo} AND NOT excluded AND absent_since IS NULL
-        AND COALESCE(epi_week_onset, epi_week_notified) BETWEEN ${de} AND ${ate}
+      SELECT COALESCE(r.epi_week_onset, r.epi_week_notified) AS semana, (r.epi_week_onset IS NULL) AS "pelaNotificacao", r.situation AS situacao,
+             r.severity AS gravidade, r.evolution AS evolucao, r.agravo, left(r.residence_ibge, 6) AS residencia,
+             r.neighborhood_code AS "bairroCodigo", r.neighborhood_name AS "bairroNome", count(*)::int AS n
+      FROM official_records r LEFT JOIN notifications n ON n.id = r.notification_id
+      WHERE r.type = 'INDIVIDUAL' AND ${doGrupo} AND NOT r.excluded AND r.absent_since IS NULL
+        AND COALESCE(r.epi_week_onset, r.epi_week_notified) BETWEEN ${de} AND ${ate}
       GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9`;
-    // Sem semana nenhuma (raro): a SE pela data da notificação.
-    const soData = await sys.db.officialRecord.findMany({
-      where: {
-        type: 'INDIVIDUAL',
-        groupKey: grupo,
-        excluded: false,
-        absentSince: null,
-        epiWeekOnset: null,
-        epiWeekNotified: null,
-        notifiedOn: { gte: new Date(`${inicioDoAno(anos[0]!)}T00:00:00Z`), lte: new Date(`${fimDoAno(anos[anos.length - 1]!)}T00:00:00Z`) },
-      },
-      select: { notifiedOn: true, situation: true, severity: true, evolution: true, agravo: true, residenceIbge: true, neighborhoodCode: true, neighborhoodName: true },
-    });
+    // Sem semana nenhuma (raro): a SE pela data da notificação (a mesma regra do grupo).
+    const soData = await sys.db.$queryRaw<
+      { dia: string; situacao: string; gravidade: string | null; evolucao: string | null; agravo: string | null; residencia: string | null; bairroCodigo: string | null; bairroNome: string | null }[]
+    >`
+      SELECT r.notified_on::text AS dia, r.situation AS situacao, r.severity AS gravidade, r.evolution AS evolucao, r.agravo, left(r.residence_ibge, 6) AS residencia,
+             r.neighborhood_code AS "bairroCodigo", r.neighborhood_name AS "bairroNome"
+      FROM official_records r LEFT JOIN notifications n ON n.id = r.notification_id
+      WHERE r.type = 'INDIVIDUAL' AND ${doGrupo} AND NOT r.excluded AND r.absent_since IS NULL AND r.epi_week_onset IS NULL AND r.epi_week_notified IS NULL
+        AND r.notified_on BETWEEN ${inicioDoAno(anos[0]!)}::date AND ${fimDoAno(anos[anos.length - 1]!)}::date`;
     const todas = [
       ...grupos,
       ...soData.map((r) => ({
-        semana: semanaDaData(dia(r.notifiedOn)).codigo,
+        semana: semanaDaData(r.dia).codigo,
         pelaNotificacao: true,
-        situacao: r.situation,
-        gravidade: r.severity,
-        evolucao: r.evolution,
+        situacao: r.situacao,
+        gravidade: r.gravidade,
+        evolucao: r.evolucao,
         agravo: r.agravo,
-        residencia: r.residenceIbge ? r.residenceIbge.slice(0, 6) : null,
-        bairroCodigo: r.neighborhoodCode,
-        bairroNome: r.neighborhoodName,
+        residencia: r.residencia || null,
+        bairroCodigo: r.bairroCodigo,
+        bairroNome: r.bairroNome,
         n: 1,
       })),
     ];
@@ -490,9 +496,10 @@ export class ConsolidadoService {
 
   /**
    * Cobertura por SE (a pesquisa: "ano ou período sem base importada é nulo e fica fora do conjunto"). A SE está coberta
-   * quando cai no período de um arquivo de importação aplicada que cobre o agravo (`arquivoCobre` e `periodoCoberto`,
-   * os mesmos da conciliação: o período declarado no envio vale mais que o lido no arquivo, e o fim não passa da data
-   * do envio), quando o OmniSaúde já estava em uso (da SE em que a primeira notificação notificada ou encerrada, de
+   * quando cai no período de um arquivo de importação aplicada (só a APLICADA: a SUBSTITUIDA não cobre nada) que cobre o
+   * agravo (`arquivoCobre` e `periodoCoberto`, os mesmos da conciliação: o período declarado no envio vale mais que o
+   * lido no arquivo, e o fim não passa da data do primeiro envio do mesmo arquivo), quando o OmniSaúde já estava em uso
+   * (da SE em que a primeira notificação notificada ou encerrada, de
    * qualquer agravo, entrou no sistema em diante) ou quando tem caso do agravo (o caso nunca se perde). O arquivo de um
    * CNES só (exportação de um estabelecimento) não cobre a SE do município nem a do território: os registros dele
    * continuam contando. O período lido no arquivo é a menor e a maior data de notificação: num DBF de agravo raro ele
@@ -500,21 +507,30 @@ export class ConsolidadoService {
    */
   private async cobertura(sys: SystemContext, grupo: string, anos: number[], linhas: LinhaCasos[]): Promise<{ cobertura: CoberturaAno[]; semanas: Map<number, boolean[]> }> {
     const [importacoes, primeira] = await Promise.all([
-      sys.db.officialImport.findMany({ where: { status: 'APLICADA' }, select: { id: true, fileName: true, periodFrom: true, periodTo: true, declaredPeriod: true, createdAt: true, files: true } }),
+      sys.db.officialImport.findMany({
+        where: { status: 'APLICADA' },
+        select: { id: true, fileName: true, sha256: true, periodFrom: true, periodTo: true, declaredPeriod: true, createdAt: true, files: true },
+      }),
       // Quando a ficha entrou no sistema (não a data de conhecimento, que aceita qualquer dia passado: uma carga
       // retroativa cobriria com zeros anos inteiros de todo agravo).
       sys.db.notification.findFirst({ where: { status: { in: ['NOTIFICADA', 'ENCERRADA'] } }, orderBy: { createdAt: 'asc' }, select: { createdAt: true } }),
     ]);
     const arquivos = (imp: (typeof importacoes)[number]) => (Array.isArray(imp.files) ? (imp.files as unknown as ArquivoDetectado[]) : []);
-    const gravados = await this.gruposGravados(
-      sys.db,
-      importacoes.filter((i) => arquivos(i).some((a) => a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos)).map((i) => i.id),
-    );
+    const [gravados, primeiros] = await Promise.all([
+      this.gruposGravados(
+        sys.db,
+        importacoes.filter((i) => arquivos(i).some((a) => a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos)).map((i) => i.id),
+      ),
+      primeirosEnvios(
+        sys.db,
+        importacoes.map((i) => i.sha256),
+      ),
+    ]);
     const periodos: { de: string; ate: string; nome: string }[] = [];
     for (const imp of importacoes)
       for (const a of arquivos(imp)) {
         if (cnesDoArquivo(a) || !arquivoCobre(a, grupo, gravados.get(imp.id))) continue;
-        const p = periodoCoberto(imp, a, sys.tenant.timeZone);
+        const p = periodoCoberto(imp, a, sys.tenant.timeZone, primeiros.get(imp.sha256));
         if (p) periodos.push({ de: p.de, ate: p.ate, nome: imp.fileName });
       }
     const omniDesde = primeira ? semanaEpidemiologica(primeira.createdAt, sys.tenant.timeZone).codigo : null;

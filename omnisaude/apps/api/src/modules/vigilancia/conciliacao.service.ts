@@ -20,6 +20,7 @@ import {
   type DivergenciaPar,
   type FiltroConciliacao,
   type ListaBairrosSemCorrespondencia,
+  type ListaCandidatasVinculo,
   type ListaDivergentes,
   type ListaSoOficial,
   type ListaSoOmnisaude,
@@ -41,7 +42,7 @@ import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { MASTER_DB } from '../../core/database';
 import { conflict, DomainError, forbidden, notFound } from '../../core/errors';
-import { cnesDoArquivo, gruposDoArquivo, periodoCoberto } from './cobertura-importacao';
+import { cnesDoArquivo, gruposDoArquivo, gruposDoMesmoAgravo, periodoCoberto, primeirosEnvios } from './cobertura-importacao';
 import { sqlCnsValido, sqlCpfValido, sqlDataSinan, sqlNomePessoa, sqlSemZeros } from './conciliacao-sql';
 import { municipioDoTenant, NOME_DO_GRUPO } from './importacao/apoio';
 import { NotificacaoService } from './notificacao.service';
@@ -69,6 +70,11 @@ const JANELA_SUGESTAO_DIAS = 30;
 const POR_PAGINA = 50;
 /** Ids por consulta (o Postgres aceita até 65.535 parâmetros por comando). */
 const LOTE_IDS = 5000;
+/**
+ * Linhas por UPDATE em lote (SQL com um parâmetro JSON, como a gravação da importação): o Prisma 7 guarda os
+ * argumentos das últimas chamadas, e um lote pequeno não deixa muita coisa presa.
+ */
+const LOTE_GRAVACAO = 250;
 
 const dia = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
 /** Código de classificação ou evolução sem espaço nem zero à esquerda ('02' e ' 2' viram '2'). */
@@ -287,6 +293,8 @@ const ORDEM = new Intl.Collator('pt-BR');
 /** Quanto vincular, desvincular e rejeitar esperam pela trava da conciliação (com uma importação aplicando, ela fica ocupada). */
 const ESPERA_TRAVA_MS = 3_000;
 const INTERVALO_TRAVA_MS = 100;
+/** A trava pode ser da importação (a aplicação inteira), da tarefa periódica (o vínculo automático) ou de outra ação. */
+const MENSAGEM_OCUPADA = 'A conciliação está sendo atualizada agora (importação ou vínculo automático). Tente de novo em instantes.';
 
 /** Chave das notificações na tabela do agravo do Sinan: grupo, CID, gestante (campo 12) e linha do catálogo. */
 const CHAVE_AGRAVO_NOTIFICACAO = raw(`(n.group_key || '|' || COALESCE(n.code, '') || '|' || CASE WHEN COALESCE(n.form->>'CS_GESTANT', '') IN ('1', '2', '3', '4') THEN '1' ELSE '0' END || '|' || n.condition_key)`);
@@ -294,6 +302,15 @@ const CHAVE_AGRAVO_NOTIFICACAO = raw(`(n.group_key || '|' || COALESCE(n.code, ''
 const MESMO_AGRAVO = raw(`(rr.agravo = nn.agravo OR (split_part(rr.agravo, ':', 1) = split_part(nn.agravo, ':', 1) AND (strpos(rr.agravo, ':') = 0 OR strpos(nn.agravo, ':') = 0)))`);
 /** Notificação sem registro oficial vinculado (o índice único parcial de official_records.notification_id responde). */
 const SEM_VINCULO = raw(`NOT EXISTS (SELECT 1 FROM official_records x WHERE x.notification_id = n.id)`);
+/**
+ * A notificação `nid` e o registro `rid` (expressões escritas no código) já são duas linhas da planilha do mesmo surto
+ * aberto (N6): o vínculo automático pula o par, que fica nas sugestões.
+ */
+const mesmoSurtoAberto = (nid: string, rid: string) =>
+  raw(
+    `EXISTS (SELECT 1 FROM outbreak_cases a JOIN outbreak_cases b ON b.outbreak_id = a.outbreak_id AND b.id <> a.id JOIN outbreaks o ON o.id = a.outbreak_id ` +
+      `WHERE a.notification_id = ${nid} AND b.official_record_id = ${rid} AND o.status = 'ABERTO')`,
+  );
 
 @Injectable()
 export class ConciliacaoService {
@@ -452,6 +469,9 @@ export class ConciliacaoService {
    * concorrentes (o "único dos dois lados") são todos os registros e notificações sem vínculo, não só os indicados:
    * primeiro as notificações que casam com os indicados (consulta pequena), depois todos os pares dessas notificações.
    * Roda dentro de uma transação (o advisory lock é da transação); o fuso é o do tenant (padrão: America/Sao_Paulo).
+   * A gravação é em lotes e pula o par que já são duas linhas da planilha do mesmo surto aberto (N6): ele fica nas
+   * sugestões, com o aviso. É o caminho de todo vínculo que não é manual (a tarefa periódica e a aplicação da
+   * importação).
    */
   async conciliarAutomatico(db: Db, filtro?: { recordIds?: string[]; timeZone?: string }): Promise<number> {
     const tz = filtro?.timeZone ?? 'America/Sao_Paulo';
@@ -486,41 +506,57 @@ export class ConciliacaoService {
           )
         ).map((n) => [n.id, n]),
       );
-      const agora = new Date();
-      for (const c of pares) {
+      const linhas = pares.flatMap((c) => {
         const r = regs.get(c.recordId);
         const n = nots.get(c.notificationId);
-        if (!r || !n) continue;
-        // A rejeição do par é conferida de novo na gravação: a gravada depois da leitura dos candidatos também vale.
-        const { count } = await db.officialRecord.updateMany({
-          where: { id: r.id, notificationId: null, rejections: { none: { notificationId: n.id } } },
-          data: { notificationId: n.id, matchMethod: degrau === 1 ? 'NUMERO_OFICIAL' : 'IDENTIDADE', matchedBy: null, matchedAt: agora, divergences: divergenciasDoPar(r, n) as object[] },
-        });
-        total += count;
-      }
+        return r && n ? [{ id: r.id, nid: n.id, divergencias: divergenciasDoPar(r, n) }] : [];
+      });
+      const metodo = degrau === 1 ? 'NUMERO_OFICIAL' : 'IDENTIDADE';
+      const agora = new Date().toISOString();
+      // Em lotes, com as condições conferidas de novo na gravação: o registro ainda sem vínculo, o par sem rejeição (a
+      // gravada depois da leitura dos candidatos também vale) e fora da planilha do mesmo surto aberto (N6).
+      for (let i = 0; i < linhas.length; i += LOTE_GRAVACAO)
+        total += await db.$executeRaw`
+          UPDATE official_records r SET notification_id = x.nid::uuid, match_method = ${metodo}::"RecordMatchMethod", matched_by = NULL,
+            matched_at = ${agora}::timestamptz AT TIME ZONE 'UTC', divergences = x.divergencias, updated_at = ${agora}::timestamptz AT TIME ZONE 'UTC'
+          FROM jsonb_to_recordset(${JSON.stringify(linhas.slice(i, i + LOTE_GRAVACAO))}::jsonb) AS x(id text, nid text, divergencias jsonb)
+          WHERE r.id = x.id::uuid AND r.notification_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM official_record_rejections j WHERE j.record_id = r.id AND j.notification_id = x.nid::uuid)
+            AND NOT ${mesmoSurtoAberto('x.nid::uuid', 'r.id')}`;
     }
     return total;
   }
 
-  /** Recalcula as divergências gravadas dos pares vinculados (depois de uma importação mudar o registro). */
+  /**
+   * Recalcula as divergências gravadas dos pares vinculados (depois de uma importação mudar o registro), em lotes: uma
+   * leitura dos dois lados e um UPDATE por lote (SQL com um parâmetro JSON, como a gravação da importação). Antes era um
+   * UPDATE por registro dentro da transação da aplicação: 4.000 alterados vinculados levavam 5 vezes o tempo dos sem
+   * vínculo. As datas vêm como texto (AAAA-MM-DD): a comparação é só do dia, como em `divergenciasDoPar`.
+   */
   async atualizarDivergencias(db: Db, recordIds: string[]): Promise<void> {
-    for (let i = 0; i < recordIds.length; i += 1000) {
-      const regs = await db.officialRecord.findMany({
-        where: { id: { in: recordIds.slice(i, i + 1000) }, notificationId: { not: null } },
-        select: { id: true, system: true, agravo: true, situation: true, evolution: true, closedOn: true, notificationId: true },
-      });
-      const nots = new Map(
-        (
-          await db.notification.findMany({
-            where: { id: { in: regs.map((r) => r.notificationId!) } },
-            select: { id: true, status: true, finalClass: true, evolution: true, closedAt: true },
-          })
-        ).map((n) => [n.id, n]),
-      );
-      for (const r of regs) {
-        const n = nots.get(r.notificationId!);
-        if (n) await db.officialRecord.update({ where: { id: r.id }, data: { divergences: divergenciasDoPar(r, n) as object[] } });
-      }
+    const comoData = (d: string | null) => (d ? new Date(`${d}T00:00:00Z`) : null);
+    for (let i = 0; i < recordIds.length; i += LOTE_GRAVACAO) {
+      const lote = recordIds.slice(i, i + LOTE_GRAVACAO);
+      const pares = await db.$queryRaw<
+        { id: string; system: string; agravo: string | null; situation: string; evolution: string | null; closedOn: string | null; status: string; finalClass: string | null; nEvolution: string | null; closedAt: string | null }[]
+      >`
+        SELECT r.id::text AS id, r.system::text AS system, r.agravo, r.situation, r.evolution, r.closed_on::text AS "closedOn",
+               n.status::text AS status, n.final_class AS "finalClass", n.evolution AS "nEvolution", n.closed_at::date::text AS "closedAt"
+        FROM official_records r JOIN notifications n ON n.id = r.notification_id
+        WHERE r.id = ANY(${lote}::uuid[])`;
+      if (!pares.length) continue;
+      const linhas = pares.map((p) => ({
+        id: p.id,
+        divergencias: divergenciasDoPar(
+          { system: p.system, agravo: p.agravo, situation: p.situation, evolution: p.evolution, closedOn: comoData(p.closedOn) },
+          { status: p.status, finalClass: p.finalClass, evolution: p.nEvolution, closedAt: comoData(p.closedAt) },
+        ),
+      }));
+      const agora = new Date().toISOString();
+      await db.$executeRaw`
+        UPDATE official_records r SET divergences = x.divergencias, updated_at = ${agora}::timestamptz AT TIME ZONE 'UTC'
+        FROM jsonb_to_recordset(${JSON.stringify(linhas)}::jsonb) AS x(id text, divergencias jsonb)
+        WHERE r.id = x.id::uuid`;
     }
   }
 
@@ -651,27 +687,37 @@ export class ConciliacaoService {
   }
 
   /**
-   * Cobertura das importações aplicadas: sistema, grupos, CNES e período de cada arquivo individual
-   * (`gruposDoArquivo`: o DBF do agravo e o CSV do e-SUS Sinan cobrem os agravos que vieram, com os grupos do mesmo
-   * agravo do Sinan; o e-SUS Notifica, a ficha; só o NINDINET cobre todos os grupos do Sinan Net; `cnesDoArquivo`: o
-   * arquivo de um CNES só cobre essa unidade; `periodoCoberto`: o período vai até a data local do envio). Junta os
+   * Cobertura das importações aplicadas (só a APLICADA: a SUBSTITUIDA, o mesmo arquivo aplicado de novo com outro
+   * período, não cobre nada): sistema, grupos, CNES e período de cada arquivo individual (`gruposDoArquivo`: o DBF do
+   * agravo e o CSV do e-SUS Sinan cobrem os agravos que vieram, com os grupos do mesmo agravo do Sinan; o e-SUS
+   * Notifica, a ficha; só o NINDINET cobre todos os grupos do Sinan Net; `cnesDoArquivo`: o arquivo de um CNES só cobre
+   * essa unidade; `periodoCoberto`: o período vai até a data local do primeiro envio do mesmo arquivo). Junta os
    * intervalos que se tocam por sistema, grupo e CNES e, para a tela, põe numa linha só os grupos com o mesmo sistema,
    * CNES e período.
    */
   private async cobertura(db: Db, timeZone: string): Promise<Cobertura[]> {
-    const imps = await db.officialImport.findMany({ where: { status: 'APLICADA' }, select: { id: true, files: true, periodFrom: true, periodTo: true, declaredPeriod: true, createdAt: true } });
+    const imps = await db.officialImport.findMany({
+      where: { status: 'APLICADA' },
+      select: { id: true, sha256: true, files: true, periodFrom: true, periodTo: true, declaredPeriod: true, createdAt: true },
+    });
     const arquivos = (imp: (typeof imps)[number]) => (Array.isArray(imp.files) ? (imp.files as unknown as ArquivoDetectado[]) : []);
-    const gravados = await this.gruposGravados(
-      db,
-      imps.filter((i) => arquivos(i).some((a) => a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos)).map((i) => i.id),
-    );
+    const [gravados, primeiros] = await Promise.all([
+      this.gruposGravados(
+        db,
+        imps.filter((i) => arquivos(i).some((a) => a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos)).map((i) => i.id),
+      ),
+      primeirosEnvios(
+        db,
+        imps.map((i) => i.sha256),
+      ),
+    ]);
     type Trecho = { sistema: SistemaOficial; grupo: string | null; cnes: string | null; de: string; ate: string };
     const porChave = new Map<string, Trecho[]>();
     for (const imp of imps) {
       for (const a of arquivos(imp)) {
         const grupos = gruposDoArquivo(a, gravados.get(imp.id));
         if (!a.sistema || (grupos !== null && !grupos.length)) continue;
-        const periodo = periodoCoberto(imp, a, timeZone);
+        const periodo = periodoCoberto(imp, a, timeZone, primeiros.get(imp.sha256));
         if (!periodo) continue;
         const cnes = cnesDoArquivo(a);
         for (const grupo of grupos ?? [null]) {
@@ -819,6 +865,22 @@ export class ConciliacaoService {
     };
   }
 
+  /**
+   * Pares (registro|notificação) que já são duas linhas da planilha do mesmo surto aberto (N6), com o número do surto:
+   * o vínculo automático os pula e a sugestão avisa.
+   */
+  private async paresNoMesmoSurto(db: Db, pares: { recordId: string; notificationId: string }[]): Promise<Map<string, string>> {
+    if (!pares.length) return new Map();
+    const linhas = await db.$queryRaw<{ rid: string; nid: string; surto: string }[]>`
+      SELECT x.rid, x.nid, min(o.number) AS surto
+      FROM jsonb_to_recordset(${JSON.stringify(pares.map((p) => ({ rid: p.recordId, nid: p.notificationId })))}::jsonb) AS x(rid text, nid text)
+      JOIN outbreak_cases a ON a.notification_id = x.nid::uuid
+      JOIN outbreak_cases b ON b.outbreak_id = a.outbreak_id AND b.id <> a.id AND b.official_record_id = x.rid::uuid
+      JOIN outbreaks o ON o.id = a.outbreak_id AND o.status = 'ABERTO'
+      GROUP BY x.rid, x.nid`;
+    return new Map(linhas.map((l) => [`${l.rid}|${l.nid}`, l.surto]));
+  }
+
   /** Lados sigilosos mostrados com identificação (para a auditoria). */
   private sigilososDosPares(pares: { r: { id: string; sensitive: boolean }; n: { id: string; sensitive: boolean } }[], sensivel: boolean) {
     if (!sensivel) return [];
@@ -936,6 +998,42 @@ export class ConciliacaoService {
     return { total: linha!.total, pagina, porPagina: POR_PAGINA, itens: nots.map((n) => this.resumoNotificacao(n, sensivel)) };
   }
 
+  /**
+   * GET /vigilancia/conciliacao/candidatas: as notificações que o diálogo "Vincular…" do registro oferece. As
+   * NOTIFICADA/ENCERRADA sem vínculo, com os filtros e a regra de sigilo do "só no OmniSaúde" (a busca por nome, CNS ou
+   * CPF só acha a sigilosa para quem tem `notificacao.sensivel`, e o paciente dela só aparece para quem tem), mas sem a
+   * cobertura das importações: a notificação do mesmo caso feita em outra unidade (arquivo de um CNES só) ou depois do
+   * envio fica fora do "só no OmniSaúde" e continua achável aqui. O grupo vale com os grupos do mesmo agravo do Sinan
+   * (o registro do Y09 acha a notificação da violência sexual).
+   */
+  async candidatas(ctx: RequestContext, filtro: FiltroConciliacao): Promise<ListaCandidatasVinculo> {
+    const sensivel = this.pode(ctx, 'notificacao.sensivel');
+    const { pagina, offset } = this.paginaDo(filtro);
+    const busca = filtro.busca?.trim();
+    const filtros: Sql[] = [];
+    if (filtro.sistema) filtros.push(sql`n.official_system::text = ${filtro.sistema}`);
+    if (filtro.grupo) filtros.push(sql`n.group_key = ANY(${gruposDoMesmoAgravo(filtro.grupo)}::text[])`);
+    if (busca) filtros.push(sql`(${join([...this.sqlBuscaNotificacao(busca, sensivel), sql`strpos(COALESCE(n.official_number, ''), ${busca}) > 0`], ' OR ')})`);
+    if (filtro.de) filtros.push(sql`${sqlDataSinan(ctx.tenant.timeZone)} >= ${filtro.de}::date`);
+    if (filtro.ate) filtros.push(sql`${sqlDataSinan(ctx.tenant.timeZone)} <= ${filtro.ate}::date`);
+    const [linha] = await ctx.db.$queryRaw<{ total: number; ids: string[] }[]>`
+      WITH c AS (
+        SELECT n.id, n.notified_at FROM notifications n JOIN patients p ON p.id = n.patient_id
+        WHERE n.status IN ('NOTIFICADA', 'ENCERRADA') AND ${SEM_VINCULO} ${filtros.length ? sql`AND ${join(filtros, ' AND ')}` : empty}
+      )
+      SELECT (SELECT count(*) FROM c)::int AS total,
+             COALESCE((SELECT array_agg(q.id ORDER BY q.i) FROM (SELECT id, row_number() OVER (ORDER BY notified_at NULLS LAST, id) AS i FROM c ORDER BY notified_at NULLS LAST, id LIMIT ${POR_PAGINA} OFFSET ${offset}) q), '{}') AS ids`;
+    const nots = await this.notificacoesPorId(ctx.db, linha!.ids);
+    await this.auditarLista(
+      ctx,
+      'candidatas',
+      filtro,
+      nots.length,
+      nots.filter((n) => n.sensitive && sensivel).map((n) => ({ tipo: 'Notification' as const, id: n.id })),
+    );
+    return { total: linha!.total, pagina, porPagina: POR_PAGINA, itens: nots.map((n) => this.resumoNotificacao(n, sensivel)) };
+  }
+
   /** GET /vigilancia/conciliacao/divergentes: pares vinculados com diferença (calculada com os dados atuais dos dois lados). */
   async divergentes(ctx: RequestContext, filtro: FiltroConciliacao): Promise<ListaDivergentes> {
     return this.listaDePares(ctx, 'divergentes', filtro);
@@ -963,7 +1061,19 @@ export class ConciliacaoService {
       const n = nots.get(c.notificationId);
       return r && n ? [{ c, r, n }] : [];
     });
-    const itens: SugestaoVinculo[] = pares.map(({ c, r, n }) => ({ registro: this.resumoRegistro(r, sensivel), notificacao: this.resumoNotificacao(n, sensivel), degrau: c.degrau, motivo: c.motivo }));
+    const noSurto = await this.paresNoMesmoSurto(
+      ctx.db,
+      pares.map(({ c }) => c),
+    );
+    const itens: SugestaoVinculo[] = pares.map(({ c, r, n }) => {
+      const surto = noSurto.get(`${c.recordId}|${c.notificationId}`);
+      return {
+        registro: this.resumoRegistro(r, sensivel),
+        notificacao: this.resumoNotificacao(n, sensivel),
+        degrau: c.degrau,
+        motivo: surto ? `${c.motivo}; as duas linhas estão no surto ${surto}` : c.motivo,
+      };
+    });
     await this.auditarLista(ctx, 'sugestoes', filtro, itens.length, this.sigilososDosPares(pares, sensivel));
     return { total: linha!.total, pagina, porPagina: POR_PAGINA, itens };
   }
@@ -1001,7 +1111,9 @@ export class ConciliacaoService {
 
   /**
    * GET /vigilancia/conciliacao/bairros: os nomes sem correspondência, do que tem mais registros para o que tem menos,
-   * em páginas de 50, com os bairros parecidos (nome e apelidos) calculados só para a página.
+   * em páginas de 50, com os bairros parecidos (nome e apelidos) calculados só para a página (`bairrosParecidos`). Num
+   * território grande são dezenas de milhares de comparações por nome: o laço de eventos é cedido entre um nome e outro
+   * (a API atende os outros pedidos, de todos os municípios, no meio da página).
    */
   async bairros(ctx: RequestContext, filtro: Pick<FiltroConciliacao, 'pagina'> = {}): Promise<ListaBairrosSemCorrespondencia> {
     const { pagina, offset } = this.paginaDo(filtro);
@@ -1009,41 +1121,72 @@ export class ConciliacaoService {
     // A grafia que mais aparece dá o nome mostrado (e o apelido gravado).
     const ordenados = [...nomes].map(([norm, a]) => ({ norm, a, nome: [...a.contagens].sort((x, y) => y[1] - x[1] || ORDEM.compare(x[0], y[0]))[0]![0] }));
     ordenados.sort((x, y) => y.a.registros - x.a.registros || ORDEM.compare(x.nome, y.nome));
-    const itens: BairroSemCorrespondencia[] = ordenados.slice(offset, offset + POR_PAGINA).map(({ norm, a, nome }) => ({
-      nome,
-      nomeNormalizado: norm,
-      codigo: a.codigo,
-      registros: a.registros,
-      candidatos: bairros
-        .map((b) => ({ b, nota: b.nomes.reduce((m, n) => Math.max(m, semelhanca(norm, n)), 0) }))
-        .filter((x) => x.nota >= 0.5)
-        .sort((x, y) => y.nota - x.nota || ORDEM.compare(x.b.nome, y.b.nome))
-        .slice(0, 5)
-        .map((x) => ({ neighborhoodId: x.b.id, nome: x.b.nome, localidade: x.b.localidade })),
-    }));
+    const comparaveis = bairrosComparaveis(bairros);
+    const itens: BairroSemCorrespondencia[] = [];
+    for (const { norm, a, nome } of ordenados.slice(offset, offset + POR_PAGINA)) {
+      if (itens.length) await new Promise<void>((r) => setImmediate(r));
+      itens.push({
+        nome,
+        nomeNormalizado: norm,
+        codigo: a.codigo,
+        registros: a.registros,
+        candidatos: bairrosParecidos(norm, comparaveis).map((b) => ({ neighborhoodId: b.id, nome: b.nome, localidade: b.localidade })),
+      });
+    }
     return { total: ordenados.length, pagina, porPagina: POR_PAGINA, itens };
   }
 
   // ───────────────────────────── ações ─────────────────────────────
 
   /**
-   * Trava da conciliação para as ações da tela (vincular, desvincular, rejeitar), na transação delas, em tentativas
-   * curtas por até 3 s. A importação fica com ela durante a aplicação inteira (pega logo depois da trava da
-   * importação) e a tarefa, durante o vínculo automático; sem conseguir, 409 CONCILIACAO_OCUPADA. Esperar a aplicação
-   * acabar deixava o pedido parado até a borda cortar (100 s).
+   * Gravação das ações da tela (vincular, desvincular, rejeitar) com a trava da conciliação, em transações curtas: cada
+   * tentativa abre a transação e tenta a trava (pg_try_advisory_xact_lock); com ela, grava e faz commit na mesma
+   * transação; sem ela, sai da transação (a conexão volta para o pool) e espera 100 ms fora dela, por até 3 s no total;
+   * depois, 409 CONCILIACAO_OCUPADA. A trava fica com a importação durante a aplicação inteira (pega logo depois da trava
+   * da importação), com a tarefa durante o vínculo automático e, por instantes, com outra ação. Esperar com a transação
+   * aberta prendia uma conexão do pool por pedido: com a importação aplicando, 4 cliques esgotavam o pool do município
+   * (5 conexões em produção) e as outras telas esperavam ou caíam.
    */
-  private async travarParaAcao(tx: Db): Promise<void> {
+  private async comTrava<T>(ctx: RequestContext, gravar: (tx: Db) => Promise<T>): Promise<T> {
     const limite = Date.now() + ESPERA_TRAVA_MS;
     for (;;) {
-      const [trava] = await tx.$queryRaw<{ ok: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtext('vigilancia:conciliacao')) AS ok`;
-      if (trava?.ok) return;
-      if (Date.now() >= limite) throw new DomainError('CONCILIACAO_OCUPADA', 'Uma importação está sendo aplicada. Tente de novo em instantes.', HttpStatus.CONFLICT);
+      const tentativa = await ctx.db.$transaction(async (tx) => {
+        const [trava] = await tx.$queryRaw<{ ok: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtext('vigilancia:conciliacao')) AS ok`;
+        return trava?.ok ? { valor: await gravar(tx) } : null;
+      }, this.opcoesDaAcao);
+      if (tentativa) return tentativa.valor;
+      if (Date.now() >= limite) throw new DomainError('CONCILIACAO_OCUPADA', MENSAGEM_OCUPADA, HttpStatus.CONFLICT);
       await new Promise((r) => setTimeout(r, INTERVALO_TRAVA_MS));
     }
   }
 
-  /** Transação das ações da tela: cabe a espera pela trava e a gravação (o padrão do Prisma é 5 s). */
-  private readonly opcoesDaAcao = { maxWait: 5_000, timeout: ESPERA_TRAVA_MS + 15_000 };
+  /** Transação de cada tentativa das ações da tela: a trava (sem esperar) e a gravação. */
+  private readonly opcoesDaAcao = { maxWait: 5_000, timeout: 15_000 };
+
+  /**
+   * N6: a notificação e o registro que já são duas linhas da planilha do mesmo surto aberto não se vinculam (o caso
+   * ficaria duas vezes na planilha e na exportação para o Sinan). Sob a trava da conciliação, pega as travas
+   * 'surto-caso:<id>' dos surtos que têm a notificação ou o registro, em ordem crescente de id (a ordem das travas é
+   * importação, conciliação, surtos; quem segura a de um surto nunca pede a da conciliação), e só então confere: a
+   * inclusão da outra linha ao mesmo tempo espera ou é vista. Surto encerrado ou descartado não conta: a planilha dele
+   * não muda mais, e o vínculo é que tira a dupla contagem da base consolidada.
+   */
+  private async conferirSurtos(tx: Db, r: { id: string; number: string }, n: { id: string }): Promise<void> {
+    const surtos = await tx.$queryRaw<{ id: string }[]>`
+      SELECT DISTINCT outbreak_id::text AS id FROM outbreak_cases WHERE notification_id = ${n.id}::uuid OR official_record_id = ${r.id}::uuid ORDER BY 1`;
+    for (const s of surtos) await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`surto-caso:${s.id}`}))`;
+    const [dupla] = await tx.$queryRaw<{ surto: string; a: number; b: number }[]>`
+      SELECT o.number AS surto, a.case_number AS a, b.case_number AS b
+      FROM outbreak_cases a JOIN outbreak_cases b ON b.outbreak_id = a.outbreak_id AND b.id <> a.id JOIN outbreaks o ON o.id = a.outbreak_id
+      WHERE a.notification_id = ${n.id}::uuid AND b.official_record_id = ${r.id}::uuid AND o.status = 'ABERTO'
+      ORDER BY o.number, a.case_number, b.case_number LIMIT 1`;
+    if (dupla)
+      throw new DomainError(
+        'CASO_DUPLICADO_NO_SURTO',
+        `A notificação e o registro ${r.number} são linhas do surto ${dupla.surto} (casos ${dupla.a} e ${dupla.b}). Retire uma das linhas da planilha antes de vincular.`,
+        HttpStatus.CONFLICT,
+      );
+  }
 
   /** POST /vigilancia/conciliacao/vincular. */
   async vincular(ctx: RequestContext, corpo: CorpoVincular): Promise<RespostaVincular> {
@@ -1064,16 +1207,17 @@ export class ConciliacaoService {
     let preenchido = false;
     if (corpo.preencherNumeroOficial && n.entryStatus === 'PENDENTE' && n.officialSystem === r.system && !n.officialNumber) {
       if (!this.pode(ctx, 'vigilancia.digitar')) throw forbidden('Preencher o número oficial exige a permissão de digitação');
-      // Com uma importação aplicando, o 409 vem antes de mexer na notificação (o número não fica sem o vínculo).
-      await ctx.db.$transaction((tx) => this.travarParaAcao(tx), this.opcoesDaAcao);
+      // Com uma importação aplicando, o 409 vem antes de mexer na notificação (o número não fica sem o vínculo): a
+      // sonda pega a trava numa transação curta e a solta no commit.
+      await this.comTrava(ctx, async () => undefined);
       // A regra do endpoint notificacoes/:id/numero-oficial (formato, número repetido, fila), sem duplicar.
       await this.notificacoes().informarNumero(ctx, n.id, { numero: r.number, lote: null });
       preenchido = true;
     }
     const divergencias = divergenciasDoPar(r, n);
     try {
-      await ctx.db.$transaction(async (tx) => {
-        await this.travarParaAcao(tx);
+      await this.comTrava(ctx, async (tx) => {
+        await this.conferirSurtos(tx, r, n);
         const { count } = await tx.officialRecord.updateMany({
           where: { id: r.id, notificationId: null },
           data: { notificationId: n.id, matchMethod: 'MANUAL', matchedBy: ctx.session.userId, matchedAt: new Date(), divergences: divergencias as object[] },
@@ -1086,7 +1230,7 @@ export class ConciliacaoService {
           entityId: r.id,
           payload: { notificationId: n.id, notificacao: n.number, sistema: r.system, numero: r.number, motivo: corpo.motivo?.trim() || null, numeroOficialPreenchido: preenchido },
         });
-      }, this.opcoesDaAcao);
+      });
     } catch (e) {
       if ((e as { code?: string }).code === 'P2002') throw conflict('A notificação já está vinculada a outro registro oficial');
       throw e;
@@ -1100,8 +1244,7 @@ export class ConciliacaoService {
     if (!r) throw notFound('Registro oficial');
     if (!r.notificationId) throw conflict('O registro não está vinculado');
     const notificationId = r.notificationId;
-    await ctx.db.$transaction(async (tx) => {
-      await this.travarParaAcao(tx);
+    await this.comTrava(ctx, async (tx) => {
       const { count } = await tx.officialRecord.updateMany({
         where: { id: r.id, notificationId },
         data: { notificationId: null, matchMethod: null, matchedBy: null, matchedAt: null, divergences: TenantPrisma.DbNull },
@@ -1118,7 +1261,7 @@ export class ConciliacaoService {
         entityId: r.id,
         payload: { notificationId, numero: r.number, metodoAnterior: r.matchMethod, motivo: corpo.motivo.trim() },
       });
-    }, this.opcoesDaAcao);
+    });
     return { ok: true };
   }
 
@@ -1134,8 +1277,7 @@ export class ConciliacaoService {
     if (!r) throw notFound('Registro oficial');
     if (!n) throw notFound('Notificação');
     if (r.notificationId === n.id) throw conflict('O par está vinculado: use "desvincular"');
-    await ctx.db.$transaction(async (tx) => {
-      await this.travarParaAcao(tx);
+    await this.comTrava(ctx, async (tx) => {
       // Relido com a trava: o vínculo automático pode ter gravado o par enquanto o pedido esperava.
       const relido = await tx.officialRecord.findUnique({ where: { id: r.id }, select: { notificationId: true } });
       if (relido?.notificationId === n.id) throw conflict('O par está vinculado: use "desvincular"');
@@ -1150,7 +1292,7 @@ export class ConciliacaoService {
         entityId: r.id,
         payload: { notificationId: n.id, notificacao: n.number, numero: r.number, motivo: corpo.motivo.trim() },
       });
-    }, this.opcoesDaAcao);
+    });
     return { ok: true };
   }
 
@@ -1186,18 +1328,128 @@ export class ConciliacaoService {
   }
 }
 
-/** Semelhança entre dois nomes normalizados (0 a 1): palavras em comum e distância de edição. */
-function semelhanca(a: string, b: string): number {
-  if (!a || !b) return 0;
-  if (a === b) return 1;
-  if (a.includes(b) || b.includes(a)) return 0.8;
-  const pa = new Set(a.split(' '));
-  const pb = new Set(b.split(' '));
-  const comuns = [...pa].filter((p) => pb.has(p)).length;
-  const jaccard = comuns / new Set([...pa, ...pb]).size;
-  return Math.max(jaccard, 1 - levenshtein(a, b) / Math.max(a.length, b.length));
+// ───────────────────────────── bairros parecidos ─────────────────────────────
+
+/** Nota mínima (0 a 1) para um bairro do território ser parecido com o nome sem correspondência. */
+const NOTA_PARECIDO = 0.5;
+/** Bairros parecidos mostrados por nome. */
+const PARECIDOS_POR_NOME = 5;
+
+/** Nome normalizado pronto para comparar: o texto e as palavras distintas (calculadas uma vez por pedido). */
+interface NomeComparavel {
+  texto: string;
+  palavras: Set<string>;
 }
 
+/** Bairro do território com o nome e os apelidos prontos para comparar. */
+export interface BairroComparavel {
+  id: string;
+  nome: string;
+  localidade: string | null;
+  nomes: NomeComparavel[];
+}
+
+const comparavel = (texto: string): NomeComparavel => ({ texto, palavras: new Set(texto.split(' ')) });
+
+/** Os bairros ativos (nome e apelidos já normalizados) prontos para `bairrosParecidos`. */
+export function bairrosComparaveis(bairros: readonly { id: string; nome: string; localidade: string | null; nomes: readonly string[] }[]): BairroComparavel[] {
+  return bairros.map((b) => ({ id: b.id, nome: b.nome, localidade: b.localidade, nomes: b.nomes.map(comparavel) }));
+}
+
+/**
+ * Bairros parecidos com o nome sem correspondência (normalizado), do mais para o menos parecido, até 5: a nota do
+ * bairro é a maior semelhança entre o nome e o nome ou os apelidos dele (palavras em comum e distância de edição), e
+ * entram os de nota 0,5 ou mais, com o nome do bairro desempatando. Os candidatos e a ordem são os da conta direta de
+ * todos os pares; a conta só pula o que não muda o resultado (`semelhancaAcimaDoLimiar`).
+ */
+export function bairrosParecidos(norm: string, bairros: readonly BairroComparavel[]): BairroComparavel[] {
+  const nome = comparavel(norm);
+  const notas: { b: BairroComparavel; nota: number }[] = [];
+  for (const b of bairros) {
+    let nota = 0;
+    for (const n of b.nomes) {
+      const s = semelhancaAcimaDoLimiar(nome, n);
+      if (s > nota) nota = s;
+    }
+    if (nota >= NOTA_PARECIDO) notas.push({ b, nota });
+  }
+  return notas
+    .sort((x, y) => y.nota - x.nota || ORDEM.compare(x.b.nome, y.b.nome))
+    .slice(0, PARECIDOS_POR_NOME)
+    .map((x) => x.b);
+}
+
+/**
+ * Semelhança entre dois nomes normalizados (0 a 1): 1 se iguais; 0,8 se um contém o outro; senão, a maior entre a das
+ * palavras em comum (Jaccard) e a da distância de edição (1 - distância / maior comprimento). Exata sempre que chega a
+ * 0,5; abaixo disso pode sair menor (o bairro fica fora do mesmo jeito). Pré-filtro barato: a distância de edição é
+ * pelo menos a diferença de comprimento; se nem com ela a nota da distância alcança o limiar (0,5, ou a das palavras,
+ * quando é maior), a conta da distância não muda o resultado e fica de fora.
+ */
+function semelhancaAcimaDoLimiar(a: NomeComparavel, b: NomeComparavel): number {
+  const x = a.texto;
+  const y = b.texto;
+  if (!x || !y) return 0;
+  if (x === y) return 1;
+  if (x.length < y.length ? y.includes(x) : x.length > y.length && x.includes(y)) return 0.8;
+  let comuns = 0;
+  for (const p of a.palavras) if (b.palavras.has(p)) comuns++;
+  const jaccard = comuns / (a.palavras.size + b.palavras.size - comuns);
+  const maior = Math.max(x.length, y.length);
+  if (1 - Math.abs(x.length - y.length) / maior < Math.max(jaccard, NOTA_PARECIDO)) return jaccard;
+  return Math.max(jaccard, 1 - distanciaDeEdicao(x, y) / maior);
+}
+
+/** Máscaras de bits do padrão no algoritmo de Myers, por código de caractere (abaixo de 128), zeradas depois de cada conta. */
+const MASCARAS = new Int32Array(128);
+
+/**
+ * Distância de edição (Levenshtein: inserção, remoção e troca custam 1), a mesma da conta por programação dinâmica.
+ * Com o menor dos dois de até 32 caracteres (abaixo do código 128), pelo algoritmo de vetores de bits de Myers (1999),
+ * na formulação de Hyyrö: uma passada pelo maior, com operações de 32 bits, em vez da tabela inteira; senão, a conta
+ * linha a linha.
+ */
+export function distanciaDeEdicao(a: string, b: string): number {
+  let p = a;
+  let t = b;
+  if (b.length < a.length) {
+    p = b;
+    t = a;
+  }
+  const m = p.length;
+  if (!m) return t.length;
+  if (m > 32) return levenshtein(a, b);
+  for (let i = 0; i < m; i++) {
+    const c = p.charCodeAt(i);
+    if (c >= 128) {
+      for (let k = 0; k < i; k++) MASCARAS[p.charCodeAt(k)] = 0;
+      return levenshtein(a, b);
+    }
+    MASCARAS[c] = MASCARAS[c]! | (1 << i);
+  }
+  const ultimo = 1 << (m - 1);
+  let pv = -1;
+  let mv = 0;
+  let d = m;
+  for (let j = 0; j < t.length; j++) {
+    const c = t.charCodeAt(j);
+    const eq = c < 128 ? MASCARAS[c]! : 0;
+    const xv = eq | mv;
+    const xh = (((eq & pv) + pv) ^ pv) | eq;
+    let ph = mv | ~(xh | pv);
+    let mh = pv & xh;
+    if (ph & ultimo) d++;
+    else if (mh & ultimo) d--;
+    ph = (ph << 1) | 1;
+    mh <<= 1;
+    pv = mh | ~(xv | ph);
+    mv = ph & xv;
+  }
+  for (let i = 0; i < m; i++) MASCARAS[p.charCodeAt(i)] = 0;
+  return d;
+}
+
+/** Distância de edição pela tabela de programação dinâmica, linha a linha (para o nome de mais de 32 caracteres). */
 function levenshtein(a: string, b: string): number {
   const linha = Array.from({ length: b.length + 1 }, (_, j) => j);
   for (let i = 1; i <= a.length; i++) {

@@ -16,6 +16,8 @@ import {
   type DetalheImportacao,
   type ErroImportacao,
   type EtapaImportacao,
+  type ImportacaoDoMesmoArquivo,
+  type ImportacaoSubstituida,
   type ListaImportacoes,
   type PreviaImportacao,
   type RespostaAplicacao,
@@ -49,9 +51,12 @@ import { NegativaService } from './negativa.service';
  *
  * Memória (container de 1 GiB): o envio é lido em fluxo e comparado em lotes; o payload vai para um arquivo temporário
  * com gzip e daí para o banco em fatias; a aplicação o lê em fatias e em lotes. Uma prévia ou aplicação por vez neste
- * processo: a outra recebe 409. O envio recebe 409 antes de o corpo ser lido quando o processo já tem `LIMITE_CARGAS`
- * arquivos na memória (corpo sendo lido ou leitura em segundo plano, de qualquer tenant) ou quando o tenant tem outra
- * importação lendo ou aplicando (sinal de vida recente, em qualquer processo).
+ * processo: a outra recebe 409. O envio recebe 409 antes de o corpo ser lido quando o tenant tem outra importação lendo
+ * ou aplicando (sinal de vida recente, em qualquer processo: IMPORTACAO_OCUPADA, a tela manda acompanhar no histórico)
+ * ou quando o processo está ocupado com outros envios (IMPORTACAO_SERVIDOR_OCUPADO, com a mensagem da API): já tem
+ * `LIMITE_CARGAS` arquivos na memória (corpo sendo lido ou leitura em segundo plano, de qualquer tenant), o tenant já
+ * tem um (`LIMITE_CARGAS_TENANT`: o outro envio dele ainda chegando) ou a vez está com a importação de outro tenant. O
+ * corpo que para de chegar por 30 s dá 408 (`rawBody`), e a carga é solta.
  *
  * Tempo (container de 1/4 de vCPU; a borda da Cloudflare corta com 524 a resposta que não começa em ~100 s): a leitura
  * e a aplicação rodam em segundo plano no próprio processo, com a vez do processo presa até acabarem. O pedido espera
@@ -66,12 +71,19 @@ type Db = TenantPrisma.TransactionClient;
 const HORA = 3_600_000;
 /**
  * Arquivos de importação na memória do processo, de qualquer tenant: o corpo sendo lido e o arquivo da leitura em
- * segundo plano (até 95 MB cada, e o dobro por um instante enquanto o corpo é juntado). No teto, o envio seguinte
- * recebe 409 antes de o corpo ser lido (o Node descarta o corpo não lido, sem juntar).
+ * segundo plano (até 95 MB cada; com o Content-Length, o Buffer é alocado uma vez). No teto, o envio seguinte recebe
+ * 409 antes de o corpo ser lido (o Node descarta o corpo não lido, sem juntar).
  */
 const LIMITE_CARGAS = 2;
+/** Cargas de um tenant ao mesmo tempo: dois envios lentos do mesmo município não seguram o processo inteiro. */
+const LIMITE_CARGAS_TENANT = 1;
+/** A importação do próprio tenant lendo ou aplicando (aparece no histórico dele). */
 const MSG_OCUPADA = 'Outra importação está sendo processada agora. Tente de novo em alguns minutos.';
-const MSG_CARGAS = 'Outro envio está sendo recebido ou processado. Tente de novo em instantes.';
+/** O processo ocupado com envios ou importações de outros tenants. */
+const MSG_SERVIDOR_OCUPADO = 'O servidor está recebendo ou processando outros envios agora. Tente de novo em instantes.';
+/** O outro envio do mesmo tenant, ainda chegando (ou com o arquivo na memória). */
+const MSG_ENVIO_DO_TENANT = 'Outro envio da sua instituição está sendo recebido agora. Tente de novo quando ele terminar.';
+const MSG_SUBSTITUIDA = 'A importação foi aplicada e depois substituída por uma aplicação do mesmo arquivo com outro período.';
 const ERRO_LEITURA_INTERROMPIDA: ErroImportacao = {
   codigo: 'LEITURA_INTERROMPIDA',
   mensagem: 'A leitura do arquivo foi interrompida (o servidor reiniciou). Envie o arquivo de novo.',
@@ -100,6 +112,18 @@ const FATIA_HASH = 4 * 1024 * 1024;
 /** Registro do banco com o estado e os campos que a prévia e as listas usam. */
 type LinhaBanco = LinhaEstado & { system: string; type: string; naturalKey: string; contentHash: string; absentSince: Date | null; notificationId: string | null };
 
+/** Importação do mesmo arquivo aplicada antes (a que a aplicação substitui), com os ausentes que ela marcou. */
+interface AnteriorDoArquivo {
+  id: string;
+  createdAt: Date;
+  appliedAt: Date | null;
+  periodFrom: Date | null;
+  periodTo: Date | null;
+  declaredPeriod: boolean;
+  /** Registros com absent_import_id nela, contados antes de gravar os registros deste envio. */
+  ausentes: number;
+}
+
 interface Comparado {
   r: RegistroDoEnvio;
   antes: EstadoRegistro;
@@ -109,6 +133,8 @@ interface Comparado {
 }
 
 const dia = (d: Date | null | undefined) => (d ? d.toISOString().slice(0, 10) : null);
+/** AAAA-MM-DD → DD/MM/AAAA. */
+const dataBr = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 const txt = (v: unknown) => (typeof v === 'string' && v ? v : null);
 const SINAN: readonly SistemaOficial[] = ['SINAN_NET', 'SINAN_ONLINE'];
 
@@ -192,8 +218,12 @@ interface Trabalho {
 class Processo {
   /** Uma prévia ou aplicação por vez (o envio grande ocupa a memória e a CPU do container). */
   ocupado = false;
+  /** O tenant da importação que está com a vez (null: a vez tomada sem tenant, como nos testes). */
+  donoDaVez: string | null = null;
   /** Arquivos de importação na memória (`LIMITE_CARGAS`). */
   cargas = 0;
+  /** Arquivos de importação na memória por tenant (`LIMITE_CARGAS_TENANT`). */
+  readonly cargasPorTenant = new Map<string, number>();
   /** Trabalhos em segundo plano, pelo id da importação: o sinal de vida parado de um deles não é trabalho interrompido. */
   readonly trabalhos = new Map<string, Trabalho>();
 }
@@ -239,20 +269,28 @@ export class ImportacaoService {
     return this.moduleRef.get(NegativaService, { strict: false });
   }
 
-  /** Toma a vez do processo; com outra prévia ou aplicação em andamento, 409. */
-  private tomarVez(p: Processo): void {
-    if (p.ocupado) throw new DomainError('IMPORTACAO_OCUPADA', MSG_OCUPADA, HttpStatus.CONFLICT);
+  /**
+   * Toma a vez do processo para o tenant; com outra prévia ou aplicação em andamento, 409: IMPORTACAO_OCUPADA quando é
+   * a importação do mesmo tenant (aparece no histórico dele), IMPORTACAO_SERVIDOR_OCUPADO quando é a de outro tenant.
+   */
+  private tomarVez(p: Processo, tenantId: string | null): void {
+    if (p.ocupado) {
+      if (tenantId && p.donoDaVez === tenantId) throw new DomainError('IMPORTACAO_OCUPADA', MSG_OCUPADA, HttpStatus.CONFLICT);
+      throw new DomainError('IMPORTACAO_SERVIDOR_OCUPADO', MSG_SERVIDOR_OCUPADO, HttpStatus.CONFLICT);
+    }
     p.ocupado = true;
+    p.donoDaVez = tenantId;
   }
 
   private devolverVez(p: Processo): void {
     p.ocupado = false;
+    p.donoDaVez = null;
   }
 
   /** Roda `fn` sozinho neste processo; com outra prévia ou aplicação em andamento, 409 (os testes seguram a vez assim). */
   private async exclusivo<T>(fn: () => Promise<T>): Promise<T> {
     const p = ImportacaoService.processo;
-    this.tomarVez(p);
+    this.tomarVez(p, null);
     try {
       return await fn();
     } finally {
@@ -261,17 +299,23 @@ export class ImportacaoService {
   }
 
   /**
-   * Reserva uma carga na memória do processo antes de ler o corpo; no teto, 409. Devolve a liberação (pode ser chamada
-   * mais de uma vez).
+   * Reserva uma carga na memória do processo para o tenant antes de ler o corpo; com o tenant ou o processo no teto, 409
+   * IMPORTACAO_SERVIDOR_OCUPADO. Devolve a liberação (pode ser chamada mais de uma vez).
    */
-  private reservarCarga(p: Processo): () => void {
-    if (p.cargas >= LIMITE_CARGAS) throw new DomainError('IMPORTACAO_OCUPADA', MSG_CARGAS, HttpStatus.CONFLICT);
+  private reservarCarga(p: Processo, tenantId: string): () => void {
+    const doTenant = p.cargasPorTenant.get(tenantId) ?? 0;
+    if (doTenant >= LIMITE_CARGAS_TENANT) throw new DomainError('IMPORTACAO_SERVIDOR_OCUPADO', MSG_ENVIO_DO_TENANT, HttpStatus.CONFLICT);
+    if (p.cargas >= LIMITE_CARGAS) throw new DomainError('IMPORTACAO_SERVIDOR_OCUPADO', MSG_SERVIDOR_OCUPADO, HttpStatus.CONFLICT);
     p.cargas++;
+    p.cargasPorTenant.set(tenantId, doTenant + 1);
     let solta = false;
     return () => {
       if (solta) return;
       solta = true;
       p.cargas--;
+      const n = (p.cargasPorTenant.get(tenantId) ?? 1) - 1;
+      if (n > 0) p.cargasPorTenant.set(tenantId, n);
+      else p.cargasPorTenant.delete(tenantId);
     };
   }
 
@@ -398,7 +442,7 @@ export class ImportacaoService {
           WHERE id IN (
             SELECT id FROM official_imports
             WHERE id = ${id}::uuid AND working_step = ${etapa}
-              AND (CASE WHEN working_step = 'LENDO' THEN status = 'PROCESSANDO' ELSE status IN ('PREVIA', 'APLICADA') END)
+              AND (CASE WHEN working_step = 'LENDO' THEN status = 'PROCESSANDO' ELSE status IN ('PREVIA', 'APLICADA', 'SUBSTITUIDA') END)
             FOR NO KEY UPDATE SKIP LOCKED)`;
       } catch (e) {
         this.logger.warn(`Sinal de vida da importação ${id}: ${(e as Error).message}`);
@@ -570,15 +614,70 @@ export class ImportacaoService {
     return { total, amostra };
   }
 
-  /** Aplicação: marca os ausentes da cobertura (os registros que este envio não tocou). Nunca apaga. */
+  /**
+   * Aplicação: marca os ausentes da cobertura (os registros que este envio não tocou), com a importação que marcou
+   * (absent_import_id: se ela for substituída, o registro volta). Nunca apaga.
+   */
   private async marcarAusentes(tx: Db, cobertura: Cobertura[], id: string, agora: Date): Promise<number> {
     let total = 0;
     for (const c of cobertura) {
       if (c.grupos && !c.grupos.length) continue;
-      const { count } = await tx.officialRecord.updateMany({ where: { ...this.ondeCobertura(c), lastImportId: { not: id } }, data: { absentSince: agora } });
+      const { count } = await tx.officialRecord.updateMany({ where: { ...this.ondeCobertura(c), lastImportId: { not: id } }, data: { absentSince: agora, absentImportId: id } });
       total += count;
     }
     return total;
+  }
+
+  /**
+   * Prévia: os registros que a importação `anterior` (do mesmo arquivo, que este envio vai substituir) deu como ausentes
+   * e voltam ao aplicar, em termos líquidos: todos os dela, menos os que a cobertura deste envio marca de novo (dentro
+   * dela e fora do arquivo).
+   */
+  private async voltamDaSubstituicao(db: Db, anterior: string, cobertura: Cobertura[], leitura: LeituraEnvio, ritmo: Ritmo): Promise<number> {
+    let voltam = await db.officialRecord.count({ where: { absentImportId: anterior } });
+    if (!voltam) return 0;
+    for (const c of cobertura) {
+      if (c.grupos && !c.grupos.length) continue;
+      for (let depois: string | null = null; ; ) {
+        const rows: { id: string; system: string; type: string; naturalKey: string }[] = await db.officialRecord.findMany({
+          where: { ...this.ondeCobertura(c), absentSince: undefined, absentImportId: anterior, ...(depois ? { id: { gt: depois } } : {}) },
+          orderBy: { id: 'asc' },
+          take: PAGINA,
+          select: { id: true, system: true, type: true, naturalKey: true },
+        });
+        for (const a of rows) if (!leitura.tem(chaveDoEnvio(a.system, a.type, a.naturalKey))) voltam--;
+        if (rows.length < PAGINA) break;
+        depois = rows[rows.length - 1]!.id;
+        await ritmo.ceder();
+      }
+    }
+    return voltam;
+  }
+
+  /**
+   * Aplicação (na transação, com as travas, depois de gravar os registros do arquivo e antes de marcar os ausentes): as
+   * outras aplicações do mesmo arquivo (`anteriores`, APLICADA) passam a SUBSTITUIDA, com superseded_by = esta. Os
+   * registros que elas deram como ausentes e que a cobertura desta marca de novo (dentro dela e não tocados por este
+   * envio) continuam ausentes, agora por esta, com o absent_since de quando sumiram; os outros voltam (absent_since e
+   * absent_import_id nulos). Devolve, por substituída, quantos voltaram em termos líquidos (os dela que deixaram de
+   * estar ausentes, os que vieram no arquivo inclusive).
+   */
+  private async substituirAnteriores(tx: Db, anteriores: AnteriorDoArquivo[], cobertura: Cobertura[], id: string): Promise<ImportacaoSubstituida[]> {
+    if (!anteriores.length) return [];
+    const { count } = await tx.officialImport.updateMany({ where: { id: { in: anteriores.map((a) => a.id) }, status: 'APLICADA' }, data: { status: 'SUBSTITUIDA', supersededBy: id } });
+    if (count !== anteriores.length) throw conflict('A importação mudou: abra de novo');
+    const out: ImportacaoSubstituida[] = [];
+    for (const a of anteriores) {
+      let continuam = 0;
+      for (const c of cobertura) {
+        if (c.grupos && !c.grupos.length) continue;
+        const r = await tx.officialRecord.updateMany({ where: { ...this.ondeCobertura(c), absentSince: undefined, absentImportId: a.id, lastImportId: { not: id } }, data: { absentImportId: id } });
+        continuam += r.count;
+      }
+      await tx.officialRecord.updateMany({ where: { absentImportId: a.id }, data: { absentSince: null, absentImportId: null } });
+      out.push({ ...this.doMesmoArquivo(a), voltaram: Math.max(0, a.ausentes - continuam) });
+    }
+    return out;
   }
 
   private amostra(c: Comparado): AmostraRegistro {
@@ -610,10 +709,12 @@ export class ImportacaoService {
   }
 
   /**
-   * A aplicação do mesmo arquivo que já vale para este envio: sem período declarado, qualquer aplicação do arquivo; com
-   * período declarado, só a aplicação com o mesmo período declarado. Outro período gera prévia nova: é como se corrige o
-   * período depois de aplicado (o lido das notificações, ou um declarado errado). O índice único
-   * official_imports_sha_aplicado (SHA-256 e período declarado, "sem período" como valor próprio) segura a corrida.
+   * A aplicação do mesmo arquivo que já vale para este envio: sem período declarado, a aplicação do arquivo (qualquer
+   * período); com período declarado, só a aplicação com o mesmo período declarado. Outro período gera prévia nova: é
+   * como se corrige o período depois de aplicado (o lido das notificações, ou um declarado errado). Aplicada, ela
+   * substitui a anterior (SUBSTITUIDA, que não conta aqui): vale só a aplicação mais recente do arquivo. Para voltar ao
+   * período lido, declara-se esse período. O índice único official_imports_sha_aplicado (SHA-256 e período declarado,
+   * "sem período" como valor próprio) segura a corrida.
    */
   private jaAplicada(db: Db, sha256: string, declarado: { de: string; ate: string } | null) {
     return db.officialImport.findFirst({
@@ -646,7 +747,7 @@ export class ImportacaoService {
     await this.conferirEmAndamento(ctx.db);
     // A carga é reservada logo depois, sem espera no meio (sem corrida entre envios simultâneos), e solta quando o
     // arquivo deixa a memória: no erro ou na resposta sem trabalho; com o trabalho em segundo plano, quando ele acaba.
-    const soltarCarga = this.reservarCarga(p);
+    const soltarCarga = this.reservarCarga(p, ctx.tenant.id);
     let comCarga = true;
     try {
       const arquivo = await lerCorpo();
@@ -656,7 +757,7 @@ export class ImportacaoService {
       const declarado = consulta.de && consulta.ate ? { de: consulta.de, ate: consulta.ate } : null;
       const aplicada = await this.jaAplicada(ctx.db, sha256, declarado);
       if (aplicada) return { jaImportado: { id: aplicada.id, aplicadoEm: (aplicada.appliedAt ?? new Date()).toISOString() } };
-      this.tomarVez(p);
+      this.tomarVez(p, ctx.tenant.id);
       let comVez = true;
       try {
         const id = uuidv7();
@@ -785,8 +886,26 @@ export class ImportacaoService {
         await escritor.escrever(lote);
         await ritmo.ceder();
       }
-      const { cobertura, avisos: avisosCobertura } = acumulador.resultado();
+      // A cobertura termina na data local do primeiro envio do arquivo (o mesmo SHA-256, em qualquer situação, esta
+      // inclusive): reenviado depois para declarar o período, o arquivo continua sem o que veio depois da exportação.
+      const primeiro = (await ctx.db.officialImport.aggregate({ where: { sha256 }, _min: { createdAt: true } }))._min.createdAt ?? new Date();
+      const { cobertura, avisos: avisosCobertura } = acumulador.resultado(localDateString(primeiro, ctx.tenant.timeZone));
       const ausentes = await this.ausentesPrevistos(ctx.db, cobertura, leitura, ritmo);
+      // A aplicação do mesmo arquivo que vale hoje (com outro período): aplicar este envio a substitui.
+      const substitui: string[] = [];
+      for (const a of await ctx.db.officialImport.findMany({
+        where: { sha256, status: 'APLICADA' },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, createdAt: true, periodFrom: true, periodTo: true, declaredPeriod: true },
+      })) {
+        const voltam = await this.voltamDaSubstituicao(ctx.db, a.id, cobertura, leitura, ritmo);
+        const quando = localDateString(a.createdAt, ctx.tenant.timeZone);
+        const periodo = a.periodFrom && a.periodTo ? `período ${dataBr(dia(a.periodFrom)!)} a ${dataBr(dia(a.periodTo)!)}${a.declaredPeriod ? ', declarado' : ', lido das notificações'}` : 'sem período';
+        substitui.push(
+          `Este envio substitui a importação de ${dataBr(quando)} do mesmo arquivo (${periodo}). A cobertura passa a ser a deste envio` +
+            (voltam ? `, e ${voltam.toLocaleString('pt-BR')} registro(s) que ela deu como ausentes voltam.` : '.'),
+        );
+      }
       const tamanhoPayload = await escritor.fechar(cobertura);
       fechado = true;
 
@@ -807,7 +926,7 @@ export class ImportacaoService {
       const sistema = [...porSistema].sort((a, b) => b[1] - a[1])[0]![0];
       const datas = validos.flatMap((a) => (a.periodo ? [a.periodo.de, a.periodo.ate] : [])).sort();
       const periodo = declarado ?? (datas.length ? { de: datas[0]!, ate: datas[datas.length - 1]! } : null);
-      const avisos = [...leitura.avisos, ...avisosCobertura];
+      const avisos = [...substitui, ...leitura.avisos, ...avisosCobertura];
       if (foraDoPeriodo) avisos.push(`${foraDoPeriodo} registro(s) com data da notificação fora do período declarado: entram, mas o período declarado é que define os ausentes.`);
       if (nosDoisSistemas) avisos.push(`${nosDoisSistemas} registro(s) gravados antes nos dois sistemas do Sinan (Net e Online) com a mesma chave: vale o do sistema da dengue ou da chikungunya. Confira na conciliação.`);
       if (validos.some((a) => a.tipo === 'ESUS_NOTIFICA_CSV'))
@@ -916,7 +1035,8 @@ export class ImportacaoService {
         situation = x.situation, severity = x.severity, excluded = x.excluded, sensitive = x.sensitive, patient_name = x.patient_name,
         patient_name_norm = x.patient_name_norm, birth_date = x.birth_date::date, sex = x.sex, mother_name_norm = x.mother_name_norm,
         cns = x.cns, cpf = x.cpf, data = x.data, content_hash = x.content_hash, last_import_id = ${importacao}::uuid,
-        last_seen_at = ${quando}::timestamptz AT TIME ZONE 'UTC', absent_since = NULL, updated_at = ${quando}::timestamptz AT TIME ZONE 'UTC'
+        last_seen_at = ${quando}::timestamptz AT TIME ZONE 'UTC', absent_since = NULL, absent_import_id = NULL,
+        updated_at = ${quando}::timestamptz AT TIME ZONE 'UTC'
       FROM jsonb_to_recordset(${JSON.stringify(linhas)}::jsonb) AS x(id text, system text, number text, notified_on text, epi_week_notified text,
         municipality_ibge text, unit_cnes text, agravo text, suspected_type text, group_key text, symptoms_onset text, epi_week_onset text,
         residence_ibge text, neighborhood_code text, neighborhood_name text, final_class text, criterion text, evolution text, closed_on text,
@@ -934,7 +1054,7 @@ export class ImportacaoService {
     const quando = agora.toISOString();
     await tx.$executeRaw`
       UPDATE official_records r SET data = x.data, last_import_id = ${importacao}::uuid, last_seen_at = ${quando}::timestamptz AT TIME ZONE 'UTC',
-        absent_since = NULL, updated_at = ${quando}::timestamptz AT TIME ZONE 'UTC'
+        absent_since = NULL, absent_import_id = NULL, updated_at = ${quando}::timestamptz AT TIME ZONE 'UTC'
       FROM jsonb_to_recordset(${JSON.stringify(linhas)}::jsonb) AS x(id text, data jsonb)
       WHERE r.id = x.id::uuid`;
   }
@@ -1002,8 +1122,10 @@ export class ImportacaoService {
       workingAt: Date | null;
       error: unknown;
       applyResult: unknown;
+      supersededBy: string | null;
     },
     nomes: Map<string, string>,
+    substitutas: Map<string, ImportacaoDoMesmoArquivo>,
   ): ResumoImportacao {
     const contagens = imp.counts as Partial<ContagensImportacao> | null;
     const erro = imp.error as ErroImportacao | null;
@@ -1028,6 +1150,28 @@ export class ImportacaoService {
       processamento: imp.workingStep && imp.workingSince && imp.workingAt ? { etapa: imp.workingStep as EtapaImportacao, desde: imp.workingSince.toISOString(), atualizadoEm: imp.workingAt.toISOString() } : null,
       erro: erro ? { codigo: erro.codigo, mensagem: erro.mensagem } : null,
       resultadoAplicacao: (imp.applyResult as ResultadoAplicacao | null) ?? null,
+      substituidaPor: imp.supersededBy ? (substitutas.get(imp.supersededBy) ?? null) : null,
+    };
+  }
+
+  /** As aplicações que substituíram as importações (`superseded_by`), pelo id. */
+  private async substitutas(db: Db, ids: (string | null)[]): Promise<Map<string, ImportacaoDoMesmoArquivo>> {
+    const unicos = [...new Set(ids.filter((x): x is string => !!x))];
+    if (!unicos.length) return new Map();
+    const rows = await db.officialImport.findMany({
+      where: { id: { in: unicos } },
+      select: { id: true, createdAt: true, appliedAt: true, periodFrom: true, periodTo: true, declaredPeriod: true },
+    });
+    return new Map(rows.map((r) => [r.id, this.doMesmoArquivo(r)]));
+  }
+
+  private doMesmoArquivo(r: { id: string; createdAt: Date; appliedAt: Date | null; periodFrom: Date | null; periodTo: Date | null; declaredPeriod: boolean }): ImportacaoDoMesmoArquivo {
+    return {
+      id: r.id,
+      enviadaEm: r.createdAt.toISOString(),
+      aplicadaEm: r.appliedAt?.toISOString() ?? null,
+      periodo: r.periodFrom && r.periodTo ? { de: dia(r.periodFrom)!, ate: dia(r.periodTo)! } : null,
+      periodoDeclarado: r.declaredPeriod,
     };
   }
 
@@ -1053,6 +1197,7 @@ export class ImportacaoService {
     workingAt: true,
     error: true,
     applyResult: true,
+    supersededBy: true,
   } as const;
 
   /** GET /vigilancia/importacoes. */
@@ -1063,7 +1208,11 @@ export class ImportacaoService {
       ctx,
       rows.flatMap((r) => [r.createdBy, r.appliedBy, r.discardedBy]),
     );
-    return rows.map((r) => this.resumo(r, nomes));
+    const substitutas = await this.substitutas(
+      ctx.db,
+      rows.map((r) => r.supersededBy),
+    );
+    return rows.map((r) => this.resumo(r, nomes, substitutas));
   }
 
   /**
@@ -1105,7 +1254,7 @@ export class ImportacaoService {
         payload: { nominais: nominais.length, sigilosos: nominais.filter((a) => a.sigiloso).length },
       });
     const horas = ctx.tenant.settings.vigilancia.consolidacao.expiraPreviaHoras;
-    const resumo = this.resumo(imp, nomes);
+    const resumo = this.resumo(imp, nomes, await this.substitutas(ctx.db, [imp.supersededBy]));
     const erro = imp.error as ErroImportacao | null;
     return {
       ...resumo,
@@ -1136,6 +1285,7 @@ export class ImportacaoService {
     if (imp.status === 'PROCESSANDO') throw conflict('A prévia ainda está sendo preparada: aguarde a leitura do arquivo terminar.');
     if (imp.status === 'FALHOU') throw conflict('A leitura do arquivo falhou e não gerou prévia: envie o arquivo de novo.');
     if (imp.status === 'APLICADA') throw conflict('A importação já foi aplicada');
+    if (imp.status === 'SUBSTITUIDA') throw conflict(MSG_SUBSTITUIDA);
     if (imp.workingStep === 'APLICANDO') throw conflict('A importação já está sendo aplicada: acompanhe nesta tela.');
     if (imp.status === 'DESCARTADA') throw conflict(imp.discardedBy ? 'A prévia foi descartada' : 'A prévia expirou: envie o arquivo de novo');
     const horas = ctx.tenant.settings.vigilancia.consolidacao.expiraPreviaHoras;
@@ -1146,7 +1296,7 @@ export class ImportacaoService {
     const [tem] = await ctx.db.$queryRaw<{ n: number | null }[]>`SELECT octet_length(payload)::int AS n FROM official_imports WHERE id = ${id}::uuid`;
     if (!tem?.n) throw conflict('A prévia não tem mais os registros: envie o arquivo de novo');
     const p = ImportacaoService.processo;
-    this.tomarVez(p);
+    this.tomarVez(p, ctx.tenant.id);
     let comVez = true;
     try {
       // Reivindicação atômica: só a PREVIA sem marca, ou com a marca de uma aplicação interrompida (sinal parado).
@@ -1194,6 +1344,15 @@ export class ImportacaoService {
           // O mesmo arquivo com o mesmo período declarado (ou, sem período declarado, com qualquer um) já aplicado.
           const declarado = imp.declaredPeriod && imp.periodFrom && imp.periodTo ? { de: dia(imp.periodFrom)!, ate: dia(imp.periodTo)! } : null;
           if (await this.jaAplicada(tx, imp.sha256, declarado)) throw conflict('Este arquivo já foi aplicado');
+          // As aplicações do mesmo arquivo com outro período: esta as substitui (vale a mais recente). Os ausentes que
+          // cada uma marcou são contados antes de gravar (o resultado diz quantos voltaram).
+          const aplicadasAntes: AnteriorDoArquivo[] = [];
+          for (const a of await tx.officialImport.findMany({
+            where: { sha256: imp.sha256, status: 'APLICADA', id: { not: id } },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, createdAt: true, appliedAt: true, periodFrom: true, periodTo: true, declaredPeriod: true },
+          }))
+            aplicadasAntes.push({ ...a, ausentes: await tx.officialRecord.count({ where: { absentImportId: a.id } }) });
           await ImportacaoService.ganchoDeTeste?.('APLICANDO', id, 'INICIO');
 
           let novos = 0;
@@ -1226,7 +1385,7 @@ export class ImportacaoService {
             }
             for (let i = 0; i < mudar.length; i += LOTE) await this.atualizar(tx, mudar.slice(i, i + LOTE), sensiveis, id, agora);
             for (let i = 0; i < fontes.length; i += LOTE) await this.atualizarFontes(tx, fontes.slice(i, i + LOTE), sensiveis, id, agora);
-            if (tocar.length) await tx.officialRecord.updateMany({ where: { id: { in: tocar } }, data: { lastImportId: id, lastSeenAt: agora, absentSince: null } });
+            if (tocar.length) await tx.officialRecord.updateMany({ where: { id: { in: tocar } }, data: { lastImportId: id, lastSeenAt: agora, absentSince: null, absentImportId: null } });
             for (let i = 0; i < criar.length; i += LOTE) {
               const parte = criar.slice(i, i + LOTE);
               await this.inserir(tx, parte, sensiveis, id, agora);
@@ -1238,6 +1397,10 @@ export class ImportacaoService {
           }
           await ImportacaoService.ganchoDeTeste?.('APLICANDO', id, 'GRAVADO');
           const cobertura = leitor.cobertura!;
+
+          // O mesmo arquivo aplicado antes com outro período: esta aplicação o substitui, e os ausentes que ele marcou
+          // fora da cobertura desta voltam.
+          const substituidas = await this.substituirAnteriores(tx, aplicadasAntes, cobertura, id);
 
           // Ausentes: só dentro da cobertura do envio (sistema, tipo, agravos, período, municípios, ficha e CNES), entre
           // os registros que este envio não tocou. Nunca apaga.
@@ -1285,6 +1448,7 @@ export class ImportacaoService {
             vinculadosAutomaticamente: vinculados,
             negativasCanceladas: 0,
             avisos: unidades.length ? [AVISO_NEGATIVA_PENDENTE] : [],
+            substituidas,
           };
           // A marca APLICANDO continua até a reconciliação da negativa acabar (a tela espera o resultado final).
           const { count } = await tx.officialImport.updateMany({
@@ -1305,7 +1469,16 @@ export class ImportacaoService {
             action: 'vigilancia.importacao_aplicada',
             entityType: 'OfficialImport',
             entityId: id,
-            payload: { arquivo: imp.fileName, sha256: imp.sha256, contagens: { ...contagens, motivosRecusa: undefined }, ausentesMarcados, voltaram, unidadesLigadas: ligadas, vinculados },
+            payload: {
+              arquivo: imp.fileName,
+              sha256: imp.sha256,
+              contagens: { ...contagens, motivosRecusa: undefined },
+              ausentesMarcados,
+              voltaram,
+              unidadesLigadas: ligadas,
+              vinculados,
+              substituidas: substituidas.map((s) => ({ id: s.id, voltaram: s.voltaram })),
+            },
           });
           return { gravado, unidades, semanas };
         },
@@ -1340,7 +1513,7 @@ export class ImportacaoService {
     return final;
   }
 
-  /** POST /vigilancia/importacoes/:id/descartar: a PREVIA (sem aplicação em andamento) ou a FALHOU. */
+  /** POST /vigilancia/importacoes/:id/descartar: a PREVIA (sem aplicação em andamento) ou a FALHOU (a SUBSTITUIDA, não). */
   async descartar(ctx: RequestContext, id: string): Promise<ResultadoDescarte> {
     await this.recuperarInterrompidos(ctx.db, id);
     const agora = new Date();
@@ -1353,6 +1526,7 @@ export class ImportacaoService {
         const imp = await tx.officialImport.findUnique({ where: { id }, select: { status: true, workingStep: true } });
         if (!imp) throw notFound('Importação');
         if (imp.status === 'APLICADA') throw conflict('A importação já foi aplicada');
+        if (imp.status === 'SUBSTITUIDA') throw conflict(`${MSG_SUBSTITUIDA} Não dá para descartar.`);
         if (imp.status === 'PROCESSANDO') throw conflict('O arquivo ainda está sendo lido: espere a prévia ficar pronta para descartar.');
         if (imp.workingStep === 'APLICANDO') throw conflict('A importação está sendo aplicada: não dá para descartar agora.');
         throw conflict('A prévia já foi descartada');

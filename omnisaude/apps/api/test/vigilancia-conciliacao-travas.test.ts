@@ -173,7 +173,11 @@ describe.runIf(enabled)('Vigilância: travas da conciliação com a tarefa, a im
       await Promise.allSettled(pedidos);
     }
     const tempo = Date.now() - inicio;
-    for (const resposta of respostas) expect(resposta).toEqual({ status: 409, body: expect.objectContaining({ code: 'CONCILIACAO_OCUPADA', message: 'Uma importação está sendo aplicada. Tente de novo em instantes.' }) });
+    for (const resposta of respostas)
+      expect(resposta).toEqual({
+        status: 409,
+        body: expect.objectContaining({ code: 'CONCILIACAO_OCUPADA', message: 'A conciliação está sendo atualizada agora (importação ou vínculo automático). Tente de novo em instantes.' }),
+      });
     expect(tempo).toBeGreaterThanOrEqual(2_500);
     expect(tempo).toBeLessThan(10_000);
     // Nada mudou.

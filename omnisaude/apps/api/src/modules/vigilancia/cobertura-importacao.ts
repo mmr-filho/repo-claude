@@ -1,3 +1,4 @@
+import type { TenantPrisma } from '@omnisaude/database';
 import { agravoSinanDaChave, infoAgravoSinan, LNNC_NACIONAL, localDateString, ROTAS_PADRAO, type ArquivoDetectado, type SistemaOficial } from '@omnisaude/shared';
 
 /**
@@ -5,8 +6,9 @@ import { agravoSinanDaChave, infoAgravoSinan, LNNC_NACIONAL, localDateString, RO
  * a base consolidada usarem a mesma regra. Só o arquivo individual cobre. O NINDINET traz todas as notificações
  * individuais do Sinan Net e cobre todos os agravos que vão para lá. Os demais cobrem só o que trazem: o DBF do agravo
  * (AGRAVO_NET) e o CSV do e-SUS Sinan, os agravos que vieram; o DENGON e o CHIKON, a dengue e a chikungunya; o CSV do
- * e-SUS Notifica, a ficha (síndrome gripal = covid; ESAVI...). O período vai até a data do envio, e o arquivo de um
- * CNES só cobre só esse estabelecimento.
+ * e-SUS Notifica, a ficha (síndrome gripal = covid; ESAVI...). O período vai até a data do primeiro envio do mesmo
+ * arquivo, e o arquivo de um CNES só cobre só esse estabelecimento. Só a importação APLICADA cobre (a SUBSTITUIDA, o
+ * mesmo arquivo aplicado de novo com outro período, não cobre nada): quem lê official_imports filtra a situação.
  */
 
 /** Sistema padrão do agravo (o que não tem rota conferida vai para o Sinan Net). */
@@ -27,6 +29,15 @@ const GRUPOS_DO_AGRAVO: ReadonlyMap<string, readonly string[]> = (() => {
     }
   return new Map([...m].map(([k, s]) => [k, [...s].sort()]));
 })();
+
+/**
+ * Os grupos do mesmo agravo do Sinan que o grupo (a família de GRUPOS_DO_AGRAVO, com o próprio grupo), em ordem: a
+ * violência interpessoal e a sexual e tentativa de suicídio são uma família (a ficha do Y09); os demais grupos, só eles.
+ */
+export function gruposDoMesmoAgravo(grupo: string): string[] {
+  const familia = GRUPOS_DO_AGRAVO.get(agravoSinanDaChave(grupo, null).split(':')[0]!) ?? [];
+  return familia.includes(grupo) ? [...familia] : [...familia, grupo].sort();
+}
 
 /** Os grupos que os registros do arquivo recebem (o grupo do agravo de cada um, ou a ficha do e-SUS Notifica). */
 function gruposDosRegistros(a: ArquivoDetectado, gruposGravados: readonly string[]): string[] | null {
@@ -62,7 +73,8 @@ export function gruposDoArquivo(a: ArquivoDetectado, gruposGravados: readonly st
 /**
  * O arquivo cobre o grupo na base consolidada: trouxe o agravo, é o DBF do Sinan Online do agravo (DENGON, CHIKON), é
  * o CSV do e-SUS Notifica da ficha ou é o NINDINET de agravo que vai para o Sinan Net. Aqui sem os grupos do mesmo
- * agravo do Sinan: os registros do Y09 ficam todos no grupo "violencia", e cobrir a violência sexual com eles daria SE
+ * agravo do Sinan: os registros do Y09 sem vínculo ficam no grupo "violencia" (só o ligado a uma notificação da
+ * violência sexual ou da tentativa de suicídio conta no grupo dela), e cobrir a violência sexual com eles daria SE
  * zeradas sem os casos.
  */
 export function arquivoCobre(a: ArquivoDetectado, grupo: string, gruposGravados: readonly string[] = []): boolean {
@@ -84,17 +96,34 @@ export function cnesDoArquivo(a: ArquivoDetectado): string | null {
 
 /**
  * Período que o arquivo de uma importação aplicada cobre: o declarado no envio (vale mais) ou o lido no arquivo (menor
- * e maior data de notificação), com o fim limitado à data local do envio (official_imports.created_at, no fuso do
- * tenant): a exportação não traz o que veio depois dela. null = não cobre nada (sem período, ou começa depois do envio).
+ * e maior data de notificação), com o fim limitado à data local (fuso do tenant) do primeiro envio do mesmo arquivo:
+ * a exportação não traz o que veio depois dela, e o reenvio do mesmo arquivo (o mesmo SHA-256, para declarar o
+ * período) não a deixa mais nova. `primeiroEnvio`: o menor created_at das official_imports com o mesmo sha256, em
+ * qualquer situação (`primeirosEnvios`); sem ele, o envio da própria importação. null = não cobre nada (sem período, ou
+ * começa depois do envio).
  */
 export function periodoCoberto(
   imp: { periodFrom: Date | null; periodTo: Date | null; declaredPeriod: boolean; createdAt: Date },
   a: Pick<ArquivoDetectado, 'periodo'>,
   timeZone: string,
+  primeiroEnvio?: Date | null,
 ): { de: string; ate: string } | null {
   const p = imp.declaredPeriod && imp.periodFrom && imp.periodTo ? { de: dia(imp.periodFrom), ate: dia(imp.periodTo) } : a.periodo;
   if (!p) return null;
-  const envio = localDateString(imp.createdAt, timeZone);
+  const limite = primeiroEnvio && primeiroEnvio.getTime() < imp.createdAt.getTime() ? primeiroEnvio : imp.createdAt;
+  const envio = localDateString(limite, timeZone);
   const ate = p.ate < envio ? p.ate : envio;
   return p.de <= ate ? { de: p.de, ate } : null;
+}
+
+/**
+ * Primeiro envio de cada arquivo (sha256): o menor created_at entre as official_imports com o mesmo sha256, em
+ * qualquer situação (a prévia descartada, a leitura que falhou e a importação substituída também dizem que o arquivo
+ * já existia). Para o fim do `periodoCoberto`.
+ */
+export async function primeirosEnvios(db: TenantPrisma.TransactionClient, shas: readonly string[]): Promise<Map<string, Date>> {
+  const unicos = [...new Set(shas)];
+  if (!unicos.length) return new Map();
+  const linhas = await db.officialImport.groupBy({ by: ['sha256'], where: { sha256: { in: unicos } }, _min: { createdAt: true } });
+  return new Map(linhas.flatMap((l) => (l._min.createdAt ? [[l.sha256, l._min.createdAt] as const] : [])));
 }

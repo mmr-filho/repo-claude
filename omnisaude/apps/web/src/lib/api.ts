@@ -45,15 +45,19 @@ export function setUnauthorizedHandler(fn: () => void) {
 /** Respostas do proxy e da borda (502, 503, 504 e a 524 da Cloudflare): a API não chegou a responder a tempo. */
 const STATUS_DA_BORDA: readonly number[] = [502, 503, 504, 524];
 export const MENSAGEM_SERVIDOR_DEMOROU = 'O servidor demorou a responder. Tente de novo em instantes.';
+/** 413 do proxy (a página do nginx, sem JSON): o envio passou do tamanho que o servidor aceita. */
+export const MENSAGEM_ARQUIVO_GRANDE = 'O arquivo passa do tamanho aceito pelo servidor. Exporte um período menor ou separe o arquivo.';
 /** Texto maior que isto não é mensagem para a tela (página de erro, pilha). */
 const TEXTO_MAXIMO = 300;
 
 /**
- * Mensagem do erro que não veio em JSON. Texto curto sem HTML vale como mensagem; a página HTML (da borda, do proxy, do
- * Worker) e o corpo vazio, não: 502, 503, 504 e 524 dizem que o servidor demorou; os demais, `Erro <status>`. A 503 da
- * partida do Worker ("está iniciando") vem em JSON e mantém a mensagem dela.
+ * Mensagem do erro que não veio em JSON. O 413 (o proxy que corta o envio grande, com página HTML ou texto) diz que o
+ * arquivo passou do tamanho aceito. Nos demais, texto curto sem HTML vale como mensagem; a página HTML (da borda, do
+ * proxy, do Worker) e o corpo vazio, não: 502, 503, 504 e 524 dizem que o servidor demorou; os outros, `Erro <status>`.
+ * A 503 da partida do Worker ("está iniciando") e o 413 da própria API vêm em JSON e mantêm a mensagem deles.
  */
 export function mensagemSemJson(status: number, tipo: string, corpo: string): string {
+  if (status === 413) return MENSAGEM_ARQUIVO_GRANDE;
   const texto = corpo.trim();
   const html = /text\/html/i.test(tipo) || texto.startsWith('<');
   if (texto && !html && texto.length <= TEXTO_MAXIMO) return texto;

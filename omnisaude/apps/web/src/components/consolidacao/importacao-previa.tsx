@@ -49,6 +49,7 @@ import {
   ROTULO_ORIGEM_CODIFICACAO,
   situacaoImportacao,
   textoExpiracao,
+  textoSubstituidaPor,
   textoPorTipo,
   type AlvoAcompanhamento,
   type PassoAcompanhamento,
@@ -446,6 +447,7 @@ export function DetalheDaImportacao({
   const porTipo = textoPorTipo(d.contagens?.porTipo ?? {});
   const periodoLido = avisoPeriodoLido(d);
   const aplicado = resultado ?? d.resultadoAplicacao;
+  const substituida = textoSubstituidaPor(d, dataHora);
   const falhaDaLeitura = d.status === 'FALHOU' && d.erro ? detalhesDoErroDeEnvio(d.erro.detalhes) : null;
   const sistema = d.sistema ? (SISTEMA_INFO[d.sistema]?.label ?? d.sistema) : null;
 
@@ -518,6 +520,11 @@ export function DetalheDaImportacao({
               {d.aplicadoPor ? ` por ${d.aplicadoPor}` : ''}.
             </p>
           )}
+          {substituida && (
+            <Alert tone="info" title="Importação substituída">
+              {substituida}
+            </Alert>
+          )}
           {d.descartadoEm && (
             <p className="text-sm text-slate-700">
               {d.expirada ? 'Prévia expirada' : 'Descartada'} em {dataHora(d.descartadoEm)}
@@ -533,7 +540,7 @@ export function DetalheDaImportacao({
           {aplicado && !emAndamento && (
             <Alert tone="success" title="Importação aplicada">
               <ul className="list-inside list-disc">
-                {resumoDaAplicacao(aplicado).map((l) => (
+                {resumoDaAplicacao(aplicado, dataHora).map((l) => (
                   <li key={l}>{l}</li>
                 ))}
               </ul>

@@ -5,7 +5,7 @@
 -- vigência e responsáveis, e o atesto da notificação negativa semanal. Só tipos novos: nenhum valor é acrescentado a
 -- enum existente.
 
-CREATE TYPE "OfficialImportStatus" AS ENUM ('PROCESSANDO', 'PREVIA', 'APLICADA', 'DESCARTADA', 'FALHOU');
+CREATE TYPE "OfficialImportStatus" AS ENUM ('PROCESSANDO', 'PREVIA', 'APLICADA', 'DESCARTADA', 'FALHOU', 'SUBSTITUIDA');
 CREATE TYPE "OfficialRecordType" AS ENUM ('INDIVIDUAL', 'NEGATIVA', 'SURTO');
 CREATE TYPE "RecordMatchMethod" AS ENUM ('NUMERO_OFICIAL', 'IDENTIDADE', 'MANUAL');
 CREATE TYPE "TerritoryLevel" AS ENUM ('MUNICIPIO', 'LOCALIDADE', 'BAIRRO');
@@ -18,8 +18,10 @@ CREATE TYPE "NegativeReportStatus" AS ENUM ('ATESTADA', 'CANCELADA', 'ANULADA');
 -- ───────────── Importação e conciliação ─────────────
 
 -- Um envio (arquivo solto ou zip com vários arquivos). A leitura e a aplicação rodam em segundo plano no processo da
--- API: PROCESSANDO (lendo o arquivo) vira PREVIA ou FALHOU; a PREVIA vira APLICADA, DESCARTADA ou expira. A prévia
--- guarda os registros normalizados (JSON com gzip) em payload, que é apagado ao aplicar, descartar ou expirar.
+-- API: PROCESSANDO (lendo o arquivo) vira PREVIA ou FALHOU; a PREVIA vira APLICADA, DESCARTADA ou expira; a APLICADA
+-- vira SUBSTITUIDA quando o mesmo arquivo (SHA-256) é aplicado de novo, com outro período declarado: vale só a aplicação
+-- mais recente do arquivo, e a cobertura (os ausentes) passa a ser a dela. A prévia guarda os registros normalizados
+-- (JSON com gzip) em payload, que é apagado ao aplicar, descartar ou expirar.
 CREATE TABLE official_imports (
   id uuid PRIMARY KEY,
   -- Sistema predominante do envio: só se sabe no fim da leitura (nulo enquanto lê e quando a leitura falha).
@@ -53,21 +55,26 @@ CREATE TABLE official_imports (
   error jsonb,
   -- ResultadoAplicacao (contratos em @omnisaude/shared), para a tela ler o resultado da aplicação em segundo plano.
   apply_result jsonb,
-  CONSTRAINT official_imports_sistema CHECK (system IS NOT NULL OR status NOT IN ('PREVIA', 'APLICADA')),
+  -- A aplicação do mesmo arquivo que substituiu esta (só na SUBSTITUIDA).
+  superseded_by uuid REFERENCES official_imports(id),
+  CONSTRAINT official_imports_sistema CHECK (system IS NOT NULL OR status NOT IN ('PREVIA', 'APLICADA', 'SUBSTITUIDA')),
+  -- APLICANDO na SUBSTITUIDA: a aplicação terminou e ainda reconciliava a negativa quando a do mesmo arquivo a substituiu.
   CONSTRAINT official_imports_etapa CHECK (
     CASE working_step
       WHEN 'LENDO' THEN status = 'PROCESSANDO' AND working_since IS NOT NULL AND working_at IS NOT NULL
-      WHEN 'APLICANDO' THEN status IN ('PREVIA', 'APLICADA') AND working_since IS NOT NULL AND working_at IS NOT NULL
+      WHEN 'APLICANDO' THEN status IN ('PREVIA', 'APLICADA', 'SUBSTITUIDA') AND working_since IS NOT NULL AND working_at IS NOT NULL
       ELSE working_step IS NULL AND working_since IS NULL AND working_at IS NULL AND status <> 'PROCESSANDO'
     END
   ),
-  CONSTRAINT official_imports_falhou CHECK (status <> 'FALHOU' OR error IS NOT NULL)
+  CONSTRAINT official_imports_falhou CHECK (status <> 'FALHOU' OR error IS NOT NULL),
+  CONSTRAINT official_imports_substituida CHECK ((status = 'SUBSTITUIDA') = (superseded_by IS NOT NULL))
 );
 CREATE INDEX official_imports_status_created_at_idx ON official_imports (status, created_at);
 CREATE INDEX official_imports_sha256_idx ON official_imports (sha256);
 -- O mesmo arquivo não é aplicado duas vezes com o mesmo período declarado. "Sem período declarado" é um valor próprio
 -- (a data 0001-01-01 nas duas pontas, nunca nulo: nulos não se repetem num índice único). Reenviar o arquivo aplicado
--- com outro período declarado corrige o período (o lido das notificações, ou um declarado errado) sem duplicar nada.
+-- com outro período declarado corrige o período (o lido das notificações, ou um declarado errado) sem duplicar nada: a
+-- aplicação nova substitui a anterior (SUBSTITUIDA), e só ela fica APLICADA.
 CREATE UNIQUE INDEX official_imports_sha_aplicado ON official_imports (
   sha256,
   (COALESCE(CASE WHEN declared_period THEN period_from END, DATE '0001-01-01')),
@@ -118,6 +125,8 @@ CREATE TABLE official_records (
   last_import_id uuid NOT NULL REFERENCES official_imports(id),
   last_seen_at timestamp(3) NOT NULL,
   absent_since timestamp(3),
+  -- A importação que marcou o registro como ausente (junto com absent_since): se ela for substituída, o registro volta.
+  absent_import_id uuid REFERENCES official_imports(id),
   notification_id uuid REFERENCES notifications(id),
   match_method "RecordMatchMethod",
   matched_by uuid,
@@ -126,7 +135,8 @@ CREATE TABLE official_records (
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp(3) NOT NULL,
   CONSTRAINT official_records_situation CHECK (situation IN ('CONFIRMADO', 'DESCARTADO', 'INCONCLUSIVO', 'EM_INVESTIGACAO')),
-  CONSTRAINT official_records_severity CHECK (severity IS NULL OR severity IN ('SINAIS_ALARME', 'GRAVE'))
+  CONSTRAINT official_records_severity CHECK (severity IS NULL OR severity IN ('SINAIS_ALARME', 'GRAVE')),
+  CONSTRAINT official_records_ausencia CHECK ((absent_since IS NULL) = (absent_import_id IS NULL))
 );
 CREATE UNIQUE INDEX official_records_system_type_natural_key_key ON official_records (system, type, natural_key);
 -- Uma notificação do OmniSaúde casa com um registro oficial só.

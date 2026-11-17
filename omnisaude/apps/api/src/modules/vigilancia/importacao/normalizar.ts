@@ -223,12 +223,13 @@ const UNIDADE_IDADE: Record<string, string> = { '1': 'hora', '2': 'dia', '3': 'm
 /**
  * Campos de caso da planilha de acompanhamento do surto quando ela vem dentro do NSURTNET (com NU_CASO: uma linha por
  * caso, com o surto repetido). No registro do surto, ficam de fora: a data dos primeiros sintomas do surto é a
- * DT_PRIM_SI (a DT_SIN_PRI é a do caso), e a residência, o sexo, a idade, as iniciais (NM_LOCAL), o desfecho e o local
- * de infecção são do caso.
+ * DT_PRIM_SI (a DT_SIN_PRI e a SEM_PRI, quando vêm na linha do caso, são as do caso: a semana do surto sai da
+ * DT_PRIM_SI), e a residência, o sexo, a idade, as iniciais (NM_LOCAL), o desfecho e o local de infecção são do caso.
  */
 const CAMPOS_DE_CASO: ReadonlySet<string> = new Set([
   ...IDENTIFICACAO_SINAN,
   'dt_sin_pri',
+  'sem_pri',
   'id_muni_re',
   'id_mn_resi',
   'id_bairro',
@@ -304,7 +305,8 @@ function normalizarSinan(l: LinhaArquivo, ctx: ContextoNormalizacao): ResultadoN
   const ds = lerData(surto ? (texto(l, 'dt_prim_si') ?? valor('dt_sin_pri')) : (texto(l, 'dt_sin_pri') ?? texto(l, 'dt_prim_si')));
   if (ds.invalida) avisos.push('Data dos primeiros sintomas inválida');
   const inicioSintomas = ds.data;
-  const semanaSintomas = semanaValida(texto(l, 'sem_pri')) ?? (inicioSintomas ? semanaDaData(inicioSintomas).codigo : null);
+  // Na linha de caso do surto, a SEM_PRI é a do caso: a semana do surto sai da DT_PRIM_SI.
+  const semanaSintomas = semanaValida(valor('sem_pri')) ?? (inicioSintomas ? semanaDaData(inicioSintomas).codigo : null);
   // Conclusão: DT_ENCERRA (Sinan), DT_CONCLU (ficha de notificação/conclusão do e-SUS Sinan), DT_CONCLUSÃO (ficha de Mpox).
   const de = lerData(texto(l, 'dt_encerra') ?? texto(l, 'dt_conclu') ?? texto(l, 'dt_conclusao'));
   if (de.invalida) avisos.push('Data do encerramento inválida');

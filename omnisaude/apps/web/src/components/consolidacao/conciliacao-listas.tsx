@@ -5,6 +5,7 @@ import {
   ROTULO_SITUACAO_CASO,
   ROTULO_TIPO_REGISTRO,
   type FiltroConciliacao,
+  type ListaCandidatasVinculo,
   type ListaDivergentes,
   type ListaSoOficial,
   type ListaSoOmnisaude,
@@ -195,9 +196,11 @@ function textoVinculo(r: RespostaVincular): string {
 }
 
 /**
- * Vínculo manual: com o par já escolhido (sugestão), só confirma; com um lado só, busca o outro na lista "só no
- * OmniSaúde" (para um registro) ou "só no oficial" (para uma notificação), no mesmo agravo. Oferece preencher o
- * número oficial da notificação que ainda não tem.
+ * Vínculo manual: com o par já escolhido (sugestão), só confirma; com um lado só, busca o outro: para um registro, nas
+ * candidatas ao vínculo (as notificações sem vínculo, mesmo fora da cobertura das importações: a do mesmo caso feita
+ * em outra unidade ou depois do envio também aparece; o agravo vale com os grupos do mesmo agravo do Sinan); para uma
+ * notificação, na lista "só no oficial", no mesmo agravo. Oferece preencher o número oficial da notificação que ainda
+ * não tem.
  */
 export function DialogoVincular({ registro, notificacao, onFechar, onFeito }: { registro: RegistroOficialResumo | null; notificacao: NotificacaoParaConciliar | null; onFechar: () => void; onFeito: () => void }) {
   const toast = useToast();
@@ -212,7 +215,7 @@ export function DialogoVincular({ registro, notificacao, onFechar, onFeito }: { 
   const [erro, setErro] = useState<string | null>(null);
   const buscaNotificacao = !!registro && !notificacao;
   const buscaRegistro = !!notificacao && !registro;
-  const candidatosN = useApi<ListaSoOmnisaude>(buscaNotificacao ? `/vigilancia/conciliacao/so-omnisaude${consultaConciliacao(filtro)}` : null);
+  const candidatosN = useApi<ListaCandidatasVinculo>(buscaNotificacao ? `/vigilancia/conciliacao/candidatas${consultaConciliacao(filtro)}` : null);
   const candidatosR = useApi<ListaSoOficial>(buscaRegistro ? `/vigilancia/conciliacao/so-oficial${consultaConciliacao(filtro)}` : null);
   const candidatos = buscaNotificacao ? candidatosN : candidatosR;
   const r = escolhidoR;

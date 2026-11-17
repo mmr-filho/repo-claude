@@ -3464,13 +3464,15 @@ model BlockingOrderAssignee {
 
 // ───────────── Vigilância: consolidação, diagrama de controle, contingência, surto e notificação negativa (VIG-1c) ─────────────
 
-/// PROCESSANDO (lendo o arquivo em segundo plano) vira PREVIA ou FALHOU; a PREVIA vira APLICADA, DESCARTADA ou expira.
+/// PROCESSANDO (lendo o arquivo em segundo plano) vira PREVIA ou FALHOU; a PREVIA vira APLICADA, DESCARTADA ou expira;
+/// a APLICADA vira SUBSTITUIDA quando o mesmo arquivo é aplicado de novo (vale só a aplicação mais recente do arquivo).
 enum OfficialImportStatus {
   PROCESSANDO
   PREVIA
   APLICADA
   DESCARTADA
   FALHOU
+  SUBSTITUIDA
 }
 
 /// TP_NOT do Sinan: 2 individual, 1 negativa, 3 surto.
@@ -3568,9 +3570,14 @@ model OfficialImport {
   error          Json?
   /// ResultadoAplicacao (contratos em @omnisaude/shared).
   applyResult    Json?                @map("apply_result")
+  /// A aplicação do mesmo arquivo que substituiu esta (só na SUBSTITUIDA: CHECK official_imports_substituida, só no SQL).
+  supersededBy   String?              @map("superseded_by") @db.Uuid
 
-  firstRecords OfficialRecord[] @relation("OfficialRecordFirstImport")
-  lastRecords  OfficialRecord[] @relation("OfficialRecordLastImport")
+  firstRecords       OfficialRecord[] @relation("OfficialRecordFirstImport")
+  lastRecords        OfficialRecord[] @relation("OfficialRecordLastImport")
+  absentRecords      OfficialRecord[] @relation("OfficialRecordAbsentImport")
+  supersededByImport OfficialImport?  @relation("OfficialImportSupersededBy", fields: [supersededBy], references: [id])
+  supersedes         OfficialImport[] @relation("OfficialImportSupersededBy")
 
   @@index([status, createdAt])
   @@index([sha256])
@@ -3627,6 +3634,8 @@ model OfficialRecord {
   lastSeenAt       DateTime           @map("last_seen_at")
   /// O registro não veio na última exportação do mesmo sistema, tipo, agravos e período.
   absentSince      DateTime?          @map("absent_since")
+  /// A importação que marcou o ausente (junto com absentSince: CHECK official_records_ausencia, só no SQL).
+  absentImportId   String?            @map("absent_import_id") @db.Uuid
   notificationId   String?            @map("notification_id") @db.Uuid
   matchMethod      RecordMatchMethod? @map("match_method")
   matchedBy        String?            @map("matched_by") @db.Uuid
@@ -3639,6 +3648,7 @@ model OfficialRecord {
   unit            Unit?                     @relation(fields: [unitId], references: [id])
   firstImport     OfficialImport            @relation("OfficialRecordFirstImport", fields: [firstImportId], references: [id])
   lastImport      OfficialImport            @relation("OfficialRecordLastImport", fields: [lastImportId], references: [id])
+  absentImport    OfficialImport?           @relation("OfficialRecordAbsentImport", fields: [absentImportId], references: [id])
   notification    Notification?             @relation(fields: [notificationId], references: [id])
   rejections      OfficialRecordRejection[]
   outbreakCases   OutbreakCase[]

@@ -181,8 +181,13 @@ export interface PreviaImportacao {
 
 // ───────────── Importações ─────────────
 
-/** PROCESSANDO (lendo o arquivo no servidor) vira PREVIA ou FALHOU; a PREVIA vira APLICADA, DESCARTADA ou expira. */
-export type StatusImportacao = 'PROCESSANDO' | 'PREVIA' | 'APLICADA' | 'DESCARTADA' | 'FALHOU';
+/**
+ * PROCESSANDO (lendo o arquivo no servidor) vira PREVIA ou FALHOU; a PREVIA vira APLICADA, DESCARTADA ou expira; a
+ * APLICADA vira SUBSTITUIDA quando o mesmo arquivo (SHA-256) é aplicado de novo, com outro período declarado: vale só a
+ * aplicação mais recente do arquivo (a cobertura, na conciliação, na base consolidada e nos ausentes, passa a ser a
+ * dela). A SUBSTITUIDA não pode ser descartada.
+ */
+export type StatusImportacao = 'PROCESSANDO' | 'PREVIA' | 'APLICADA' | 'DESCARTADA' | 'FALHOU' | 'SUBSTITUIDA';
 
 export const ROTULO_STATUS_IMPORTACAO: Record<StatusImportacao, string> = {
   PROCESSANDO: 'Lendo o arquivo',
@@ -190,7 +195,26 @@ export const ROTULO_STATUS_IMPORTACAO: Record<StatusImportacao, string> = {
   APLICADA: 'Aplicada',
   DESCARTADA: 'Descartada',
   FALHOU: 'Falhou',
+  SUBSTITUIDA: 'Substituída',
 };
+
+/** Outra importação do mesmo arquivo (SHA-256), como aparece na substituição. */
+export interface ImportacaoDoMesmoArquivo {
+  id: string;
+  enviadaEm: string;
+  aplicadaEm: string | null;
+  periodo: { de: string; ate: string } | null;
+  periodoDeclarado: boolean;
+}
+
+/** Importação do mesmo arquivo que a aplicação substituiu (passou a SUBSTITUIDA). */
+export interface ImportacaoSubstituida extends ImportacaoDoMesmoArquivo {
+  /**
+   * Registros que ela tinha dado como ausentes e voltaram, em termos líquidos: os que a cobertura da aplicação nova não
+   * marca de novo (os que estão dentro dela e não vieram continuam ausentes, agora por ela).
+   */
+  voltaram: number;
+}
 
 /**
  * Trabalho que roda em segundo plano no servidor: LENDO (status PROCESSANDO) ou APLICANDO (status PREVIA; APLICADA
@@ -218,9 +242,12 @@ export interface ErroImportacao {
 
 /**
  * POST /vigilancia/importacoes: o corpo é o arquivo cru (zip, dbf ou csv; até 95 MB). Estes são os parâmetros da
- * consulta. Para trocar a codificação, a tela envia o mesmo arquivo de novo com `codificacao`. 409 IMPORTACAO_OCUPADA
- * antes de o corpo ser lido: o servidor já tem dois arquivos de importação na memória (de qualquer município) ou o
- * município tem outra importação lendo ou aplicando.
+ * consulta. Para trocar a codificação, a tela envia o mesmo arquivo de novo com `codificacao`. Antes de o corpo ser
+ * lido: 409 IMPORTACAO_OCUPADA quando o município tem outra importação lendo ou aplicando (aparece no histórico); 409
+ * IMPORTACAO_SERVIDOR_OCUPADO quando o servidor está ocupado com outros envios (dois arquivos de importação na memória,
+ * de qualquer município, a vez de leitura ou aplicação com outro município, ou outro envio do mesmo município ainda
+ * chegando), com a mensagem da API para a tela; 413 quando o Content-Length passa do limite. Durante o envio: 408 se o
+ * corpo para de chegar por 30 s, 400 se chega incompleto.
  */
 export interface ConsultaEnvioImportacao {
   nome: string;
@@ -256,6 +283,8 @@ export interface ResumoImportacao {
   erro: ErroImportacao | null;
   /** Resultado guardado ao aplicar (null antes de aplicar e nas importações aplicadas antes de ele ser guardado). */
   resultadoAplicacao: ResultadoAplicacao | null;
+  /** Na SUBSTITUIDA: a aplicação do mesmo arquivo que a substituiu; null nas outras. */
+  substituidaPor: ImportacaoDoMesmoArquivo | null;
 }
 
 export type ListaImportacoes = ResumoImportacao[];
@@ -278,9 +307,12 @@ export interface DetalheImportacao extends ResumoImportacao {
 }
 
 /**
- * Mesmo arquivo (SHA-256) já aplicado: nada é criado. Vale para o reenvio sem período declarado (qualquer aplicação do
- * arquivo) e para o reenvio com o mesmo período declarado de uma aplicação. Com outro período declarado, o envio gera
- * uma prévia nova: é como se corrige o período depois de aplicado (os registros não duplicam).
+ * Mesmo arquivo (SHA-256) já aplicado: nada é criado. Vale para o reenvio sem período declarado (a aplicação do arquivo
+ * que vale, qualquer que seja o período dela) e para o reenvio com o mesmo período declarado da aplicação que vale.
+ * Com outro período declarado, o envio gera uma prévia nova: é como se corrige o período depois de aplicado (os
+ * registros não duplicam). Aplicada, ela substitui a anterior (SUBSTITUIDA): a cobertura passa a ser a dela, e os
+ * registros que a anterior deu como ausentes fora dessa cobertura voltam. Para voltar ao período lido das
+ * notificações, declare esse período.
  */
 export interface ArquivoJaImportado {
   jaImportado: { id: string; aplicadoEm: string };
@@ -321,6 +353,11 @@ export interface ResultadoAplicacao {
   /** Atestos de negativa cancelados pela reconciliação. */
   negativasCanceladas: number;
   avisos: string[];
+  /**
+   * Aplicações do mesmo arquivo que esta substituiu (com outro período declarado), com os registros que cada uma deu
+   * como ausentes e voltaram. Vazio quando não substituiu nada; ausente nos resultados gravados antes da regra.
+   */
+  substituidas?: ImportacaoSubstituida[];
 }
 
 /**
@@ -350,8 +387,9 @@ export const ROTULO_METODO_VINCULO: Record<MetodoVinculo, string> = { NUMERO_OFI
 
 /**
  * Filtro das listas da conciliação (consulta). `sistema`, `de` e `ate` valem para o registro oficial (no "só no
- * OmniSaúde", para a notificação: sistema de destino e data da notificação). `grupo` vale para o registro, para a
- * notificação ou, nas listas de pares (sugestões, divergentes e vinculados), para qualquer um dos dois lados.
+ * OmniSaúde" e nas candidatas ao vínculo, para a notificação: sistema de destino e data da notificação). `grupo` vale
+ * para o registro, para a notificação (nas candidatas, com os grupos do mesmo agravo do Sinan) ou, nas listas de pares
+ * (sugestões, divergentes e vinculados), para qualquer um dos dois lados.
  */
 export interface FiltroConciliacao {
   sistema?: SistemaOficial;
@@ -431,7 +469,9 @@ export interface ResumoConciliacao {
    * o CHIKON, a dengue e a chikungunya; o CSV do e-SUS Notifica, a ficha (síndrome gripal = covid). `grupos` null =
    * todos os do sistema: só o NINDINET, que traz todas as notificações individuais do Sinan Net. Os grupos com o mesmo
    * agravo do Sinan entram juntos (o DBF do Y09 cobre também a violência sexual e a tentativa de suicídio). `cnes`: o
-   * arquivo de um estabelecimento só cobre só a unidade com esse CNES (null = todas). `ate` nunca passa da data do envio.
+   * arquivo de um estabelecimento só cobre só a unidade com esse CNES (null = todas). `ate` nunca passa da data do
+   * primeiro envio do mesmo arquivo (SHA-256), mesmo reenviado depois para declarar o período. Só a importação APLICADA
+   * cobre (a SUBSTITUIDA não).
    */
   cobertura: { sistema: SistemaOficial; grupos: string[] | null; cnes: string | null; de: string; ate: string }[];
   ultimaImportacao: { id: string; sistema: SistemaOficial; aplicadoEm: string } | null;
@@ -451,6 +491,15 @@ export type ListaSoOficial = PaginaConciliacao<RegistroOficialResumo>;
 
 /** GET /vigilancia/conciliacao/so-omnisaude (NOTIFICADA/ENCERRADA não descartadas, de sistema, grupo e período cobertos, sem vínculo). */
 export type ListaSoOmnisaude = PaginaConciliacao<NotificacaoParaConciliar>;
+
+/**
+ * GET /vigilancia/conciliacao/candidatas: as notificações que o diálogo "Vincular…" do registro oficial oferece. As
+ * NOTIFICADA/ENCERRADA sem vínculo, com os filtros (sistema de destino, grupo, período e busca) e a regra de sigilo do
+ * "só no OmniSaúde", mas sem a cobertura das importações: a notificação do mesmo caso feita em outra unidade (arquivo
+ * de um CNES só) ou depois do envio também aparece. `grupo` vale com os grupos do mesmo agravo do Sinan (o registro do
+ * Y09 acha a notificação da violência sexual ou da tentativa de suicídio). Auditada como as outras listas nominais.
+ */
+export type ListaCandidatasVinculo = PaginaConciliacao<NotificacaoParaConciliar>;
 
 /**
  * Diferença do par vinculado. Situação: a do registro (classificação traduzida pela ficha do agravo) e a da notificação.
@@ -485,7 +534,11 @@ export interface SugestaoVinculo {
   registro: RegistroOficialResumo;
   notificacao: NotificacaoParaConciliar;
   degrau: 1 | 2 | 3;
-  /** Por que o par foi sugerido (ex.: "mesmo nome, nascimento e sexo"). */
+  /**
+   * Por que o par foi sugerido (ex.: "mesmo nome, nascimento e sexo"). Com as duas linhas na planilha do mesmo surto
+   * aberto, acrescenta "as duas linhas estão no surto AAAA/NNNN": o vínculo automático pula o par e o manual responde
+   * 409 CASO_DUPLICADO_NO_SURTO até uma das linhas sair da planilha.
+   */
   motivo: string;
 }
 

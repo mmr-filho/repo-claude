@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { IntegrationsModule } from '../integrations/integrations.module';
 import { TerritorioModule } from '../territorio/territorio.module';
 import { CatalogoVigilanciaService } from './catalogo.service';
+import { ConciliacaoController } from './conciliacao.controller';
 import { ConciliacaoService } from './conciliacao.service';
 import { ConsolidadoService } from './consolidado.service';
 import { ContingenciaController } from './contingencia.controller';
@@ -28,7 +29,7 @@ import { VigilanciaController } from './vigilancia.controller';
  */
 @Module({
   imports: [IntegrationsModule, TerritorioModule],
-  controllers: [VigilanciaController, ImportacaoController, DiagramaController, ContingenciaController, SurtoController, NegativaController],
+  controllers: [VigilanciaController, ImportacaoController, ConciliacaoController, DiagramaController, ContingenciaController, SurtoController, NegativaController],
   providers: [
     CatalogoVigilanciaService,
     NotificacaoService,
