@@ -367,19 +367,31 @@ instituição, editáveis em *Notificação negativa > Prazos e parâmetros*.
 
 - **Envio** (zip, DBF ou CSV, até 95 MB): o tipo de cada arquivo é **detectado pelo conteúdo**, nunca pelo nome:
   NINDINET, DBF de agravo, NNEGANET, NSURTNET, DENGON, CHIKON, CSV do e-SUS Notifica, CSV do e-SUS Sinan; tabelas do
-  Sinan (MUNICNET, REGIONET...) e a planilha de acompanhamento do surto (NU_CASO) ficam de fora com aviso.
+  Sinan (MUNICNET, REGIONET...) e a planilha de acompanhamento do surto (NU_CASO) ficam de fora com aviso. Antes de
+  ler o corpo, o envio responde 409 em dois casos. Se o município já tem outra importação lendo ou aplicando, com sinal
+  de vida recente em qualquer processo, a mensagem é "Outra importação está sendo processada agora". Se o processo já
+  tem 2 arquivos de importação na memória, de qualquer município, a mensagem é "Outro envio está sendo recebido ou
+  processado". O corpo não lido é descartado sem ser guardado.
 - **Leitura em fluxo**: o zip é aberto pelo diretório central e cada arquivo é descompactado em pedaços, com o tamanho
   real e o CRC conferidos (o arquivo que descompacta mais do que o zip declara é recusado no primeiro pedaço). CSV e
   DBF são lidos em pedaços, só nas colunas usadas, e os registros normalizados vão para um arquivo temporário. Tetos:
   **150 MB descompactados e 400 mil registros por envio**; acima disso, a mensagem pede para exportar um ano por vez.
-  Arquivo do zip com senha ou compressão diferente de deflate fica de fora, com aviso. Uma prévia ou aplicação por vez
-  (a outra recebe "Outra importação está sendo processada agora").
+  O zip com mais de **1.000 arquivos** é recusado antes de ser lido. Dos arquivos ignorados, a lista e os avisos
+  guardam os 50 primeiros e um "mais X". Arquivo do zip com senha ou compressão diferente de deflate fica de fora, com
+  aviso. Uma prévia ou aplicação por vez (a outra recebe "Outra importação está sendo processada agora").
+- **Uma parte por tipo de arquivo** em cada registro: a chave repetida em outro arquivo do mesmo tipo fica com a do
+  último arquivo lido (pela ordem do nome), com aviso, e não conta como duplicada. Os lotes da prévia e da aplicação
+  fecham em 500 registros ou 1.000 partes.
 - **Trabalho longo em segundo plano**: a resposta espera até 20 s. Se a leitura ou a aplicação demorar mais (um envio
   grande no container de produção, com 1/4 de vCPU), a API responde 202 e a tela acompanha o andamento ("Lendo o
   arquivo…", "Aplicando…"); dá para sair da tela e voltar. Um sinal de vida a cada 15 s mostra que o trabalho segue.
+  A transação da aplicação não bloqueia o sinal, nem mesmo com a linha da importação presa pelas chaves estrangeiras
+  dos registros. Por isso a recuperação rodada por outra réplica ou pelo worker do job não desfaz uma aplicação viva.
   Parado há mais de 2 minutos (o servidor reiniciou), a leitura vira "Falhou" (envie de novo) e a aplicação volta à
   prévia, aplicável de novo (a transação desfez tudo). A falha depois do 202 fica no histórico com a mensagem; a que
-  acontece dentro da espera responde como antes, sem deixar linha.
+  acontece dentro da espera responde como antes, sem deixar linha. Enquanto acompanha, a tela consulta só o andamento
+  (sem a prévia nominal e sem auditoria) e mantém a prévia que já tem. Durante a aplicação, o detalhe também vem sem
+  a prévia.
 - **DBF**: código de página pelo byte 29 (0x25 e 0x02 CP850, 0x01 CP437, 0x24 CP860, CP1252); sem marca (0x00), vence
   a página que acerta mais letras portuguesas (empate: CP850). A tela mostra a codificação e permite trocar e refazer a
   prévia. Datas vazias viram nulo; arquivo regravado pelo R (cabeçalho de 26/07/1995) recebe aviso. Só é DBF o
@@ -387,6 +399,10 @@ instituição, editáveis em *Notificação negativa > Prazos e parâmetros*.
 - **Dengue e chikungunya** (A90 e A92.0) são sempre do Sinan Online, venham do DENGON, do CHIKON, do NINDINET ou de um
   DBF de investigação sem as marcas do Sinan Online: a mesma notificação não vira dois registros. O registro antigo
   gravado no Sinan Net muda de sistema na aplicação (a prévia mostra a mudança).
+- **Surto do Sinan Net (NSURTNET)**: a data do 1º sintoma do surto é a DT_PRIM_SI; a DT_SIN_PRI só vale sem ela. Com
+  a planilha dentro do próprio arquivo (linhas com NU_CASO), os campos de caso não entram no registro do surto:
+  DT_SIN_PRI, residência, sexo, idade, iniciais, óbito, evolução, classificação e local de infecção. Essas linhas
+  também não contam como duplicadas.
 - **Mpox no e-SUS Sinan** segue a ficha de Mpox: evolução 1 óbito e 2 cura (comparada já traduzida); classificação
   2 e 6 descartado, 3 (provável), 5 (perda de seguimento) e 8 inconclusivo, 4 (suspeito) em investigação; a data de
   conclusão (DT_CONCLUSÃO) é o encerramento.
@@ -395,32 +411,57 @@ instituição, editáveis em *Notificação negativa > Prazos e parâmetros*.
   CNS) é recusado. Colunas de contato (telefone, e-mail, endereço, notificante) são descartadas na leitura.
 - **Prévia**: lê, normaliza (município de 7 dígitos comparado pelos 6 primeiros, ano epidemiológico pelo SEM_NOT e
   SEM_PRI, nunca pelo NU_ANO), junta por chave dentro do envio (NINDINET + DBF do agravo viram um registro só) e compara
-  com o banco: lidos, novos, alterados, iguais, recusados com o motivo, duplicados no arquivo e ausentes previstos. O
-  mesmo arquivo (SHA-256) já aplicado não cria nada: a resposta aponta a importação anterior. A prévia expira em
-  24 horas (padrão das configurações). O período declarado no envio vale mais que o lido; data que não existe no
-  calendário ou período invertido são recusados. Num arquivo de um agravo só, o período lido vai da primeira à última
-  notificação daquele agravo: declare o período exportado, senão as semanas das pontas ficam fora do canal endêmico.
+  com o banco: lidos, novos, alterados, iguais, recusados com o motivo, duplicados no arquivo e ausentes previstos. A
+  prévia expira em 24 horas (padrão das configurações). O período declarado no envio vale mais que o lido; data que não
+  existe no calendário ou período invertido são recusados. Num arquivo de um agravo ou de uma ficha sem período
+  declarado (DBF do agravo, DENGON, CHIKON, CSV do e-SUS Sinan ou do e-SUS Notifica), o período lido vai da primeira à
+  última notificação, e a prévia avisa: declare o período exportado, senão as semanas das pontas ficam fora do canal
+  endêmico. O DBF do agravo enviado junto com o NINDINET não avisa.
+- **O mesmo arquivo de novo** (mesmo SHA-256): se já foi aplicado, sem período ou com o mesmo período declarado, não
+  cria nada, e a resposta aponta a importação anterior. Com outro período declarado, gera uma prévia nova. Aplicada,
+  ela corrige o período: os registros não duplicam, as duas importações ficam aplicadas e a cobertura soma os
+  períodos.
 - **Aplicar**: grava pela chave natural, **campo a campo**: valor preenchido sobrescreve; valor vazio só apaga o campo
   que o mesmo tipo de arquivo tinha gravado (o NINDINET não apaga a classificação que veio do DBF do agravo). Registro
   que não veio numa exportação do mesmo sistema, tipo, agravos e período fica **ausente** (nunca apagado) e volta se
   reaparecer. No e-SUS Notifica, a ausência só vale dentro da mesma ficha (o CSV da síndrome gripal só cobre a
   covid-19; arquivo sem ficha identificada não marca ausente) e, no e-SUS, um arquivo com um CNES só restringe os
   ausentes a esse CNES. Liga a unidade pelo CNES e roda a conciliação automática, numa transação só: se cair no meio,
-  nada é gravado. Importar o mesmo DBF de novo não duplica.
-- **Conciliação** em degraus: (1) número oficial informado na fila de digitação, mesmo agravo do Sinan e data a até 7
-  dias; (2) CNS ou CPF + mesmo agravo + data a até 7 dias; os dois só ligam sozinhos com candidato único dos dois
-  lados; (3) nome normalizado + nascimento + sexo: só sugestão; (4) sem identificação: só nas contagens. O agravo
-  comparado é o do Sinan, não o grupo do catálogo (a violência sexual, T74.2, casa com a violência interpessoal, Y09).
-  "Não é o mesmo caso" fica gravado e não volta como sugestão. Vínculo manual e desvínculo pedem motivo e são
-  auditados. Ao vincular, a tela oferece preencher o número oficial da notificação (mesma regra da fila de digitação).
-  A tarefa `vigilancia` também liga sozinha o registro à notificação que ganhou o número depois da importação.
+  nada é gravado. A transação pega a trava da importação e logo depois a da conciliação, antes de gravar (sempre nessa
+  ordem). Os registros alterados são gravados em lote. Importar o mesmo DBF de novo não duplica.
+- **Conciliação** em degraus:
+  1. número oficial informado na fila de digitação, mesmo agravo do Sinan e data a até 7 dias;
+  2. CNS ou CPF, mesmo agravo e data a até 7 dias;
+  3. nome normalizado (a mesma normalização dos dois lados), nascimento e sexo: só sugestão;
+  4. sem identificação: só nas contagens.
+
+  Os degraus 1 e 2 só ligam sozinhos com candidato único dos dois lados. O agravo comparado é o do Sinan, não o grupo
+  do catálogo: a violência sexual (T74.2) casa com a violência interpessoal (Y09). "Não é o mesmo caso" fica gravado e
+  não volta como sugestão. O vínculo automático confere a rejeição no próprio UPDATE, então não liga um par rejeitado.
+  Vínculo manual e desvínculo pedem motivo e são auditados. Ao vincular, a tela oferece preencher o número oficial da
+  notificação (mesma regra da fila de digitação). A tarefa `vigilancia` também liga sozinha o registro à notificação
+  que ganhou o número depois da importação. Ela tenta as travas da importação e da conciliação sem esperar e pula a
+  rodada se alguma estiver ocupada.
+
+  Vincular, desvincular e rejeitar esperam até 3 s pela trava da conciliação. Se ela não sai (uma importação sendo
+  aplicada), respondem 409 "Uma importação está sendo aplicada. Tente de novo em instantes." e não gravam nada.
+  Rejeitar um par que o vínculo automático ligou durante a espera responde "O par está vinculado: use desvincular".
 - **Listas**: resumo, só no oficial, só no OmniSaúde, divergentes (situação, evolução e data de encerramento),
   sugestões, **vinculados** (com o método e a data do vínculo; o par pode ser desvinculado com motivo) e bairros sem
-  correspondência (com contagem; o apelido novo vai para o bairro do território e vale na próxima consulta). Tudo é
-  contado e paginado no banco (50 por página), sem carregar a base. "Só no OmniSaúde" é a notificação notificada ou
-  encerrada, sem vínculo, dentro do que algum arquivo aplicado **cobre**: o DBF de um agravo cobre só aquele agravo,
-  o CSV do e-SUS Notifica cobre a ficha dele e só o NINDINET cobre o Sinan Net inteiro. A evolução das divergências é
-  comparada na numeração da ficha de notificação (a do Mpox é traduzida antes).
+  correspondência. Nos bairros, a lista vem com contagem e em ordem decrescente de registros; os até 5 bairros
+  parecidos são calculados só para a página, e o resumo só conta os nomes. O apelido novo vai para o bairro do
+  território e vale na próxima consulta. Tudo é contado e paginado no banco (50 por página), sem carregar a base.
+- **Só no OmniSaúde** é a notificação notificada ou encerrada, sem vínculo, dentro do que algum arquivo aplicado
+  **cobre**:
+  - o DBF de um agravo cobre aquele agravo e os grupos do catálogo com o mesmo agravo do Sinan (o DBF do Y09 cobre
+    também a violência sexual e a tentativa de suicídio);
+  - o CSV do e-SUS Notifica cobre a ficha dele;
+  - só o NINDINET cobre o Sinan Net inteiro.
+
+  O período coberto vai só até a data do envio: a exportação não traz o que veio depois dela. O arquivo do e-SUS com um
+  CNES só cobre apenas as notificações das unidades com esse CNES, e a tela mostra "só o CNES N". A regra fica num
+  lugar só, que a conciliação e a base consolidada usam.
+- A evolução das divergências é comparada na numeração da ficha de notificação (a do Mpox é traduzida antes).
 - **Sigilo**: registro de grupo sigiloso (aids, HIV, sífilis, violências) sai sem identificação para quem não tem
   `notificacao.sensivel`; as listas identificadas são auditadas como a exportação CSV.
 
@@ -431,10 +472,17 @@ encerradas, não descartadas e **sem vínculo** com registro oficial: o par vinc
 oficial. A semana é a de início dos sintomas; sem ela, a da notificação (contada à parte, com aviso). Base de casos
 prováveis (situação diferente de descartado), notificados ou confirmados. Território: município pela residência;
 bairro e localidade pelo código ou pelo nome do bairro do registro (com os apelidos) e pelo quarteirão da residência
-da notificação. **Cobertura** por SE: a semana sem caso só vale zero se estiver no período de uma importação aplicada
-que traz o agravo, se o OmniSaúde já estava em uso (da SE da primeira notificação em diante) ou se a semana tem caso.
-Fora disso, fica fora do canal (nula, diferente de zero). O ano coberto só em parte aparece como "coberto em parte",
-com as SE cobertas.
+da notificação.
+
+**Cobertura** por SE. A semana sem caso só vale zero em três situações:
+- está no período de uma importação aplicada que traz o agravo. O período vai até a data do envio, e o arquivo do
+  e-SUS com um CNES só não cobre semana nenhuma; os registros dele contam;
+- o OmniSaúde já estava em uso: da SE em que a primeira notificação notificada ou encerrada entrou no sistema em
+  diante. A data de conhecimento retroativa não conta;
+- a semana tem caso.
+
+Fora disso, a semana fica fora do canal (nula, diferente de zero). O ano coberto só em parte aparece como "coberto em
+parte", com as SE cobertas.
 
 ### Diagrama de controle e receitas
 
@@ -595,16 +643,22 @@ com as SE cobertas.
   excesso, lista, ficha, planilha com busca de notificação e de registro oficial, espelho) e *Notificação negativa*
   (grade, cartões, configuração das unidades notificantes e dos responsáveis, e *Prazos e parâmetros*).
 - Os horários das telas da semana saem no fuso da instituição. O seletor de agravo esconde os sigilosos de quem não
-  pode vê-los. Cada lista de abas tem nome próprio para o leitor de tela.
+  pode vê-los. Cada lista de abas tem nome próprio para o leitor de tela, e os botões que se repetem em cada linha
+  dizem o objeto ("Vincular o registro N", "Desvincular o registro N").
+- Envio cuja resposta se perdeu (0, 502, 503, 504 ou 524) aparece como aviso, "A resposta do envio não chegou", e não
+  como erro. Em qualquer tela, uma página HTML de erro da borda (ou um corpo vazio ou longo) não vira mensagem. Para
+  502, 503, 504 e 524, a mensagem é "O servidor demorou a responder. Tente de novo em instantes."; nos demais casos,
+  "Erro N".
 - **Notificação negativa** (`/notificacao-negativa`): as unidades do responsável, as semanas a atestar com o texto à
   vista, o botão *Atestar*, o histórico e o PDF.
 
 ### API (semana 27)
 
-`/api/vigilancia/...`: `importacoes` (POST com o arquivo cru e `?nome=&de=&ate=&codificacao=`: 201 com a prévia ou
-202 enquanto lê; GET), `importacoes/:id` (GET), `.../aplicar` (200 ou 202 enquanto aplica), `.../descartar`; `conciliacao/resumo`, `/so-oficial`, `/so-omnisaude`,
-`/divergentes`, `/sugestoes`, `/vinculados`, `/bairros`, `/vincular`, `/desvincular`, `/rejeitar`,
-`/bairros/apelido`; `populacao`
+`/api/vigilancia/...`: `importacoes` (POST com o arquivo cru e `?nome=&de=&ate=&codificacao=`: 201 com a prévia,
+202 enquanto lê ou 409 IMPORTACAO_OCUPADA antes de ler o corpo; GET), `importacoes/:id` (GET; `?acompanhar=1` vem sem
+a prévia e sem auditoria), `.../aplicar` (200 ou 202 enquanto aplica), `.../descartar`; `conciliacao/resumo`,
+`/so-oficial`, `/so-omnisaude`, `/divergentes`, `/sugestoes`, `/vinculados`, `/bairros?pagina=`, `/vincular`,
+`/desvincular`, `/rejeitar` (os três podem responder 409 CONCILIACAO_OCUPADA), `/bairros/apelido`; `populacao`
 (GET, PUT), `populacao/:id` (DELETE); `diagrama`, `diagrama.csv`, `diagrama/congelar`, `diagrama/configuracao/:grupo`
 (GET, PUT), `diagrama/anos-epidemicos`; `contingencia`, `contingencia/planos` (GET, POST), `contingencia/planos/:id`
 (GET, PUT), `.../vigencia`, `contingencia/respostas`, `contingencia/acionar`, `contingencia/acoes/:id` (PATCH);
@@ -676,8 +730,10 @@ núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80;
   uma importação cubra o período (regra conservadora).
 - **Evento inusitado**: os registros oficiais da janela não contam como caso anterior, só os anteriores a ela (o mesmo
   caso digitado no Sinan e ainda não conciliado apagaria um inusitado verdadeiro).
-- **Período de uma importação já aplicada** não se corrige: o mesmo arquivo não é aplicado de novo. Declare o período
-  no envio do DBF de um agravo só.
+- **Cobertura por data**: a notificação feita no próprio dia do envio, mesmo depois dele, ainda entra em "só no
+  OmniSaúde", porque o arquivo cobre o dia inteiro.
+- O 409 de **conciliação ocupada** fala de importação, mas também aparece se a tarefa periódica segurar a trava por
+  mais de 3 s, o que só deve acontecer numa base grande.
 - **Memória do Prisma**: o cliente do Prisma 7 guarda os argumentos das últimas 100 chamadas internas, mesmo sem
   `DEBUG`. A importação grava por SQL próprio para não reter as linhas; as outras cargas grandes (CNES, demonstração)
   ainda serão medidas.
