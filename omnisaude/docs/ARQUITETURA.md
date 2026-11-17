@@ -47,6 +47,11 @@ Este documento explica as decisões de arquitetura e onde cada parte da especifi
   (`0002_bi_e_auditoria`). O executor próprio (`src/migrate.ts`) aplica o pendente em cada banco com
   advisory lock e confere o checksum (migração aplicada não pode mudar). `cli.js migrate` percorre todos os
   tenants; `tenant:create` provisiona um banco novo.
+- **Prisma sem histórico de depuração**: o Prisma 7 guarda em memória os argumentos das últimas 100 chamadas
+  de depuração mesmo com o `DEBUG` desligado (o plano de cada consulta e cada SQL com os parâmetros), o que
+  prendia centenas de MB numa importação grande. A instalação corrige o runtime
+  (`packages/database/scripts/prisma-sem-historico.cjs`, no `postinstall` e no Dockerfile) e o teste
+  `apps/api/test/prisma-memoria.test.ts` segura o teto; medições e decisão em `docs/PRISMA-MEMORIA.md`.
 
 ## Segurança, acesso e auditoria
 

@@ -18,6 +18,8 @@ COPY apps/web/package.json apps/web/
 COPY apps/mobile/package.json apps/mobile/
 COPY apps/cloudflare/package.json apps/cloudflare/
 COPY infra/mocks/package.json infra/mocks/
+# O postinstall desliga o histórico de depuração que o Prisma guarda em memória (docs/PRISMA-MEMORIA.md).
+COPY packages/database/scripts/prisma-sem-historico.cjs packages/database/scripts/
 RUN npm ci --no-audit --no-fund
 
 FROM deps AS build
@@ -25,10 +27,12 @@ COPY . .
 RUN npm run build:libs && npx tsc -b apps/api infra/mocks
 
 # Dependências de produção só dos pacotes do back-end (sem Next, React, Capacitor, ferramentas de build).
+# O npm ci reinstala o Prisma: a correção do histórico de depuração roda de novo e, aqui, sem ela a imagem não sai.
 FROM deps AS prod-deps
 RUN npm ci --omit=dev --no-audit --no-fund \
   -w @omnisaude/api -w @omnisaude/database -w @omnisaude/shared -w @omnisaude/ai-engine \
-  -w @omnisaude/messaging -w @omnisaude/fhir -w @omnisaude/esus -w @omnisaude/accessibility -w @omnisaude/mocks
+  -w @omnisaude/messaging -w @omnisaude/fhir -w @omnisaude/esus -w @omnisaude/accessibility -w @omnisaude/mocks \
+  && node packages/database/scripts/prisma-sem-historico.cjs --exigir
 
 # ── Servidores simulados (RNDS/CADSUS, SEFAZ, WhatsApp) para desenvolvimento ──
 FROM node:22-bookworm-slim AS mocks

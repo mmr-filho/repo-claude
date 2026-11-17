@@ -13,3 +13,4 @@ export { completarDemo, completarDemoNoBanco, type ComplementoDemo } from './see
 export * as demoFixtures from './seed/fixtures';
 export * from './bootstrap';
 export * from './partida';
+export * from './prisma-historico';

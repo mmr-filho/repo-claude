@@ -13,7 +13,8 @@
   },
   "files": [
     "dist",
-    "prisma"
+    "prisma",
+    "scripts"
   ],
   "scripts": {
     "generate": "prisma generate --config prisma.master.config.ts && prisma generate --config prisma.tenant.config.ts",

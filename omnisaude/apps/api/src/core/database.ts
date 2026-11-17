@@ -1,5 +1,5 @@
-import { Global, Inject, Injectable, Module, type OnModuleDestroy } from '@nestjs/common';
-import { createMasterClient, envCredentials, TenantConnectionManager, type MasterClient } from '@omnisaude/database';
+import { Global, Inject, Injectable, Logger, Module, type OnModuleDestroy } from '@nestjs/common';
+import { createMasterClient, envCredentials, prismaComHistoricoDeDepuracao, TenantConnectionManager, type MasterClient } from '@omnisaude/database';
 import { APP_CONFIG, type AppConfig } from './config';
 
 export const MASTER_DB = Symbol('MASTER_DB');
@@ -13,6 +13,9 @@ export class TenantsService implements OnModuleDestroy {
     @Inject(APP_CONFIG) config: AppConfig,
   ) {
     this.connections = new TenantConnectionManager(master, { credentials: envCredentials(), ssl: config.DB_SSL ?? false, poolSize: config.DB_POOL_SIZE });
+    // A instalação desliga o histórico de depuração do Prisma (scripts/prisma-sem-historico.cjs); sem isso, uma importação
+    // grande prende centenas de MB no heap de 512 MB (docs/PRISMA-MEMORIA.md).
+    for (const arquivo of prismaComHistoricoDeDepuracao()) new Logger('Prisma').warn(`Histórico de depuração ligado: ${arquivo.orientacao}`);
   }
 
   resolve(slugOrId: string) {
