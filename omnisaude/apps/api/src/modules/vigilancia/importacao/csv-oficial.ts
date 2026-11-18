@@ -1,5 +1,6 @@
 import { isUtf8 } from 'node:buffer';
 import { decodificar } from './codepages';
+import { avisoCamposLimpos, limparTexto } from './controle';
 import { ErroArquivo, type LinhaArquivo } from './dbf';
 import { LIMITE_LINHA_BYTES } from './limites';
 
@@ -8,7 +9,9 @@ import { LIMITE_LINHA_BYTES } from './limites';
  * windows-1252 com aviso; separador ';' ou ',' pelo cabeçalho; aspas e CRLF; cabeçalho normalizado (sem acento,
  * minúsculas, sem pontuação) com sinônimos; recusa arquivo regravado pelo Excel (número em notação científica na
  * coluna do número da notificação, do CPF ou do CNS). O `LeitorCsv` lê os bytes em pedaços e decodifica cada valor
- * sozinho: o arquivo nunca vira uma string única e nenhum valor segura o texto de onde saiu.
+ * sozinho: o arquivo nunca vira uma string única e nenhum valor segura o texto de onde saiu. O caractere de controle
+ * dentro da célula (o NUL, que o banco recusa) sai na leitura, com aviso (controle.ts); a tabulação e a quebra de linha
+ * ficam.
  */
 
 export interface LeituraCsv {
@@ -197,6 +200,8 @@ export class LeitorCsv {
   private saida: LinhaCsv[] = [];
   private visto: Uint8Array | null = null;
   private vistoBuf: Buffer | null = null;
+  /** Células com caractere de controle, limpas (o aviso sai no fim). */
+  private limpos = 0;
 
   constructor(private readonly opcoes: OpcoesLeitorCsv) {}
 
@@ -234,6 +239,7 @@ export class LeitorCsv {
     }
     if (!this.cabecalhoLido) throw new ErroArquivo('CSV vazio');
     if (this.foraDoPadrao) this.avisos.push(`${this.foraDoPadrao} linha(s) com número de colunas diferente do cabeçalho.`);
+    if (this.limpos) this.avisos.push(avisoCamposLimpos(this.limpos));
     return this.saida;
   }
 
@@ -260,8 +266,17 @@ export class LeitorCsv {
     this.tamCampo += n;
   }
 
-  /** Texto dos bytes, sem segurar nada além dele (o Buffer só aponta para os bytes). */
+  /** Texto dos bytes, sem caractere de controle (conta a célula limpa) e sem segurar nada além dele. */
   private texto(b: Uint8Array, s: number, e: number): string {
+    const v = this.decodificado(b, s, e);
+    const limpo = limparTexto(v);
+    if (limpo === null) return v;
+    this.limpos++;
+    return limpo;
+  }
+
+  /** Texto dos bytes, sem segurar nada além dele (o Buffer só aponta para os bytes). */
+  private decodificado(b: Uint8Array, s: number, e: number): string {
     if (this.opcoes.codificacao === 'CP1252') {
       for (let i = s; i < e; i++) if (b[i]! >= 0x80) return decodificar(b.subarray(s, e), 'CP1252');
     }

@@ -10,7 +10,6 @@ import {
   semanaEpidemiologica,
   semanasNoAno,
   situacaoOmni,
-  type ArquivoDetectado,
   type CoberturaAno,
   type GravidadeCaso,
   type NivelTerritorio,
@@ -20,7 +19,7 @@ import {
 import { MASTER_DB } from '../../core/database';
 import type { SystemContext } from '../integrations/messaging.service';
 import { LocalizadorService, PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
-import { arquivoCobre, cnesDoArquivo, gruposDoMesmoAgravo, periodoCoberto, primeirosEnvios } from './cobertura-importacao';
+import { arquivoCobre, arquivosCobertos, gruposDoMesmoAgravo } from './cobertura-importacao';
 import { MapaCasosService } from './mapa.service';
 
 /** Consulta da base consolidada. */
@@ -480,59 +479,26 @@ export class ConsolidadoService {
     };
   }
 
-  /** Grupos dos registros que cada importação do e-SUS Notifica gravou (para o arquivo sem `grupos`, de envios anteriores). */
-  private async gruposGravados(db: Db, importacoes: string[]): Promise<Map<string, string[]>> {
-    if (!importacoes.length) return new Map();
-    const linhas = await db.$queryRaw<{ imp: string; grupos: string[] }[]>`
-      SELECT imp, array_agg(DISTINCT g ORDER BY g) AS grupos FROM (
-        SELECT first_import_id AS imp, group_key AS g FROM official_records
-        WHERE system = 'ESUS_NOTIFICA' AND type = 'INDIVIDUAL' AND group_key IS NOT NULL AND first_import_id = ANY(${importacoes}::uuid[])
-        UNION ALL
-        SELECT last_import_id AS imp, group_key AS g FROM official_records
-        WHERE system = 'ESUS_NOTIFICA' AND type = 'INDIVIDUAL' AND group_key IS NOT NULL AND last_import_id = ANY(${importacoes}::uuid[])
-      ) x GROUP BY imp`;
-    return new Map(linhas.map((l) => [l.imp, l.grupos]));
-  }
-
   /**
    * Cobertura por SE (a pesquisa: "ano ou período sem base importada é nulo e fica fora do conjunto"). A SE está coberta
-   * quando cai no período de um arquivo de importação aplicada (só a APLICADA: a SUBSTITUIDA não cobre nada) que cobre o
-   * agravo (`arquivoCobre` e `periodoCoberto`, os mesmos da conciliação: o período declarado no envio vale mais que o
-   * lido no arquivo, e o fim não passa da data do primeiro envio do mesmo arquivo), quando o OmniSaúde já estava em uso
-   * (da SE em que a primeira notificação notificada ou encerrada, de
-   * qualquer agravo, entrou no sistema em diante) ou quando tem caso do agravo (o caso nunca se perde). O arquivo de um
-   * CNES só (exportação de um estabelecimento) não cobre a SE do município nem a do território: os registros dele
-   * continuam contando. O período lido no arquivo é a menor e a maior data de notificação: num DBF de agravo raro ele
-   * pode ser menor que o exportado, e as SE das pontas ficam fora (o envio com período declarado resolve).
+   * quando cai no período de um arquivo de importação aplicada que cobre o agravo (`arquivosCobertos` e `arquivoCobre`,
+   * os mesmos da conciliação: o arquivo cobre o que cobre nos ausentes, só pelas linhas do sistema dele, com o período
+   * declarado no envio valendo mais que o lido e o fim na data do primeiro envio do mesmo arquivo), quando o OmniSaúde
+   * já estava em uso (da SE em que a primeira notificação notificada ou encerrada, de qualquer agravo, entrou no sistema
+   * em diante) ou quando tem caso do agravo (o caso nunca se perde). O NINDINET com algumas linhas de dengue (do Sinan
+   * Online) não cobre a dengue: o ano sem o DENGON fica só com as SE com caso (R6-2). O arquivo de um CNES só
+   * (exportação de um estabelecimento) não cobre a SE do município nem a do território: os registros dele continuam
+   * contando. O período lido no arquivo é a menor e a maior data de notificação: num DBF de agravo raro ele pode ser
+   * menor que o exportado, e as SE das pontas ficam fora (o envio com período declarado resolve).
    */
   private async cobertura(sys: SystemContext, grupo: string, anos: number[], linhas: LinhaCasos[]): Promise<{ cobertura: CoberturaAno[]; semanas: Map<number, boolean[]> }> {
-    const [importacoes, primeira] = await Promise.all([
-      sys.db.officialImport.findMany({
-        where: { status: 'APLICADA' },
-        select: { id: true, fileName: true, sha256: true, periodFrom: true, periodTo: true, declaredPeriod: true, createdAt: true, files: true },
-      }),
+    const [arquivos, primeira] = await Promise.all([
+      arquivosCobertos(sys.db, sys.tenant.timeZone),
       // Quando a ficha entrou no sistema (não a data de conhecimento, que aceita qualquer dia passado: uma carga
       // retroativa cobriria com zeros anos inteiros de todo agravo).
       sys.db.notification.findFirst({ where: { status: { in: ['NOTIFICADA', 'ENCERRADA'] } }, orderBy: { createdAt: 'asc' }, select: { createdAt: true } }),
     ]);
-    const arquivos = (imp: (typeof importacoes)[number]) => (Array.isArray(imp.files) ? (imp.files as unknown as ArquivoDetectado[]) : []);
-    const [gravados, primeiros] = await Promise.all([
-      this.gruposGravados(
-        sys.db,
-        importacoes.filter((i) => arquivos(i).some((a) => a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos)).map((i) => i.id),
-      ),
-      primeirosEnvios(
-        sys.db,
-        importacoes.map((i) => i.sha256),
-      ),
-    ]);
-    const periodos: { de: string; ate: string; nome: string }[] = [];
-    for (const imp of importacoes)
-      for (const a of arquivos(imp)) {
-        if (cnesDoArquivo(a) || !arquivoCobre(a, grupo, gravados.get(imp.id))) continue;
-        const p = periodoCoberto(imp, a, sys.tenant.timeZone, primeiros.get(imp.sha256));
-        if (p) periodos.push({ de: p.de, ate: p.ate, nome: imp.fileName });
-      }
+    const periodos = arquivos.flatMap((a) => (a.cnes.length || !arquivoCobre(a.fonte, grupo) ? [] : [{ de: a.de, ate: a.ate, nome: a.envio }]));
     const omniDesde = primeira ? semanaEpidemiologica(primeira.createdAt, sys.tenant.timeZone).codigo : null;
     const comCaso = new Set(linhas.map((l) => `${l.ano}${pad(l.semana)}`));
     const semanas = new Map<number, boolean[]>();

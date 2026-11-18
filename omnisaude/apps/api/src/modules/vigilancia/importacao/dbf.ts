@@ -1,11 +1,13 @@
 import type { CodigoPagina } from '@omnisaude/shared';
 import { codigoPaginaDoCabecalho, decodificar, escolherCodificacao } from './codepages';
+import { avisoCamposLimpos, limparCampo } from './controle';
 
 /**
  * Leitor de DBF dBase III do Sinan Net e do Sinan Online (VIG-1c, frente F2): versão no byte 0; registros, tamanho do
  * cabeçalho e do registro nos bytes 4 a 11; descritores até 0x0D; para no 0x1A ou na contagem; pula o registro
  * apagado ('*'); valores aparados (espaço e NUL); D vazio = null, D preenchido = 'AAAA-MM-DD'; aceita C e N onde o
- * dicionário diz outro tipo (datas em C como 'AAAAMMDD' ou 'dd/mm/aaaa' ficam como vieram: a normalização as lê).
+ * dicionário diz outro tipo (datas em C como 'AAAAMMDD' ou 'dd/mm/aaaa' ficam como vieram: a normalização as lê). O
+ * caractere de controle no meio do campo (o NUL, que o banco recusa) vira espaço, com aviso (controle.ts).
  * O `LeitorDbf` recebe o arquivo em pedaços e devolve as linhas de cada pedaço: o arquivo nunca fica inteiro na memória.
  */
 
@@ -160,6 +162,8 @@ export class LeitorDbf {
   /** Registros guardados até escolher a codificação (DBF sem marca no byte 29). */
   private pendentes: Uint8Array[] | null = null;
   private plano: Plano[] = [];
+  /** Campos com caractere de controle no meio, limpos (o aviso sai no fim). */
+  private limpos = 0;
 
   constructor(private readonly opcoes: OpcoesLeitorDbf = {}) {}
 
@@ -196,6 +200,7 @@ export class LeitorDbf {
       const completos = Math.max(0, Math.floor((this.recebidos - c.tamanhoCabecalho) / c.tamanhoRegistro));
       this.avisos.push(`O arquivo terminou antes do previsto pelo cabeçalho: ${completos} de ${c.registros} registros completos (arquivo cortado ou compactado em DBC).`);
     }
+    if (this.limpos) this.avisos.push(avisoCamposLimpos(this.limpos));
     return saida;
   }
 
@@ -283,7 +288,16 @@ export class LeitorDbf {
     return linha;
   }
 
+  /** O valor do campo, sem caractere de controle (conta o campo limpo). */
   private valor(p: Plano, r: Uint8Array, buf: Buffer): string | null {
+    const v = this.bruto(p, r, buf);
+    const limpo = v === null ? null : limparCampo(v);
+    if (limpo === null) return v;
+    this.limpos++;
+    return limpo.trim() || null;
+  }
+
+  private bruto(p: Plano, r: Uint8Array, buf: Buffer): string | null {
     let s = p.inicio;
     let e = Math.min(p.fim, r.length);
     while (s < e && branco(r[s]!)) s++;

@@ -360,7 +360,8 @@ export interface AcionamentoEmVigor {
    * Retrato dos indicadores no acionamento. O critério do acumulado do ano já atendido nele não faz o estágio subir de
    * novo enquanto o que chegou desde o retrato, avaliado sozinho, não passa do limiar (óbitos novos sobre os casos
    * prováveis novos, graves e com sinais de alarme novos sobre os prováveis novos, prováveis novos por 100 mil
-   * habitantes), no mesmo ano do acumulado.
+   * habitantes), no mesmo ano do acumulado. Na descida, o critério de canal atendido nele põe o agravo em S, e as SE
+   * completas depois da última SE completa dele (incompletas no dia da decisão) também contam para S.
    */
   indicadores?: IndicadoresAgravo[] | null;
 }
@@ -572,21 +573,22 @@ function acumuladosAltos(plano: PlanoContingencia, criterios: AvaliacaoCriterio[
  *
  * Descer só depois de N SE completas seguidas abaixo do estágio em vigor, contadas desde o início do acionamento em
  * vigor, pela curva dos agravos que sustentam o estágio (S, `agravosQueSustentam`): os com canal cujo critério de canal
- * de algum estágio até o em vigor foi atendido numa SE completa desde o início do acionamento, ou no retrato dele. Uma
- * SE conta como abaixo quando a sugestão dela está abaixo do estágio em vigor e a curva da própria SE, em cada agravo de
- * S, está fora dos status que os critérios de canal do estágio em vigor ou de um acima aceitam (no modelo do MS: no
- * alerta, não acima do LS; na mobilização, até o centro ou abaixo do LI). Uma SE de queda no meio da alta quebra as
- * janelas de N SE dos critérios, mas não é redução sustentada; e o caso esporádico de um agravo fora de S (o canal de
- * um agravo raro tem centro e LS zero) não trava a descida. O destino é o maior entre as sugestões das N SE, os
- * estágios dos critérios de canal que ficaram sem avaliação nelas (SE sem canal na janela) e o piso de nível: o maior
- * estágio abaixo do em vigor cujo critério de canal aceita o status da SE num agravo de S (da epidemia com a curva acima
- * do LS, o alerta; do alerta com a curva entre o centro e o LS, a mobilização). A SE sem canal nunca conta como abaixo
- * num agravo de S ou num agravo cujo critério de canal ficou sem avaliação nas SE contadas (sem o dado, ele pode estar
- * sustentando o estágio); com S vazio, em todo agravo com canal, para não descer por falta de dado. Com S vazio e o dado
- * presente, valem só as sugestões. O agravo sem canal em nenhuma SE completa dos indicadores não tem como ser conferido
- * e não trava a contagem. O acumulado do ano quase nunca volta a cair no mesmo ano: o do agravo cuja curva voltou ao
- * canal deixa de segurar o estágio, como manda o Plano 2025 (item 7.2.3), e o detalhe o cita. Com a curva fora do
- * canal, ele segura.
+ * de algum estágio até o em vigor foi atendido no retrato do acionamento ou numa SE completa a partir do menor entre o
+ * início dele e a SE seguinte à última SE completa do retrato (a SE que estava incompleta quando a vigilância decidiu
+ * também conta; sem retrato, desde o início). Uma SE conta como abaixo quando a sugestão dela está abaixo do estágio em
+ * vigor e a curva da própria SE, em cada agravo de S, está fora dos status que os critérios de canal do estágio em
+ * vigor ou de um acima aceitam (no modelo do MS: no alerta, não acima do LS; na mobilização, até o centro ou abaixo do
+ * LI). Uma SE de queda no meio da alta quebra as janelas de N SE dos critérios, mas não é redução sustentada; e o caso
+ * esporádico de um agravo fora de S (o canal de um agravo raro tem centro e LS zero) não trava a descida. O destino é o
+ * maior entre as sugestões das N SE, os estágios dos critérios de canal que ficaram sem avaliação nelas (SE sem canal
+ * na janela) e o piso de nível: o maior estágio abaixo do em vigor cujo critério de canal aceita o status da SE num
+ * agravo de S (da epidemia com a curva acima do LS, o alerta; do alerta com a curva entre o centro e o LS, a
+ * mobilização). A SE sem canal nunca conta como abaixo num agravo de S ou num agravo cujo critério de canal ficou sem
+ * avaliação nas SE contadas (sem o dado, ele pode estar sustentando o estágio); com S vazio, em todo agravo com canal,
+ * para não descer por falta de dado. Com S vazio e o dado presente, valem só as sugestões. O agravo sem canal em
+ * nenhuma SE completa dos indicadores não tem como ser conferido e não trava a contagem. O acumulado do ano quase nunca
+ * volta a cair no mesmo ano: o do agravo cuja curva voltou ao canal deixa de segurar o estágio, como manda o Plano 2025
+ * (item 7.2.3), e o detalhe o cita. Com a curva fora do canal, ele segura.
  * Nas semanas passadas, só os critérios de canal são refeitos; as respostas manuais da semana valem como estão.
  */
 export function avaliarPlano(plano: PlanoContingencia, indicadores: IndicadoresAgravo[], respostas: RespostaCriterio[], estagioAtual: string | null, acionamento: AcionamentoEmVigor | null = null): AvaliacaoPlano {
@@ -747,22 +749,32 @@ interface SemanaDaDescida {
 
 /**
  * Agravos que sustentam o estágio em vigor (S): os com canal cujo critério de canal (de algum estágio até o em vigor:
- * `deCanal` já vem filtrado) foi atendido numa SE completa desde o início do acionamento em vigor, com a janela do
- * critério terminando nela (sem acionamento, em qualquer SE completa dos indicadores), ou no retrato do acionamento (as
- * SE completas dos indicadores que a vigilância viu ao decidir).
+ * `deCanal` já vem filtrado) foi atendido no retrato do acionamento (as SE completas dos indicadores que a vigilância
+ * viu ao decidir, com a janela do critério terminando na última delas) ou numa SE completa a partir do limite, com a
+ * janela do critério terminando nela. O limite é o menor entre o início do acionamento em vigor e a SE seguinte à
+ * última SE completa do retrato: as SE entre as duas estavam incompletas quando a vigilância decidiu (com as 2 semanas
+ * incompletas do padrão, a SE anterior à do início) e não estão no retrato. Sem retrato, o início; sem acionamento,
+ * qualquer SE completa dos indicadores.
  */
 function agravosQueSustentam(deCanal: { c: CriterioPlano; agravos: string[] }[], completasDe: Map<string, IndicadoresAgravo['semanas']>, acionamento: AcionamentoEmVigor | null): Set<string> {
   const inicio = acionamento?.semanaInicio ?? null;
   const retrato = new Map(
     (Array.isArray(acionamento?.indicadores) ? acionamento.indicadores : []).filter((i) => i && typeof i.grupo === 'string').map((i) => [i.grupo, (Array.isArray(i.semanas) ? i.semanas : []).filter((s) => s.completa)]),
   );
+  // A última SE completa do retrato (a semana de referência do dia do acionamento); null sem retrato.
+  const ultimaDoRetrato = [...retrato.values()].reduce<string | null>((m, cs) => {
+    const u = cs[cs.length - 1]?.semana;
+    return typeof u === 'string' && /^\d{6}$/.test(u) && (m === null || u > m) ? u : m;
+  }, null);
+  // A janela que termina na SE conta: desde o início, ou depois da última SE completa do retrato (o que vier antes).
+  const conta = (semana: string) => inicio === null || semana >= inicio || (ultimaDoRetrato !== null && semana > ultimaDoRetrato);
   const sustentam = new Set<string>();
   for (const { c, agravos } of deCanal)
     for (const agravo of agravos) {
       if (sustentam.has(agravo)) continue;
       const cs = completasDe.get(agravo) ?? [];
-      // As SE completas desde o início, da mais recente para trás (os indicadores vêm em ordem).
-      for (let recuo = 0; recuo < cs.length && (inicio === null || cs[cs.length - 1 - recuo]!.semana >= inicio); recuo++)
+      // As SE completas a partir do limite, da mais recente para trás (os indicadores vêm em ordem).
+      for (let recuo = 0; recuo < cs.length && conta(cs[cs.length - 1 - recuo]!.semana); recuo++)
         if (avaliarCanalNas(c, cs, recuo).atendido === true) {
           sustentam.add(agravo);
           break;

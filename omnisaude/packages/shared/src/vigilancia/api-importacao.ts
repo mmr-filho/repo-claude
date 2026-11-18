@@ -35,7 +35,11 @@ export interface ArquivoDetectado {
   codificacao: CodificacaoArquivo | null;
   /** Como a codificação foi escolhida: cabeçalho do DBF, pontuação das letras, informada na tela ou UTF-8 válido. */
   origemCodificacao: 'CABECALHO' | 'PONTUACAO' | 'INFORMADA' | 'UTF8' | null;
-  /** Agravos normalizados presentes. */
+  /**
+   * Agravos normalizados presentes, de todas as linhas (o que a tela mostra do arquivo). O que o arquivo cobre (nos
+   * ausentes, na base consolidada e na conciliação) conta só as linhas do sistema dele: fica na cobertura gravada no
+   * apply_result da aplicação (`ResultadoAplicacao`).
+   */
   agravos: string[];
   /**
    * Grupos do catálogo dos registros do arquivo (opcional). O CSV do e-SUS Notifica não traz o agravo: a ficha (síndrome
@@ -50,7 +54,7 @@ export interface ArquivoDetectado {
    * o arquivo cobre o município inteiro. Os envios anteriores não têm o campo: vale como null.
    */
   cnes: string | null;
-  /** Menor e maior data de notificação do arquivo. */
+  /** Menor e maior data de notificação do arquivo, de todas as linhas (como em `agravos`). */
   periodo: { de: string; ate: string } | null;
   /** O arquivo traz a identificação do paciente. */
   identificado: boolean;
@@ -346,8 +350,10 @@ export type RespostaEnvioImportacao = DetalheImportacao | ArquivoJaImportado | E
 
 /**
  * Resposta de POST /vigilancia/importacoes/:id/aplicar quando a aplicação termina dentro da espera (200). O apply_result
- * gravado guarda também a cobertura dos ausentes que a aplicação usou (`cobertura`, a lista por arquivo, para a
- * substituição de outra aplicação conferir se um ausente continua confirmado); ela não vem nas respostas da API.
+ * gravado guarda também a cobertura dos ausentes que a aplicação usou (`cobertura`, a lista por arquivo, só com as
+ * linhas do sistema de cada arquivo, com o tipo do arquivo): a substituição de outra aplicação confere por ela se um
+ * ausente continua confirmado, e a base consolidada e a conciliação leem dela o que o arquivo cobre (a aplicação
+ * gravada sem ela, como a demonstração, usa official_imports.files). Ela não vem nas respostas da API.
  */
 export interface ResultadoAplicacao {
   id: string;
@@ -475,14 +481,15 @@ export interface ResumoConciliacao {
   bairrosSemCorrespondencia: number;
   porSistema: { sistema: SistemaOficial; registros: number; vinculados: number; soOficial: number; soOmnisaude: number }[];
   /**
-   * Sistemas, grupos e períodos cobertos por importação aplicada (o "só no OmniSaúde" só vale dentro deles). Cada
-   * arquivo cobre só o que traz: o DBF do agravo (Sinan Net) e o CSV do e-SUS Sinan, os agravos que vieram; o DENGON e
-   * o CHIKON, a dengue e a chikungunya; o CSV do e-SUS Notifica, a ficha (síndrome gripal = covid). `grupos` null =
-   * todos os do sistema: só o NINDINET, que traz todas as notificações individuais do Sinan Net. Os grupos com o mesmo
-   * agravo do Sinan entram juntos (o DBF do Y09 cobre também a violência sexual e a tentativa de suicídio). `cnes`: o
-   * arquivo de um estabelecimento só cobre só a unidade com esse CNES (null = todas). `ate` nunca passa da data do
-   * primeiro envio do mesmo arquivo (SHA-256), mesmo reenviado depois para declarar o período. Só a importação APLICADA
-   * cobre (a SUBSTITUIDA não).
+   * Sistemas, grupos e períodos cobertos por importação aplicada (o "só no OmniSaúde" só vale dentro deles), os mesmos
+   * dos ausentes e da base consolidada: só as linhas do sistema de cada arquivo contam (a dengue de um NINDINET, que é
+   * do Sinan Online, não entra nem estica o período dele). Cada arquivo cobre só o que traz: o DBF do agravo (Sinan Net)
+   * e o CSV do e-SUS Sinan, os agravos que vieram; o DENGON e o CHIKON, a dengue e a chikungunya; o CSV do e-SUS
+   * Notifica, a ficha (síndrome gripal = covid). `grupos` null = todos os do sistema: só o NINDINET, que traz todas as
+   * notificações individuais do Sinan Net. Os grupos com o mesmo agravo do Sinan entram juntos (o DBF do Y09 cobre
+   * também a violência sexual e a tentativa de suicídio). `cnes`: o arquivo de um estabelecimento só cobre só a unidade
+   * com esse CNES (null = todas). `ate` nunca passa da data do primeiro envio do mesmo arquivo (SHA-256), mesmo
+   * reenviado depois para declarar o período. Só a importação APLICADA cobre (a SUBSTITUIDA não).
    */
   cobertura: { sistema: SistemaOficial; grupos: string[] | null; cnes: string | null; de: string; ate: string }[];
   ultimaImportacao: { id: string; sistema: SistemaOficial; aplicadoEm: string } | null;

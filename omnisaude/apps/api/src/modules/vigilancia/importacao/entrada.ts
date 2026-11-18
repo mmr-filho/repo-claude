@@ -1,6 +1,7 @@
 import { crc32 } from 'node:zlib';
 import { Inflate } from 'fflate';
 import { decodificar } from './codepages';
+import { limparCampo } from './controle';
 import { ErroArquivo } from './dbf';
 import { LIMITE_DESCOMPACTADO_BYTES, LIMITE_ENTRADAS_ZIP, mensagemTetoBytes, mensagemTetoEntradas } from './limites';
 import type { Ritmo } from './ritmo';
@@ -8,7 +9,9 @@ import type { Ritmo } from './ritmo';
 /**
  * Entrada do envio (VIG-1c): o zip é lido pelo diretório central, sem descompactar nada de uma vez; cada arquivo sai em
  * pedaços, descompactado em fluxo, contando os bytes reais. Um arquivo que descompacta mais do que o zip declara (zip
- * bomb) para no primeiro pedaço a mais. O arquivo enviado sem zip é uma entrada só.
+ * bomb) para no primeiro pedaço a mais. O arquivo enviado sem zip é uma entrada só. O nome da entrada do zip com
+ * caractere de controle (o NUL, que o banco recusa) é limpo: cada sequência deles vira um espaço, e o arquivo ganha
+ * um aviso (R6-3).
  */
 
 export interface EntradaEnvio {
@@ -24,6 +27,8 @@ export interface EntradaEnvio {
   crc: number | null;
   /** Fora da importação (motivo): não é .dbf nem .csv, protegido por senha ou compressão que não é lida. */
   ignorado?: string;
+  /** O nome dentro do zip tinha caractere de controle: `nome` é o nome limpo. */
+  nomeLimpo?: boolean;
 }
 
 /** Bytes compactados empurrados por vez para o inflate: o pior caso do deflate (1:1032) dá 8 MB descompactados. */
@@ -42,6 +47,7 @@ const zipInvalido = (motivo: string) => new ErroArquivo(`Não foi possível abri
 
 interface EntradaCentral {
   nome: string;
+  nomeLimpo: boolean;
   flags: number;
   metodo: number;
   crc: number;
@@ -91,7 +97,9 @@ function entradasCentrais(b: Uint8Array): EntradaCentral[] {
     const c = u16(b, q + 32);
     if (q + 46 + n + m + c > b.length) throw zipInvalido('diretório central corrompido');
     const bytesNome = b.subarray(q + 46, q + 46 + n);
-    const nome = flags & 0x800 ? new TextDecoder('utf-8').decode(bytesNome) : decodificar(bytesNome, 'CP437');
+    const lido = flags & 0x800 ? new TextDecoder('utf-8').decode(bytesNome) : decodificar(bytesNome, 'CP437');
+    const limpo = limparCampo(lido);
+    const nome = limpo === null ? lido : limpo.trim();
     let compactado = u32(b, q + 20);
     let tamanho = u32(b, q + 24);
     let local = u32(b, q + 42);
@@ -110,7 +118,7 @@ function entradasCentrais(b: Uint8Array): EntradaCentral[] {
         x += 4 + t;
       }
     }
-    out.push({ nome, flags, metodo: u16(b, q + 10), crc: u32(b, q + 16), compactado, tamanho, local });
+    out.push({ nome, nomeLimpo: limpo !== null, flags, metodo: u16(b, q + 10), crc: u32(b, q + 16), compactado, tamanho, local });
     q += 46 + n + m + c;
   }
   return out;
@@ -132,7 +140,8 @@ export function abrirEnvio(nome: string, bytes: Uint8Array): EntradaEnvio[] {
   for (const e of entradasCentrais(bytes)) {
     const base = e.nome.split('/').pop() ?? '';
     if (!base || e.nome.endsWith('/') || e.nome.startsWith('__MACOSX/') || base.startsWith('.')) continue;
-    const fora = (motivo: string) => ignorados.push({ nome: e.nome, tamanho: e.tamanho, metodo: e.metodo, dados: new Uint8Array(0), crc: null, ignorado: motivo });
+    const fora = (motivo: string) =>
+      ignorados.push({ nome: e.nome, tamanho: e.tamanho, metodo: e.metodo, dados: new Uint8Array(0), crc: null, ignorado: motivo, ...(e.nomeLimpo ? { nomeLimpo: true } : {}) });
     if (!/\.(dbf|csv)$/i.test(base)) {
       fora(/\.dbc$/i.test(base) ? 'DBC do DATASUS (compactado) não é lido: use a exportação DBF do Sinan' : 'não é .dbf nem .csv');
       continue;
@@ -150,7 +159,7 @@ export function abrirEnvio(nome: string, bytes: Uint8Array): EntradaEnvio[] {
     if (inicio + e.compactado > bytes.length) throw zipInvalido(`${e.nome} cortado`);
     total += e.tamanho;
     if (total > LIMITE_DESCOMPACTADO_BYTES) throw new ErroArquivo(mensagemTetoBytes(), true);
-    aceitos.push({ nome: e.nome, tamanho: e.tamanho, metodo: e.metodo, dados: bytes.subarray(inicio, inicio + e.compactado), crc: e.crc });
+    aceitos.push({ nome: e.nome, tamanho: e.tamanho, metodo: e.metodo, dados: bytes.subarray(inicio, inicio + e.compactado), crc: e.crc, ...(e.nomeLimpo ? { nomeLimpo: true } : {}) });
   }
   if (ignorados.some((i) => i.nome === '[Content_Types].xml')) throw new ErroArquivo('Planilha do Excel (.xlsx) não é lida: envie o DBF ou o CSV exportado pelo sistema oficial, sem abrir no Excel', true);
   aceitos.sort((a, b) => a.nome.localeCompare(b.nome));

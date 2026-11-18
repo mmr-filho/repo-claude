@@ -8,7 +8,6 @@ import { TenantPrisma, type MasterClient } from '@omnisaude/database';
 import {
   localDateString,
   roleHasPermission,
-  SISTEMA_INFO,
   type AmostraAlteracao,
   type AmostraRegistro,
   type ArquivoDetectado,
@@ -36,6 +35,7 @@ import type { RequestContext } from '../../core/context';
 import { MASTER_DB, TenantsService } from '../../core/database';
 import { conflict, DomainError, notFound } from '../../core/errors';
 import { CargasDoProcesso, MSG_SERVIDOR_OCUPADO } from '../../core/raw-body';
+import { coberturaGravada, entradaVazia } from './cobertura-importacao';
 import { ConciliacaoService } from './conciliacao.service';
 import { gruposSigilosos, grupoDoCidFabrica, municipioDoTenant, municipiosPorNome } from './importacao/apoio';
 import { ErroArquivo } from './importacao/dbf';
@@ -211,7 +211,10 @@ function dataExiste(s: string): boolean {
 
 /**
  * Filtro dos registros do banco dentro de uma entrada da cobertura (sistema, tipo, período, agravos, municípios, ficha e
- * CNES), ausentes ou não.
+ * CNES), ausentes ou não. É de dois valores (dá verdadeiro ou falso, nunca nulo): cada condição sobre coluna anulável
+ * (CNES, município, agravo e ficha) leva a guarda de não nulo. Sem ela, `unit_cnes IN (...)` dá NULL no registro sem
+ * CNES (lógica de três valores do SQL), o NOT de `foraDe` também dá NULL, e o registro sem CNES, sem município, sem
+ * agravo ou sem ficha sumia da prévia, que deixava de bater com a aplicação (R6-1).
  */
 function cobertoPor(c: Cobertura): TenantPrisma.OfficialRecordWhereInput {
   const agravos = c.agravos.filter((a): a is string => !!a);
@@ -219,17 +222,17 @@ function cobertoPor(c: Cobertura): TenantPrisma.OfficialRecordWhereInput {
     system: c.sistema,
     type: c.tipo,
     notifiedOn: { gte: new Date(`${c.de}T00:00:00Z`), lte: new Date(`${c.ate}T00:00:00Z`) },
-    ...(c.grupos ? { groupKey: { in: c.grupos } } : {}),
-    ...(c.cnes ? { unitCnes: { in: c.cnes } } : {}),
+    ...(c.grupos ? { groupKey: { in: c.grupos, not: null } } : {}),
+    ...(c.cnes ? { unitCnes: { in: c.cnes, not: null } } : {}),
     AND: [
-      { OR: [...(agravos.length ? [{ agravo: { in: agravos } }] : []), ...(c.agravos.includes(null) ? [{ agravo: null }] : [])] },
-      { OR: [...c.municipios.map((m) => ({ municipalityIbge: { startsWith: m } })), ...(c.municipioNulo ? [{ municipalityIbge: null }] : [])] },
+      { OR: [...(agravos.length ? [{ agravo: { in: agravos, not: null } }] : []), ...(c.agravos.includes(null) ? [{ agravo: null }] : [])] },
+      { OR: [...c.municipios.map((m) => ({ municipalityIbge: { startsWith: m, not: null } })), ...(c.municipioNulo ? [{ municipalityIbge: null }] : [])] },
     ],
   };
 }
 
 /** A entrada da cobertura que não cobre nada (a ficha do e-SUS Notifica sem grupo, de envios antigos). */
-const vazia = (c: Cobertura) => !!c.grupos && !c.grupos.length;
+const vazia = entradaVazia;
 
 const cruzam = <T>(a: readonly T[], b: readonly T[]) => a.some((x) => b.includes(x));
 
@@ -251,40 +254,11 @@ function podemSeCruzar(a: Cobertura, b: Cobertura): boolean {
   );
 }
 
-/** Fora das entradas `antes` (o NOT de um OR; sem entradas, nada a excluir). */
-const foraDe = (antes: readonly Cobertura[]): TenantPrisma.OfficialRecordWhereInput => (antes.length ? { NOT: { OR: antes.map(cobertoPor) } } : {});
-
-const ehTexto = (v: unknown): v is string => typeof v === 'string';
-const ehSistema = (v: unknown): v is SistemaOficial => ehTexto(v) && Object.hasOwn(SISTEMA_INFO, v);
-const ehTipo = (v: unknown): v is TipoRegistroOficial => v === 'INDIVIDUAL' || v === 'NEGATIVA' || v === 'SURTO';
-const ehListaDeTextos = (v: unknown): v is string[] => Array.isArray(v) && v.every(ehTexto);
-const ehData = (v: unknown): v is string => ehTexto(v) && /^\d{4}-\d{2}-\d{2}$/.test(v);
-
 /**
- * A cobertura que uma aplicação gravou no apply_result (`cobertura`), conferida entrada a entrada: a entrada fora do
- * formato fica de fora (não confirma ausência), e a aplicação gravada sem a cobertura (de antes da regra, a demonstração)
- * não tem nenhuma.
+ * Fora das entradas `antes` (o NOT de um OR; sem entradas, nada a excluir). Verdadeiro para o registro que nenhuma delas
+ * cobre, com CNES, município, agravo ou ficha nulos inclusive: `cobertoPor` é de dois valores.
  */
-function coberturaGravada(applyResult: unknown): Cobertura[] {
-  const lista = (applyResult as { cobertura?: unknown } | null)?.cobertura;
-  if (!Array.isArray(lista)) return [];
-  return lista.filter((c): c is Cobertura => {
-    const x = c as Record<string, unknown> | null;
-    return (
-      !!x &&
-      ehSistema(x.sistema) &&
-      ehTipo(x.tipo) &&
-      ehData(x.de) &&
-      ehData(x.ate) &&
-      Array.isArray(x.agravos) &&
-      x.agravos.every((a) => a === null || ehTexto(a)) &&
-      ehListaDeTextos(x.municipios) &&
-      typeof x.municipioNulo === 'boolean' &&
-      (x.grupos === undefined || ehListaDeTextos(x.grupos)) &&
-      (x.cnes === undefined || ehListaDeTextos(x.cnes))
-    );
-  });
-}
+const foraDe = (antes: readonly Cobertura[]): TenantPrisma.OfficialRecordWhereInput => (antes.length ? { NOT: { OR: antes.map(cobertoPor) } } : {});
 
 /** O resultado da aplicação como a API mostra: sem a cobertura gravada (é do servidor, e um zip de muitas unidades a deixa longa). */
 function resultadoSemCobertura(applyResult: unknown): ResultadoAplicacao | null {
@@ -1610,7 +1584,8 @@ export class ImportacaoService {
           ];
           // O resultado fica gravado com a aplicação, junto com a cobertura dos ausentes que ela usou (a lista por
           // arquivo, já com o fim no primeiro envio): a substituição de outra aplicação a consulta para saber se um
-          // ausente continua confirmado. A cobertura não vai para as respostas da API. A reconciliação da negativa roda
+          // ausente continua confirmado, e a base consolidada e a conciliação leem dela o que cada arquivo cobre
+          // (cobertura-importacao.ts). A cobertura não vai para as respostas da API. A reconciliação da negativa roda
           // depois da transação: até ela terminar, fica o aviso de que não rodou (verdade se o processo cair antes; o job
           // reconcilia depois).
           const gravado: ResultadoAplicacao = {

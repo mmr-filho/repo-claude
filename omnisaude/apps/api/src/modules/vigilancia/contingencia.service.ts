@@ -127,7 +127,9 @@ export class ContingenciaService {
       : { chave: normalidade.chave, nome: normalidade.nome, desde: null, acionamentoId: null };
     const respostas = plano ? await this.respostasDaSemana(ctx.db, plano.id, territorio, ultimaCompleta) : [];
     // A desmobilização conta as SE desde o início do acionamento em vigor e olha os agravos que sustentam o estágio (o
-    // critério de canal atendido desde o início ou no retrato); o acumulado já visto no retrato não faz subir de novo.
+    // critério de canal atendido no retrato, ou numa SE completa depois dele ou desde o início: o retrato vai até a
+    // última SE completa do dia da decisão, e a SE ainda incompleta naquele dia também conta); o acumulado já visto no
+    // retrato não faz subir de novo.
     const emVigor: AcionamentoEmVigor | null = aberto ? { semanaInicio: aberto.startedWeek, indicadores: retratoDe(aberto.indicators) } : null;
     const avaliacao = definicao
       ? avaliarPlano(

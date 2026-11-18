@@ -17,6 +17,7 @@ import {
 } from '@omnisaude/shared';
 import { LeitorCsv, normalizarCabecalho, ValidadorUtf8 } from './csv-oficial';
 import { bytesDoCabecalho, ErroArquivo, lerCabecalhoDbf, LeitorDbf, type LinhaArquivo } from './dbf';
+import { AVISO_NOME_LIMPO } from './controle';
 import { detectarTipo } from './detectar';
 import { abrirEnvio, ContadorBytes, pedacos, type EntradaEnvio } from './entrada';
 import { LIMITE_REGISTROS, mensagemTetoRegistros } from './limites';
@@ -213,12 +214,20 @@ class Indice {
  * (nunca apagados). Cada arquivo cobre o sistema e o tipo dele, os agravos (no e-SUS Notifica, as fichas) e o período
  * dos registros que vieram dele (ou o declarado), os municípios de notificação e, no e-SUS, o CNES dele quando o arquivo
  * traz um CNES só; senão, o município inteiro. A cobertura do envio é a lista das coberturas dos arquivos: os mesmos
- * arquivos dão os mesmos ausentes num zip ou em envios separados. As entradas iguais (o mesmo sistema, tipo, agravos,
- * fichas, período e municípios) ficam numa só, com os CNES unidos: a consulta não cresce com o zip de muitas unidades.
+ * arquivos dão os mesmos ausentes num zip ou em envios separados. As entradas iguais (o mesmo tipo de arquivo, sistema,
+ * tipo, agravos, fichas, período e municípios) ficam numa só, com os CNES unidos: a consulta não cresce com o zip de
+ * muitas unidades. A aplicação grava a lista no apply_result, e a base consolidada e a conciliação leem dela o que o
+ * arquivo cobre (R6-2: o mesmo dos ausentes).
  */
 export interface Cobertura {
   sistema: SistemaOficial;
   tipo: TipoRegistroOficial;
+  /**
+   * Tipo do arquivo de onde a entrada veio: a base consolidada e a conciliação leem por ele o que o arquivo cobre (o
+   * NINDINET, todos os agravos do Sinan Net; o DENGON e o CHIKON, a dengue e a chikungunya). A entrada gravada antes
+   * da regra não o tem, e quem lê usa então o files[] da importação.
+   */
+  tipoArquivo?: TipoArquivoOficial;
   /** Agravos presentes (null = registro sem agravo, como a negativa e o e-SUS Notifica). */
   agravos: (string | null)[];
   /** e-SUS Notifica: fichas (grupos) presentes; a ausência só vale dentro da mesma ficha. */
@@ -240,11 +249,14 @@ export interface Cobertura {
 /**
  * A cobertura de um arquivo, somada linha a linha na leitura (a mesma conta do `cnes` de official_imports.files). Entram
  * as linhas do sistema do arquivo (a dengue de um NINDINET antigo, que é do Sinan Online, não cobre o Sinan Online nem o
- * Sinan Net) e, no e-SUS Notifica, as da ficha identificada. A linha do registro que também veio em outro arquivo (o
- * NINDINET e o DBF do agravo; a mesma chave em dois arquivos do mesmo tipo) entra na cobertura de cada um.
+ * Sinan Net, nos ausentes, na base consolidada nem na conciliação) e, no e-SUS Notifica, as da ficha identificada. A
+ * linha do registro que também veio em outro arquivo (o NINDINET e o DBF do agravo; a mesma chave em dois arquivos do
+ * mesmo tipo) entra na cobertura de cada um. Os agravos e o período de official_imports.files contam todas as linhas
+ * (são o que a tela mostra do arquivo).
  */
 interface CoberturaDoArquivo {
   nome: string;
+  tipoArquivo: TipoArquivoOficial;
   sistema: SistemaOficial;
   tipo: TipoRegistroOficial;
   agravos: Set<string | null>;
@@ -301,6 +313,7 @@ function coberturaDosArquivos(
     const out: Cobertura = {
       sistema: a.sistema,
       tipo: a.tipo,
+      tipoArquivo: a.tipoArquivo,
       agravos: emOrdem(a.agravos),
       de: declarado?.de ?? a.de,
       ate: declarado?.ate ?? a.ate,
@@ -315,7 +328,7 @@ function coberturaDosArquivos(
     if (a.sistema === 'ESUS_NOTIFICA') out.grupos = [...a.grupos].sort();
     if (a.cnes) out.cnes = [a.cnes];
     valendo.push(a);
-    const k = JSON.stringify([out.sistema, out.tipo, out.agravos, out.grupos ?? null, out.de, out.ate, out.municipios, out.municipioNulo, !!out.cnes]);
+    const k = JSON.stringify([out.tipoArquivo, out.sistema, out.tipo, out.agravos, out.grupos ?? null, out.de, out.ate, out.municipios, out.municipioNulo, !!out.cnes]);
     const igual = porChave.get(k);
     if (!igual) {
       porChave.set(k, out);
@@ -539,9 +552,9 @@ export class LeituraEnvio {
    * linha só no fim da leitura (`fecharIgnorados`). Sem o teto, um zip com centenas de entradas estranhas enchia a lista,
    * os avisos e o erro sem registros.
    */
-  private ignorar(arquivo: ArquivoLido, aviso: string) {
+  private ignorar(e: EntradaEnvio, arquivo: ArquivoLido, aviso: string) {
     if (++this.ignorados > MAX_IGNORADOS) return;
-    this.arquivos.push(arquivo);
+    this.arquivos.push(e.nomeLimpo ? { ...arquivo, avisos: [...arquivo.avisos, AVISO_NOME_LIMPO] } : arquivo);
     this.avisos.push(aviso);
   }
 
@@ -560,11 +573,11 @@ export class LeituraEnvio {
 
   async lerEntrada(e: EntradaEnvio, opcoes: OpcoesLeitura, ritmo: Ritmo, contador: ContadorBytes) {
     if (e.ignorado) {
-      this.ignorar(ignorado(e.nome, 0, 'DESCONHECIDO', `Fora da importação: ${e.ignorado}`), `${e.nome}: fora da importação (${e.ignorado}).`);
+      this.ignorar(e, ignorado(e.nome, 0, 'DESCONHECIDO', `Fora da importação: ${e.ignorado}`), `${e.nome}: fora da importação (${e.ignorado}).`);
       return;
     }
     if (/\.dbc$/i.test(e.nome)) {
-      this.ignorar(ignorado(e.nome, e.tamanho, 'DESCONHECIDO', 'DBC do DATASUS (compactado) não é lido: use a exportação DBF do Sinan'), `${e.nome}: DBC do DATASUS não é lido; use a exportação DBF do Sinan.`);
+      this.ignorar(e, ignorado(e.nome, e.tamanho, 'DESCONHECIDO', 'DBC do DATASUS (compactado) não é lido: use a exportação DBF do Sinan'), `${e.nome}: DBC do DATASUS não é lido; use a exportação DBF do Sinan.`);
       return;
     }
     // Estado do arquivo: preenchido quando o tipo é detectado (depois das primeiras linhas).
@@ -572,7 +585,7 @@ export class LeituraEnvio {
     try {
       const leitor = await this.abrir(e, opcoes, ritmo);
       if (!leitor) {
-        this.ignorar(ignorado(e.nome, e.tamanho, 'DESCONHECIDO', 'Formato não reconhecido (nem DBF nem CSV)'), `${e.nome}: formato não reconhecido (nem DBF nem CSV).`);
+        this.ignorar(e, ignorado(e.nome, e.tamanho, 'DESCONHECIDO', 'Formato não reconhecido (nem DBF nem CSV)'), `${e.nome}: formato não reconhecido (nem DBF nem CSV).`);
         return;
       }
       const amostra: LinhaNumerada[] = [];
@@ -618,7 +631,7 @@ export class LeituraEnvio {
             : tipoFora === 'PLANILHA_SURTO'
               ? 'Planilha de acompanhamento do surto (uma linha por caso): ignorada. O surto vem do NSURTNET'
               : `Arquivo não reconhecido como exportação do Sinan ou do e-SUS (colunas: ${colunas.slice(0, 8).join(', ')}${colunas.length > 8 ? '...' : ''})`;
-        this.ignorar(ignorado(e.nome, e.tamanho, tipoFora, aviso), `${e.nome}: ${aviso}.`);
+        this.ignorar(e, ignorado(e.nome, e.tamanho, tipoFora, aviso), `${e.nome}: ${aviso}.`);
         return;
       }
       this.fecharArquivo(st.estado, st.tipo, leitor, e);
@@ -626,7 +639,7 @@ export class LeituraEnvio {
       if (!(x instanceof ErroArquivo) || x.recusaEnvio) throw x;
       // Erro do arquivo depois de linhas já lidas não tem volta: recusa o envio.
       if (st.estado) throw new ErroArquivo(`${e.nome}: ${x.message}`, true);
-      this.ignorar(ignorado(e.nome, e.tamanho, 'DESCONHECIDO', x.message), `${e.nome}: ${x.message}.`);
+      this.ignorar(e, ignorado(e.nome, e.tamanho, 'DESCONHECIDO', x.message), `${e.nome}: ${x.message}.`);
     }
   }
 
@@ -649,7 +662,12 @@ export class LeituraEnvio {
         fim: () => numerar(dbf.fim()),
       };
     }
-    if (inicio.subarray(0, 4096).includes(0)) return null;
+    // Binário (planilha, DBC, DBF com o cabeçalho estragado, texto em UTF-16): byte nulo em mais de 1% do começo (e em
+    // mais de 8 bytes). O texto com algum nulo perdido é lido como CSV: o nulo sai na leitura, com aviso (R6-3).
+    const comeco = inicio.subarray(0, 4096);
+    let nulos = 0;
+    for (const b of comeco) if (b === 0) nulos++;
+    if (nulos > Math.max(8, comeco.length / 100)) return null;
     // Texto: confere o UTF-8 do arquivo inteiro antes de ler (um caractere inválido no fim muda a leitura toda).
     const avisos: string[] = [];
     let codificacao: 'UTF8' | 'CP1252';
@@ -729,6 +747,7 @@ export class LeituraEnvio {
       ignorado: false,
       avisos: [
         ...leitor.avisos(),
+        ...(e.nomeLimpo ? [AVISO_NOME_LIMPO] : []),
         ...(a.repetidas ? [`${a.repetidas} chave(s) repetida(s) no arquivo: ficou a linha com mais campos preenchidos.`] : []),
         ...[...a.avisosLinha].map(([aviso, n]) => `${aviso} (${n} registro${n > 1 ? 's' : ''}).`),
       ],
@@ -739,6 +758,7 @@ export class LeituraEnvio {
     if (sistema && tipoRegistro && a.cobertos > 0 && c.de && c.ate)
       this.coberturasDosArquivos.push({
         nome: e.nome,
+        tipoArquivo: tipo,
         sistema,
         tipo: tipoRegistro,
         agravos: c.agravos,

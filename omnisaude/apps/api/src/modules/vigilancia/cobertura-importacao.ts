@@ -1,5 +1,18 @@
 import type { TenantPrisma } from '@omnisaude/database';
-import { agravoSinanDaChave, infoAgravoSinan, LNNC_NACIONAL, localDateString, ROTAS_PADRAO, type ArquivoDetectado, type SistemaOficial } from '@omnisaude/shared';
+import {
+  agravoSinanDaChave,
+  infoAgravoSinan,
+  LNNC_NACIONAL,
+  localDateString,
+  ROTAS_PADRAO,
+  SISTEMA_DO_ARQUIVO,
+  SISTEMA_INFO,
+  type ArquivoDetectado,
+  type SistemaOficial,
+  type TipoArquivoOficial,
+  type TipoRegistroOficial,
+} from '@omnisaude/shared';
+import type { Cobertura } from './importacao/leitura';
 
 /**
  * O que cada arquivo de uma importação aplicada cobre (VIG-1c), num lugar só para a conciliação ("só no OmniSaúde") e
@@ -8,8 +21,16 @@ import { agravoSinanDaChave, infoAgravoSinan, LNNC_NACIONAL, localDateString, RO
  * (AGRAVO_NET) e o CSV do e-SUS Sinan, os agravos que vieram; o DENGON e o CHIKON, a dengue e a chikungunya; o CSV do
  * e-SUS Notifica, a ficha (síndrome gripal = covid; ESAVI...). O período vai até a data do primeiro envio do mesmo
  * arquivo, e o arquivo de um CNES só cobre só esse estabelecimento. Só a importação APLICADA cobre (a SUBSTITUIDA, o
- * mesmo arquivo aplicado de novo com outro período, não cobre nada): quem lê official_imports filtra a situação.
+ * mesmo arquivo aplicado de novo com outro período, não cobre nada).
+ *
+ * A fonte é a cobertura dos ausentes que a aplicação usou e gravou no apply_result (R6-2): só as linhas do sistema do
+ * arquivo, arquivo por arquivo, com o período declarado e o fim no primeiro envio. Assim o arquivo cobre na base
+ * consolidada e na conciliação exatamente o que cobre nos ausentes: o NINDINET com algumas linhas de dengue (do Sinan
+ * Online) não cobre a dengue, e o período dele é o das linhas do Sinan Net. A aplicação gravada sem essa lista (a
+ * demonstração, dado antigo) usa o official_imports.files, que conta todas as linhas do arquivo (`arquivosCobertos`).
  */
+
+type Db = TenantPrisma.TransactionClient;
 
 /** Sistema padrão do agravo (o que não tem rota conferida vai para o Sinan Net). */
 export const sistemaPadrao = (grupo: string): SistemaOficial => ROTAS_PADRAO.find((r) => r.grupo === grupo)?.sistema ?? 'SINAN_NET';
@@ -39,8 +60,14 @@ export function gruposDoMesmoAgravo(grupo: string): string[] {
   return familia.includes(grupo) ? [...familia] : [...familia, grupo].sort();
 }
 
+/**
+ * O que um arquivo traz, para as regras de cobertura: o arquivo de official_imports.files (`ArquivoDetectado`) ou a
+ * entrada da cobertura gravada no apply_result (só as linhas do sistema do arquivo).
+ */
+export type FonteCobertura = Pick<ArquivoDetectado, 'tipo' | 'sistema' | 'tipoRegistro' | 'agravos' | 'ignorado'> & { grupos?: string[] };
+
 /** Os grupos que os registros do arquivo recebem (o grupo do agravo de cada um, ou a ficha do e-SUS Notifica). */
-function gruposDosRegistros(a: ArquivoDetectado, gruposGravados: readonly string[]): string[] | null {
+function gruposDosRegistros(a: FonteCobertura, gruposGravados: readonly string[]): string[] | null {
   if (a.ignorado || !a.sistema || a.tipoRegistro !== 'INDIVIDUAL') return [];
   if (a.tipo === 'NINDINET') return null;
   const grupos = new Set<string>();
@@ -61,7 +88,7 @@ function gruposDosRegistros(a: ArquivoDetectado, gruposGravados: readonly string
  * NINDINET); [] = nenhum (arquivo ignorado, sem registro individual ou sem agravo conhecido). `gruposGravados`: no
  * e-SUS Notifica sem `grupos` no arquivo (envios anteriores), os grupos dos registros que a importação gravou.
  */
-export function gruposDoArquivo(a: ArquivoDetectado, gruposGravados: readonly string[] = []): string[] | null {
+export function gruposDoArquivo(a: FonteCobertura, gruposGravados: readonly string[] = []): string[] | null {
   const grupos = gruposDosRegistros(a, gruposGravados);
   if (grupos === null) return null;
   const todos = new Set<string>();
@@ -77,7 +104,7 @@ export function gruposDoArquivo(a: ArquivoDetectado, gruposGravados: readonly st
  * violência sexual ou da tentativa de suicídio conta no grupo dela), e cobrir a violência sexual com eles daria SE
  * zeradas sem os casos.
  */
-export function arquivoCobre(a: ArquivoDetectado, grupo: string, gruposGravados: readonly string[] = []): boolean {
+export function arquivoCobre(a: FonteCobertura, grupo: string, gruposGravados: readonly string[] = []): boolean {
   const grupos = gruposDosRegistros(a, gruposGravados);
   if (grupos !== null) return grupos.includes(grupo);
   return (a.agravos ?? []).some((c) => infoAgravoSinan(c)?.grupo === grupo) || sistemaPadrao(grupo) === 'SINAN_NET';
@@ -126,4 +153,135 @@ export async function primeirosEnvios(db: TenantPrisma.TransactionClient, shas: 
   if (!unicos.length) return new Map();
   const linhas = await db.officialImport.groupBy({ by: ['sha256'], where: { sha256: { in: unicos } }, _min: { createdAt: true } });
   return new Map(linhas.flatMap((l) => (l._min.createdAt ? [[l.sha256, l._min.createdAt] as const] : [])));
+}
+
+// ───────────── a cobertura gravada pela aplicação ─────────────
+
+const ehTexto = (v: unknown): v is string => typeof v === 'string';
+const ehSistema = (v: unknown): v is SistemaOficial => ehTexto(v) && Object.hasOwn(SISTEMA_INFO, v);
+const ehTipo = (v: unknown): v is TipoRegistroOficial => v === 'INDIVIDUAL' || v === 'NEGATIVA' || v === 'SURTO';
+const ehTipoArquivo = (v: unknown): v is TipoArquivoOficial => ehTexto(v) && Object.hasOwn(SISTEMA_DO_ARQUIVO, v);
+const ehListaDeTextos = (v: unknown): v is string[] => Array.isArray(v) && v.every(ehTexto);
+const ehData = (v: unknown): v is string => ehTexto(v) && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+/** A entrada da cobertura que não cobre nada (a ficha do e-SUS Notifica sem grupo, de envios antigos). */
+export const entradaVazia = (c: Cobertura) => !!c.grupos && !c.grupos.length;
+
+/**
+ * A cobertura que uma aplicação gravou no apply_result (`cobertura`), conferida entrada a entrada: a entrada fora do
+ * formato fica de fora (não confirma ausência nem cobre nada), e a aplicação gravada sem a cobertura (de antes da
+ * regra, a demonstração) não tem nenhuma.
+ */
+export function coberturaGravada(applyResult: unknown): Cobertura[] {
+  const lista = (applyResult as { cobertura?: unknown } | null)?.cobertura;
+  if (!Array.isArray(lista)) return [];
+  return lista.filter((c): c is Cobertura => {
+    const x = c as Record<string, unknown> | null;
+    return (
+      !!x &&
+      ehSistema(x.sistema) &&
+      ehTipo(x.tipo) &&
+      (x.tipoArquivo === undefined || ehTipoArquivo(x.tipoArquivo)) &&
+      ehData(x.de) &&
+      ehData(x.ate) &&
+      Array.isArray(x.agravos) &&
+      x.agravos.every((a) => a === null || ehTexto(a)) &&
+      ehListaDeTextos(x.municipios) &&
+      typeof x.municipioNulo === 'boolean' &&
+      (x.grupos === undefined || ehListaDeTextos(x.grupos)) &&
+      (x.cnes === undefined || ehListaDeTextos(x.cnes))
+    );
+  });
+}
+
+/**
+ * A cobertura gravada como a base consolidada e a conciliação a leem; null quando a aplicação foi gravada sem ela (a
+ * demonstração, dado antigo) ou com alguma entrada individual sem o tipo do arquivo (gravada antes da regra): quem lê
+ * usa então o files[].
+ */
+function coberturaParaLeitura(applyResult: unknown): Cobertura[] | null {
+  if (!Array.isArray((applyResult as { cobertura?: unknown } | null)?.cobertura)) return null;
+  const entradas = coberturaGravada(applyResult);
+  return entradas.some((c) => c.tipo === 'INDIVIDUAL' && !c.tipoArquivo) ? null : entradas;
+}
+
+/**
+ * Um arquivo de uma importação aplicada como a base consolidada e a conciliação o leem: o que ele traz (`fonte`, para
+ * `arquivoCobre` e `gruposDoArquivo`), os CNES do arquivo de um estabelecimento só (a entrada que junta arquivos iguais
+ * tem mais de um; vazio = o município inteiro) e o período coberto, já com o declarado no envio e o fim no primeiro
+ * envio do arquivo.
+ */
+export interface ArquivoCoberto {
+  /** Nome do envio (official_imports.file_name), para a tela. */
+  envio: string;
+  fonte: FonteCobertura;
+  cnes: string[];
+  de: string;
+  ate: string;
+}
+
+/** Grupos dos registros que cada importação do e-SUS Notifica gravou (para o arquivo sem `grupos`, de envios anteriores). */
+async function gruposGravados(db: Db, importacoes: string[]): Promise<Map<string, string[]>> {
+  if (!importacoes.length) return new Map();
+  const linhas = await db.$queryRaw<{ imp: string; grupos: string[] }[]>`
+    SELECT imp, array_agg(DISTINCT g ORDER BY g) AS grupos FROM (
+      SELECT first_import_id AS imp, group_key AS g FROM official_records
+      WHERE system = 'ESUS_NOTIFICA' AND type = 'INDIVIDUAL' AND group_key IS NOT NULL AND first_import_id = ANY(${importacoes}::uuid[])
+      UNION ALL
+      SELECT last_import_id AS imp, group_key AS g FROM official_records
+      WHERE system = 'ESUS_NOTIFICA' AND type = 'INDIVIDUAL' AND group_key IS NOT NULL AND last_import_id = ANY(${importacoes}::uuid[])
+    ) x GROUP BY imp`;
+  return new Map(linhas.map((l) => [l.imp, l.grupos]));
+}
+
+/**
+ * Os arquivos individuais das importações APLICADA (a SUBSTITUIDA não cobre nada), com o que cada um cobre. A fonte é a
+ * cobertura dos ausentes gravada no apply_result (a lista que a aplicação usou: só as linhas do sistema do arquivo, o
+ * período declarado e o fim no primeiro envio, como na prévia); a aplicação gravada sem ela usa o files[] (agravos e
+ * período de todas as linhas, com `periodoCoberto` e `cnesDoArquivo`, e, no e-SUS Notifica sem `grupos`, os grupos
+ * dos registros gravados).
+ */
+export async function arquivosCobertos(db: Db, timeZone: string): Promise<ArquivoCoberto[]> {
+  const imps = await db.officialImport.findMany({
+    where: { status: 'APLICADA' },
+    select: { id: true, fileName: true, sha256: true, periodFrom: true, periodTo: true, declaredPeriod: true, createdAt: true, files: true, applyResult: true },
+  });
+  const out: ArquivoCoberto[] = [];
+  const semCobertura: typeof imps = [];
+  for (const imp of imps) {
+    const gravada = coberturaParaLeitura(imp.applyResult);
+    if (!gravada) {
+      semCobertura.push(imp);
+      continue;
+    }
+    for (const c of gravada) {
+      if (c.tipo !== 'INDIVIDUAL' || !c.tipoArquivo || entradaVazia(c)) continue;
+      out.push({
+        envio: imp.fileName,
+        fonte: { tipo: c.tipoArquivo, sistema: c.sistema, tipoRegistro: c.tipo, agravos: c.agravos.filter((x): x is string => !!x), ignorado: false, ...(c.grupos ? { grupos: c.grupos } : {}) },
+        cnes: c.cnes ?? [],
+        de: c.de,
+        ate: c.ate,
+      });
+    }
+  }
+  const arquivos = (imp: (typeof imps)[number]) => (Array.isArray(imp.files) ? (imp.files as unknown as ArquivoDetectado[]) : []);
+  const [gravados, primeiros] = await Promise.all([
+    gruposGravados(
+      db,
+      semCobertura.filter((i) => arquivos(i).some((a) => a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos)).map((i) => i.id),
+    ),
+    primeirosEnvios(
+      db,
+      semCobertura.map((i) => i.sha256),
+    ),
+  ]);
+  for (const imp of semCobertura)
+    for (const a of arquivos(imp)) {
+      const p = periodoCoberto(imp, a, timeZone, primeiros.get(imp.sha256));
+      if (!p) continue;
+      const cnes = cnesDoArquivo(a);
+      out.push({ envio: imp.fileName, fonte: a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos ? { ...a, grupos: gravados.get(imp.id) ?? [] } : a, cnes: cnes ? [cnes] : [], de: p.de, ate: p.ate });
+    }
+  return out;
 }

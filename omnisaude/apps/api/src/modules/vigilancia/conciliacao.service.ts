@@ -11,7 +11,6 @@ import {
   personNameKey,
   roleHasPermission,
   situacaoOmni,
-  type ArquivoDetectado,
   type BairroSemCorrespondencia,
   type CorpoApelidoBairro,
   type CorpoDesvincular,
@@ -42,7 +41,7 @@ import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { MASTER_DB } from '../../core/database';
 import { conflict, DomainError, forbidden, notFound } from '../../core/errors';
-import { cnesDoArquivo, gruposDoArquivo, gruposDoMesmoAgravo, periodoCoberto, primeirosEnvios } from './cobertura-importacao';
+import { arquivosCobertos, gruposDoArquivo, gruposDoMesmoAgravo } from './cobertura-importacao';
 import { sqlCnsValido, sqlCpfValido, sqlDataSinan, sqlNomePessoa, sqlSemZeros } from './conciliacao-sql';
 import { municipioDoTenant, NOME_DO_GRUPO } from './importacao/apoio';
 import { NotificacaoService } from './notificacao.service';
@@ -683,59 +682,27 @@ export class ConciliacaoService {
     return { pagina, offset: (pagina - 1) * POR_PAGINA };
   }
 
-  /** Grupos dos registros que cada importação do e-SUS Notifica gravou (para o arquivo sem `grupos`, de envios anteriores). */
-  private async gruposGravados(db: Db, importacoes: string[]): Promise<Map<string, string[]>> {
-    if (!importacoes.length) return new Map();
-    const linhas = await db.$queryRaw<{ imp: string; grupos: string[] }[]>`
-      SELECT imp, array_agg(DISTINCT g ORDER BY g) AS grupos FROM (
-        SELECT first_import_id AS imp, group_key AS g FROM official_records
-        WHERE system = 'ESUS_NOTIFICA' AND type = 'INDIVIDUAL' AND group_key IS NOT NULL AND first_import_id = ANY(${importacoes}::uuid[])
-        UNION ALL
-        SELECT last_import_id AS imp, group_key AS g FROM official_records
-        WHERE system = 'ESUS_NOTIFICA' AND type = 'INDIVIDUAL' AND group_key IS NOT NULL AND last_import_id = ANY(${importacoes}::uuid[])
-      ) x GROUP BY imp`;
-    return new Map(linhas.map((l) => [l.imp, l.grupos]));
-  }
-
   /**
    * Cobertura das importações aplicadas (só a APLICADA: a SUBSTITUIDA, o mesmo arquivo aplicado de novo com outro
-   * período, não cobre nada): sistema, grupos, CNES e período de cada arquivo individual (`gruposDoArquivo`: o DBF do
-   * agravo e o CSV do e-SUS Sinan cobrem os agravos que vieram, com os grupos do mesmo agravo do Sinan; o e-SUS
-   * Notifica, a ficha; só o NINDINET cobre todos os grupos do Sinan Net; `cnesDoArquivo`: o arquivo de um CNES só cobre
-   * essa unidade; `periodoCoberto`: o período vai até a data local do primeiro envio do mesmo arquivo). Junta os
-   * intervalos que se tocam por sistema, grupo e CNES e, para a tela, põe numa linha só os grupos com o mesmo sistema,
-   * CNES e período.
+   * período, não cobre nada): sistema, grupos, CNES e período de cada arquivo individual, os mesmos da base consolidada
+   * (`arquivosCobertos`: o que o arquivo cobre nos ausentes, gravado pela aplicação, só pelas linhas do sistema dele e
+   * com o período até a data local do primeiro envio do mesmo arquivo; `gruposDoArquivo`: o DBF do agravo e o CSV do
+   * e-SUS Sinan cobrem os agravos que vieram, com os grupos do mesmo agravo do Sinan; o e-SUS Notifica, a ficha; só o
+   * NINDINET cobre todos os grupos do Sinan Net; o arquivo de um CNES só cobre essa unidade). Junta os intervalos que se
+   * tocam por sistema, grupo e CNES e, para a tela, põe numa linha só os grupos com o mesmo sistema, CNES e período.
    */
   private async cobertura(db: Db, timeZone: string): Promise<Cobertura[]> {
-    const imps = await db.officialImport.findMany({
-      where: { status: 'APLICADA' },
-      select: { id: true, sha256: true, files: true, periodFrom: true, periodTo: true, declaredPeriod: true, createdAt: true },
-    });
-    const arquivos = (imp: (typeof imps)[number]) => (Array.isArray(imp.files) ? (imp.files as unknown as ArquivoDetectado[]) : []);
-    const [gravados, primeiros] = await Promise.all([
-      this.gruposGravados(
-        db,
-        imps.filter((i) => arquivos(i).some((a) => a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos)).map((i) => i.id),
-      ),
-      primeirosEnvios(
-        db,
-        imps.map((i) => i.sha256),
-      ),
-    ]);
     type Trecho = { sistema: SistemaOficial; grupo: string | null; cnes: string | null; de: string; ate: string };
     const porChave = new Map<string, Trecho[]>();
-    for (const imp of imps) {
-      for (const a of arquivos(imp)) {
-        const grupos = gruposDoArquivo(a, gravados.get(imp.id));
-        if (!a.sistema || (grupos !== null && !grupos.length)) continue;
-        const periodo = periodoCoberto(imp, a, timeZone, primeiros.get(imp.sha256));
-        if (!periodo) continue;
-        const cnes = cnesDoArquivo(a);
+    for (const a of await arquivosCobertos(db, timeZone)) {
+      const sistema = a.fonte.sistema;
+      const grupos = gruposDoArquivo(a.fonte);
+      if (!sistema || (grupos !== null && !grupos.length)) continue;
+      for (const cnes of a.cnes.length ? a.cnes : [null])
         for (const grupo of grupos ?? [null]) {
-          const k = `${a.sistema}|${grupo ?? '*'}|${cnes ?? '*'}`;
-          (porChave.get(k) ?? porChave.set(k, []).get(k)!).push({ sistema: a.sistema, grupo, cnes, de: periodo.de, ate: periodo.ate });
+          const k = `${sistema}|${grupo ?? '*'}|${cnes ?? '*'}`;
+          (porChave.get(k) ?? porChave.set(k, []).get(k)!).push({ sistema, grupo, cnes, de: a.de, ate: a.ate });
         }
-      }
     }
     const umDia = (a: string, b: string) => Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`) <= 86_400_000;
     const juntos: Trecho[] = [];
