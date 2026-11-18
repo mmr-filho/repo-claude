@@ -32,6 +32,7 @@ import {
   filtrarUnidades,
   MINIMO_MOTIVO_FIM,
   motivoNaoAtesta,
+  nomeDaUnidadeNaTela,
   pendenciasAbrirPeriodo,
   pendenciasDesignacao,
   pendenciasEncerrarPeriodo,
@@ -69,8 +70,8 @@ function Pendencias({ itens }: { itens: string[] }) {
   );
 }
 
-/** Abre o período em que a unidade é notificante (entra no denominador da negativa). */
-function AbrirPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: () => void; onFeito: () => void }) {
+/** Abre o período em que a unidade é notificante (entra no denominador da negativa). `nome`: como a tela chama a unidade. */
+function AbrirPeriodo({ u, nome = u.unidade.nome, onFechar, onFeito }: { u: UnidadeNotificante; nome?: string; onFechar: () => void; onFeito: () => void }) {
   const toast = useToast();
   const hojeNoFuso = useHoje();
   const [desde, setDesde] = useState(hojeNoFuso);
@@ -81,7 +82,7 @@ function AbrirPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFecha
     <Dialog
       open
       onOpenChange={(o) => !o && onFechar()}
-      title={`Tornar notificante: ${u.unidade.nome}`}
+      title={`Tornar notificante: ${nome}`}
       description="A partir do início, a unidade entra na grade e deve informar toda semana (positiva ou negativa)."
       footer={
         <Button
@@ -92,7 +93,7 @@ function AbrirPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFecha
             setErro(null);
             try {
               await api.post('/vigilancia/unidades-notificantes', { unitId: u.unidade.id, desde });
-              toast.success(`${u.unidade.nome} é notificante desde ${dataBr(desde)}.`);
+              toast.success(`${nome} é notificante desde ${dataBr(desde)}.`);
               onFeito();
             } catch (err) {
               setErro(errorMessage(err));
@@ -118,9 +119,10 @@ function AbrirPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFecha
 
 /**
  * Encerra o período aberto (a unidade sai do denominador depois do fim; o histórico não muda). Na unidade inativa, a
- * data vai até hoje, e o período que ainda termina depois de hoje também se encerra (a API encurta o fim).
+ * data vai até hoje, e o período que ainda termina depois de hoje também se encerra (a API encurta o fim). `nome`: como
+ * a tela chama a unidade.
  */
-export function EncerrarPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: () => void; onFeito: () => void }) {
+export function EncerrarPeriodo({ u, nome = u.unidade.nome, onFechar, onFeito }: { u: UnidadeNotificante; nome?: string; onFechar: () => void; onFeito: () => void }) {
   const toast = useToast();
   const hojeNoFuso = useHoje();
   const [ate, setAte] = useState(hojeNoFuso);
@@ -132,7 +134,7 @@ export function EncerrarPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificant
     <Dialog
       open
       onOpenChange={(o) => !o && onFechar()}
-      title={`Encerrar o período: ${u.unidade.nome}`}
+      title={`Encerrar o período: ${nome}`}
       description={
         u.ativa
           ? 'Use quando a unidade deixa de atender ou de ser fonte de notificação. As semanas até o fim continuam contando.'
@@ -148,7 +150,7 @@ export function EncerrarPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificant
             setErro(null);
             try {
               await api.post(`/vigilancia/unidades-notificantes/${u.unidade.id}/encerrar`, { ate, motivo: motivo.trim() });
-              toast.success(`Período de ${u.unidade.nome} encerrado em ${dataBr(ate)}.`);
+              toast.success(`Período de ${nome} encerrado em ${dataBr(ate)}.`);
               onFeito();
             } catch (err) {
               setErro(errorMessage(err));
@@ -177,9 +179,9 @@ export function EncerrarPeriodo({ u, onFechar, onFeito }: { u: UnidadeNotificant
 
 /**
  * Designa o responsável pela negativa entre os usuários lotados na unidade. O titular cuja designação não vale não trava
- * a vaga: designar outro titular encerra a dele hoje (a API faz na mesma transação).
+ * a vaga: designar outro titular encerra a dele hoje (a API faz na mesma transação). `nome`: como a tela chama a unidade.
  */
-function Designar({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: () => void; onFeito: () => void }) {
+function Designar({ u, nome = u.unidade.nome, onFechar, onFeito }: { u: UnidadeNotificante; nome?: string; onFechar: () => void; onFeito: () => void }) {
   const toast = useToast();
   const hojeNoFuso = useHoje();
   const temTitular = responsaveisAtivos(u).some((r) => r.tipo === 'TITULAR' && designacaoValida(r));
@@ -205,7 +207,7 @@ function Designar({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: (
       open
       size="lg"
       onOpenChange={(o) => !o && onFechar()}
-      title={`Responsável pela negativa: ${u.unidade.nome}`}
+      title={`Responsável pela negativa: ${nome}`}
       description="Só quem tem lotação ativa na unidade, em papel que atesta a negativa, pode ser designado. Um titular por unidade; substitutos, quantos forem precisos."
       footer={
         <Button
@@ -283,8 +285,8 @@ function Designar({ u, onFechar, onFeito }: { u: UnidadeNotificante; onFechar: (
   );
 }
 
-/** Revoga a designação (termina hoje; os atestos já feitos continuam valendo). */
-function Revogar({ u, r, onFechar, onFeito }: { u: UnidadeNotificante; r: ResponsavelNegativa; onFechar: () => void; onFeito: () => void }) {
+/** Revoga a designação (termina hoje; os atestos já feitos continuam valendo). `nome`: como a tela chama a unidade. */
+function Revogar({ u, r, nome = u.unidade.nome, onFechar, onFeito }: { u: UnidadeNotificante; r: ResponsavelNegativa; nome?: string; onFechar: () => void; onFeito: () => void }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -294,7 +296,7 @@ function Revogar({ u, r, onFechar, onFeito }: { u: UnidadeNotificante; r: Respon
       size="sm"
       onOpenChange={(o) => !o && onFechar()}
       title="Revogar a designação"
-      description={`${r.nome} deixa de ser ${r.tipo === 'TITULAR' ? 'titular' : 'substituto(a)'} da negativa de ${u.unidade.nome} hoje. Os atestos já feitos continuam valendo.`}
+      description={`${r.nome} deixa de ser ${r.tipo === 'TITULAR' ? 'titular' : 'substituto(a)'} da negativa de ${nome} hoje. Os atestos já feitos continuam valendo.`}
       footer={
         <Button
           variant="danger"
@@ -332,6 +334,8 @@ export function NegativaUnidades() {
   const [acao, setAcao] = useState<Acao | null>(null);
   const resumo = useMemo(() => (lista.data ? resumoUnidades(lista.data) : null), [lista.data]);
   const visiveis = useMemo(() => (lista.data ? filtrarUnidades(lista.data, filtro, busca) : []), [lista.data, filtro, busca]);
+  // Os botões de cada linha dizem a unidade pelo nome e, quando outra unidade da lista tem o mesmo nome, também pelo CNES.
+  const nomeDaUnidade = useMemo(() => nomeDaUnidadeNaTela((lista.data ?? []).map((u) => u.unidade)), [lista.data]);
   const feito = () => {
     setAcao(null);
     void lista.reload();
@@ -389,6 +393,7 @@ export function NegativaUnidades() {
             <TBody>
               {visiveis.map((u) => {
                 const sit = situacaoDaUnidade(u);
+                const nome = nomeDaUnidade(u.unidade);
                 const ativos = responsaveisAtivos(u);
                 const antigos = u.responsaveis.filter((r) => r.ate !== null);
                 const aberto = periodoAberto(u);
@@ -432,7 +437,7 @@ export function NegativaUnidades() {
                                   {r.motivoInvalido}
                                 </span>
                               )}
-                              <Button size="sm" variant="link" className="h-auto" aria-label={rotuloRevogar(r, u)} onClick={() => setAcao({ tipo: 'revogar', u, r })}>
+                              <Button size="sm" variant="link" className="h-auto" aria-label={rotuloRevogar(r, nome)} onClick={() => setAcao({ tipo: 'revogar', u, r })}>
                                 Revogar
                               </Button>
                             </li>
@@ -456,17 +461,17 @@ export function NegativaUnidades() {
                     <TD className="text-right">
                       <div className="flex flex-wrap justify-end gap-1.5">
                         {aberto && (
-                          <Button size="sm" aria-label={rotuloDesignar(u)} onClick={() => setAcao({ tipo: 'designar', u })}>
+                          <Button size="sm" aria-label={rotuloDesignar(nome)} onClick={() => setAcao({ tipo: 'designar', u })}>
                             Designar
                           </Button>
                         )}
                         {paraEncerrar && (
-                          <Button size="sm" variant="secondary" aria-label={rotuloEncerrarPeriodo(u)} onClick={() => setAcao({ tipo: 'encerrar', u })}>
+                          <Button size="sm" variant="secondary" aria-label={rotuloEncerrarPeriodo(nome)} onClick={() => setAcao({ tipo: 'encerrar', u })}>
                             Encerrar período
                           </Button>
                         )}
                         {!paraEncerrar && u.ativa && (
-                          <Button size="sm" variant="secondary" aria-label={rotuloTornarNotificante(u)} onClick={() => setAcao({ tipo: 'abrir', u })}>
+                          <Button size="sm" variant="secondary" aria-label={rotuloTornarNotificante(nome)} onClick={() => setAcao({ tipo: 'abrir', u })}>
                             Tornar notificante
                           </Button>
                         )}
@@ -479,10 +484,11 @@ export function NegativaUnidades() {
           </Table>
         )}
       </Card>
-      {acao?.tipo === 'abrir' && <AbrirPeriodo u={acao.u} onFechar={() => setAcao(null)} onFeito={feito} />}
-      {acao?.tipo === 'encerrar' && <EncerrarPeriodo u={acao.u} onFechar={() => setAcao(null)} onFeito={feito} />}
-      {acao?.tipo === 'designar' && <Designar u={acao.u} onFechar={() => setAcao(null)} onFeito={feito} />}
-      {acao?.tipo === 'revogar' && <Revogar u={acao.u} r={acao.r} onFechar={() => setAcao(null)} onFeito={feito} />}
+      {/* Os diálogos chamam a unidade como a linha (com o CNES quando outra unidade da lista tem o mesmo nome). */}
+      {acao?.tipo === 'abrir' && <AbrirPeriodo u={acao.u} nome={nomeDaUnidade(acao.u.unidade)} onFechar={() => setAcao(null)} onFeito={feito} />}
+      {acao?.tipo === 'encerrar' && <EncerrarPeriodo u={acao.u} nome={nomeDaUnidade(acao.u.unidade)} onFechar={() => setAcao(null)} onFeito={feito} />}
+      {acao?.tipo === 'designar' && <Designar u={acao.u} nome={nomeDaUnidade(acao.u.unidade)} onFechar={() => setAcao(null)} onFeito={feito} />}
+      {acao?.tipo === 'revogar' && <Revogar u={acao.u} r={acao.r} nome={nomeDaUnidade(acao.u.unidade)} onFechar={() => setAcao(null)} onFeito={feito} />}
     </div>
   );
 }

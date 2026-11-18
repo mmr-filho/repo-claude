@@ -96,10 +96,10 @@ describe('botões repetidos por linha dizem o objeto (TELAS-7)', () => {
     ];
     simulado.respostas.set('/vigilancia/unidades-notificantes', lista);
     const h = html(NegativaUnidades, {});
-    expect(rotulos('Designar')).toEqual(['Designar responsável da UBS Norte', 'Designar responsável da UBS Sul']);
-    expect(rotulos('Encerrar período')).toEqual(['Encerrar o período da UBS Norte', 'Encerrar o período da UBS Sul']);
+    expect(rotulos('Designar')).toEqual(['Designar responsável da unidade UBS Norte', 'Designar responsável da unidade UBS Sul']);
+    expect(rotulos('Encerrar período')).toEqual(['Encerrar o período da unidade UBS Norte', 'Encerrar o período da unidade UBS Sul']);
     expect(rotulos('Tornar notificante')).toEqual(['Tornar UBS Leste notificante', 'Tornar UBS Oeste notificante']);
-    expect(h).toContain('aria-label="Designar responsável da UBS Norte"');
+    expect(h).toContain('aria-label="Designar responsável da unidade UBS Norte"');
   });
 
   it('tela do responsável: Atestar com a SE; PDF com a SE e, no histórico, com a unidade', () => {
@@ -191,7 +191,7 @@ describe('unidade inativa: o fim do período vai até hoje (N14)', () => {
   it('a linha da unidade inativa com período que termina depois de hoje tem o botão de encerrar; a ativa segue como antes', () => {
     simulado.respostas.set('/vigilancia/unidades-notificantes', [inativaFimFuturo, ativaFimFuturo]);
     html(NegativaUnidades, {});
-    expect(rotulos('Encerrar período')).toEqual(['Encerrar o período da UBS Inativa Fim Futuro']);
+    expect(rotulos('Encerrar período')).toEqual(['Encerrar o período da unidade UBS Inativa Fim Futuro']);
     expect(rotulos('Tornar notificante')).toEqual(['Tornar UBS Ativa Fim Futuro notificante']);
     expect(rotulos('Designar')).toEqual([]);
   });

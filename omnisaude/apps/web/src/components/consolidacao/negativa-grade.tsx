@@ -23,6 +23,7 @@ import {
   DESCRICAO_SITUACAO,
   filtrarLinhas,
   LEGENDA_GRADE,
+  nomeDaUnidadeNaTela,
   notaPrazoDoAtesto,
   percentuaisDaGrade,
   podeAtestarEmNome,
@@ -200,6 +201,8 @@ export function NegativaGrade({ podeConfigurar }: { podeConfigurar: boolean }) {
   const linhas = useMemo(() => (dados ? filtrarLinhas(dados, filtro, busca) : []), [dados, filtro, busca]);
   const silenciosas = useMemo(() => new Set(dados?.analise.silenciosas.map((s) => s.unitId) ?? []), [dados]);
   const soNegativas = useMemo(() => new Set(dados?.analise.soNegativas.map((s) => s.unitId) ?? []), [dados]);
+  // As células e os cartões chamam a unidade pelo nome e, quando outra unidade da grade tem o mesmo nome, também pelo CNES.
+  const nomeDaUnidade = useMemo(() => nomeDaUnidadeNaTela(dados?.linhas.map((l) => l.unidade) ?? []), [dados]);
 
   return (
     <div className="space-y-4">
@@ -276,14 +279,14 @@ export function NegativaGrade({ podeConfigurar }: { podeConfigurar: boolean }) {
             <ListaUnidades
               titulo="Unidades silenciosas"
               descricao="Semanas fechadas seguidas sem notificação nem atesto, até a última com o prazo vencido. Pedem busca ativa e visita técnica."
-              itens={cartoes.silenciosas.map((s) => ({ id: s.unidade.id, nome: s.unidade.nome, detalhe: `${s.semanasSeguidas} semana(s) sem informação` }))}
+              itens={cartoes.silenciosas.map((s) => ({ id: s.unidade.id, nome: nomeDaUnidade(s.unidade), detalhe: `${s.semanasSeguidas} semana(s) sem informação` }))}
               vazio="Nenhuma unidade silenciosa nas semanas da grade."
               tom="red"
             />
             <ListaUnidades
               titulo="Só negativas"
               descricao="Unidades que só atestam negativa há muitas semanas: o manual do Sinan manda fazer busca ativa nelas."
-              itens={cartoes.soNegativas.map((s) => ({ id: s.unidade.id, nome: s.unidade.nome, detalhe: `${s.semanas} semana(s) só com negativa` }))}
+              itens={cartoes.soNegativas.map((s) => ({ id: s.unidade.id, nome: nomeDaUnidade(s.unidade), detalhe: `${s.semanas} semana(s) só com negativa` }))}
               vazio="Nenhuma unidade só com negativas no período."
               tom="amber"
             />
@@ -329,7 +332,7 @@ export function NegativaGrade({ podeConfigurar }: { podeConfigurar: boolean }) {
                       </TD>
                       {l.celulas.map((c, i) => {
                         const coluna = dados.colunas[i]!;
-                        const titulo = tituloCelula(l.unidade, c);
+                        const titulo = tituloCelula({ nome: nomeDaUnidade(l.unidade) }, c);
                         return (
                           <TD key={c.semana} className="p-1 align-middle">
                             <button

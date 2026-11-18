@@ -121,7 +121,7 @@ export function textoFontes(f: FontesCelula): string {
   return partes.length ? partes.join(', ') : 'nenhuma informação';
 }
 
-/** Rótulo acessível da célula. */
+/** Rótulo acessível da célula; `unidade.nome` é o nome com que a grade chama a unidade (`nomeDaUnidadeNaTela`). */
 export function tituloCelula(unidade: Pick<UnidadeRef, 'nome'>, c: Pick<CelulaGrade, 'semana' | 'situacao' | 'fontes'>): string {
   return `${unidade.nome}, SE ${rotuloSemana(c.semana)}: ${CELULA[c.situacao].texto}. ${textoFontes(c.fontes)}.`;
 }
@@ -193,6 +193,25 @@ export type FiltroGrade = 'TODAS' | 'SILENCIOSAS' | 'SO_NEGATIVAS' | 'SEM_INFORM
 
 const normalizar = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 
+/** Chave do nome da unidade para saber se duas têm o mesmo nome: sem maiúsculas, acentos e espaços repetidos. */
+const chaveDoNome = (nome: string) => normalizar(nome).replace(/\s+/g, ' ');
+
+/**
+ * Como os nomes acessíveis de uma tela chamam a unidade: pelo nome e, quando outra unidade da mesma tela tem o mesmo
+ * nome (o nome não é único, só o CNES é), pelo nome e o CNES, "Posto de Saúde (CNES 9100001)". `unidades` são todas as
+ * da tela, as da lista inteira e não só as que o filtro mostra (o nome do botão não muda com a busca). Maiúsculas,
+ * acentos e espaços repetidos não distinguem os nomes (o leitor de tela lê igual); a mesma unidade (o mesmo id) em dois
+ * lugares da tela não conta como outra.
+ */
+export function nomeDaUnidadeNaTela(unidades: Iterable<Pick<UnidadeRef, 'id' | 'nome'>>): (u: Pick<UnidadeRef, 'nome' | 'cnes'>) => string {
+  const ids = new Map<string, Set<string>>();
+  for (const u of unidades) {
+    const chave = chaveDoNome(u.nome);
+    ids.set(chave, (ids.get(chave) ?? new Set<string>()).add(u.id));
+  }
+  return (u) => ((ids.get(chaveDoNome(u.nome))?.size ?? 0) > 1 && u.cnes ? `${u.nome} (CNES ${u.cnes})` : u.nome);
+}
+
 /** Linhas da grade pelo filtro e pela busca (nome ou CNES). */
 export function filtrarLinhas(g: Pick<RespostaGradeNegativa, 'linhas' | 'analise'>, filtro: FiltroGrade, busca: string): LinhaGradeNegativa[] {
   const silenciosas = new Set(g.analise.silenciosas.map((s) => s.unitId));
@@ -247,30 +266,89 @@ export const semResponsavel = (u: UnidadeNotificante) => !!periodoAberto(u) && !
 export const titularQueNaoVale = (u: Pick<UnidadeNotificante, 'responsaveis'>): ResponsavelNegativa | null => responsaveisAtivos(u).find((r) => r.tipo === 'TITULAR' && !designacaoValida(r)) ?? null;
 /**
  * Nome acessível do botão "Revogar" de cada responsável: de quem é a designação e de qual unidade (a mesma pessoa pode
- * ser responsável em mais de uma).
+ * ser responsável em mais de uma). `unidade` é o nome com que a tela chama a unidade (`nomeDaUnidadeNaTela`: com o
+ * CNES quando outra unidade da lista tem o mesmo nome).
  */
-export const rotuloRevogar = (r: Pick<ResponsavelNegativa, 'nome'>, u: Pick<UnidadeNotificante, 'unidade'>) => `Revogar a designação de ${r.nome} como responsável da ${u.unidade.nome}`;
-/** Nomes acessíveis dos botões que se repetem em cada linha das unidades notificantes (dizem de qual unidade são). */
-export const rotuloDesignar = (u: Pick<UnidadeNotificante, 'unidade'>) => `Designar responsável da ${u.unidade.nome}`;
-export const rotuloEncerrarPeriodo = (u: Pick<UnidadeNotificante, 'unidade'>) => `Encerrar o período da ${u.unidade.nome}`;
-export const rotuloTornarNotificante = (u: Pick<UnidadeNotificante, 'unidade'>) => `Tornar ${u.unidade.nome} notificante`;
+export const rotuloRevogar = (r: Pick<ResponsavelNegativa, 'nome'>, unidade: string) => `Revogar a designação de ${r.nome} como responsável da unidade ${unidade}`;
+/** Nomes acessíveis dos outros botões que se repetem em cada linha das unidades notificantes (dizem de qual unidade são). */
+export const rotuloDesignar = (unidade: string) => `Designar responsável da unidade ${unidade}`;
+export const rotuloEncerrarPeriodo = (unidade: string) => `Encerrar o período da unidade ${unidade}`;
+export const rotuloTornarNotificante = (unidade: string) => `Tornar ${unidade} notificante`;
 /**
  * Nome acessível do botão Atestar da tela do responsável, um por semana: a SE e, quando a tela tem mais de uma unidade,
- * a unidade.
+ * a unidade (o nome com que a tela a chama: `nomesDaTelaDoResponsavel`).
  */
 export const rotuloAtestar = (semana: string, unidade?: string) => `Atestar a SE ${rotuloSemana(semana)}${unidade ? `, ${unidade}` : ''}`;
+
+const FUSO_BRASILIA = 'America/Sao_Paulo';
+
+/** Data e hora com os segundos no fuso da instituição; um fuso desconhecido cai no de Brasília, como no `fmtDateTimeTz`. */
+function dataHoraComSegundos(iso: string, tz: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const formato = { dateStyle: 'short', timeStyle: 'medium' } as const;
+  try {
+    return d.toLocaleString('pt-BR', { ...formato, timeZone: tz || FUSO_BRASILIA });
+  } catch {
+    return d.toLocaleString('pt-BR', { ...formato, timeZone: FUSO_BRASILIA });
+  }
+}
+
 /**
- * Nome acessível do botão do espelho em PDF, um por semana ou por atesto: a SE; com `comUnidade` (o histórico, que
- * junta as unidades, e a tela com mais de uma unidade), a unidade; e, no atesto que não é o vigente (anulado ou
- * cancelado), a situação e quando foi atestado, como na tabela do histórico (o anulado e o refeito da mesma SE e
- * unidade ficam distintos). Com mais de uma unidade, o atesto da semana e o do histórico têm o mesmo nome quando são o
- * mesmo atesto: é o mesmo espelho.
+ * Nome acessível do botão do espelho em PDF, um por semana ou por atesto: a SE; com `unidade` (o histórico, que junta
+ * as unidades, e a tela com mais de uma unidade), a unidade, pelo nome com que a tela a chama; e, no atesto que não é o
+ * vigente (anulado ou cancelado), a situação e quando foi atestado, com os segundos, no fuso da instituição (o anulado
+ * e o refeito da mesma SE e unidade ficam distintos, e também dois anulados do mesmo minuto).
  */
-export function rotuloEspelhoPdf(a: Pick<AtestoNegativa, 'semana' | 'unidade' | 'status' | 'atestadoEm'>, tz: string, comUnidade = false): string {
+export function rotuloEspelhoPdf(a: Pick<AtestoNegativa, 'semana' | 'status' | 'atestadoEm'>, tz: string, unidade?: string): string {
   const partes = [`Espelho em PDF da SE ${rotuloSemana(a.semana)}`];
-  if (comUnidade) partes.push(a.unidade);
-  if (a.status !== 'ATESTADA') partes.push(`${ROTULO_STATUS_ATESTO[a.status].toLowerCase()}, atestada em ${fmtDateTimeTz(a.atestadoEm, tz)}`);
+  if (unidade) partes.push(unidade);
+  if (a.status !== 'ATESTADA') partes.push(`${ROTULO_STATUS_ATESTO[a.status].toLowerCase()}, atestada em ${dataHoraComSegundos(a.atestadoEm, tz)}`);
   return partes.join(', ');
+}
+
+/** Nomes acessíveis dos botões que se repetem na tela do responsável. */
+export interface NomesDaTelaDoResponsavel {
+  /** O Atestar da semana da unidade. */
+  atestar: (unidade: Pick<UnidadeRef, 'nome' | 'cnes'>, semana: string) => string;
+  /** O PDF do atesto, na semana da unidade ou no histórico. */
+  pdf: (a: AtestoNegativa, lugar: 'semana' | 'historico') => string;
+}
+
+/**
+ * Nomes acessíveis da tela do responsável, sem repetição para botões que fazem coisas diferentes:
+ * - Atestar e o PDF dizem a SE; com mais de uma unidade na tela, também a unidade; o PDF do histórico, que junta as
+ *   unidades, sempre a unidade;
+ * - a unidade pelo nome e, quando outra unidade da tela (das semanas ou do histórico) tem o mesmo nome, também o CNES;
+ * - o PDF do atesto que não é o vigente diz a situação e quando foi atestado, com os segundos (`rotuloEspelhoPdf`);
+ * - se ainda assim dois atestos diferentes ficarem com o mesmo nome (não vigentes da mesma SE, unidade e situação,
+ *   atestados no mesmo segundo), cada um diz a sua ordem pela hora do atesto: "(1 de 2)", "(2 de 2)".
+ * Com mais de uma unidade, o mesmo atesto na semana e no histórico tem o mesmo nome: é o mesmo espelho.
+ */
+export function nomesDaTelaDoResponsavel(r: Pick<RespostaMinhasNegativas, 'unidades' | 'historico'>, tz: string): NomesDaTelaDoResponsavel {
+  const variasUnidades = r.unidades.length > 1;
+  const unidadeDoAtesto = (a: Pick<AtestoNegativa, 'unitId' | 'unidade' | 'cnes'>) => ({ id: a.unitId, nome: a.unidade, cnes: a.cnes });
+  const nome = nomeDaUnidadeNaTela([...r.unidades.map((u) => u.unidade), ...r.historico.map(unidadeDoAtesto)]);
+  const nomeDoPdf = (a: AtestoNegativa, lugar: 'semana' | 'historico') => rotuloEspelhoPdf(a, tz, lugar === 'historico' || variasUnidades ? nome(unidadeDoAtesto(a)) : undefined);
+  // Os atestos diferentes de cada nome, pela hora do atesto (e pelo id, no mesmo instante).
+  const porNome = new Map<string, AtestoNegativa[]>();
+  const anotar = (a: AtestoNegativa, lugar: 'semana' | 'historico') => {
+    const n = nomeDoPdf(a, lugar);
+    const atestos = porNome.get(n) ?? [];
+    if (!atestos.some((x) => x.id === a.id)) porNome.set(n, [...atestos, a]);
+  };
+  for (const u of r.unidades) for (const s of u.semanas) if (s.atesto) anotar(s.atesto, 'semana');
+  for (const a of r.historico) anotar(a, 'historico');
+  for (const atestos of porNome.values()) atestos.sort((x, y) => Date.parse(x.atestadoEm) - Date.parse(y.atestadoEm) || x.id.localeCompare(y.id));
+  return {
+    atestar: (u, semana) => rotuloAtestar(semana, variasUnidades ? nome(u) : undefined),
+    pdf: (a, lugar) => {
+      const n = nomeDoPdf(a, lugar);
+      const atestos = porNome.get(n) ?? [];
+      const ordem = atestos.findIndex((x) => x.id === a.id);
+      return atestos.length > 1 && ordem >= 0 ? `${n} (${ordem + 1} de ${atestos.length})` : n;
+    },
+  };
 }
 
 /**

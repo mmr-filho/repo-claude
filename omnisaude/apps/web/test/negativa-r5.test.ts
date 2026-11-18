@@ -165,8 +165,9 @@ describe('R5-10: nomes acessíveis distintos na tela do responsável', () => {
     const pdf = rotulos('PDF');
     expect(pdf).toEqual([
       'Espelho em PDF da SE 25/2026, UBS Centro',
-      'Espelho em PDF da SE 25/2026, UBS Centro, anulada, atestada em 01/06/2026, 12:00',
-      'Espelho em PDF da SE 24/2026, UBS Centro, cancelada, atestada em 15/06/2026, 09:30',
+      // A hora vai com os segundos desde a R6-6 (dois anulados do mesmo minuto ficam distintos).
+      'Espelho em PDF da SE 25/2026, UBS Centro, anulada, atestada em 01/06/2026, 12:00:00',
+      'Espelho em PDF da SE 24/2026, UBS Centro, cancelada, atestada em 15/06/2026, 09:30:00',
     ]);
     expect(repetidos(pdf)).toEqual([]);
   });
@@ -179,7 +180,7 @@ describe('R5-10: nomes acessíveis distintos na tela do responsável', () => {
     } as unknown as RespostaMinhasNegativas;
     simulado.respostas.set('/vigilancia/negativas/minhas', r);
     html(NegativaMinhas, {});
-    expect(rotulos('PDF')).toEqual(['Espelho em PDF da SE 26/2026, anulada, atestada em 29/06/2026, 11:00', 'Espelho em PDF da SE 26/2026, UBS Centro, anulada, atestada em 29/06/2026, 11:00']);
+    expect(rotulos('PDF')).toEqual(['Espelho em PDF da SE 26/2026, anulada, atestada em 29/06/2026, 11:00:00', 'Espelho em PDF da SE 26/2026, UBS Centro, anulada, atestada em 29/06/2026, 11:00:00']);
   });
 
   it('o cenário do revisor inteiro (duas unidades, com o histórico das duas): nenhum nome repetido para espelhos diferentes', () => {
@@ -230,8 +231,9 @@ describe('R5-10: "Revogar" das unidades notificantes diz a unidade (r4vneg-3)', 
     const lista: ListaUnidadesNotificantes = [unidade('11', 'UBS Centro', responsavel('r1')), unidade('12', 'UPA 24h', responsavel('r2'))];
     simulado.respostas.set('/vigilancia/unidades-notificantes', lista);
     const h = html(NegativaUnidades, {});
-    expect(rotulos('Revogar')).toEqual(['Revogar a designação de Bruno Almeida Enfermeiro como responsável da UBS Centro', 'Revogar a designação de Bruno Almeida Enfermeiro como responsável da UPA 24h']);
-    expect(h).toContain('aria-label="Revogar a designação de Bruno Almeida Enfermeiro como responsável da UPA 24h"');
+    // "da unidade <nome>" desde a R6-6 (antes saía "da UPA 24h", e "da Posto de Saúde" com outro nome).
+    expect(rotulos('Revogar')).toEqual(['Revogar a designação de Bruno Almeida Enfermeiro como responsável da unidade UBS Centro', 'Revogar a designação de Bruno Almeida Enfermeiro como responsável da unidade UPA 24h']);
+    expect(h).toContain('aria-label="Revogar a designação de Bruno Almeida Enfermeiro como responsável da unidade UPA 24h"');
   });
 });
 

@@ -27,7 +27,8 @@ import type { Cobertura } from './importacao/leitura';
  * arquivo, arquivo por arquivo, com o período declarado e o fim no primeiro envio. Assim o arquivo cobre na base
  * consolidada e na conciliação exatamente o que cobre nos ausentes: o NINDINET com algumas linhas de dengue (do Sinan
  * Online) não cobre a dengue, e o período dele é o das linhas do Sinan Net. A aplicação gravada sem essa lista (a
- * demonstração, dado antigo) usa o official_imports.files, que conta todas as linhas do arquivo (`arquivosCobertos`).
+ * demonstração, dado antigo) ou com alguma entrada individual sem o tipo do arquivo (gravada antes desta regra) usa o
+ * official_imports.files, que conta todas as linhas do arquivo (`arquivosCobertos`).
  */
 
 type Db = TenantPrisma.TransactionClient;
@@ -239,49 +240,51 @@ async function gruposGravados(db: Db, importacoes: string[]): Promise<Map<string
  * cobertura dos ausentes gravada no apply_result (a lista que a aplicação usou: só as linhas do sistema do arquivo, o
  * período declarado e o fim no primeiro envio, como na prévia); a aplicação gravada sem ela usa o files[] (agravos e
  * período de todas as linhas, com `periodoCoberto` e `cnesDoArquivo`, e, no e-SUS Notifica sem `grupos`, os grupos
- * dos registros gravados).
+ * dos registros gravados). Nos dois casos o fim passa pelo corte do primeiro envio do arquivo lido agora
+ * (`primeirosEnvios`, `periodoCoberto`): a entrada gravada já vem cortada na prévia, e o corte de novo só muda alguma
+ * coisa se o primeiro envio do arquivo aparecer mais antigo do que estava na prévia.
  */
 export async function arquivosCobertos(db: Db, timeZone: string): Promise<ArquivoCoberto[]> {
   const imps = await db.officialImport.findMany({
     where: { status: 'APLICADA' },
     select: { id: true, fileName: true, sha256: true, periodFrom: true, periodTo: true, declaredPeriod: true, createdAt: true, files: true, applyResult: true },
   });
-  const out: ArquivoCoberto[] = [];
-  const semCobertura: typeof imps = [];
-  for (const imp of imps) {
-    const gravada = coberturaParaLeitura(imp.applyResult);
-    if (!gravada) {
-      semCobertura.push(imp);
-      continue;
-    }
-    for (const c of gravada) {
-      if (c.tipo !== 'INDIVIDUAL' || !c.tipoArquivo || entradaVazia(c)) continue;
-      out.push({
-        envio: imp.fileName,
-        fonte: { tipo: c.tipoArquivo, sistema: c.sistema, tipoRegistro: c.tipo, agravos: c.agravos.filter((x): x is string => !!x), ignorado: false, ...(c.grupos ? { grupos: c.grupos } : {}) },
-        cnes: c.cnes ?? [],
-        de: c.de,
-        ate: c.ate,
-      });
-    }
-  }
   const arquivos = (imp: (typeof imps)[number]) => (Array.isArray(imp.files) ? (imp.files as unknown as ArquivoDetectado[]) : []);
+  const lidas = imps.map((imp) => ({ imp, gravada: coberturaParaLeitura(imp.applyResult) }));
   const [gravados, primeiros] = await Promise.all([
     gruposGravados(
       db,
-      semCobertura.filter((i) => arquivos(i).some((a) => a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos)).map((i) => i.id),
+      lidas.filter((l) => !l.gravada && arquivos(l.imp).some((a) => a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos)).map((l) => l.imp.id),
     ),
     primeirosEnvios(
       db,
-      semCobertura.map((i) => i.sha256),
+      imps.map((i) => i.sha256),
     ),
   ]);
-  for (const imp of semCobertura)
+  const out: ArquivoCoberto[] = [];
+  for (const { imp, gravada } of lidas) {
+    const primeiro = primeiros.get(imp.sha256);
+    if (gravada) {
+      for (const c of gravada) {
+        if (c.tipo !== 'INDIVIDUAL' || !c.tipoArquivo || entradaVazia(c)) continue;
+        const p = periodoCoberto({ periodFrom: null, periodTo: null, declaredPeriod: false, createdAt: imp.createdAt }, { periodo: { de: c.de, ate: c.ate } }, timeZone, primeiro);
+        if (!p) continue;
+        out.push({
+          envio: imp.fileName,
+          fonte: { tipo: c.tipoArquivo, sistema: c.sistema, tipoRegistro: c.tipo, agravos: c.agravos.filter((x): x is string => !!x), ignorado: false, ...(c.grupos ? { grupos: c.grupos } : {}) },
+          cnes: c.cnes ?? [],
+          de: p.de,
+          ate: p.ate,
+        });
+      }
+      continue;
+    }
     for (const a of arquivos(imp)) {
-      const p = periodoCoberto(imp, a, timeZone, primeiros.get(imp.sha256));
+      const p = periodoCoberto(imp, a, timeZone, primeiro);
       if (!p) continue;
       const cnes = cnesDoArquivo(a);
       out.push({ envio: imp.fileName, fonte: a.tipo === 'ESUS_NOTIFICA_CSV' && !a.grupos ? { ...a, grupos: gravados.get(imp.id) ?? [] } : a, cnes: cnes ? [cnes] : [], de: p.de, ate: p.ate });
     }
+  }
   return out;
 }

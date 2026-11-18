@@ -9,6 +9,7 @@ import {
   filtrarUnidades,
   LEGENDA_GRADE,
   LINK_PARAMETROS_NEGATIVA,
+  nomeDaUnidadeNaTela,
   pendenciasAbrirPeriodo,
   pendenciasDesignacao,
   pendenciasEncerrarPeriodo,
@@ -267,8 +268,10 @@ describe('designação que não vale (NEGATIVA-4) e reativada sem período (sur-
   });
 
   it('o botão Revogar diz de quem é a designação (TELAS-7) e de qual unidade (R5-10: a mesma pessoa pode ser responsável em duas)', () => {
-    expect(rotuloRevogar(substitutoValido, lista[1]!)).toBe('Revogar a designação de Carla Menezes como responsável da Unidade 2');
-    expect(rotuloRevogar(substitutoValido, lista[2]!)).toBe('Revogar a designação de Carla Menezes como responsável da Unidade 3');
+    // A unidade pelo nome com que a tela a chama (nomes diferentes: sem o CNES) e "da unidade <nome>" (R6-6).
+    const nome = nomeDaUnidadeNaTela(lista.map((u) => u.unidade));
+    expect(rotuloRevogar(substitutoValido, nome(lista[1]!.unidade))).toBe('Revogar a designação de Carla Menezes como responsável da unidade Unidade 2');
+    expect(rotuloRevogar(substitutoValido, nome(lista[2]!.unidade))).toBe('Revogar a designação de Carla Menezes como responsável da unidade Unidade 3');
   });
 });
 

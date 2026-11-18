@@ -433,7 +433,20 @@ describe('cobertura do e-SUS Notifica pela ficha e pelo CNES (imp-ausentes-esus)
       ]),
     );
     const { cobertura, avisos } = l.leitura.cobertura({ de: '2025-06-01', ate: '2025-06-30' }, '3550308');
-    expect(cobertura).toEqual([{ sistema: 'ESUS_NOTIFICA', tipo: 'INDIVIDUAL', agravos: [null], grupos: ['covid'], cnes: ['9000011'], de: '2025-06-01', ate: '2025-06-30', municipios: ['355030'], municipioNulo: false }]);
+    expect(cobertura).toEqual([
+      {
+        sistema: 'ESUS_NOTIFICA',
+        tipo: 'INDIVIDUAL',
+        tipoArquivo: 'ESUS_NOTIFICA_CSV',
+        agravos: [null],
+        grupos: ['covid'],
+        cnes: ['9000011'],
+        de: '2025-06-01',
+        ate: '2025-06-30',
+        municipios: ['355030'],
+        municipioNulo: false,
+      },
+    ]);
     expect(avisos.join(' ')).toContain('um CNES só');
     // Dois CNES: a cobertura não fica restrita.
     const dois = await lerTudo(

@@ -140,8 +140,7 @@ export function abrirEnvio(nome: string, bytes: Uint8Array): EntradaEnvio[] {
   for (const e of entradasCentrais(bytes)) {
     const base = e.nome.split('/').pop() ?? '';
     if (!base || e.nome.endsWith('/') || e.nome.startsWith('__MACOSX/') || base.startsWith('.')) continue;
-    const fora = (motivo: string) =>
-      ignorados.push({ nome: e.nome, tamanho: e.tamanho, metodo: e.metodo, dados: new Uint8Array(0), crc: null, ignorado: motivo, ...(e.nomeLimpo ? { nomeLimpo: true } : {}) });
+    const fora = (motivo: string) => ignorados.push({ nome: e.nome, tamanho: e.tamanho, metodo: e.metodo, dados: new Uint8Array(0), crc: null, ignorado: motivo, ...(e.nomeLimpo ? { nomeLimpo: true } : {}) });
     if (!/\.(dbf|csv)$/i.test(base)) {
       fora(/\.dbc$/i.test(base) ? 'DBC do DATASUS (compactado) não é lido: use a exportação DBF do Sinan' : 'não é .dbf nem .csv');
       continue;

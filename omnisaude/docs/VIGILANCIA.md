@@ -430,6 +430,15 @@ instituição, editáveis em *Notificação negativa > Prazos e parâmetros*.
 - **CSV**: sem BOM; UTF-8 e, se inválido, Windows-1252 com aviso; separador `;` ou `,`; cabeçalho comparado sem
   acento e com sinônimos. Arquivo regravado pelo Excel (número em notação científica no número da notificação, CPF ou
   CNS) é recusado. Colunas de contato (telefone, e-mail, endereço, notificante) são descartadas na leitura.
+- **Caractere de controle dentro do arquivo**: a leitura tira o caractere nulo e os demais caracteres de controle
+  (U+0000 a U+001F e U+007F a U+009F) da célula do CSV, menos a tabulação, o LF e o CR (fazem parte do texto e da
+  quebra de linha dentro das aspas), do campo do DBF e do nome do arquivo dentro do zip. Cada sequência deles vira um
+  espaço, e o arquivo ganha um aviso: no CSV e no DBF, "N campo(s) com caractere de controle foram limpos (cada
+  sequência deles virou um espaço)."; no nome, também no arquivo que fica fora da importação, "O nome do arquivo dentro
+  do zip tinha caractere de controle: foi limpo (cada sequência deles virou um espaço).". Por causa desses caracteres, o
+  envio não cai mais com 400 VALIDACAO na prévia ou no aplicar, nem com ERRO_INTERNO depois do 202. O texto com algum
+  nulo perdido no começo continua lido como CSV; só fica fora, com "Formato não reconhecido (nem DBF nem CSV)", o
+  arquivo com nulo em mais de 1% dos primeiros 4 KB (e em mais de 8 bytes), como o texto em UTF-16 e a planilha.
 - **Prévia**: lê, normaliza (município de 7 dígitos comparado pelos 6 primeiros, ano epidemiológico pelo SEM_NOT e
   SEM_PRI, nunca pelo NU_ANO), junta por chave dentro do envio (NINDINET + DBF do agravo viram um registro só) e
   compara com o banco: lidos, novos, alterados, iguais, recusados com o motivo, duplicados no arquivo e ausentes
@@ -464,9 +473,10 @@ instituição, editáveis em *Notificação negativa > Prazos e parâmetros*.
        período também não traz;
     4. os demais voltam.
   - Cada aplicação grava em `apply_result.cobertura` a cobertura dos ausentes que usou (a lista de *Aplicar*, já com
-    o fim no primeiro envio). A aplicação gravada sem ela (de antes desta regra, como a da demonstração) e a entrada
-    fora do formato não confirmam ausência. A API não mostra a cobertura: o resultado da aplicação vem sem ela no
-    detalhe, na lista e na resposta do aplicar.
+    o fim no primeiro envio, cada entrada com o tipo do arquivo de onde veio, `tipoArquivo`). A aplicação gravada sem
+    ela (de antes desta regra, como a da demonstração) e a entrada fora do formato não confirmam ausência. A base
+    consolidada e a conciliação também leem dela o que cada arquivo cobre (*Cobertura dos ausentes, por arquivo*). A
+    API não mostra a cobertura: o resultado da aplicação vem sem ela no detalhe, na lista e na resposta do aplicar.
   - A contagem "voltam" da prévia segue a mesma regra; as aplicações do mesmo arquivo não confirmam, porque vão ser
     substituídas.
   - O resultado da aplicação lista as substituídas (`substituidas`: envio, aplicação, período, se ele foi declarado e
@@ -498,15 +508,37 @@ instituição, editáveis em *Notificação negativa > Prazos e parâmetros*.
   O fim de cada entrada não passa da data local do primeiro envio do arquivo (*Prévia*). O registro que veio em mais
   de um arquivo (o NINDINET e o DBF do agravo; a mesma chave em dois arquivos do mesmo tipo) entra na cobertura de cada
   um. Assim, os mesmos arquivos dão os mesmos ausentes num zip ou em envios separados, e um zip com o DENGON de 2023 e o
-  de 2025 não cobre 2024. As entradas iguais (mesmo sistema, tipo, agravos, fichas, período e municípios, restritas ou
-  não a um estabelecimento) viram uma só, com os CNES unidos, para a consulta não crescer com o zip de muitas
-  unidades; o registro dentro de duas entradas conta uma vez na prévia. A mesma lista vale na prévia, na aplicação, na
-  substituição do mesmo arquivo e no `apply_result.cobertura`. A prévia avisa, por sistema do e-SUS: "e-SUS Notifica:
+  de 2025 não cobre 2024. A exceção é o fim no primeiro envio, procurado pelo SHA-256 do envio, e não pelo de cada
+  arquivo do zip: o arquivo antigo reenviado dentro de um zip novo, com um período declarado além da data da
+  exportação, fica com o fim no primeiro envio do zip, e não no dele (*Pontos de atenção*). As entradas iguais (mesmo
+  tipo de arquivo, sistema, tipo, agravos, fichas, período e municípios, restritas ou não a um estabelecimento) viram
+  uma só, com os CNES unidos, para a consulta não crescer com o zip de muitas unidades. O registro dentro de duas
+  entradas conta uma vez na prévia, também sem CNES, sem município, sem agravo ou sem ficha: o filtro de cada entrada
+  põe a guarda de não nulo em cada uma dessas colunas, e a prévia exclui de cada entrada o que as anteriores que se
+  cruzam com ela já contaram sem perder o registro com coluna nula. Os ausentes previstos (a contagem e a aba Ausentes,
+  até o teto da amostra) são os que a aplicação marca, e o "voltam" do aviso da substituição é o "voltaram" do
+  resultado. A mesma lista vale na prévia, na aplicação, na substituição do mesmo arquivo, no
+  `apply_result.cobertura`, na base consolidada e na conciliação. A prévia avisa, por sistema do e-SUS: "e-SUS Notifica:
   o envio traz um CNES só (X): os ausentes valem só para esse estabelecimento." quando todos os arquivos daquele
   sistema são do mesmo estabelecimento; senão, com algum arquivo de um CNES só, "e-SUS Notifica: N arquivo(s) de um
   estabelecimento só (a.csv, CNES X; b.csv, CNES Y; e mais K): os ausentes de cada um valem só para o estabelecimento
   dele.", com até 5 arquivos citados e, havendo arquivo do município inteiro no mesmo sistema, " Os outros arquivos do
   e-SUS Notifica valem para o município inteiro." (o mesmo para o e-SUS Sinan).
+
+  A base consolidada (as SE cobertas) e a conciliação (a cobertura do resumo e o "só no OmniSaúde") leem, de cada
+  importação APLICADA, essa lista gravada no `apply_result.cobertura`: o arquivo cobre nelas o que cobre nos ausentes,
+  só pelas linhas do sistema dele, arquivo por arquivo, com o período declarado no envio (ou o das linhas do sistema
+  do arquivo). O fim é cortado de novo na leitura pela data local do primeiro envio do arquivo, o que, com dado real,
+  dá o mesmo da prévia. O tipo do arquivo de cada entrada diz o que ela cobre: o NINDINET, todos os agravos do Sinan
+  Net; o DBF do agravo e o CSV do e-SUS Sinan, os agravos que vieram (na conciliação, com os grupos do mesmo agravo do
+  Sinan); o DENGON e o CHIKON, a dengue e a chikungunya; o CSV do e-SUS Notifica, as fichas. A entrada de um CNES só,
+  ou a que junta arquivos iguais de vários CNES, cobre na conciliação só esses estabelecimentos e na base consolidada
+  não cobre a SE. Com isso, o NINDINET não cobre a dengue nem a chikungunya (Sinan Online) em ano nenhum, e o período
+  dele é o das linhas do Sinan Net; a zika (A92.8) é do Sinan Net, e o NINDINET a cobre. A aplicação gravada sem a
+  lista (a da demonstração, dado antigo) ou com alguma entrada individual sem o tipo do arquivo (gravada antes desta
+  regra) é lida pelo `official_imports.files`, como antes: agravos e período de todas as linhas do arquivo, e o
+  NINDINET com linhas de dengue cobre a dengue no período dele. Os agravos e o período de `files[]` continuam contando
+  todas as linhas: são o que a tela mostra do arquivo.
 - **Conciliação** em degraus:
   1. número oficial informado na fila de digitação, mesmo agravo do Sinan e data a até 7 dias;
   2. CNS ou CPF, mesmo agravo e data a até 7 dias;
@@ -556,11 +588,14 @@ instituição, editáveis em *Notificação negativa > Prazos e parâmetros*.
   - o CSV do e-SUS Notifica cobre a ficha dele;
   - só o NINDINET cobre o Sinan Net inteiro.
 
-  Só a importação APLICADA cobre (a substituída, não). O período coberto vai só até a data local do primeiro envio do
-  arquivo: a exportação não traz o que veio depois dela. O arquivo do e-SUS de um estabelecimento só (`files[].cnes`,
-  o mesmo critério da cobertura dos ausentes, arquivo por arquivo) cobre só as notificações das unidades com esse
-  CNES, mesmo com o CSV do município no mesmo envio, e a tela mostra "só o CNES N". A regra fica num lugar só, que a
-  conciliação e a base consolidada usam, lendo `files[]` arquivo por arquivo.
+  Só a importação APLICADA cobre (a substituída, não). O arquivo cobre o que cobre nos ausentes, só pelas linhas do
+  sistema dele (o NINDINET com algumas linhas de dengue não cobre a dengue), e o período coberto vai só até a data
+  local do primeiro envio do arquivo: a exportação não traz o que veio depois dela. O arquivo do e-SUS de um
+  estabelecimento só (o mesmo critério da cobertura dos ausentes, arquivo por arquivo; `files[].cnes`) cobre só as
+  notificações das unidades com esse CNES, mesmo com o CSV do município no mesmo envio, e a tela mostra "só o CNES N".
+  A regra fica num lugar só (`cobertura-importacao.ts`), que a conciliação e a base consolidada usam, lendo o
+  `apply_result.cobertura` de cada importação aplicada, arquivo por arquivo, ou `files[]` na aplicação gravada sem ela
+  (*Cobertura dos ausentes, por arquivo*).
 - A evolução das divergências é comparada na numeração da ficha de notificação (a do Mpox é traduzida antes).
 - **Sigilo**: registro de grupo sigiloso (aids, HIV, sífilis, violências) sai sem identificação para quem não tem
   `notificacao.sensivel`; as listas identificadas são auditadas como a exportação CSV.
@@ -581,7 +616,9 @@ como dentro; fora de todos, o mais próximo até 15 m; no empate (divisa, quarte
 depois o de menor id. Da ficha da notificação sem quarteirão, a base lê só o nome do bairro.
 
 **Cobertura** por SE. A semana sem caso só vale zero em três situações:
-- está no período de uma importação aplicada (a substituída não conta) que traz o agravo. O período vai até a data
+- está no período de um arquivo de importação aplicada (a substituída não conta) que cobre o agravo, com o que o
+  arquivo cobre nos ausentes, só pelas linhas do sistema dele (*Cobertura dos ausentes, por arquivo*): o NINDINET com
+  algumas linhas de dengue não cobre a dengue, e o período dele é o das linhas do Sinan Net. O período vai até a data
   local do primeiro envio do arquivo, e o arquivo do e-SUS restrito ao CNES não cobre semana nenhuma; os registros dele
   contam;
 - o OmniSaúde já estava em uso: da SE em que a primeira notificação notificada ou encerrada entrou no sistema em
@@ -589,7 +626,11 @@ depois o de menor id. Da ficha da notificação sem quarteirão, a base lê só 
 - a semana tem caso.
 
 Fora disso, a semana fica fora do canal (nula, diferente de zero). O ano coberto só em parte aparece como "coberto em
-parte", com as SE cobertas.
+parte", com as SE cobertas. O ano de referência sem o DENGON (ou o CHIKON) fica coberto só nas SE com caso do agravo
+("Coberto só nas SE … (SE com caso do agravo)"): por elas, ele entra na lista dos anos de referência do canal, e nas SE
+sem caso fica fora do canal, que nelas não muda. Nos anos de antes do Sinan Online, a dengue vem no NINDINET e no DBF
+do agravo do Sinan Net, que não a cobrem: a série histórica desses anos fica com as SE sem caso descobertas
+(*Pontos de atenção*).
 
 ### Diagrama de controle e receitas
 
@@ -672,17 +713,33 @@ parte", com as SE cobertas.
   endêmico", Plano 2025, item 7.2.3, p. 52). O item fala em "período superior a quatro semanas" para a curva
   epidêmica: 4 SE é interpretação, e a vigilância que quiser a letra põe 5 nas semanas da desmobilização do plano. A
   descida olha a curva dos **agravos que sustentam o estágio** (S): os agravos com canal cujo critério de canal de
-  algum estágio até o em vigor foi atendido numa SE completa desde o início do acionamento em vigor (a janela do
-  critério termina nessa SE e pode alcançar SE de antes do início) ou no retrato do acionamento (o critério avaliado
-  sobre as SE completas dos indicadores gravados quando a vigilância decidiu, `contingency_activations.indicators`; o
-  retrato que não é lista, ou é lista vazia, como o do acionamento da demonstração, não conta). Uma SE conta como
-  abaixo quando:
+  algum estágio até o em vigor foi atendido:
+  - no retrato do acionamento: o critério avaliado sobre as SE completas dos indicadores gravados quando a vigilância
+    decidiu (`contingency_activations.indicators`), com a janela terminando na última delas. O retrato que não é
+    lista, ou é lista vazia, como o do acionamento da demonstração, não conta;
+  - ou numa SE completa a partir do **limite**, com a janela do critério terminando nessa SE (ela pode alcançar SE de
+    antes do início). O limite é o menor entre a SE de início do acionamento em vigor e a SE seguinte à última SE
+    completa do retrato; sem retrato, o início; sem acionamento, qualquer SE completa conta. O acionamento grava o
+    início na SE em curso e o retrato com as SE completas do dia: com as 2 semanas incompletas do padrão (a em curso e
+    a anterior), o retrato vai até duas SE antes do início. As SE entre os dois estavam incompletas quando a vigilância
+    decidiu (a SE anterior à do início, no padrão; até 7 SE, com 8 semanas incompletas) e também contam. A última SE
+    completa do retrato é uma só por acionamento, a maior entre os agravos do retrato (na API, a mesma em todos: a
+    semana de referência do dia da decisão); o agravo do plano que não está no retrato também é olhado a partir dela,
+    e a semana fora do formato AAAASS não conta. Assim, quando o critério de canal fechou numa SE ainda incompleta no
+    dia da decisão (o acionamento pelo nowcasting, ou vendo a SE incompleta no diagrama), o agravo fica em S mesmo que
+    a SE do acionamento seja de queda: no alerta, as SE seguintes com a curva acima do limite superior não contam como
+    abaixo, e o alerta é mantido, sem o vai e volta; da epidemia, a descida para no alerta.
+
+  A contagem das 4 SE completas da descida continua só desde o início (a nota "Só contam as SE completas desde o
+  acionamento em vigor (SE XX/AAAA)" não muda). Uma SE conta como abaixo quando:
   - a sugestão dela está abaixo do estágio em vigor;
   - a curva da própria SE, em cada agravo de S, está fora dos status que os critérios de canal do estágio em vigor ou
     de um acima aceitam. No modelo do MS: no alerta, não acima do limite superior; na mobilização, até o centro ou
-    abaixo do limite inferior. Uma SE de queda no meio da alta não vira redução sustentada, e o caso esporádico de um
-    agravo fora de S não trava a descida (no canal do MS de um agravo raro, como o Zika, o centro e o limite superior
-    são zero: um caso já fica acima do limite superior);
+    abaixo do limite inferior. Uma SE de queda no meio da alta de um agravo de S não vira redução sustentada. O agravo
+    fora de S não segura a descida nem o destino, e para ele vale só a sugestão de cada SE: o caso esporádico não trava
+    a descida (no canal do MS de um agravo raro, como o Zika, o centro e o limite superior são zero: um caso já fica
+    acima do limite superior), e a alta de um agravo cujo critério de canal ainda não fechou (3 de 4 SE acima do limite
+    superior, ou em dente de serra) também não (*Pontos de atenção*);
   - nenhum agravo vigiado está sem canal nela (sem base que cubra a semana, sem população ou com o quartil
     indefinido: a curva pode não ter descido), e nenhum critério de canal de agravo vigiado, do estágio em vigor ou de
     um acima, ficou sem avaliação. Vigiados são os agravos de S e os que tiveram critério de canal sem avaliação numa
@@ -916,15 +973,29 @@ parte", com as SE cobertas.
   mostra o prazo da semana e o prazo do atesto).
 - Os horários das telas da semana saem no fuso da instituição. O seletor de agravo esconde os sigilosos de quem não
   pode vê-los. Cada lista de abas tem nome próprio para o leitor de tela, e os botões que se repetem em cada linha
-  dizem o objeto: "Vincular o registro N", "Desvincular o registro N", "Revogar a designação de <pessoa> como
-  responsável da <unidade>", "Designar responsável da <nome>", "Encerrar o período da <nome>" e "Tornar <nome>
-  notificante" (unidades notificantes); "Editar <nome>", "Desativar <nome>" e "Reativar <nome>" (cadastro de
-  unidades). Na tela do responsável, "Atestar a SE SS/AAAA" e "Espelho em PDF da SE SS/AAAA" com uma unidade só, e
-  "Atestar a SE SS/AAAA, <unidade>" e "Espelho em PDF da SE SS/AAAA, <unidade>" com mais de uma; no histórico, que
-  junta as unidades, "Espelho em PDF da SE SS/AAAA, <unidade>". O PDF do atesto que não é o vigente leva também a
-  situação e quando foi atestado, no fuso da instituição: "Espelho em PDF da SE SS/AAAA, <unidade>, anulada, atestada
-  em dd/mm/aaaa, hh:mm" (ou "…, cancelada, …"), assim o anulado e o refeito da mesma SE e unidade ficam distintos.
-  Com mais de uma unidade, o mesmo atesto na semana e no histórico tem o mesmo nome (é o mesmo espelho).
+  dizem o objeto:
+  - "Vincular o registro N" e "Desvincular o registro N";
+  - "Revogar a designação de <pessoa> como responsável da unidade <unidade>", "Designar responsável da unidade
+    <unidade>", "Encerrar o período da unidade <unidade>" e "Tornar <unidade> notificante" (unidades notificantes);
+  - "Editar <nome>", "Desativar <nome>" e "Reativar <nome>" (cadastro de unidades, só com o nome: duas unidades de
+    mesmo nome repetem esses botões).
+
+  Nas telas da negativa (grade, unidades notificantes e tela do responsável), <unidade> é o nome da unidade. Quando
+  outra unidade da mesma tela tem o mesmo nome (o nome não é único, só o CNES é), vai o nome com o CNES: "Posto de
+  Saúde (CNES 9100001)". Maiúsculas, acentos e espaços repetidos não distinguem os nomes, e conta a lista inteira da
+  tela: o nome não muda com o filtro nem com a busca. O mesmo nome vai no rótulo da célula da grade ("<unidade>, SE
+  SS/AAAA: <situação>. <fontes>."), nos cartões das unidades silenciosas e das só negativas, e no título e na mensagem
+  dos diálogos das unidades notificantes.
+
+  Na tela do responsável, "Atestar a SE SS/AAAA" e "Espelho em PDF da SE SS/AAAA" com uma unidade só, e "Atestar a SE
+  SS/AAAA, <unidade>" e "Espelho em PDF da SE SS/AAAA, <unidade>" com mais de uma; no histórico, que junta as
+  unidades, "Espelho em PDF da SE SS/AAAA, <unidade>" (o CNES entra também quando a unidade do histórico tem o nome de
+  outra unidade da tela). O PDF do atesto que não é o vigente leva também a situação e quando foi atestado, com os
+  segundos, no fuso da instituição: "Espelho em PDF da SE SS/AAAA, <unidade>, anulada, atestada em dd/mm/aaaa,
+  hh:mm:ss" (ou "…, cancelada, …"). Assim ficam distintos o anulado e o refeito da mesma SE e unidade, e também dois
+  anulados do mesmo minuto. Se dois atestos diferentes ainda ficarem com o mesmo nome (não vigentes da mesma SE,
+  unidade e situação, atestados no mesmo segundo), cada um leva a sua ordem pela hora do atesto: "… (1 de 2)", "… (2
+  de 2)". Com mais de uma unidade, o mesmo atesto na semana e no histórico tem o mesmo nome (é o mesmo espelho).
 - *Desativar* no cadastro de unidades pede confirmação: "Encerra hoje o período de unidade notificante e as
   designações de responsável pela notificação negativa (o que só começaria depois de hoje é apagado); reativar não os
   reabre.". Reativar é direto, com o aviso de que a negativa não se reabre.
@@ -1012,18 +1083,22 @@ núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80;
 - API contra PostgreSQL real (`apps/api/test/vigilancia-importacao.test.ts`, `-diagrama`, `-contingencia`, `-surto`,
   `-negativa` e `migracao-0031.test.ts`).
 - Correções das revisões adversariais, cada uma com teste de regressão que falha no código anterior: importação em
-  segundo plano, travas e memória (`vigilancia-importacao-r3*.test.ts`, `-r4*.test.ts` e `-r5*.test.ts`, com a API
-  num processo filho limitado a 512 MB; corpo cru, cobertura dos ausentes por arquivo, substituição do mesmo arquivo
-  com a ausência confirmada por outra aplicação, a vez de outro município e a carga da SIGTAP antes do corpo, busca
-  com caractere de controle), conciliação (`vigilancia-conciliacao-travas`, `-cobertura`, `-regras`, `-r4`, `-pool`,
-  `-divergencias` e `-bairros`), base consolidada (`vigilancia-consolidado-cobertura`), contingência
-  (`vigilancia-contingencia-r3`, `-r4` e `-r5`, na API e em `packages/shared/test`: a descida pelos agravos que
-  sustentam o estágio e o piso de nível), quarteirões em lote (`vigilancia-diagrama-quarteiroes`,
-  `vigilancia-mapa-lote` e `territorio-quarteiroes-lote`), surto (`vigilancia-surto-r3`, `-r4` e `-r5`: o par sem
-  revelar a linha sigilosa), negativa (`vigilancia-negativa-r3`, `-r4` e `-r5`: o prazo gravado na grade e a
-  designação sem impasse com o cadastro) e o filtro global de erros (`filtro-erros-r5`: impasse e serialização em 409,
-  o caractere nulo em 400, com os erros reais do Prisma 7), além dos testes das telas em `apps/web/test` (`surto-r5` e
-  `negativa-r5`: a contagem do detalhe do surto, as marcas do par e os nomes acessíveis da negativa).
+  segundo plano, travas e memória (`vigilancia-importacao-r3*.test.ts`, `-r4*.test.ts`, `-r5*.test.ts` e
+  `-r6*.test.ts`, com a API num processo filho limitado a 512 MB; corpo cru, cobertura dos ausentes por arquivo,
+  substituição do mesmo arquivo com a ausência confirmada por outra aplicação, a vez de outro município e a carga da
+  SIGTAP antes do corpo, busca com caractere de controle; a prévia igual à aplicação com registros sem CNES, sem
+  município, sem agravo e sem ficha, também em 150 arranjos sorteados no serviço e 40 pela API; a cobertura da base
+  consolidada e da conciliação lida do `apply_result`; o caractere de controle limpo na leitura), conciliação
+  (`vigilancia-conciliacao-travas`, `-cobertura`, `-regras`, `-r4`, `-pool`, `-divergencias` e `-bairros`), base
+  consolidada (`vigilancia-consolidado-cobertura`), contingência (`vigilancia-contingencia-r3`, `-r4`, `-r5` e `-r6`,
+  na API e em `packages/shared/test`: a descida pelos agravos que sustentam o estágio, o piso de nível e a SE que
+  estava incompleta no acionamento), quarteirões em lote (`vigilancia-diagrama-quarteiroes`, `vigilancia-mapa-lote` e
+  `territorio-quarteiroes-lote`), surto (`vigilancia-surto-r3`, `-r4` e `-r5`: o par sem revelar a linha sigilosa),
+  negativa (`vigilancia-negativa-r3`, `-r4` e `-r5`: o prazo gravado na grade e a designação sem impasse com o
+  cadastro) e o filtro global de erros (`filtro-erros-r5`: impasse e serialização em 409, o caractere nulo em 400, com
+  os erros reais do Prisma 7), além dos testes das telas em `apps/web/test` (`surto-r5`, `negativa-r5` e
+  `negativa-r6`: a contagem do detalhe do surto, as marcas do par e os nomes acessíveis da negativa, também com
+  unidades de mesmo nome e com atestos do mesmo minuto ou do mesmo segundo).
 - Demonstração: `packages/database/test/seed-consolidacao.test.ts` refaz a sugestão do plano só com as funções
   compartilhadas em seis datas de 2026 (mobilização; alerta com 2024 excluído) e
   `apps/api/test/demo-consolidacao.test.ts` semeia a demonstração num dia fixo e confere pela API a sugestão de
@@ -1070,10 +1145,19 @@ núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80;
   exportação, o arquivo tem a cobertura limitada pela data do reenvio, e não pela do envio que falhou: o que foi
   notificado entre as duas datas pode ficar ausente. Exige a falha dentro da espera, o reenvio em outro dia e o
   período declarado além da exportação; a falha depois do 202 fica no histórico (FALHOU) e conta.
-- **Cobertura do DBF do Sinan na base consolidada**: no Sinan, o período e os agravos de `files[]` contam todas as
-  linhas do arquivo, inclusive as de outro sistema (a dengue de um NINDINET, que é do Sinan Online), mas a cobertura
-  dos ausentes conta só as do sistema do arquivo. A base consolidada trata esse NINDINET como cobrindo a dengue no
-  período dele. No e-SUS os dois coincidem.
+- **Arquivo antigo dentro de um zip novo**: o fim da cobertura no primeiro envio é procurado pelo SHA-256 do envio, e
+  não pelo de cada arquivo do zip. A exportação antiga já enviada sozinha e reenviada dentro de um zip novo, com um
+  período declarado além da data dela, fica com o fim no primeiro envio do zip: o que foi notificado depois da
+  exportação, e não veio nela, fica ausente, o que não acontece com o mesmo arquivo reenviado sozinho. É a exceção à
+  regra de que os mesmos arquivos dão o mesmo resultado num zip ou em envios separados, e vale também para o "só no
+  OmniSaúde" e para a base consolidada. Exige o reenvio dentro de um zip com o período declarado além da exportação;
+  para declarar o período de um arquivo já enviado, reenvie-o sozinho.
+- **Série histórica de antes do Sinan Online**: na base consolidada e na conciliação, o arquivo cobre só pelas linhas
+  do sistema dele, e a dengue e a chikungunya (A90 e A92.0) são sempre do Sinan Online. O NINDINET e o DBF do agravo
+  do Sinan Net, também os de antes do Sinan Online, não cobrem a dengue: sem o DENGON (ou o CHIKON) do ano, o ano
+  fica coberto só nas SE com caso do agravo, que o põem na lista dos anos de referência, e as SE sem caso ficam fora do
+  canal (nulas, e não zero). A aplicação gravada antes desta regra (sem o tipo do arquivo na cobertura) ainda é lida
+  pelo `files[]`, e nela o NINDINET com linhas de dengue cobre a dengue no período dele.
 - **Zip com muitos arquivos de unidade** (até 1.000) com períodos diferentes vira até 1.000 entradas de cobertura:
   uma consulta por entrada na prévia e na marcação dos ausentes, e a prévia exclui de cada entrada o que as anteriores
   que se cruzam com ela já contaram. Na substituição do mesmo arquivo com ausentes, as outras aplicações são lidas com
@@ -1096,9 +1180,19 @@ núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80;
   epidêmica. O modelo usa 4 (interpretação); 5 segue a letra e é só mudar as semanas da desmobilização no plano.
 - **Agravos que sustentam o estágio**: no acionamento sem retrato (o da demonstração grava `indicators: []`) e sem
   critério de canal atendido desde o início, com o dado presente, valem só as sugestões, e a curva não segura a
-  descida (o acionamento feito pela tela sempre grava o retrato). O retrato é avaliado com os critérios do plano em
-  vigor, não com os da versão do plano do acionamento. Na combinação "dois ou mais", os agravos que sustentam e o piso
-  de nível usam o critério de canal sozinho, como a condição da curva.
+  descida. O acionamento feito pela tela grava o retrato até a última SE completa do dia, e as SE completas depois
+  dele, incompletas na decisão, também contam para S. A última SE completa do retrato é uma só por acionamento: o
+  agravo que entrou no plano depois do acionamento, fora do retrato, também é olhado a partir da SE seguinte a ela. O
+  retrato é avaliado com os critérios do plano em vigor, não com os da versão do plano do acionamento. Na combinação
+  "dois ou mais", os agravos que sustentam e o piso de nível usam o critério de canal sozinho, como a condição da
+  curva.
+- **Agravo fora de S em alta**: a condição da curva e o piso de nível valem só para os agravos de S. O agravo cujo
+  critério de canal não foi atendido no retrato nem desde o limite, mesmo com a curva alta (a chikungunya acima do
+  limite superior em 3 das 4 SE contadas, o Zika entre o centro e o limite superior na mobilização, ou a curva em
+  dente de serra, que quebra as janelas do critério), não segura a descida nem o destino: o plano pode sugerir
+  "pode desmobilizar para Normalidade" com essa curva e, quando o critério dele fechar, sugerir subir de novo na SE
+  seguinte. É a regra decidida (para o agravo fora de S vale a sugestão de cada SE); uma regra mais conservadora,
+  como segurar com o critério atendido em k−1 de n SE, fica para validar com a vigilância.
 - **Sigilo no diagrama**: tuberculose, hanseníase e hepatites são sigilosas só no diagrama e na contingência (Lei
   14.289/2022). Nas notificações, na conciliação, no surto e no mapa de casos, vale a marca do catálogo, que a
   instituição decide.

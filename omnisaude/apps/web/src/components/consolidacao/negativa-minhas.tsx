@@ -2,7 +2,7 @@
 
 import { ROTULO_SITUACAO_UNIDADE_SEMANA, ROTULO_STATUS_ATESTO, ROTULO_TIPO_RESPONSAVEL, type AtestoNegativa, type RespostaMinhasNegativas, type SemanaParaAtestar, type UnidadeRef } from '@omnisaude/shared';
 import { CheckCircle2, Download, Info } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader, EmptyState, Stat } from '@/components/ui/card';
@@ -12,22 +12,21 @@ import { useToast } from '@/components/ui/toast';
 import { api, errorMessage, saveBlob } from '@/lib/api';
 import { useApi } from '@/lib/hooks';
 import { useDataHora } from './fuso';
-import { dataBr, resumoMinhas, rotuloAtestar, rotuloEspelhoPdf, rotuloSemana, textoCancelamento, textoDaSemanaDoResponsavel, TOM_SITUACAO, TOM_STATUS_ATESTO } from './negativa-regras';
+import { dataBr, nomesDaTelaDoResponsavel, resumoMinhas, rotuloSemana, textoCancelamento, textoDaSemanaDoResponsavel, TOM_SITUACAO, TOM_STATUS_ATESTO, type NomesDaTelaDoResponsavel } from './negativa-regras';
 
 /**
- * Baixa o espelho em PDF do atesto. O botão se repete (um por semana ou por atesto): o nome acessível diz a SE; no
- * histórico e na tela com mais de uma unidade (`comUnidade`), também a unidade; e, no atesto que não é o vigente, a
- * situação e quando foi atestado.
+ * Baixa o espelho em PDF do atesto. O botão se repete (um por semana ou por atesto): o nome acessível (`nome`, de
+ * `nomesDaTelaDoResponsavel`) diz a SE; no histórico e na tela com mais de uma unidade, também a unidade; e, no atesto
+ * que não é o vigente, a situação e quando foi atestado.
  */
-function BotaoPdf({ atesto, rotulo = 'PDF', comUnidade = false }: { atesto: Pick<AtestoNegativa, 'id' | 'cnes' | 'semana' | 'unidade' | 'status' | 'atestadoEm'>; rotulo?: string; comUnidade?: boolean }) {
+function BotaoPdf({ atesto, nome, rotulo = 'PDF' }: { atesto: Pick<AtestoNegativa, 'id' | 'cnes' | 'semana'>; nome: string; rotulo?: string }) {
   const toast = useToast();
-  const { fuso } = useDataHora();
   const [busy, setBusy] = useState(false);
   return (
     <Button
       size="sm"
       variant="secondary"
-      aria-label={rotuloEspelhoPdf(atesto, fuso, comUnidade)}
+      aria-label={nome}
       loading={busy}
       onClick={async () => {
         setBusy(true);
@@ -47,10 +46,10 @@ function BotaoPdf({ atesto, rotulo = 'PDF', comUnidade = false }: { atesto: Pick
 }
 
 /**
- * Uma semana fechada da unidade: situação, prazo, atesto e, quando pode, o texto e o botão de atestar. Com mais de uma
- * unidade na tela (`comUnidade`), os nomes acessíveis de Atestar e do PDF dizem também a unidade.
+ * Uma semana fechada da unidade: situação, prazo, atesto e, quando pode, o texto e o botão de atestar. Os nomes
+ * acessíveis de Atestar e do PDF vêm de `nomes` (com mais de uma unidade na tela, dizem também a unidade).
  */
-function SemanaDaUnidade({ unidade, s, comUnidade, onAtestado }: { unidade: UnidadeRef; s: SemanaParaAtestar; comUnidade: boolean; onAtestado: () => void }) {
+function SemanaDaUnidade({ unidade, s, nomes, onAtestado }: { unidade: UnidadeRef; s: SemanaParaAtestar; nomes: NomesDaTelaDoResponsavel; onAtestado: () => void }) {
   const toast = useToast();
   const { fuso } = useDataHora();
   const [confirmo, setConfirmo] = useState(false);
@@ -72,7 +71,7 @@ function SemanaDaUnidade({ unidade, s, comUnidade, onAtestado }: { unidade: Unid
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={TOM_SITUACAO[s.situacao]}>{ROTULO_SITUACAO_UNIDADE_SEMANA[s.situacao]}</Badge>
           {s.atesto && <Badge tone={TOM_STATUS_ATESTO[s.atesto.status]}>{ROTULO_STATUS_ATESTO[s.atesto.status]}</Badge>}
-          {s.atesto && <BotaoPdf atesto={s.atesto} comUnidade={comUnidade} />}
+          {s.atesto && <BotaoPdf atesto={s.atesto} nome={nomes.pdf(s.atesto, 'semana')} />}
         </div>
       </div>
       {s.atesto && textoCancelamento(s.atesto) && <p className="text-xs text-amber-800">{textoCancelamento(s.atesto)}</p>}
@@ -90,7 +89,7 @@ function SemanaDaUnidade({ unidade, s, comUnidade, onAtestado }: { unidade: Unid
           <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
-              aria-label={rotuloAtestar(s.semana, comUnidade ? unidade.nome : undefined)}
+              aria-label={nomes.atestar(unidade, s.semana)}
               disabled={!confirmo}
               loading={busy}
               onClick={async () => {
@@ -126,10 +125,12 @@ function SemanaDaUnidade({ unidade, s, comUnidade, onAtestado }: { unidade: Unid
  */
 export function NegativaMinhas() {
   const r = useApi<RespostaMinhasNegativas>('/vigilancia/negativas/minhas');
-  const { dataHora } = useDataHora();
+  const { dataHora, fuso } = useDataHora();
   const resumo = r.data ? resumoMinhas(r.data) : null;
-  // Com mais de uma unidade, os botões que se repetem em cada uma dizem a unidade no nome acessível.
-  const variasUnidades = (r.data?.unidades.length ?? 0) > 1;
+  // Os nomes acessíveis dos botões que se repetem (Atestar e o PDF), sem repetição na tela: com mais de uma unidade,
+  // dizem a unidade (com o CNES quando duas têm o mesmo nome); o PDF do atesto que não é o vigente diz a hora com os
+  // segundos.
+  const nomes = useMemo(() => (r.data ? nomesDaTelaDoResponsavel(r.data, fuso) : null), [r.data, fuso]);
   return (
     <div className="space-y-4">
       <Alert tone="info">
@@ -143,7 +144,7 @@ export function NegativaMinhas() {
       </Alert>
       {r.error && <Alert tone="error">{r.error}</Alert>}
       {r.loading && !r.data && <Spinner />}
-      {r.data && resumo && (
+      {r.data && resumo && nomes && (
         <>
           <div className="grid gap-3 sm:grid-cols-3">
             <Stat label="Unidades sob sua responsabilidade" value={resumo.unidades} />
@@ -163,7 +164,7 @@ export function NegativaMinhas() {
                 <CardHeader title={u.unidade.nome} description={`CNES ${u.unidade.cnes}`} actions={<Badge tone={u.tipo === 'TITULAR' ? 'blue' : 'slate'}>{ROTULO_TIPO_RESPONSAVEL[u.tipo]}</Badge>} />
                 <ul className="divide-y divide-slate-100">
                   {u.semanas.map((s) => (
-                    <SemanaDaUnidade key={s.semana} unidade={u.unidade} s={s} comUnidade={variasUnidades} onAtestado={() => void r.reload()} />
+                    <SemanaDaUnidade key={s.semana} unidade={u.unidade} s={s} nomes={nomes} onAtestado={() => void r.reload()} />
                   ))}
                 </ul>
               </Card>
@@ -209,7 +210,7 @@ export function NegativaMinhas() {
                       </TD>
                       <TD className="text-xs text-slate-600">{textoCancelamento(a) ?? (a.registroOficialId ? 'Negativa digitada no Sinan.' : '—')}</TD>
                       <TD className="text-right">
-                        <BotaoPdf atesto={a} comUnidade />
+                        <BotaoPdf atesto={a} nome={nomes.pdf(a, 'historico')} />
                       </TD>
                     </TR>
                   ))}

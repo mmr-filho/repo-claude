@@ -185,7 +185,7 @@ describe.runIf(enabled)('importação, quinta rodada: cobertura por arquivo, sub
     expect(det.resultadoAplicacao).not.toHaveProperty('cobertura');
     const lista = (await t.http().get('/api/vigilancia/importacoes').set(auth(vig)).expect(200)).body as ListaImportacoes;
     expect(lista.find((i) => i.id === zip.id)!.resultadoAplicacao).not.toHaveProperty('cobertura');
-    // A conciliação lê official_imports.files arquivo por arquivo: o mesmo CNES e o mesmo período de cada um.
+    // A conciliação lê a cobertura gravada arquivo por arquivo (R6-2): o mesmo CNES e o mesmo período de cada um.
     const conciliacao = (await t.http().get('/api/vigilancia/conciliacao/resumo').set(auth(vig)).expect(200)).body as { cobertura: { sistema: string; cnes: string | null; de: string; ate: string }[] };
     const esus = conciliacao.cobertura.filter((c) => c.sistema === 'ESUS_NOTIFICA' && c.cnes !== null && c.de.startsWith('2024'));
     expect(esus.map((c) => [c.cnes, c.de, c.ate])).toEqual([
