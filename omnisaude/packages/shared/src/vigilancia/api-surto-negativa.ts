@@ -1,0 +1,634 @@
+/**
+ * Contratos da API de surtos, sugestões de surto, notificação negativa, grade unidade × semana e unidades
+ * notificantes (VIG-1c, §4.3 do desenho; frente F4). Rotas em /api/vigilancia. Surtos: `vigilancia.surto` (o núcleo
+ * só vê os das unidades em que está lotado). Atesto: `notificacao.negativa` (e designação ativa). Grade: leitura com
+ * `vigilancia.resumo` ou `vigilancia.painel`. Unidades notificantes e responsáveis: `vigilancia.consolidacao`.
+ * Datas em AAAA-MM-DD; instantes em ISO 8601; semanas em AAAASS.
+ */
+import type { ExcessoTerritorio } from './api-diagrama';
+import type { SituacaoPrazoNotificacao } from './catalogo';
+import type { AnaliseGrade, SituacaoUnidadeSemana, StatusAtesto, TipoResponsavelNegativa } from './negativa';
+import type { CategoriaSurto, StatusSurto, SugestaoSurto, TipoEventoSurto } from './surto';
+
+// ───────────── Surtos ─────────────
+
+/** Unidade como aparece nas respostas. */
+export interface UnidadeRef {
+  id: string;
+  nome: string;
+  cnes: string;
+}
+
+/**
+ * Prazo da comunicação do surto a uma esfera (imediata: 24 h do conhecimento). A SMS cumpre com a primeira
+ * comunicação registrada a ela ou, quando a própria vigilância municipal registrou o surto, no registro; SES e MS (só
+ * com ESP) cumprem com a comunicação registrada.
+ */
+export interface PrazoSurto {
+  esfera: 'SMS' | 'SES' | 'MS';
+  venceEm: string;
+  cumpridoEm: string | null;
+  situacao: SituacaoPrazoNotificacao;
+}
+
+/** GET /vigilancia/surtos?status= (linha). */
+export interface SurtoResumo {
+  id: string;
+  /** Numeração interna AAAA/NNNN. */
+  numero: string;
+  status: StatusSurto;
+  categoria: CategoriaSurto;
+  grupo: string | null;
+  /** Agravo, síndrome ou CID, como texto para a lista. */
+  agravo: string;
+  sindrome: string | null;
+  cid: string | null;
+  unidade: UnidadeRef;
+  notificadoEm: string;
+  conhecidoEm: string;
+  primeirosSintomasEm: string;
+  /** Nº de casos suspeitos/expostos informado (campo 18). */
+  casos: number;
+  /**
+   * Casos da planilha de acompanhamento: as linhas, com o caso que está em duas delas (a notificação e o registro
+   * oficial conciliado com ela) contado uma vez.
+   */
+  casosNaPlanilha: number;
+  localInicial: string;
+  esp: boolean;
+  /** SMS sempre; SES e MS quando `esp`. */
+  prazos: PrazoSurto[];
+  numeroOficial: string | null;
+  encerradoEm: string | null;
+  avisos: string[];
+}
+
+export type ListaSurtos = SurtoResumo[];
+
+/** Local de ocorrência do surto (campos 20 a 33 da ficha). */
+export interface LocalSurto {
+  municipioIbge: string | null;
+  localidadeId: string | null;
+  bairroId: string | null;
+  endereco: string | null;
+  referencia: string | null;
+  /** CS_ZONA: 1 urbana, 2 rural, 3 periurbana, 9 ignorado. */
+  zona: string | null;
+  lat: number | null;
+  lng: number | null;
+}
+
+/** Investigação (campos 24 a 26 e observações). */
+export interface InvestigacaoSurto {
+  investigadoEm: string | null;
+  /** CS_TRANS. */
+  modoTransmissao: string | null;
+  /** TP_INDIRET (código) e CS_VEICULO (texto do "outro"). */
+  veiculo: string | null;
+  veiculoTexto: string | null;
+  observacoes: string | null;
+  investigadorNome: string | null;
+  investigadorFuncao: string | null;
+}
+
+/** Bloco da ficha de surto de DTA (campos 27 a 60), quando o veículo é alimento/água. Chaves = variáveis do dicionário. */
+export type BlocoDta = Record<string, string | number | null>;
+
+/** Linha da planilha de acompanhamento (uma por caso). */
+export interface CasoSurto {
+  id: string;
+  /** NU_CASO. */
+  numero: number;
+  notificationId: string | null;
+  /** Número interno da notificação individual ligada. */
+  notificacaoNumero: string | null;
+  officialRecordId: string | null;
+  iniciais: string | null;
+  sexo: string | null;
+  /** Idade legível ("34 anos", "5 meses", "10 dias", "12 horas"). */
+  idade: string | null;
+  municipioResidencia: string | null;
+  bairroId: string | null;
+  bairroNome: string | null;
+  inicioSintomas: string | null;
+  hospitalizado: boolean | null;
+  obito: boolean | null;
+  classificacao: string | null;
+  criterio: string | null;
+  cidFinal: string | null;
+  /** Caso de agravo da lista sem notificação individual (o surto não a substitui). */
+  semNotificacaoIndividual: boolean;
+  /**
+   * NU_CASO da outra linha que é o mesmo caso: a notificação de uma e o registro oficial conciliado com ela na outra
+   * (vínculo feito depois de as duas estarem na planilha). As duas ficam, marcadas, até a vigilância retirar uma. Nulo
+   * nas duas linhas quando uma delas é restrita para quem lê (`restrito`): o par não é revelado, e o aviso do surto é o
+   * genérico, sem os NU_CASO.
+   */
+  mesmoCasoQue: number | null;
+  /**
+   * A notificação ou o registro oficial de origem é sigiloso e quem lê não pode abri-lo: a linha vem só com o número
+   * do caso e os ids da origem (sem iniciais, sexo, idade, residência, datas, desfecho, CID nem número da notificação).
+   * No espelho, a linha sai só com o NU_CASO; na linha do tempo, o número vira "sob sigilo" (com `restrito: true`).
+   */
+  restrito: boolean;
+}
+
+/** Evento da linha do tempo. */
+export interface EventoSurto {
+  id: string;
+  tipo: TipoEventoSurto;
+  em: string;
+  por: string | null;
+  dados: Record<string, unknown>;
+}
+
+/**
+ * Variável do espelho (nome do dicionário de dados do Sinan). Valor: datas em dd/mm/aaaa; campos com domínio como
+ * "código - rótulo" (ex.: "3 - Creche/Escola"); nulo quando não preenchido.
+ */
+export interface CampoEspelho {
+  variavel: string;
+  rotulo: string;
+  valor: string | null;
+}
+
+/** GET /vigilancia/surtos/:id/espelho: TP_NOT=3, ID_AGRAVO, DT_NOTIFIC, ID_UNIDADE, DT_SIN_PRI, QT_TOTAL_C, CS_LOCAL... */
+export interface EspelhoSurto {
+  campos: CampoEspelho[];
+  /**
+   * Planilha, com os valores como vão para o Sinan (códigos): NU_CASO, NM_CASO, CS_SEXO, NU_IDADE_N, ID_MN_RESI,
+   * NM_BAIRRO, DT_SIN_PRI, ID_HOSP e OBITO (1 sim, 2 não, 9 ignorado), CLASSI_FIN, CRITERIO, DIAG_FINAL.
+   */
+  planilha: Record<string, string | null>[];
+  /** Bloco DTA, quando houver. */
+  dta: CampoEspelho[];
+  avisos: string[];
+}
+
+/** GET /vigilancia/surtos/:id. */
+export interface DetalheSurto extends SurtoResumo {
+  venceEm: string;
+  notificador: string | null;
+  agente: string | null;
+  localInicialTexto: string | null;
+  local: LocalSurto;
+  investigacao: InvestigacaoSurto;
+  dta: BlocoDta | null;
+  delimitacao: string | null;
+  delimitacaoTexto: string | null;
+  notasEncerramento: string | null;
+  descarte: { motivo: string; em: string; por: string | null } | null;
+  /** Sugestão que originou o surto (assinatura, regra, casos). */
+  sinal: Record<string, unknown> | null;
+  planilha: CasoSurto[];
+  eventos: EventoSurto[];
+  espelho: EspelhoSurto;
+  /** Pendências de `validarSurto` na etapa atual. */
+  pendencias: string[];
+  permissoes: { editar: boolean; encerrar: boolean; descartar: boolean; numeroOficial: boolean };
+}
+
+/** Caso indicado na criação a partir de uma sugestão. */
+export interface CasoIndicado {
+  notificationId?: string;
+  officialRecordId?: string;
+}
+
+/** POST /vigilancia/surtos (de uma sugestão, com `assinatura` e os casos, ou manual). */
+export interface CorpoNovoSurto {
+  assinatura?: string | null;
+  casosIndicados?: CasoIndicado[];
+  categoria: CategoriaSurto;
+  grupo?: string | null;
+  sindrome?: string | null;
+  cid?: string | null;
+  agente?: string | null;
+  notificadoEm: string;
+  /** Instante em que a vigilância soube do surto (início do prazo). */
+  conhecidoEm: string;
+  esp?: boolean;
+  unitId: string;
+  primeirosSintomasEm: string;
+  casos: number;
+  localInicial: string;
+  localInicialTexto?: string | null;
+  local?: Partial<LocalSurto>;
+}
+
+/** PATCH /vigilancia/surtos/:id (campos da notificação, local, investigação e bloco DTA). */
+export interface CorpoEditarSurto {
+  categoria?: CategoriaSurto;
+  grupo?: string | null;
+  sindrome?: string | null;
+  cid?: string | null;
+  agente?: string | null;
+  notificadoEm?: string;
+  esp?: boolean;
+  primeirosSintomasEm?: string;
+  casos?: number;
+  localInicial?: string;
+  localInicialTexto?: string | null;
+  local?: Partial<LocalSurto>;
+  investigacao?: Partial<InvestigacaoSurto>;
+  dta?: BlocoDta | null;
+}
+
+/** Linha manual da planilha. */
+export interface LinhaCasoSurto {
+  iniciais?: string | null;
+  /** M, F ou I. */
+  sexo?: string | null;
+  /** Número e unidade: "34", "34 anos", "34A", "5 meses", "10 dias", "12 horas". */
+  idade?: string | null;
+  municipioResidencia?: string | null;
+  bairroId?: string | null;
+  inicioSintomas?: string | null;
+  hospitalizado?: boolean | null;
+  obito?: boolean | null;
+  classificacao?: string | null;
+  criterio?: string | null;
+  cidFinal?: string | null;
+}
+
+/** POST /vigilancia/surtos/:id/casos: uma notificação, um registro oficial ou uma linha manual. */
+export type CorpoCasoSurto = { notificationId: string } | { officialRecordId: string } | { linha: LinhaCasoSurto };
+
+export interface RespostaCasoSurto {
+  caso: CasoSurto;
+  avisos: string[];
+}
+
+/** POST /vigilancia/surtos/:id/comunicacoes. */
+export interface CorpoComunicacaoSurto {
+  alvo: 'SMS' | 'SES' | 'MS';
+  canal: 'TELEFONE' | 'EMAIL' | 'FORMULARIO' | 'PRESENCIAL' | 'OUTRO';
+  contraparte: string;
+  protocolo?: string | null;
+  nota?: string | null;
+  /** Instante da comunicação. */
+  em: string;
+}
+
+/** POST /vigilancia/surtos/:id/encerrar. */
+export interface CorpoEncerrarSurto {
+  /** DELIMITA (1 a 11). */
+  delimitacao: string;
+  /** Texto quando a delimitação é 11 (outros). */
+  texto?: string | null;
+  data: string;
+  notas?: string | null;
+}
+
+/** POST /vigilancia/surtos/:id/descartar (motivo com pelo menos 10 caracteres). */
+export interface CorpoDescartarSurto {
+  motivo: string;
+}
+
+/** POST /vigilancia/surtos/:id/numero-oficial (1 a 7 dígitos). */
+export interface CorpoNumeroOficialSurto {
+  numero: string;
+}
+
+/** Caso de uma sugestão, para a tela. */
+export interface CasoDaSugestao {
+  id: string;
+  numero: string;
+  agravo: string;
+  unidade: string;
+  bairro: string | null;
+  inicioSintomas: string | null;
+  conhecidoEm: string;
+}
+
+export interface SugestaoSurtoTela extends SugestaoSurto {
+  /** Nome do quarteirão, bairro ou unidade do vínculo. */
+  vinculoNome: string;
+  casosDetalhe: CasoDaSugestao[];
+}
+
+/** GET /vigilancia/surtos/sugestoes. */
+export interface RespostaSugestoesSurto {
+  sugestoes: SugestaoSurtoTela[];
+  /** Dengue, chikungunya e Zika acima do limite superior do canal do território na última semana completa. */
+  excessos: ExcessoTerritorio[];
+  avisos: string[];
+}
+
+/**
+ * POST /vigilancia/surtos/sugestoes/dispensar (motivo com pelo menos 10 caracteres). A dispensa da vigilância
+ * municipal vale para todos; a do núcleo vale só na visão dele e só para sugestão com todos os casos da unidade dele.
+ * Vale até o `ultimoConhecimento` que a tela mostrou: com caso conhecido depois dele, a resposta é 409 (a sugestão
+ * mudou desde que a tela foi aberta).
+ */
+export interface CorpoDispensarSugestao {
+  assinatura: string;
+  motivo: string;
+  /** O `ultimoConhecimento` da sugestão que a tela mostrou (ISO). */
+  ultimoConhecimento: string;
+}
+
+/**
+ * Consulta de GET /vigilancia/surtos/candidatas (notificações) e GET /vigilancia/surtos/registros (registros oficiais
+ * individuais), com `vigilancia.surto`. O núcleo só vê os da unidade em que está lotado; o sigiloso só aparece para
+ * quem pode abri-lo. A busca por texto é auditada (e a lista de registros oficiais, sempre). Até 100 itens.
+ */
+export interface ConsultaCandidatasSurto {
+  /** Grupo do catálogo (ex.: leptospirose). */
+  grupo?: string;
+  /** Período em AAAA-MM-DD: do conhecimento, na notificação; da notificação, no registro oficial. */
+  de?: string;
+  ate?: string;
+  /** Número, nome, CNS ou CPF (2 a 60 caracteres). */
+  busca?: string;
+  /** Surto cuja planilha já tem o caso: ele fica de fora da lista. */
+  surtoId?: string;
+}
+
+/** Notificação candidata à planilha do surto. */
+export interface NotificacaoCandidataSurto {
+  id: string;
+  numero: string;
+  status: string;
+  grupo: string;
+  agravo: string;
+  unidade: { id: string; nome: string };
+  /** Nome social ou civil do paciente. */
+  paciente: string;
+  conhecidoEm: string;
+  inicioSintomas: string | null;
+  sigilosa: boolean;
+  /** Números dos surtos abertos em que a notificação já está. */
+  emSurtos: string[];
+}
+
+/** GET /vigilancia/surtos/candidatas?grupo=&de=&ate=&busca=&surtoId= (do conhecimento mais recente ao mais antigo). */
+export interface RespostaCandidatasSurto {
+  itens: NotificacaoCandidataSurto[];
+  /** Há mais do que as mostradas: refine a busca. */
+  limitado: boolean;
+}
+
+/** Registro oficial individual candidato à planilha do surto. */
+export interface RegistroCandidatoSurto {
+  id: string;
+  sistema: import('./sistemas').SistemaOficial;
+  numero: string;
+  notificadoEm: string;
+  inicioSintomas: string | null;
+  /** Código do agravo no Sinan (CID). */
+  agravo: string | null;
+  agravoNome: string | null;
+  grupo: string | null;
+  unidade: { id: string | null; cnes: string | null; nome: string | null };
+  paciente: { nome: string | null; nascimento: string | null; sexo: string | null } | null;
+  sigiloso: boolean;
+  situacao: import('./agravos-sinan').SituacaoCaso;
+  /** O registro não veio na última exportação do mesmo sistema e período. */
+  ausenteDesde: string | null;
+  /** Números dos surtos abertos em que o registro já está. */
+  emSurtos: string[];
+}
+
+/** GET /vigilancia/surtos/registros?grupo=&de=&ate=&busca=&surtoId= (da notificação mais recente à mais antiga). */
+export interface RespostaRegistrosCandidatosSurto {
+  itens: RegistroCandidatoSurto[];
+  limitado: boolean;
+}
+
+// ───────────── Notificação negativa ─────────────
+
+/** Atesto da negativa. */
+export interface AtestoNegativa {
+  id: string;
+  unitId: string;
+  unidade: string;
+  cnes: string;
+  semana: string;
+  status: StatusAtesto;
+  atestadoEm: string;
+  atestadoPor: string;
+  funcao: string | null;
+  emNome: boolean;
+  motivoEmNome: string | null;
+  atrasado: boolean;
+  declaracao: string;
+  canceladoEm: string | null;
+  motivoCancelamento: string | null;
+  /** O que cancelou o atesto (RQ003). */
+  causa: { tipo: 'NOTIFICACAO' | 'REGISTRO_OFICIAL' | 'SURTO'; id: string } | null;
+  /** Negativa do Sinan (NNEGANET) casada com o atesto. */
+  registroOficialId: string | null;
+}
+
+/** Semana fechada da unidade do responsável. */
+export interface SemanaParaAtestar {
+  semana: string;
+  inicio: string;
+  fim: string;
+  situacao: SituacaoUnidadeSemana;
+  prazo: string;
+  prazoPassou: boolean;
+  podeAtestar: boolean;
+  /** Por que não pode atestar (ex.: a unidade tem notificação na semana). */
+  motivo: string | null;
+  atesto: AtestoNegativa | null;
+  /** Texto do atesto, à vista antes de atestar. */
+  texto: string;
+}
+
+export interface UnidadeDoResponsavel {
+  unidade: UnidadeRef;
+  tipo: TipoResponsavelNegativa;
+  semanas: SemanaParaAtestar[];
+}
+
+/** GET /vigilancia/negativas/minhas. */
+export interface RespostaMinhasNegativas {
+  unidades: UnidadeDoResponsavel[];
+  historico: AtestoNegativa[];
+}
+
+/** POST /vigilancia/negativas (só semana terminada, dentro de `semanasAtesto`). Em nome da unidade: `vigilancia.consolidacao` com motivo. */
+export interface CorpoAtestarNegativa {
+  unitId: string;
+  semana: string;
+  emNome?: { motivo: string };
+}
+
+/** POST /vigilancia/negativas/:id/anular. */
+export interface CorpoAnularNegativa {
+  motivo: string;
+}
+
+/**
+ * Consulta de GET /vigilancia/negativas/grade. A resposta traz só as semanas pedidas; a análise (silenciosas, só
+ * negativas e regularidade) olha uma janela maior: o maior entre `semanas` e os parâmetros da análise, mais as semanas
+ * ainda abertas no fim.
+ */
+export interface ConsultaGradeNegativa {
+  /** Quantas semanas (padrão 12). */
+  semanas?: number;
+  /** Última semana da grade (AAAASS; padrão a semana em curso). */
+  ate?: string;
+}
+
+/** De onde veio a situação da célula. */
+export interface FontesCelula {
+  notificacoes: number;
+  surtos: number;
+  registrosOficiais: number;
+  /**
+   * Atesto vigente. `prazo` é o prazo gravado com ele (o que decidiu o `atrasado`); o prazo da coluna (ColunaGrade.prazo)
+   * é o da semana pela regra de agora, e os dois diferem quando a regra mudou depois do atesto.
+   */
+  atesto: { id: string; atrasado: boolean; prazo: string } | null;
+  /** Negativa digitada no Sinan (NNEGANET). Sem atesto, ela sozinha deixa a célula como negativa (no prazo). */
+  negativaSinan: boolean;
+}
+
+export interface CelulaGrade {
+  semana: string;
+  situacao: SituacaoUnidadeSemana;
+  fontes: FontesCelula;
+}
+
+export interface LinhaGradeNegativa {
+  unidade: UnidadeRef;
+  tipoUnidade: string;
+  /** Unidade ativa no cadastro. Inativa com período aberto continua na grade, com aviso: encerre o período. */
+  ativa: boolean;
+  celulas: CelulaGrade[];
+}
+
+/** Semana (coluna) da grade. */
+export interface ColunaGrade {
+  semana: string;
+  inicio: string;
+  fim: string;
+  fechada: boolean;
+  prazo: string;
+}
+
+/** Diferença entre o atesto do OmniSaúde e a negativa digitada no Sinan. */
+export interface DiferencaSinan {
+  unidade: UnidadeRef;
+  semana: string;
+  atestoId: string | null;
+  registroOficialId: string | null;
+}
+
+/**
+ * GET /vigilancia/negativas/grade?semanas=12&ate=AAAASS. `colunas`, `linhas` e `percentualPorSemana` (índice 0 = a
+ * primeira coluna) são só das semanas pedidas. A regularidade usa os fatos do município inteiro (qualquer unidade,
+ * inclusive a vigilância, e registros oficiais do município com qualquer CNES).
+ */
+export interface RespostaGradeNegativa {
+  colunas: ColunaGrade[];
+  linhas: LinhaGradeNegativa[];
+  analise: AnaliseGrade;
+  metaPercentual: number;
+  /** Atestado no OmniSaúde e sem negativa vigente no Sinan (nas semanas pedidas). */
+  atestadoSemSinan: DiferencaSinan[];
+  /** Digitado no Sinan sem atesto no OmniSaúde (nas semanas pedidas). */
+  sinanSemAtesto: DiferencaSinan[];
+  avisos: string[];
+}
+
+// ───────────── Unidades notificantes e responsáveis ─────────────
+
+export interface PeriodoNotificante {
+  id: string;
+  desde: string;
+  ate: string | null;
+  motivoFim: string | null;
+}
+
+export interface ResponsavelNegativa {
+  id: string;
+  userId: string;
+  nome: string;
+  tipo: TipoResponsavelNegativa;
+  desde: string;
+  ate: string | null;
+  designadoEm: string;
+  designadoPor: string | null;
+  /**
+   * A designação ativa vale: o usuário está ativo e tem lotação ativa na unidade num papel que atesta a negativa
+   * (`notificacao.negativa`). Nulo na designação encerrada.
+   */
+  valido: boolean | null;
+  /** Por que a designação ativa não vale (ex.: "Sem lotação ativa na unidade"); nulo quando vale ou já terminou. */
+  motivoInvalido: string | null;
+}
+
+export interface UnidadeNotificante {
+  unidade: UnidadeRef;
+  tipoUnidade: string;
+  ativa: boolean;
+  periodoAtual: PeriodoNotificante | null;
+  periodos: PeriodoNotificante[];
+  /** Ativas primeiro (cada uma com a marca de válida), depois o histórico. */
+  responsaveis: ResponsavelNegativa[];
+  /**
+   * Unidade ativa sem período de notificante: a que atende e nunca teve período, ou a reativada cujo último período
+   * terminou na desativação no cadastro, ou cuja desativação apagou o período planejado que viria depois dele (sem
+   * período aberto nem com fim depois de hoje).
+   */
+  semConfiguracao: boolean;
+  /** Problemas da configuração (ex.: unidade reativada sem período, titular cuja designação não vale). */
+  avisos: string[];
+}
+
+/** GET /vigilancia/unidades-notificantes. */
+export type ListaUnidadesNotificantes = UnidadeNotificante[];
+
+/** POST /vigilancia/unidades-notificantes (abre período). */
+export interface CorpoAbrirPeriodoNotificante {
+  unitId: string;
+  desde: string;
+}
+
+/**
+ * POST /vigilancia/unidades-notificantes/:unitId/encerrar: fecha o período aberto. Na unidade inativa, o fim não passa
+ * de hoje, no fuso da instituição (FIM_DEPOIS_DE_HOJE, 422), e também se encerra o período que ainda termina depois de
+ * hoje (o fim encurta).
+ */
+export interface CorpoEncerrarPeriodoNotificante {
+  ate: string;
+  motivo: string;
+}
+
+/**
+ * POST /vigilancia/unidades-notificantes/:unitId/responsaveis. O usuário precisa de lotação ativa na unidade
+ * (SEM_LOTACAO, 422) com papel que atesta a negativa, `notificacao.negativa` (PAPEL_SEM_NEGATIVA, 422). Um titular
+ * ativo por unidade (409); o titular cuja designação não vale (`valido: false`) é substituído: a designação dele
+ * termina hoje, na mesma transação.
+ */
+export interface CorpoDesignarResponsavel {
+  userId: string;
+  tipo: TipoResponsavelNegativa;
+  desde: string;
+}
+
+/**
+ * Usuário ativo com lotação ativa na unidade: quem pode ser designado responsável. Acréscimo ao desenho: a tela busca
+ * o usuário lotado, e o GET /admin/users exige `cadastros.profissionais`, que a vigilância não tem.
+ */
+export interface UsuarioLotado {
+  userId: string;
+  nome: string;
+  /** Papéis das lotações ativas na unidade (Role). */
+  papeis: string[];
+  /** CBO de uma das lotações ativas (a de papel que atesta, quando houver). */
+  cbo: string | null;
+  /** Algum papel das lotações ativas na unidade atesta a negativa (`notificacao.negativa`): só esse pode ser designado. */
+  podeAtestar: boolean;
+  /** Designação ativa na unidade, se já houver. */
+  responsavel: TipoResponsavelNegativa | null;
+}
+
+/**
+ * GET /vigilancia/unidades-notificantes/:unitId/lotados?busca= (até 50, por nome). A busca é pelo nome; o CPF só com
+ * os 11 dígitos e por igualdade (nunca por prefixo).
+ */
+export type ListaUsuariosLotados = UsuarioLotado[];

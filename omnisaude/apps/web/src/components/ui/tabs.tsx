@@ -3,10 +3,28 @@
 import { Tabs as T } from 'radix-ui';
 import { cn } from '@/lib/cn';
 
-export function Tabs({ value, onValueChange, tabs, children, className }: { value: string; onValueChange: (v: string) => void; tabs: { value: string; label: React.ReactNode }[]; children: React.ReactNode; className?: string }) {
+/**
+ * Abas com a lista acessível. `aria-label` nomeia a lista de abas para o leitor de tela (padrão "Seções"); abas
+ * aninhadas numa mesma página passam um nome próprio, para não haver duas listas com o mesmo nome.
+ */
+export function Tabs({
+  value,
+  onValueChange,
+  tabs,
+  children,
+  className,
+  'aria-label': ariaLabel = 'Seções',
+}: {
+  value: string;
+  onValueChange: (v: string) => void;
+  tabs: { value: string; label: React.ReactNode }[];
+  children: React.ReactNode;
+  className?: string;
+  'aria-label'?: string;
+}) {
   return (
     <T.Root value={value} onValueChange={onValueChange} className={className}>
-      <T.List className="mb-4 flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1" aria-label="Seções">
+      <T.List className="mb-4 flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1" aria-label={ariaLabel}>
         {tabs.map((t) => (
           <T.Trigger
             key={t.value}

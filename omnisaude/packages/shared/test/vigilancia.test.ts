@@ -164,7 +164,7 @@ describe('Regras de notificação', () => {
     expect(idadeSinan(new Date('1980-05-20T12:00:00Z'), new Date('2027-04-06T12:00:00Z'))).toMatchObject({ unidade: 'A', valor: 46, codigo: '4046' });
   });
 
-  it('chave do Sinan Net: violências num agravo, sífilis, tétano, toxoplasmose e sarampo/rubéola separados', () => {
+  it('chave do Sinan Net: violências num agravo, sífilis, tétano e toxoplasmose separados, sarampo/rubéola num agravo só', () => {
     expect(agravoSinanDaChave('violencia', 'T741')).toBe(agravoSinanDaChave('violencia-sexual-suicidio', 'X64'));
     expect(agravoSinanDaChave('sifilis', 'A539')).toBe('sifilis:adquirida');
     expect(agravoSinanDaChave('sifilis', 'A539', true)).toBe('sifilis:gestante');
@@ -173,10 +173,14 @@ describe('Regras de notificação', () => {
     expect(agravoSinanDaChave('tetano', 'A33')).not.toBe(agravoSinanDaChave('tetano', 'A35'));
     expect(agravoSinanDaChave('tetano', null, false, 'tetano-neonatal')).toBe(agravoSinanDaChave('tetano', 'A33'));
     expect(agravoSinanDaChave('toxoplasmose-gestacional-congenita', 'O98.6')).not.toBe(agravoSinanDaChave('toxoplasmose-gestacional-congenita', 'P37.1'));
-    expect(mesmoAgravoSinan(agravoSinanDaChave('sarampo-rubeola', 'B05'), agravoSinanDaChave('sarampo-rubeola', 'B06'))).toBe(false);
+    // Sarampo e rubéola são o mesmo agravo no Sinan Net (B09; o CS_SUSPEIT não é campo-chave), como as meningites (G03.9).
+    expect(agravoSinanDaChave('sarampo-rubeola', 'B05')).toBe('sarampo-rubeola');
+    expect(agravoSinanDaChave('sarampo-rubeola', 'B06')).toBe('sarampo-rubeola');
+    expect(mesmoAgravoSinan(agravoSinanDaChave('sarampo-rubeola', 'B05'), agravoSinanDaChave('sarampo-rubeola', 'B06'))).toBe(true);
+    expect(agravoSinanDaChave('meningites', 'A39')).toBe(agravoSinanDaChave('meningites', 'G03'));
     // Notificação manual sem CID: a variante é desconhecida e casa com qualquer uma do grupo.
-    expect(mesmoAgravoSinan(agravoSinanDaChave('sarampo-rubeola', null), agravoSinanDaChave('sarampo-rubeola', 'B06'))).toBe(true);
-    expect(mesmoAgravoSinan(agravoSinanDaChave('sarampo-rubeola', null), agravoSinanDaChave('dengue', 'A90'))).toBe(false);
+    expect(mesmoAgravoSinan(agravoSinanDaChave('tetano', null), agravoSinanDaChave('tetano', 'A33'))).toBe(true);
+    expect(mesmoAgravoSinan(agravoSinanDaChave('tetano', null), agravoSinanDaChave('dengue', 'A90'))).toBe(false);
     expect(agravoSinanDaChave('dengue', 'A90')).toBe('dengue');
   });
 

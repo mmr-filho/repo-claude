@@ -71,15 +71,23 @@ export class PlatformService {
     return result;
   }
 
+  /**
+   * Status e preferências do tenant. As preferências enviadas se mesclam sobre as gravadas, lidas e gravadas numa
+   * transação com a linha do tenant travada (FOR UPDATE), como fazem os outros escritores das configurações (a
+   * vigilância, o MFA do cadastro): o salvamento simultâneo de outro bloco não se perde, entra em fila.
+   */
   async update(actorId: string, id: string, input: { status?: 'ATIVO' | 'SUSPENSO' | 'ENCERRADO'; settings?: Partial<TenantSettings> }) {
-    const t = await this.master.tenant.findUnique({ where: { id } });
-    if (!t) throw new DomainError('NAO_ENCONTRADO', 'Tenant não encontrado', HttpStatus.NOT_FOUND);
-    const settings = input.settings ? { ...tenantSettings(t.settings), ...input.settings } : undefined;
-    const updated = await this.master.tenant.update({ where: { id }, data: { ...(input.status ? { status: input.status } : {}), ...(settings ? { settings: settings as object } : {}) } });
-    await this.master.platformAudit.create({ data: { action: 'tenant.atualizar', actorId, tenantId: id, details: input as object } });
+    const { slug, updated } = await this.master.$transaction(async (tx) => {
+      const [linha] = await tx.$queryRaw<{ slug: string; settings: unknown }[]>`SELECT slug, settings FROM tenants WHERE id = ${id}::uuid FOR UPDATE`;
+      if (!linha) throw new DomainError('NAO_ENCONTRADO', 'Tenant não encontrado', HttpStatus.NOT_FOUND);
+      const settings = input.settings ? { ...tenantSettings(linha.settings), ...input.settings } : undefined;
+      const updated = await tx.tenant.update({ where: { id }, data: { ...(input.status ? { status: input.status } : {}), ...(settings ? { settings: settings as object } : {}) } });
+      await tx.platformAudit.create({ data: { action: 'tenant.atualizar', actorId, tenantId: id, details: input as object } });
+      return { slug: linha.slug, updated };
+    });
     // O roteamento é cacheado por instância: invalida para a mudança valer já nesta.
-    this.tenants.connections.invalidate(t.slug);
-    this.tenants.connections.invalidate(t.id);
+    this.tenants.connections.invalidate(slug);
+    this.tenants.connections.invalidate(id);
     return { id: updated.id, status: updated.status, settings: tenantSettings(updated.settings) };
   }
 }

@@ -14,6 +14,7 @@ import {
   normalizePersonName,
   parseGs1,
   personNameKey,
+  ROLES,
   roleHasPermission,
   suggestRiskColor,
   zonedParts,
@@ -47,9 +48,7 @@ describe('datas', () => {
   it('converte entre fuso e UTC', () => {
     const d = new Date('2026-03-10T09:01:00Z');
     expect(zonedParts(d, 'America/Sao_Paulo')).toMatchObject({ hour: 6, minute: 1, day: 10 });
-    expect(fromZonedParts({ year: 2026, month: 3, day: 10, hour: 6, minute: 1, second: 0 }, 'America/Manaus').toISOString()).toBe(
-      '2026-03-10T10:01:00.000Z',
-    );
+    expect(fromZonedParts({ year: 2026, month: 3, day: 10, hour: 6, minute: 1, second: 0 }, 'America/Manaus').toISOString()).toBe('2026-03-10T10:01:00.000Z');
   });
 
   it('calcula idade em meses', () => {
@@ -99,6 +98,22 @@ describe('papéis', () => {
     expect(roleHasPermission('MEDICO', 'prescricao.emitir')).toBe(true);
     expect(roleHasPermission('RECEPCAO', 'prescricao.emitir')).toBe(false);
     expect(roleHasPermission('GESTOR', 'bi.consultar')).toBe(true);
+  });
+
+  it('dá as permissões da consolidação, do surto e da negativa (VIG-1c)', () => {
+    for (const p of ['vigilancia.importar', 'vigilancia.consolidacao', 'vigilancia.contingencia', 'vigilancia.surto', 'notificacao.negativa'] as const)
+      expect(roleHasPermission('VIGILANCIA_EPIDEMIOLOGICA', p)).toBe(true);
+    expect(roleHasPermission('NUCLEO_VIGILANCIA', 'vigilancia.surto')).toBe(true);
+    for (const p of ['vigilancia.importar', 'vigilancia.consolidacao', 'vigilancia.contingencia'] as const) {
+      expect(roleHasPermission('NUCLEO_VIGILANCIA', p)).toBe(false);
+      expect(roleHasPermission('GESTOR', p)).toBe(false);
+    }
+    // O gestor vê só os agregados (vigilancia.resumo) e pode ser responsável pela negativa da unidade.
+    expect(roleHasPermission('GESTOR', 'vigilancia.resumo')).toBe(true);
+    expect(roleHasPermission('GESTOR', 'notificacao.negativa')).toBe(true);
+    // Todo papel que notifica abre a tela do atesto (atestar exige a designação na unidade).
+    for (const r of ROLES) if (roleHasPermission(r, 'notificacao.registrar')) expect(roleHasPermission(r, 'notificacao.negativa')).toBe(true);
+    for (const r of ['RECEPCAO', 'ACS', 'ACE', 'FATURAMENTO'] as const) expect(roleHasPermission(r, 'notificacao.negativa')).toBe(false);
   });
 });
 

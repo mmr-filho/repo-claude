@@ -1,0 +1,235 @@
+import { randomUUID } from 'node:crypto';
+import { applyMigrations, loadMigrations } from '@omnisaude/database';
+import { Client } from 'pg';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { pgAvailable, TEST_PG } from './harness';
+
+/**
+ * A migração 0031 (VIG-1c) cria as tabelas da consolidação, do diagrama, da contingência, do surto e da negativa, e
+ * semeia as unidades notificantes do município que já tem unidades: um período aberto desde 01/01/2026 para cada
+ * unidade ativa, fora a central de abastecimento farmacêutico, o almoxarifado e a vigilância em saúde. Aplicada pelo
+ * pacote de banco como num município que estava na 0030, com unidades de todos os tipos.
+ */
+const enabled = await pgAvailable();
+
+const MIGRACAO = '0031_consolidacao_surto_negativa';
+const SUFIXO = (process.env.OMNI_TEST_SUFFIX ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const BANCO = `omni_test_mig0031${SUFIXO}`;
+
+/** Unidades do município antes da 0031 (nome, tipo, ativa). */
+const UNIDADES: [string, string, boolean][] = [
+  ['UBS Centro', 'UBS', true],
+  ['UPA Norte', 'UPA', true],
+  ['Policlínica', 'POLICLINICA', true],
+  ['Hospital Municipal', 'HOSPITAL', true],
+  ['CEO', 'CEO', true],
+  ['SAMU', 'SAMU', true],
+  ['CAPS', 'CAPS', true],
+  ['Laboratório Municipal', 'LABORATORIO', true],
+  ['Central de Abastecimento Farmacêutico', 'FARMACIA_CENTRAL', true],
+  ['Almoxarifado', 'ALMOXARIFADO', true],
+  ['Vigilância em Saúde', 'VIGILANCIA_SAUDE', true],
+  ['UBS Desativada', 'UBS', false],
+];
+
+describe.runIf(enabled)('Migração 0031: unidades notificantes semeadas e restrições das tabelas novas', () => {
+  const url = new URL(TEST_PG);
+  const conexao = `postgresql://omni_app:omni_app@${url.hostname}:${url.port}/${BANCO}`;
+  const ids = new Map<string, string>();
+  let db: Client;
+
+  async function comoSuperusuario(sql: string) {
+    const c = new Client({ connectionString: TEST_PG });
+    await c.connect();
+    try {
+      await c.query(sql);
+    } finally {
+      await c.end();
+    }
+  }
+
+  beforeAll(async () => {
+    await comoSuperusuario(`DROP DATABASE IF EXISTS ${BANCO} WITH (FORCE)`);
+    await comoSuperusuario(`CREATE DATABASE ${BANCO} OWNER omni_app`);
+    db = new Client({ connectionString: conexao });
+    await db.connect();
+    // As migrações anteriores à 0031, com o mesmo registro do pacote de banco: o banco fica como um município na 0030.
+    await db.query(`CREATE TABLE IF NOT EXISTS _omni_migrations (name text PRIMARY KEY, checksum char(64) NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`);
+    for (const m of loadMigrations('tenant').filter((x) => x.name < MIGRACAO)) {
+      await db.query('BEGIN');
+      await db.query(m.sql);
+      await db.query('INSERT INTO _omni_migrations (name, checksum) VALUES ($1, $2)', [m.name, m.checksum]);
+      await db.query('COMMIT');
+    }
+    for (const [i, [nome, tipo, ativa]] of UNIDADES.entries()) {
+      const id = randomUUID();
+      ids.set(nome, id);
+      await db.query(`INSERT INTO units (id, cnes, name, type, ibge_code, active) VALUES ($1, $2, $3, $4, '3550308', $5)`, [id, String(9000001 + i), nome, tipo, ativa]);
+    }
+    const aplicadas = await applyMigrations(conexao, 'tenant');
+    expect(aplicadas[0]).toBe(MIGRACAO);
+  }, 180_000);
+
+  afterAll(async () => {
+    await db?.end();
+    await comoSuperusuario(`DROP DATABASE IF EXISTS ${BANCO} WITH (FORCE)`);
+  });
+
+  it('cada unidade ativa que atende vira notificante desde 01/01/2026, com um período aberto só', async () => {
+    const { rows } = await db.query<{ name: string; periodos: number; desde: string | null; abertos: number }>(
+      `SELECT u.name, count(n.id)::int AS periodos, to_char(min(n.since), 'YYYY-MM-DD') AS desde, count(n.id) FILTER (WHERE n.until IS NULL)::int AS abertos
+       FROM units u LEFT JOIN notifying_units n ON n.unit_id = u.id GROUP BY u.id, u.name ORDER BY u.cnes`,
+    );
+    const notificantes = rows.filter((r) => r.periodos > 0);
+    expect(notificantes.map((r) => r.name)).toEqual(['UBS Centro', 'UPA Norte', 'Policlínica', 'Hospital Municipal', 'CEO', 'SAMU', 'CAPS', 'Laboratório Municipal']);
+    for (const r of notificantes) expect(r).toMatchObject({ periodos: 1, desde: '2026-01-01', abertos: 1 });
+    // A semeadura não tem autor: a vigilância ajusta na tela das unidades notificantes.
+    expect((await db.query('SELECT count(*)::int AS n FROM notifying_units WHERE created_by IS NOT NULL OR end_reason IS NOT NULL OR next_removed_at IS NOT NULL')).rows[0].n).toBe(0);
+    // A marca do período planejado apagado na desativação (sur-7), vazia no dado que não a tem, e o prazo usado no atesto
+    // (N13), sempre gravado: instantes sem fuso.
+    const colunas = await db.query<{ tabela: string; coluna: string; tipo: string; nulo: string }>(
+      `SELECT table_name AS tabela, column_name AS coluna, data_type AS tipo, is_nullable AS nulo FROM information_schema.columns
+       WHERE (table_name, column_name) IN (('notifying_units', 'next_removed_at'), ('negative_reports', 'deadline_at')) ORDER BY table_name`,
+    );
+    expect(colunas.rows).toEqual([
+      { tabela: 'negative_reports', coluna: 'deadline_at', tipo: 'timestamp without time zone', nulo: 'NO' },
+      { tabela: 'notifying_units', coluna: 'next_removed_at', tipo: 'timestamp without time zone', nulo: 'YES' },
+    ]);
+  });
+
+  it('recusa o que o desenho proíbe e aceita o histórico', async () => {
+    const ubs = ids.get('UBS Centro')!;
+    const falha = (sql: string, params: unknown[]) =>
+      db.query(sql, params).then(
+        () => null,
+        (e: { code: string; constraint: string }) => ({ code: e.code, constraint: e.constraint }),
+      );
+    // Unidade notificante: um período aberto por unidade; o período encerrado convive com o aberto.
+    expect(await falha(`INSERT INTO notifying_units (id, unit_id, since) VALUES ($1, $2, '2026-02-01')`, [randomUUID(), ubs])).toEqual({ code: '23505', constraint: 'notifying_units_aberto' });
+    expect(await falha(`INSERT INTO notifying_units (id, unit_id, since, until, end_reason) VALUES ($1, $2, '2025-01-01', '2025-12-31', 'Reforma')`, [randomUUID(), ubs])).toBeNull();
+
+    // População: chave única com o território nulo no município; nível e território coerentes; população positiva.
+    const populacao = `INSERT INTO population_estimates (id, year, level, territory_id, population, source, version, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, now())`;
+    expect(await falha(populacao, [randomUUID(), 2025, 'MUNICIPIO', null, 100_000, 'RIPSA', '2025'])).toBeNull();
+    expect(await falha(populacao, [randomUUID(), 2025, 'MUNICIPIO', null, 100_001, 'RIPSA', '2025'])).toEqual({ code: '23505', constraint: 'population_estimates_chave' });
+    expect(await falha(populacao, [randomUUID(), 2025, 'MUNICIPIO', null, 99_000, 'RIPSA', '2026'])).toBeNull();
+    expect(await falha(populacao, [randomUUID(), 2025, 'BAIRRO', null, 1_000, 'CENSO_2022', ''])).toEqual({ code: '23514', constraint: 'population_estimates_territorio' });
+    expect(await falha(populacao, [randomUUID(), 2025, 'MUNICIPIO', randomUUID(), 1_000, 'CENSO_2022', ''])).toEqual({ code: '23514', constraint: 'population_estimates_territorio' });
+    expect(await falha(populacao, [randomUUID(), 2024, 'MUNICIPIO', null, 0, 'RIPSA', ''])).toEqual({ code: '23514', constraint: 'population_estimates_population_check' });
+
+    // Canal congelado: uma versão ativa por agravo, território e ano; as versões antigas ficam inativas.
+    const canal = `INSERT INTO control_channels (id, group_key, level, year, version, active, recipe, reference_years, weeks, computed_by) VALUES ($1, 'dengue', 'MUNICIPIO', 2026, $2, $3, '{}', '{2021,2022,2023}', '[]', $4)`;
+    expect(await falha(canal, [randomUUID(), 1, true, randomUUID()])).toBeNull();
+    expect(await falha(canal, [randomUUID(), 2, true, randomUUID()])).toEqual({ code: '23505', constraint: 'control_channels_ativo' });
+    expect(await falha(canal, [randomUUID(), 2, false, randomUUID()])).toBeNull();
+
+    // Atesto da negativa: um ATESTADA por unidade e semana; o cancelado fica no histórico.
+    const atesto = `INSERT INTO negative_reports (id, unit_id, epi_week, status, attested_by, attested_at, attester_name, declaration, deadline_at) VALUES ($1, $2, '202644', $3, $4, now(), 'Pessoa Sintética', 'Declaro...', now())`;
+    expect(await falha(atesto, [randomUUID(), ubs, 'ATESTADA', randomUUID()])).toBeNull();
+    expect(await falha(atesto, [randomUUID(), ubs, 'ATESTADA', randomUUID()])).toEqual({ code: '23505', constraint: 'negative_reports_atestada' });
+    expect(await falha(atesto, [randomUUID(), ubs, 'CANCELADA', randomUUID()])).toBeNull();
+
+    // Importação: o mesmo arquivo (SHA-256) não é aplicado duas vezes; a prévia repetida pode existir.
+    const envio = `INSERT INTO official_imports (id, system, status, file_name, sha256, size_bytes, created_by) VALUES ($1, 'SINAN_NET', $2, 'NINDINET.DBF', $3, 10, $4)`;
+    const sha = 'a'.repeat(64);
+    expect(await falha(envio, [randomUUID(), 'APLICADA', sha, randomUUID()])).toBeNull();
+    expect(await falha(envio, [randomUUID(), 'APLICADA', sha, randomUUID()])).toEqual({ code: '23505', constraint: 'official_imports_sha_aplicado' });
+    expect(await falha(envio, [randomUUID(), 'PREVIA', sha, randomUUID()])).toBeNull();
+    // Com o período declarado: outro período é a correção do período (vale); o mesmo período, não. "Sem período
+    // declarado" é um valor próprio: dois sem período não valem, mesmo com as datas lidas diferentes.
+    const periodo = `INSERT INTO official_imports (id, system, status, file_name, sha256, size_bytes, created_by, declared_period, period_from, period_to)
+      VALUES ($1, 'SINAN_NET', 'APLICADA', 'DENGON.DBF', $2, 10, $3, $4, $5::date, $6::date)`;
+    const sha2 = 'c'.repeat(64);
+    const aplicada = (declarado: boolean, de: string, ate: string) => falha(periodo, [randomUUID(), sha2, randomUUID(), declarado, de, ate]);
+    const repetida = { code: '23505', constraint: 'official_imports_sha_aplicado' };
+    expect(await aplicada(false, '2025-03-04', '2025-03-18')).toBeNull();
+    expect(await aplicada(false, '2025-01-01', '2025-12-31')).toEqual(repetida);
+    expect(await aplicada(true, '2025-01-01', '2025-12-31')).toBeNull();
+    expect(await aplicada(true, '2025-01-01', '2025-12-31')).toEqual(repetida);
+    expect(await aplicada(true, '2025-01-01', '2025-06-30')).toBeNull();
+    expect(await aplicada(true, '2025-03-04', '2025-03-18')).toBeNull();
+  });
+
+  it('importação em segundo plano: etapa, sinal de vida, erro e sistema coerentes com o status', async () => {
+    const falha = (sql: string, params: unknown[]) =>
+      db.query(sql, params).then(
+        () => null,
+        (e: { code: string; constraint: string }) => ({ code: e.code, constraint: e.constraint }),
+      );
+    const linha = `INSERT INTO official_imports (id, system, status, file_name, sha256, size_bytes, created_by, working_step, working_since, working_at, error)
+      VALUES ($1, $2, $3, 'envio.zip', $4, 10, $5, $6::varchar, CASE WHEN $6::varchar IS NULL THEN NULL ELSE now() END, CASE WHEN $6::varchar IS NULL THEN NULL ELSE now() END, $7::jsonb)`;
+    const sha = 'b'.repeat(64);
+    const vai = (system: string | null, status: string, etapa: string | null, erro: object | null = null) => falha(linha, [randomUUID(), system, status, sha, randomUUID(), etapa, erro]);
+    const etapa = { code: '23514', constraint: 'official_imports_etapa' };
+    // Lendo o arquivo: sem sistema (só se sabe no fim), sempre com a etapa LENDO e o sinal de vida.
+    expect(await vai(null, 'PROCESSANDO', 'LENDO')).toBeNull();
+    expect(await vai(null, 'PROCESSANDO', null)).toEqual(etapa);
+    expect(await vai(null, 'PROCESSANDO', 'APLICANDO')).toEqual(etapa);
+    expect(
+      await falha(`INSERT INTO official_imports (id, status, file_name, sha256, size_bytes, created_by, working_step, working_since) VALUES ($1, 'PROCESSANDO', 'x', $2, 1, $3, 'LENDO', now())`, [
+        randomUUID(),
+        sha,
+        randomUUID(),
+      ]),
+    ).toEqual(etapa);
+    // A prévia e a aplicada têm sistema; APLICANDO só nelas; etapa desconhecida, nunca.
+    expect(await vai(null, 'PREVIA', null)).toEqual({ code: '23514', constraint: 'official_imports_sistema' });
+    expect(await vai(null, 'APLICADA', null)).toEqual({ code: '23514', constraint: 'official_imports_sistema' });
+    expect(await vai('SINAN_NET', 'PREVIA', 'APLICANDO')).toBeNull();
+    expect(await vai('SINAN_NET', 'PREVIA', 'LENDO')).toEqual(etapa);
+    expect(await vai('SINAN_NET', 'DESCARTADA', 'APLICANDO')).toEqual(etapa);
+    expect(await vai('SINAN_NET', 'PREVIA', 'PARADO')).toEqual(etapa);
+    // A que falhou guarda o erro; descartada depois de falhar, continua sem sistema.
+    expect(await vai(null, 'FALHOU', null)).toEqual({ code: '23514', constraint: 'official_imports_falhou' });
+    expect(await vai(null, 'FALHOU', null, { codigo: 'SEM_REGISTROS', mensagem: 'Nenhum registro válido no envio.' })).toBeNull();
+    expect(await vai(null, 'DESCARTADA', null, { codigo: 'SEM_REGISTROS', mensagem: 'Nenhum registro válido no envio.' })).toBeNull();
+  });
+
+  it('substituição do mesmo arquivo: a SUBSTITUIDA aponta a aplicação que a substituiu, e o ausente guarda a importação que o marcou', async () => {
+    const falha = (sql: string, params: unknown[]) =>
+      db.query(sql, params).then(
+        () => null,
+        (e: { code: string; constraint: string }) => ({ code: e.code, constraint: e.constraint }),
+      );
+    const sha = 'd'.repeat(64);
+    const importacao = `INSERT INTO official_imports (id, system, status, file_name, sha256, size_bytes, created_by, superseded_by, working_step, working_since, working_at)
+      VALUES ($1, $2, $3, 'DENGON.DBF', $4, 10, $5, $6, $7::varchar, CASE WHEN $7::varchar IS NULL THEN NULL ELSE now() END, CASE WHEN $7::varchar IS NULL THEN NULL ELSE now() END)`;
+    const vai = (id: string, status: string, por: string | null, o: { sistema?: string | null; etapa?: string; sha?: string } = {}) =>
+      falha(importacao, [id, o.sistema === undefined ? 'SINAN_ONLINE' : o.sistema, status, o.sha ?? sha, randomUUID(), por, o.etapa ?? null]);
+    const substituida = { code: '23514', constraint: 'official_imports_substituida' };
+    const nova = randomUUID();
+    expect(await vai(nova, 'APLICADA', null)).toBeNull();
+    // Só a SUBSTITUIDA tem superseded_by, e sempre; ele aponta uma importação que existe.
+    expect(await vai(randomUUID(), 'SUBSTITUIDA', null)).toEqual(substituida);
+    expect(await vai(randomUUID(), 'APLICADA', nova, { sha: 'e'.repeat(64) })).toEqual(substituida);
+    expect(await vai(randomUUID(), 'PREVIA', nova)).toEqual(substituida);
+    expect(await vai(randomUUID(), 'SUBSTITUIDA', randomUUID())).toEqual({ code: '23503', constraint: 'official_imports_superseded_by_fkey' });
+    // A SUBSTITUIDA não conta no índice do arquivo aplicado: convive com a APLICADA do mesmo arquivo e período.
+    const antiga = randomUUID();
+    expect(await vai(antiga, 'SUBSTITUIDA', nova)).toBeNull();
+    // Tem sistema; pode estar terminando a reconciliação da negativa (APLICANDO), mas não lendo.
+    expect(await vai(randomUUID(), 'SUBSTITUIDA', nova, { sistema: null })).toEqual({ code: '23514', constraint: 'official_imports_sistema' });
+    expect(await vai(randomUUID(), 'SUBSTITUIDA', nova, { etapa: 'APLICANDO' })).toBeNull();
+    expect(await vai(randomUUID(), 'SUBSTITUIDA', nova, { etapa: 'LENDO' })).toEqual({ code: '23514', constraint: 'official_imports_etapa' });
+
+    // O ausente: absent_since e absent_import_id sempre juntos, e a importação existe.
+    const registro = `INSERT INTO official_records (id, system, type, natural_key, number, notified_on, situation, content_hash, first_import_id, last_import_id, last_seen_at, updated_at, absent_since, absent_import_id)
+      VALUES ($1, 'SINAN_ONLINE', 'INDIVIDUAL', $2, '1', '2025-03-10', 'EM_INVESTIGACAO', $3, $4, $4, now(), now(), $5::timestamp, $6)`;
+    const ausencia = { code: '23514', constraint: 'official_records_ausencia' };
+    const reg = (chave: string, desde: string | null, por: string | null) => falha(registro, [randomUUID(), chave, 'f'.repeat(64), antiga, desde, por]);
+    expect(await reg('k1', null, null)).toBeNull();
+    expect(await reg('k2', '2026-11-17 10:00', nova)).toBeNull();
+    expect(await reg('k3', '2026-11-17 10:00', null)).toEqual(ausencia);
+    expect(await reg('k4', null, nova)).toEqual(ausencia);
+    expect(await reg('k5', '2026-11-17 10:00', randomUUID())).toEqual({ code: '23503', constraint: 'official_records_absent_import_id_fkey' });
+  });
+
+  it('índices que a aplicação e a conciliação usam: tocados pelo envio, cobertura dos ausentes e número sem zeros', async () => {
+    const { rows } = await db.query<{ indexname: string; indexdef: string }>(`SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'official_records'`);
+    const def = new Map(rows.map((r) => [r.indexname, r.indexdef]));
+    expect(def.get('official_records_last_import_id_idx')).toContain('(last_import_id)');
+    expect(def.get('official_records_system_type_notified_on_idx')).toContain('(system, type, notified_on)');
+    // A mesma expressão do degrau 1 (sqlSemZeros): o planejador só usa o índice se a expressão for idêntica.
+    expect(def.get('official_records_numero_sem_zeros_idx')).toContain("regexp_replace(btrim((number)::text), '^0+(?=[0-9])'::text, ''::text)");
+  });
+});

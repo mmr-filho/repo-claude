@@ -3,7 +3,7 @@ import { distanciaM, fromZonedParts, ORDEM_PRECISAO, PRECISAO_INFO, type Precisa
 import { AuditService } from '../../core/audit.service';
 import type { TenantClient } from '@omnisaude/database';
 import type { RequestContext } from '../../core/context';
-import { LocalizadorService } from '../territorio/localizador.service';
+import { LocalizadorService, PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
 import { TerritorioService } from '../territorio/territorio.service';
 import { NotificacaoService } from './notificacao.service';
 
@@ -126,7 +126,14 @@ export class MapaCasosService {
       return true;
     });
     const pos = await this.residencias(ctx.db, visiveis);
-    // Quarteirão do caso: o do imóvel; para o retrato da ficha, pela posição.
+    // Quarteirão do caso: o do imóvel; para o retrato da ficha, pela posição (só com precisão que liga ao quarteirão),
+    // todas as posições num lote só, com um número fixo de consultas.
+    const aLocalizar = visiveis.flatMap((n) => {
+      const r = pos.get(n.id);
+      return r && !r.blockId && PRECISAO_LIGA_QUARTEIRAO.includes(r.precisao) ? [{ id: n.id, lat: r.lat, lng: r.lng }] : [];
+    });
+    const achados = await this.localizador.quarteiroesDosPontos(ctx.db, aLocalizar);
+    const quarteiraoDaFicha = new Map(aLocalizar.map((p, i) => [p.id, achados[i]?.id ?? null]));
     const pontos = [];
     let semPosicao = 0;
     for (const n of visiveis) {
@@ -135,7 +142,7 @@ export class MapaCasosService {
         semPosicao++;
         continue;
       }
-      const blockId = r.blockId ?? (['GPS_CAMPO', 'MAPA', 'ENDERECO', 'FACE'].includes(r.precisao) ? ((await this.localizador.quarteiraoDoPonto(ctx.db, r.lat, r.lng))?.id ?? null) : null);
+      const blockId = r.blockId ?? quarteiraoDaFicha.get(n.id) ?? null;
       pontos.push({
         id: n.id,
         numero: n.number,

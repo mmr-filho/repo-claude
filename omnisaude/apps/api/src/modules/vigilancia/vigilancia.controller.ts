@@ -137,6 +137,8 @@ const rotaSchema = z.object({
   source: z.string().trim().min(3).max(300),
   notes: z.string().trim().max(500).nullish(),
 });
+/** Semanas dos parâmetros da negativa (de 1 a 52). */
+const semanasConfig = z.number().int().min(1).max(52);
 const configuracoesSchema = z.object({
   ackMinutes: z.number().int().min(5).max(720).optional(),
   onCallPhones: z.array(z.string().trim().min(8).max(20)).max(10).optional(),
@@ -144,6 +146,29 @@ const configuracoesSchema = z.object({
   relEnabled: z.boolean().optional(),
   prazosEncerramento: z.record(z.string().regex(/^[a-z0-9-]{2,40}$/), z.number().int().min(1).max(365)).optional(),
   modeloPolicial: z.string().max(4000).nullish(),
+  // Semana 27 (VIG-1c), campo a campo: o que não vier fica como está; chave desconhecida no bloco é recusada.
+  negativa: z
+    .strictObject({
+      prazoDiaSemana: z.number().int().min(0).max(6),
+      prazoHora: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Hora no formato HH:MM'),
+      contaAtrasada: z.boolean(),
+      metaPercentual: z.number().int().min(1).max(100),
+      semanasSilenciosa: semanasConfig,
+      semanasSoNegativa: semanasConfig,
+      semanasRegularidadeMunicipal: semanasConfig,
+      semanasAtesto: semanasConfig,
+    })
+    .partial()
+    .optional(),
+  consolidacao: z
+    .strictObject({ semanasIncompletas: z.number().int().min(0).max(8), expiraPreviaHoras: z.number().int().min(1).max(168) })
+    .partial()
+    .optional(),
+  // Do surto, só os dias do evento inusitado: as regras de sugestão não se editam por aqui.
+  surto: z
+    .strictObject({ diasInusitado: z.number().int().min(30).max(3650) })
+    .partial()
+    .optional(),
 });
 
 /** Vigilância em saúde: notificação compulsória (VIG-1a), painel da vigilância e catálogo da LNNC. */

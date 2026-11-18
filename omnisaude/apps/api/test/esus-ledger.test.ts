@@ -163,7 +163,10 @@ describe.runIf(enabled)('e-SUS: registro do que já foi exportado, reprocessamen
     ).body;
     expect(s.resultados[0].status).toBe('OK');
     const b = (await gerar(ubs.id, D(4)).expect(201)).body;
-    const f = (b.records as Rec[]).find((x) => x.sourceType === 'HomeVisit')!;
+    // A ficha desta visita: a demonstração tem visitas do mesmo ACS em dias passados (a de "5 dias atrás", entre 21h e 24h
+    // de Brasília, cai neste mesmo dia local, numa ficha à parte, com a CBO dela).
+    const fichas = (b.records as Rec[]).filter((x) => x.sourceType === 'HomeVisit');
+    const f = (await Promise.all(fichas.map(async (x) => ((await itensDe(x.id)).includes(s.resultados[0].id) ? x : null)))).find((x) => x)!;
     expect(f.status).toBe('INVALIDA');
     expect(JSON.stringify(f.issues)).toMatch(/515150/);
     await db.userAssignment.updateMany({ where: { userId: acsUser.id, role: 'ACS', unitId: ubs.id }, data: { cbo: '515105' } });

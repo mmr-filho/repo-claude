@@ -1,0 +1,870 @@
+/**
+ * Plano de contingência das arboviroses (VIG-1c): estágios, critérios de acionamento e ações por eixo, como dado
+ * editável. O sistema avalia os critérios toda semana e SUGERE o estágio; a vigilância municipal decide e registra o
+ * acionamento. Modelo padrão: Apêndice B do Plano de Contingência Nacional para Dengue, Chikungunya e Zika (MS, 2025).
+ * Ver a pesquisa da semana 27 (contingencia-surto-negativa.md, A2 a A12).
+ */
+import { arredondar, ROTULO_STATUS_SEMANA, type StatusSemana } from './diagrama';
+import { deslocarSemana } from './semana';
+
+/** Estágio do plano; ordem 0 = normalidade. */
+export interface EstagioPlano {
+  chave: string;
+  nome: string;
+  ordem: number;
+}
+
+export type TipoCriterio =
+  | 'CANAL_ACIMA_CENTRO'
+  | 'CANAL_ENTRE_CENTRO_E_LS'
+  | 'CANAL_ACIMA_LS'
+  | 'PERCENTUAL_GRAVES'
+  | 'LETALIDADE'
+  | 'LETALIDADE_GRAVES'
+  | 'OBITOS_INVESTIGACAO_PERCENTUAL'
+  | 'INCIDENCIA_ACUMULADA'
+  | 'MANUAL';
+
+export const ROTULO_TIPO_CRITERIO: Record<TipoCriterio, string> = {
+  CANAL_ACIMA_CENTRO: 'Acima do centro do canal',
+  CANAL_ENTRE_CENTRO_E_LS: 'Entre o centro e o limite superior',
+  CANAL_ACIMA_LS: 'Acima do limite superior',
+  PERCENTUAL_GRAVES: 'Percentual de casos graves',
+  LETALIDADE: 'Letalidade',
+  LETALIDADE_GRAVES: 'Letalidade entre os graves',
+  OBITOS_INVESTIGACAO_PERCENTUAL: 'Óbitos em investigação (percentual)',
+  INCIDENCIA_ACUMULADA: 'Incidência acumulada',
+  MANUAL: 'Avaliado pela vigilância',
+};
+
+/** Critério de um estágio. Os de canal contam semanas; os percentuais comparam com o limiar. */
+export interface CriterioPlano {
+  id: string;
+  estagio: string;
+  /** Grupos de agravo do catálogo (ex.: dengue). Vazio = todos os agravos do plano. */
+  agravos: string[];
+  tipo: TipoCriterio;
+  descricao: string;
+  /** Semanas exigidas (critérios de canal). */
+  semanas?: number;
+  /** CONSECUTIVAS = as últimas N completas; K_DE_N = pelo menos k das últimas n. */
+  modo?: 'CONSECUTIVAS' | 'K_DE_N';
+  k?: number;
+  n?: number;
+  /** Limiar dos critérios numéricos (percentual ou incidência). */
+  limiar?: number;
+  comparador?: '>' | '>=';
+  /** Documento e página. */
+  fonte?: string;
+}
+
+export type EixoAcao = 'GESTAO' | 'VIGILANCIA' | 'LABORATORIO' | 'VETORES' | 'APS' | 'ATENCAO_ESPECIALIZADA' | 'COMUNICACAO';
+
+export const ROTULO_EIXO_ACAO: Record<EixoAcao, string> = {
+  GESTAO: 'Gestão',
+  VIGILANCIA: 'Vigilância epidemiológica',
+  LABORATORIO: 'Laboratório',
+  VETORES: 'Controle vetorial',
+  APS: 'Atenção primária',
+  ATENCAO_ESPECIALIZADA: 'Atenção especializada',
+  COMUNICACAO: 'Comunicação',
+};
+
+export interface AcaoPlano {
+  estagio: string;
+  eixo: EixoAcao;
+  descricao: string;
+}
+
+export interface PlanoContingencia {
+  estagios: EstagioPlano[];
+  /** Grupos de agravo do plano. */
+  agravos: string[];
+  /** QUALQUER: um critério atendido basta (o "E/OU" do MS). DOIS_OU_MAIS: regra da SES-MG. */
+  combinacao: 'QUALQUER' | 'DOIS_OU_MAIS';
+  criterios: CriterioPlano[];
+  acoes: AcaoPlano[];
+  desmobilizacao: { semanas: number; descricao: string };
+}
+
+/** Situação das ações do checklist do acionamento. */
+export type StatusAcao = 'PENDENTE' | 'EM_ANDAMENTO' | 'FEITA' | 'NAO_SE_APLICA';
+
+export const ROTULO_STATUS_ACAO: Record<StatusAcao, string> = { PENDENTE: 'Pendente', EM_ANDAMENTO: 'Em andamento', FEITA: 'Feita', NAO_SE_APLICA: 'Não se aplica' };
+
+const PLANO_2025 = 'Plano de Contingência Nacional para Dengue, Chikungunya e Zika (MS, 2025)';
+const FONTE_APENDICE_B = `${PLANO_2025}, Apêndice B`;
+const ARBO = ['dengue', 'chikungunya', 'zika'];
+const DENGUE_CHIK = ['dengue', 'chikungunya'];
+
+/** Ações do Apêndice B por estágio e eixo, em texto curto (preparação: pp. 84-90; mobilização: pp. 92-95; alerta: pp. 97-98; epidemia: pp. 100-101). */
+const ACOES_MS_2025: Record<string, Partial<Record<EixoAcao, string[]>>> = {
+  NORMALIDADE: {
+    GESTAO: ['Elaborar ou revisar o plano de contingência municipal', 'Avaliar os estoques de insumos do município', 'Monitorar as metas e as ações do plano com as áreas técnicas'],
+    VIGILANCIA: [
+      'Elaborar e monitorar o diagrama de controle ou a curva epidêmica',
+      'Fazer a estratificação de risco intramunicipal',
+      'Publicar o boletim semanal das arboviroses',
+      'Emitir alertas para os distritos de saúde',
+      'Fazer busca ativa de síndrome febril',
+      'Monitorar todo mês a oportunidade de notificação, investigação e encerramento',
+      'Formar o comitê municipal de investigação de óbitos por arboviroses',
+      'Investigar surtos e situações inusitadas',
+    ],
+    LABORATORIO: ['Orientar os fluxos dos exames específicos de arboviroses', 'Monitorar o estoque estratégico de insumos laboratoriais'],
+    VETORES: ['Organizar a vigilância entomológica e o controle vetorial', 'Fazer o monitoramento entomológico (LIRAa/LIA ou armadilhas)', 'Monitorar os estoques de inseticidas, equipamentos e EPI'],
+    APS: ['Organizar as unidades para acolhimento, classificação de risco e hidratação oral', 'Definir os fluxos assistenciais e de referência'],
+    ATENCAO_ESPECIALIZADA: ['Disponibilizar à rede os fluxogramas de classificação de risco e manejo clínico'],
+    COMUNICACAO: ['Elaborar a campanha e os materiais de comunicação', 'Definir os porta-vozes'],
+  },
+  MOBILIZACAO: {
+    GESTAO: ['Implantar a Sala de Situação municipal', 'Acompanhar a execução do plano de contingência municipal'],
+    VIGILANCIA: [
+      'Publicar o boletim epidemiológico semanal',
+      'Intensificar os alertas aos distritos de saúde',
+      'Monitorar a tendência dos casos pelo diagrama de controle',
+      'Notificar em 24 horas os óbitos suspeitos ou confirmados de dengue',
+      'Investigar os óbitos de forma oportuna',
+      'Implantar a vigilância ativa dos casos graves',
+      'Selecionar unidades para enviar dados diários de atendimento',
+      'Consolidar toda semana as informações epidemiológicas, laboratoriais e entomológicas',
+    ],
+    LABORATORIO: ['Monitorar os sorotipos circulantes'],
+    VETORES: ['Fazer o bloqueio de transmissão de forma oportuna', 'Intensificar as visitas casa a casa nos pontos de maior transmissão'],
+    APS: ['Avaliar a ampliação das equipes e do horário das unidades', 'Orientar o uso dos fluxos e protocolos de manejo das arboviroses'],
+    ATENCAO_ESPECIALIZADA: ['Monitorar a notificação de casos graves pela regulação', 'Revisar e divulgar os fluxos assistenciais (leitos de retaguarda, transporte, referência)'],
+    COMUNICACAO: ['Elaborar e divulgar o plano de comunicação de risco', 'Fazer a campanha publicitária municipal'],
+  },
+  ALERTA: {
+    GESTAO: ['Manter e intensificar as atividades da mobilização', 'Adquirir em caráter emergencial os insumos essenciais', 'Avaliar a abertura do Centro de Operações de Emergências (COE)'],
+    VIGILANCIA: [
+      'Manter e intensificar as atividades da mobilização',
+      'Acompanhar com a rede assistencial os casos graves e os óbitos',
+      'Investigar os casos suspeitos de síndrome congênita do Zika e de transmissão vertical de chikungunya',
+    ],
+    LABORATORIO: ['Priorizar o diagnóstico de casos graves, óbitos, gestantes, menores de 2 anos e maiores de 60 anos'],
+    VETORES: ['Avaliar a efetividade do bloqueio de transmissão'],
+    APS: ['Intensificar a busca ativa de casos suspeitos', 'Avaliar o plano de investimento emergencial (equipes, insumos, leitos e unidades extras)'],
+    ATENCAO_ESPECIALIZADA: ['Avaliar o pedido de apoio da Força Nacional do SUS', 'Orientar a hidratação venosa precoce em todos os níveis de atenção'],
+    COMUNICACAO: ['Estabelecer o porta-voz', 'Intensificar o plano de comunicação de risco'],
+  },
+  EPIDEMIA: {
+    GESTAO: ['Manter as atividades do alerta', 'Avaliar a implantação do COE local com base na avaliação de risco'],
+    VIGILANCIA: ['Manter as atividades do alerta', 'Avaliar força-tarefa estadual ou federal para investigar óbitos e casos suspeitos de síndrome congênita'],
+    LABORATORIO: ['Apoiar os distritos de saúde na intensificação da vigilância laboratorial'],
+    VETORES: ['Suspender o monitoramento entomológico para levar a força de trabalho ao controle, comunicando a SES e o MS'],
+    APS: ['Manter e intensificar as atividades dos estágios anteriores'],
+    ATENCAO_ESPECIALIZADA: ['Ampliar a capacidade da rede especializada com recursos adicionais'],
+    COMUNICACAO: ['Organizar as entrevistas do porta-voz', 'Intensificar a campanha nas regiões de maior incidência'],
+  },
+};
+
+/**
+ * Modelo do MS 2025 para o município (Apêndice B). Os indicadores do plano vêm ligados por "E/OU": combinação
+ * QUALQUER. Nowcasting, positividade (RT-PCR e ZDC), sorotipo e atendimentos não são calculados pelo sistema: ficam
+ * como critérios MANUAIS, respondidos pela vigilância a cada semana. Interpretação: no critério da mobilização ("acima
+ * da mediana e abaixo do limite superior por 4 SE"), as semanas acima do limite superior também contam, para a
+ * sugestão não cair quando a curva passa do limite antes de completar as 4 SE.
+ */
+export const PLANO_MODELO_MS_2025: PlanoContingencia = {
+  estagios: [
+    { chave: 'NORMALIDADE', nome: 'Normalidade', ordem: 0 },
+    { chave: 'MOBILIZACAO', nome: 'Mobilização', ordem: 1 },
+    { chave: 'ALERTA', nome: 'Alerta', ordem: 2 },
+    { chave: 'EPIDEMIA', nome: 'Situação de epidemia', ordem: 3 },
+  ],
+  agravos: ARBO,
+  combinacao: 'QUALQUER',
+  criterios: [
+    // Mobilização (cenário 1, p. 92).
+    {
+      id: 'mob-canal',
+      estagio: 'MOBILIZACAO',
+      agravos: ARBO,
+      tipo: 'CANAL_ACIMA_CENTRO',
+      descricao: 'Incidência de casos prováveis acima da mediana do canal endêmico por 4 SE consecutivas (as semanas acima do limite superior também contam)',
+      semanas: 4,
+      modo: 'CONSECUTIVAS',
+      fonte: `${FONTE_APENDICE_B}, p. 92`,
+    },
+    {
+      id: 'mob-nowcasting',
+      estagio: 'MOBILIZACAO',
+      agravos: ARBO,
+      tipo: 'MANUAL',
+      descricao: 'Nowcasting acima da mediana e abaixo do limite superior por 4 SE consecutivas (InfoDengue)',
+      fonte: `${FONTE_APENDICE_B}, p. 92`,
+    },
+    { id: 'mob-rtpcr', estagio: 'MOBILIZACAO', agravos: ARBO, tipo: 'MANUAL', descricao: 'Positividade laboratorial (RT-PCR) acima de 20% por 4 SE consecutivas', fonte: `${FONTE_APENDICE_B}, p. 92` },
+    { id: 'mob-sorotipo', estagio: 'MOBILIZACAO', agravos: ['dengue'], tipo: 'MANUAL', descricao: 'Detecção de novo sorotipo de dengue', fonte: `${FONTE_APENDICE_B}, p. 92` },
+    // Alerta (cenário 2, pp. 96-97).
+    {
+      id: 'ale-canal',
+      estagio: 'ALERTA',
+      agravos: DENGUE_CHIK,
+      tipo: 'CANAL_ACIMA_LS',
+      descricao: 'Curva de incidência acima do limite superior do diagrama de controle por pelo menos 4 SE consecutivas',
+      semanas: 4,
+      modo: 'CONSECUTIVAS',
+      fonte: `${FONTE_APENDICE_B}, pp. 96-97`,
+    },
+    { id: 'ale-nowcasting', estagio: 'ALERTA', agravos: DENGUE_CHIK, tipo: 'MANUAL', descricao: 'Nowcasting acima do limite superior por pelo menos 4 SE (InfoDengue)', fonte: `${FONTE_APENDICE_B}, pp. 96-97` },
+    {
+      id: 'ale-graves',
+      estagio: 'ALERTA',
+      agravos: ['dengue'],
+      tipo: 'PERCENTUAL_GRAVES',
+      descricao: 'Casos graves ou com sinais de alarme acima de 1% dos casos prováveis',
+      limiar: 1,
+      comparador: '>',
+      fonte: `${FONTE_APENDICE_B}, p. 96`,
+    },
+    {
+      id: 'ale-letalidade',
+      estagio: 'ALERTA',
+      agravos: DENGUE_CHIK,
+      tipo: 'LETALIDADE',
+      descricao: 'Letalidade por casos prováveis acima de 0,05%',
+      limiar: 0.05,
+      comparador: '>',
+      fonte: `${FONTE_APENDICE_B}, pp. 96-97`,
+    },
+    {
+      id: 'ale-letalidade-graves',
+      estagio: 'ALERTA',
+      agravos: ['dengue'],
+      tipo: 'LETALIDADE_GRAVES',
+      descricao: 'Letalidade por casos graves e com sinais de alarme acima de 3%',
+      limiar: 3,
+      comparador: '>',
+      fonte: `${FONTE_APENDICE_B}, p. 96`,
+    },
+    {
+      id: 'ale-obitos-investigacao',
+      estagio: 'ALERTA',
+      agravos: DENGUE_CHIK,
+      tipo: 'OBITOS_INVESTIGACAO_PERCENTUAL',
+      descricao: 'Óbitos em investigação acima de 1% dos casos prováveis',
+      limiar: 1,
+      comparador: '>',
+      fonte: `${FONTE_APENDICE_B}, pp. 96-97`,
+    },
+    { id: 'ale-zdc', estagio: 'ALERTA', agravos: DENGUE_CHIK, tipo: 'MANUAL', descricao: 'Positividade laboratorial acima de 30% no teste ZDC', fonte: `${FONTE_APENDICE_B}, pp. 96-97` },
+    { id: 'ale-atendimentos', estagio: 'ALERTA', agravos: DENGUE_CHIK, tipo: 'MANUAL', descricao: 'Aumento do número de atendimentos nos serviços de saúde', fonte: `${FONTE_APENDICE_B}, pp. 96-97` },
+    { id: 'ale-zika-rtpcr', estagio: 'ALERTA', agravos: ['zika'], tipo: 'MANUAL', descricao: 'Aumento de casos de Zika confirmados por RT-PCR', fonte: `${FONTE_APENDICE_B}, p. 97` },
+    // Situação de epidemia (cenário 3, p. 100).
+    {
+      id: 'epi-nowcasting',
+      estagio: 'EPIDEMIA',
+      agravos: DENGUE_CHIK,
+      tipo: 'MANUAL',
+      descricao: 'Nowcasting ainda em alta por mais de 4 SE desde o início do alerta (nível 2)',
+      fonte: `${FONTE_APENDICE_B}, p. 100`,
+    },
+    {
+      id: 'epi-graves',
+      estagio: 'EPIDEMIA',
+      agravos: ['dengue'],
+      tipo: 'PERCENTUAL_GRAVES',
+      descricao: 'Casos graves ou com sinais de alarme acima de 2% dos casos prováveis',
+      limiar: 2,
+      comparador: '>',
+      fonte: `${FONTE_APENDICE_B}, p. 100`,
+    },
+    {
+      id: 'epi-letalidade',
+      estagio: 'EPIDEMIA',
+      agravos: DENGUE_CHIK,
+      tipo: 'LETALIDADE',
+      descricao: 'Letalidade por casos prováveis acima de 0,07%',
+      limiar: 0.07,
+      comparador: '>',
+      fonte: `${FONTE_APENDICE_B}, p. 100`,
+    },
+    {
+      id: 'epi-letalidade-graves',
+      estagio: 'EPIDEMIA',
+      agravos: ['dengue'],
+      tipo: 'LETALIDADE_GRAVES',
+      descricao: 'Letalidade por casos graves e com sinais de alarme acima de 5%',
+      limiar: 5,
+      comparador: '>',
+      fonte: `${FONTE_APENDICE_B}, p. 100`,
+    },
+    {
+      id: 'epi-obitos-investigacao',
+      estagio: 'EPIDEMIA',
+      agravos: DENGUE_CHIK,
+      tipo: 'OBITOS_INVESTIGACAO_PERCENTUAL',
+      descricao: 'Óbitos em investigação acima de 2% dos casos prováveis',
+      limiar: 2,
+      comparador: '>',
+      fonte: `${FONTE_APENDICE_B}, p. 100`,
+    },
+    { id: 'epi-zdc', estagio: 'EPIDEMIA', agravos: ['dengue'], tipo: 'MANUAL', descricao: 'Positividade laboratorial acima de 40% no teste ZDC para dengue', fonte: `${FONTE_APENDICE_B}, p. 100` },
+    { id: 'epi-sorotipo', estagio: 'EPIDEMIA', agravos: ['dengue'], tipo: 'MANUAL', descricao: 'Inversão do sorotipo predominante de dengue no município', fonte: `${FONTE_APENDICE_B}, p. 100` },
+  ],
+  acoes: Object.entries(ACOES_MS_2025).flatMap(([estagio, eixos]) => Object.entries(eixos).flatMap(([eixo, lista]) => lista!.map((descricao) => ({ estagio, eixo: eixo as EixoAcao, descricao })))),
+  desmobilizacao: {
+    semanas: 4,
+    descricao: `4 SE completas seguidas abaixo do estágio em vigor, ou volta da curva ao canal endêmico (${PLANO_2025}, item 7.2.3, p. 52)`,
+  },
+};
+
+/** Indicadores de um agravo no ano epidemiológico em análise, até a semana de referência. */
+export interface IndicadoresAgravo {
+  grupo: string;
+  /**
+   * Status de cada SE no canal (AAAASS), da mais antiga à mais recente, cada uma no canal do próprio ano. Traz também
+   * as SE do ano anterior: as "N SE seguidas" não recomeçam na virada do ano.
+   */
+  semanas: { semana: string; status: StatusSemana; completa: boolean }[];
+  provaveis: number;
+  graves: number;
+  sinaisAlarme: number;
+  obitosAgravo: number;
+  obitosInvestigacao: number;
+  incidenciaAcumulada: number | null;
+}
+
+/** Resposta da vigilância a um critério MANUAL na semana. */
+export interface RespostaCriterio {
+  criterio: string;
+  atendido: boolean;
+}
+
+export interface AvaliacaoCriterio {
+  id: string;
+  estagio: string;
+  agravo?: string;
+  /** null = não avaliado (critério manual sem resposta na semana). */
+  atendido: boolean | null;
+  valor?: number | null;
+  detalhe: string;
+}
+
+export interface AvaliacaoPlano {
+  /** Chave do estágio sugerido. */
+  sugerido: string;
+  criterios: AvaliacaoCriterio[];
+  /** Critérios atendidos por estágio. */
+  porEstagio: Record<string, number>;
+  desmobilizacao: { sugerida: boolean; detalhe: string };
+}
+
+/** Acionamento em vigor no território: de quando é e o que a vigilância viu ao decidir. */
+export interface AcionamentoEmVigor {
+  /** SE de início (AAAASS). A desmobilização só conta as SE completas desde ela. */
+  semanaInicio: string;
+  /**
+   * Retrato dos indicadores no acionamento. O critério do acumulado do ano já atendido nele não faz o estágio subir de
+   * novo enquanto o que chegou desde o retrato, avaliado sozinho, não passa do limiar (óbitos novos sobre os casos
+   * prováveis novos, graves e com sinais de alarme novos sobre os prováveis novos, prováveis novos por 100 mil
+   * habitantes), no mesmo ano do acumulado. Na descida, o critério de canal atendido nele põe o agravo em S, e as SE
+   * completas depois da última SE completa dele (incompletas no dia da decisão) também contam para S.
+   */
+  indicadores?: IndicadoresAgravo[] | null;
+}
+
+// ───────────── Avaliação ─────────────
+
+type Resultado = Pick<AvaliacaoCriterio, 'atendido' | 'valor' | 'detalhe'>;
+
+const STATUS_DO_CRITERIO: Partial<Record<TipoCriterio, StatusSemana[]>> = {
+  CANAL_ACIMA_CENTRO: ['ENTRE_CENTRO_E_LS', 'ACIMA_LS'],
+  CANAL_ENTRE_CENTRO_E_LS: ['ENTRE_CENTRO_E_LS'],
+  CANAL_ACIMA_LS: ['ACIMA_LS'],
+};
+const CANAL: TipoCriterio[] = ['CANAL_ACIMA_CENTRO', 'CANAL_ENTRE_CENTRO_E_LS', 'CANAL_ACIMA_LS'];
+const PERCENTUAIS: TipoCriterio[] = ['PERCENTUAL_GRAVES', 'LETALIDADE', 'LETALIDADE_GRAVES', 'OBITOS_INVESTIGACAO_PERCENTUAL'];
+/** Critérios sobre o acumulado do ano: só sobem ao longo do ano, nunca refletem a volta da curva. */
+const ACUMULADOS: TipoCriterio[] = [...PERCENTUAIS, 'INCIDENCIA_ACUMULADA'];
+/** SE dentro do canal endêmico. SEM_CANAL (sem base que cubra a SE, sem população, quartil indefinido) não é volta ao canal. */
+const DENTRO_DO_CANAL: StatusSemana[] = ['ABAIXO_LI', 'ATE_CENTRO', 'ENTRE_CENTRO_E_LS'];
+
+/** Número em português, com 2 casas (3 abaixo de 1). */
+const br = (x: number) => String(arredondar(x, Math.abs(x) < 1 ? 3 : 2)).replace('.', ',');
+const ss = (semana: string) => `${semana.slice(4)}/${semana.slice(0, 4)}`;
+
+/** Critério de canal sobre as semanas completas, sem as `recuo` mais recentes (para olhar semanas passadas). */
+function avaliarCanal(c: CriterioPlano, ind: IndicadoresAgravo, recuo: number): Resultado {
+  const completas = ind.semanas.filter((s) => s.completa);
+  return avaliarCanalNas(c, completas, recuo);
+}
+
+/** O mesmo, sobre as SE completas já separadas (da mais antiga à mais recente). */
+function avaliarCanalNas(c: CriterioPlano, completas: IndicadoresAgravo['semanas'], recuo: number): Resultado {
+  const aceitos = STATUS_DO_CRITERIO[c.tipo]!;
+  const ate = completas.slice(0, Math.max(0, completas.length - recuo));
+  const kDeN = c.modo === 'K_DE_N';
+  const n = Math.max(1, Math.trunc((kDeN ? (c.n ?? c.semanas) : c.semanas) ?? 1));
+  const k = kDeN ? Math.min(n, Math.max(1, Math.trunc(c.k ?? n))) : n;
+  const janela = ate.slice(-n);
+  const sim = janela.filter((s) => aceitos.includes(s.status)).length;
+  const semCanal = janela.filter((s) => s.status === 'SEM_CANAL').length;
+  const periodo = janela.length ? ` (SE ${ss(janela[0]!.semana)} a ${ss(janela[janela.length - 1]!.semana)})` : '';
+  const alvo = ROTULO_TIPO_CRITERIO[c.tipo].toLowerCase();
+  let atendido: boolean | null;
+  if (sim >= k && janela.length >= (kDeN ? 1 : n)) atendido = true;
+  else if (janela.length < (kDeN ? k : n)) atendido = false;
+  else atendido = sim + semCanal >= k && semCanal > 0 ? null : false;
+  const detalhe =
+    janela.length < (kDeN ? k : n) && atendido === false
+      ? `Só ${janela.length} SE completa(s); o critério pede ${kDeN ? `${k} de ${n}` : n}`
+      : `${sim} de ${janela.length} SE completas ${alvo}${periodo}${atendido === null ? `; ${semCanal} SE sem canal` : ''}; pede ${kDeN ? `${k} de ${n}` : `${n} seguidas`}`;
+  return { atendido, valor: sim, detalhe };
+}
+
+/** Numerador e denominador dos critérios percentuais (graves, letalidade, óbitos em investigação) nos indicadores. */
+function fracao(tipo: TipoCriterio, ind: IndicadoresAgravo): [number, number] {
+  const graves = ind.graves + ind.sinaisAlarme;
+  if (tipo === 'PERCENTUAL_GRAVES') return [graves, ind.provaveis];
+  if (tipo === 'LETALIDADE') return [ind.obitosAgravo, ind.provaveis];
+  if (tipo === 'LETALIDADE_GRAVES') return [ind.obitosAgravo, graves];
+  return [ind.obitosInvestigacao, ind.provaveis];
+}
+
+const TEXTO_FRACAO: Partial<Record<TipoCriterio, string>> = {
+  PERCENTUAL_GRAVES: 'dos casos prováveis são graves ou com sinais de alarme',
+  LETALIDADE: 'de letalidade entre os casos prováveis',
+  LETALIDADE_GRAVES: 'de letalidade entre os casos graves e com sinais de alarme',
+  OBITOS_INVESTIGACAO_PERCENTUAL: 'dos casos prováveis são óbitos em investigação',
+};
+
+/** O valor passa do limiar do critério (comparador ">" quando não informado). */
+const passaDoLimiar = (c: CriterioPlano, v: number) => ((c.comparador ?? '>') === '>=' ? v >= c.limiar! : v > c.limiar!);
+
+/** Critério numérico (percentual, letalidade ou incidência acumulada) contra o limiar. */
+function avaliarNumero(c: CriterioPlano, ind: IndicadoresAgravo): Resultado {
+  const comp = c.comparador ?? '>';
+  if (c.limiar === undefined || c.limiar === null) return { atendido: null, valor: null, detalhe: 'Critério sem limiar: não avaliado' };
+  if (c.tipo === 'INCIDENCIA_ACUMULADA') {
+    const v = ind.incidenciaAcumulada;
+    if (v === null) return { atendido: null, valor: null, detalhe: 'Sem população para a incidência acumulada: não avaliado' };
+    return { atendido: passaDoLimiar(c, v), valor: v, detalhe: `Incidência acumulada de ${br(v)} por 100 mil; limiar ${comp} ${br(c.limiar)}` };
+  }
+  const [num, den] = fracao(c.tipo, ind);
+  if (den <= 0) return { atendido: false, valor: null, detalhe: c.tipo === 'LETALIDADE_GRAVES' ? 'Sem casos graves ou com sinais de alarme no ano' : 'Sem casos prováveis no ano' };
+  const v = (num * 100) / den;
+  return { atendido: passaDoLimiar(c, v), valor: v, detalhe: `${br(v)}% ${TEXTO_FRACAO[c.tipo]} (${num} de ${den}); limiar ${comp} ${br(c.limiar)}%` };
+}
+
+function avaliarManual(c: CriterioPlano, respostas: Map<string, boolean>): Resultado {
+  const r = respostas.get(c.id);
+  if (r === undefined) return { atendido: null, valor: null, detalhe: 'Sem resposta da vigilância nesta semana: não avaliado' };
+  return { atendido: r, valor: null, detalhe: r ? 'Atendido (resposta da vigilância na semana)' : 'Não atendido (resposta da vigilância na semana)' };
+}
+
+/** Avaliação de todos os critérios: um item por agravo nos automáticos, um por critério nos manuais. */
+function avaliarCriterios(plano: PlanoContingencia, indicadores: Map<string, IndicadoresAgravo>, respostas: Map<string, boolean>, recuo: number): AvaliacaoCriterio[] {
+  return plano.criterios.flatMap((c): AvaliacaoCriterio[] => {
+    const base = { id: c.id, estagio: c.estagio };
+    if (c.tipo === 'MANUAL') return [{ ...base, ...avaliarManual(c, respostas) }];
+    return (c.agravos.length ? c.agravos : plano.agravos).map((agravo) => {
+      const ind = indicadores.get(agravo);
+      if (!ind) return { ...base, agravo, atendido: null, valor: null, detalhe: 'Sem indicadores do agravo: não avaliado' };
+      return { ...base, agravo, ...(STATUS_DO_CRITERIO[c.tipo] ? avaliarCanal(c, ind, recuo) : avaliarNumero(c, ind)) };
+    });
+  });
+}
+
+/** Estágio sugerido pelas avaliações (QUALQUER: o maior com algum critério; DOIS_OU_MAIS: regra da SES-MG por agravo). */
+function estagioSugerido(plano: PlanoContingencia, avaliacoes: AvaliacaoCriterio[]): string {
+  const estagios = [...plano.estagios].sort((a, b) => a.ordem - b.ordem);
+  const base = estagios[0]?.chave ?? 'NORMALIDADE';
+  const ordem = new Map(estagios.map((e) => [e.chave, e.ordem]));
+  const maior = (chaves: string[]) => chaves.reduce((m, c) => ((ordem.get(c) ?? -1) > (ordem.get(m) ?? -1) ? c : m), base);
+  if (plano.combinacao === 'QUALQUER') return maior(avaliacoes.filter((a) => a.atendido === true).map((a) => a.estagio));
+  // DOIS_OU_MAIS (SES-MG): por agravo, o estágio com 2 ou mais critérios atendidos; empate fica no maior; o estágio
+  // de maior ordem exige todos os seus critérios. O resultado é o pior entre os agravos.
+  const topo = estagios[estagios.length - 1]?.chave;
+  const sugestoes = plano.agravos.map((agravo) => {
+    const qualificados = estagios
+      .filter((e) => {
+        const doEstagio = plano.criterios.filter((c) => c.estagio === e.chave && (c.agravos.length ? c.agravos : plano.agravos).includes(agravo));
+        if (!doEstagio.length) return false;
+        const atendidos = doEstagio.filter((c) => avaliacoes.some((a) => a.id === c.id && a.atendido === true && (c.tipo === 'MANUAL' || a.agravo === agravo))).length;
+        return e.chave === topo ? atendidos === doEstagio.length : atendidos >= 2;
+      })
+      .map((e) => e.chave);
+    return maior(qualificados);
+  });
+  return maior(sugestoes);
+}
+
+/** Ano do acumulado dos indicadores: o da última SE completa (null sem nenhuma). */
+function anoDoAcumulado(ind: IndicadoresAgravo): number | null {
+  const completas = (ind.semanas ?? []).filter((s) => s.completa);
+  const ultima = completas[completas.length - 1];
+  return ultima ? Number(ultima.semana.slice(0, 4)) : null;
+}
+
+/**
+ * O que chegou ao acumulado do ano desde o retrato, avaliado sozinho, passa do limiar do critério: óbitos novos sobre os
+ * casos prováveis novos (letalidade), graves e com sinais de alarme novos sobre os prováveis novos (percentual), óbitos
+ * novos sobre os graves novos (letalidade entre os graves), óbitos em investigação novos sobre os prováveis novos e
+ * prováveis novos por 100 mil habitantes, com a população de agora (incidência acumulada). Sem denominador novo
+ * (nenhum caso provável a mais, ou nenhum grave a mais na letalidade entre os graves), não passa.
+ */
+function novosPassamDoLimiar(c: CriterioPlano, antes: IndicadoresAgravo, agora: IndicadoresAgravo): boolean {
+  if (c.limiar === undefined || c.limiar === null) return false;
+  if (c.tipo === 'INCIDENCIA_ACUMULADA') {
+    const novos = agora.provaveis - antes.provaveis;
+    // Incidência acumulada sobre os prováveis = 100 mil sobre a população.
+    if (novos <= 0 || agora.incidenciaAcumulada === null || agora.provaveis <= 0) return false;
+    return passaDoLimiar(c, (novos * agora.incidenciaAcumulada) / agora.provaveis);
+  }
+  const [numAntes, denAntes] = fracao(c.tipo, antes);
+  const [numAgora, denAgora] = fracao(c.tipo, agora);
+  if (denAgora - denAntes <= 0) return false;
+  return passaDoLimiar(c, ((numAgora - numAntes) * 100) / (denAgora - denAntes));
+}
+
+/**
+ * Critérios do acumulado do ano (critério|agravo) já atendidos no retrato do acionamento em vigor que ainda valem como
+ * conhecidos: o mesmo ano do acumulado de agora (vira o ano, o acumulado recomeça) e o que chegou desde o retrato,
+ * avaliado sozinho, sem passar do limiar (`novosPassamDoLimiar`). É o vai e volta depois da descida: a vigilância desceu
+ * com aquele acumulado na mão, e semanas com casos novos e poucos graves ou óbitos não o reabrem. Quando os novos,
+ * sozinhos, passam do limiar, o critério volta a contar para subir. A curva fora do canal conta pelos critérios de canal
+ * de cada estágio, que pedem N SE, e não reabre o acumulado do ano.
+ */
+function acumuladosDoAcionamento(plano: PlanoContingencia, acionamento: AcionamentoEmVigor | null, atuais: Map<string, IndicadoresAgravo>): Set<string> {
+  const conhecidos = new Set<string>();
+  const retrato = acionamento?.indicadores;
+  if (!Array.isArray(retrato) || !retrato.length) return conhecidos;
+  const antes = new Map(retrato.map((i) => [i.grupo, i]));
+  for (const c of plano.criterios) {
+    if (!ACUMULADOS.includes(c.tipo)) continue;
+    for (const agravo of c.agravos.length ? c.agravos : plano.agravos) {
+      const a = antes.get(agravo);
+      const b = atuais.get(agravo);
+      if (!a || !b || anoDoAcumulado(a) === null || anoDoAcumulado(a) !== anoDoAcumulado(b)) continue;
+      if (avaliarNumero(c, a).atendido === true && !novosPassamDoLimiar(c, a, b)) conhecidos.add(`${c.id}|${agravo}`);
+    }
+  }
+  return conhecidos;
+}
+
+/** "letalidade de dengue em 0,15%": critérios do acumulado do ano atendidos agora, um por tipo e agravo. */
+function acumuladosAltos(plano: PlanoContingencia, criterios: AvaliacaoCriterio[]): string[] {
+  const tipo = new Map(plano.criterios.map((c) => [c.id, c.tipo]));
+  const vistos = new Map<string, string>();
+  for (const a of criterios) {
+    const t = tipo.get(a.id);
+    if (a.atendido !== true || !t || !ACUMULADOS.includes(t) || a.valor === null || a.valor === undefined) continue;
+    const k = `${t}|${a.agravo ?? ''}`;
+    if (!vistos.has(k)) vistos.set(k, `${ROTULO_TIPO_CRITERIO[t].toLowerCase()}${a.agravo ? ` de ${a.agravo}` : ''} em ${br(a.valor)}${t === 'INCIDENCIA_ACUMULADA' ? ' por 100 mil' : '%'}`);
+  }
+  return [...vistos.values()];
+}
+
+/**
+ * Estágio sugerido pelos critérios. Só semanas completas contam; critério MANUAL sem resposta fica null (nunca
+ * "atendido").
+ *
+ * Curva de volta ao canal endêmico: as últimas N (`desmobilizacao.semanas`) SE completas do agravo dentro do canal
+ * (abaixo do LI, até o centro ou entre o centro e o LS). SE sem canal não é volta ao canal: sem dado, a curva pode estar
+ * em qualquer lugar.
+ *
+ * Subir não espera. O acumulado do ano (percentuais, letalidade, incidência acumulada) já atendido quando o estágio em
+ * vigor foi decidido (retrato do `acionamento`) não faz subir de novo enquanto o que chegou desde o retrato, avaliado
+ * sozinho, não passa do limiar: a vigilância já decidiu com ele (o vai e volta depois da descida). A curva fora do
+ * canal sobe pelos critérios de canal, que pedem N SE.
+ *
+ * Descer só depois de N SE completas seguidas abaixo do estágio em vigor, contadas desde o início do acionamento em
+ * vigor, pela curva dos agravos que sustentam o estágio (S, `agravosQueSustentam`): os com canal cujo critério de canal
+ * de algum estágio até o em vigor foi atendido no retrato do acionamento ou numa SE completa a partir do menor entre o
+ * início dele e a SE seguinte à última SE completa do retrato (a SE que estava incompleta quando a vigilância decidiu
+ * também conta; sem retrato, desde o início). Uma SE conta como abaixo quando a sugestão dela está abaixo do estágio em
+ * vigor e a curva da própria SE, em cada agravo de S, está fora dos status que os critérios de canal do estágio em
+ * vigor ou de um acima aceitam (no modelo do MS: no alerta, não acima do LS; na mobilização, até o centro ou abaixo do
+ * LI). Uma SE de queda no meio da alta quebra as janelas de N SE dos critérios, mas não é redução sustentada; e o caso
+ * esporádico de um agravo fora de S (o canal de um agravo raro tem centro e LS zero) não trava a descida. O destino é o
+ * maior entre as sugestões das N SE, os estágios dos critérios de canal que ficaram sem avaliação nelas (SE sem canal
+ * na janela) e o piso de nível: o maior estágio abaixo do em vigor cujo critério de canal aceita o status da SE num
+ * agravo de S (da epidemia com a curva acima do LS, o alerta; do alerta com a curva entre o centro e o LS, a
+ * mobilização). A SE sem canal nunca conta como abaixo num agravo de S ou num agravo cujo critério de canal ficou sem
+ * avaliação nas SE contadas (sem o dado, ele pode estar sustentando o estágio); com S vazio, em todo agravo com canal,
+ * para não descer por falta de dado. Com S vazio e o dado presente, valem só as sugestões. O agravo sem canal em
+ * nenhuma SE completa dos indicadores não tem como ser conferido e não trava a contagem. O acumulado do ano quase nunca
+ * volta a cair no mesmo ano: o do agravo cuja curva voltou ao canal deixa de segurar o estágio, como manda o Plano 2025
+ * (item 7.2.3), e o detalhe o cita. Com a curva fora do canal, ele segura.
+ * Nas semanas passadas, só os critérios de canal são refeitos; as respostas manuais da semana valem como estão.
+ */
+export function avaliarPlano(plano: PlanoContingencia, indicadores: IndicadoresAgravo[], respostas: RespostaCriterio[], estagioAtual: string | null, acionamento: AcionamentoEmVigor | null = null): AvaliacaoPlano {
+  const porGrupo = new Map(indicadores.map((i) => [i.grupo, i]));
+  const resp = new Map(respostas.map((r) => [r.criterio, r.atendido]));
+  const nomes = new Map(plano.estagios.map((e) => [e.chave, e.nome]));
+  const ordem = new Map(plano.estagios.map((e) => [e.chave, e.ordem]));
+  const ord = (chave: string) => ordem.get(chave) ?? -1;
+  const avaliadas = avaliarCriterios(plano, porGrupo, resp, 0);
+  const porEstagio: Record<string, number> = Object.fromEntries(plano.estagios.map((e) => [e.chave, 0]));
+  for (const id of new Set(avaliadas.filter((a) => a.atendido === true).map((a) => a.id))) {
+    const c = plano.criterios.find((x) => x.id === id)!;
+    porEstagio[c.estagio] = (porEstagio[c.estagio] ?? 0) + 1;
+  }
+  const atual = estagioAtual !== null && ordem.has(estagioAtual) ? estagioAtual : null;
+  if (atual === null) return { sugerido: estagioSugerido(plano, avaliadas), criterios: avaliadas, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
+
+  const tipo = new Map(plano.criterios.map((c) => [c.id, c.tipo]));
+  const acumulado = (a: AvaliacaoCriterio) => ACUMULADOS.includes(tipo.get(a.id)!);
+  const n = Math.max(1, Math.trunc(plano.desmobilizacao.semanas));
+  const completas = (i: IndicadoresAgravo) => i.semanas.filter((s) => s.completa);
+  // Agravos com a curva de volta ao canal: as N últimas SE completas dentro dele (SE sem canal não conta como volta).
+  const noCanal = new Set(
+    indicadores
+      .filter((i) => {
+        const ultimas = completas(i).slice(-n);
+        return ultimas.length >= n && ultimas.every((s) => DENTRO_DO_CANAL.includes(s.status));
+      })
+      .map((i) => i.grupo),
+  );
+  const conhecidos = acumuladosDoAcionamento(plano, acionamento, porGrupo);
+  const conhecido = (a: AvaliacaoCriterio) => a.atendido === true && acumulado(a) && conhecidos.has(`${a.id}|${a.agravo ?? ''}`);
+  const criterios = avaliadas.map((a) => (conhecido(a) ? { ...a, detalhe: `${a.detalhe}. Já atendido quando o estágio em vigor foi decidido, e o que chegou desde então não passa do limiar: não faz subir` } : a));
+  const sem = (avs: AvaliacaoCriterio[], tirar: (a: AvaliacaoCriterio) => boolean) => avs.map((a) => (a.atendido === true && tirar(a) ? { ...a, atendido: false } : a));
+
+  const bruto = estagioSugerido(plano, sem(avaliadas, conhecido));
+  if (ord(bruto) > ord(atual)) return { sugerido: bruto, criterios, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
+
+  // Manter ou descer: o acumulado do agravo cuja curva voltou ao canal endêmico não segura o estágio.
+  const solto = (a: AvaliacaoCriterio) => acumulado(a) && noCanal.has(a.agravo ?? '');
+  if (ord(estagioSugerido(plano, sem(avaliadas, solto))) >= ord(atual)) return { sugerido: atual, criterios, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
+
+  const disponiveis = Math.max(0, ...indicadores.map((i) => completas(i).length));
+  const inicio = acionamento?.semanaInicio ?? null;
+  // SE completas desde o início do acionamento (sem indicadores não há como contar: vale a semana de referência).
+  const desdeInicio = inicio === null || disponiveis === 0 ? Infinity : Math.max(0, ...indicadores.map((i) => completas(i).filter((s) => s.semana >= inicio).length));
+  const limite = Math.min(n, Math.max(1, disponiveis), desdeInicio);
+  // Os critérios em cada SE contada, da semana de referência (recuo 0) para trás.
+  const janelas = Array.from({ length: limite }, (_, recuo) => (recuo === 0 ? avaliadas : avaliarCriterios(plano, porGrupo, resp, recuo)));
+  // Agravos com canal em alguma SE completa (o que nunca teve canal nos indicadores não tem como ser conferido) e, em
+  // cada critério de canal do plano, os agravos dele que têm canal.
+  const completasDe = new Map(indicadores.map((i) => [i.grupo, completas(i)]));
+  const comCanal = new Set([...completasDe].filter(([, cs]) => cs.some((s) => s.status !== 'SEM_CANAL')).map(([g]) => g));
+  const deCanal = plano.criterios.filter((c) => CANAL.includes(c.tipo)).map((c) => ({ c, agravos: (c.agravos.length ? c.agravos : plano.agravos).filter((g) => comCanal.has(g)) }));
+  // S: a curva e o piso de nível só olham os agravos que sustentam o estágio (critérios de canal até o em vigor).
+  const ateOEmVigor = deCanal.filter(({ c }) => ord(c.estagio) <= ord(atual));
+  const sustentam = agravosQueSustentam(ateOEmVigor, completasDe, acionamento);
+  // A SE sem canal vale para os agravos de S e para o que teve critério de canal sem avaliação nas SE contadas (sem o
+  // dado, ele pode estar sustentando o estágio); com S vazio, para todo agravo com canal (não descer por falta de dado).
+  const semAvaliacao = (a: AvaliacaoCriterio) => a.atendido === null && CANAL.includes(tipo.get(a.id)!) && comCanal.has(a.agravo ?? '');
+  const vigiados = sustentam.size ? new Set([...sustentam, ...janelas.flatMap((avs) => avs.filter(semAvaliacao).map((a) => a.agravo!))]) : comCanal;
+  const menor = [...plano.estagios].sort((a, b) => a.ordem - b.ordem)[0]!.chave;
+  const maior = (x: string, y: string) => (ord(y) > ord(x) ? y : x);
+  /** A SE do recuo (a r-ésima completa, de trás para a frente) na descida, com os critérios avaliados nela. */
+  const naSemana = (avs: AvaliacaoCriterio[], recuo: number): SemanaDaDescida => {
+    // Critério de canal sem avaliação (SE sem canal na janela) num agravo vigiado: o destino não fica abaixo dele.
+    const piso = avs.filter((a) => semAvaliacao(a) && vigiados.has(a.agravo!)).reduce((m, a) => maior(m, a.estagio), menor);
+    let semCanal = false;
+    let acima: PontoDaCurva | null = null;
+    let nivel: PontoDaCurva | null = null;
+    for (const { c, agravos } of deCanal)
+      for (const agravo of agravos) {
+        const cs = completasDe.get(agravo)!;
+        const se = cs[cs.length - 1 - recuo];
+        if (!se) continue;
+        // SE sem canal num agravo vigiado, qualquer que seja o estágio do critério: a curva pode não ter descido.
+        if (se.status === 'SEM_CANAL') semCanal ||= vigiados.has(agravo);
+        else if (sustentam.has(agravo) && STATUS_DO_CRITERIO[c.tipo]!.includes(se.status)) {
+          const ponto = { semana: se.semana, agravo, status: se.status, estagio: c.estagio };
+          // A curva da própria SE ainda no nível de um critério de canal do estágio em vigor ou de um acima: não conta.
+          if (ord(c.estagio) >= ord(atual)) acima ??= ponto;
+          // No nível do critério de canal de um estágio abaixo: o destino não fica abaixo dele (piso de nível).
+          else if (!nivel || ord(c.estagio) > ord(nivel.estagio)) nivel = ponto;
+        }
+      }
+    return { sugestao: estagioSugerido(plano, sem(avs, solto)), piso, semCanal, acima, nivel };
+  };
+  const desce = (s: SemanaDaDescida) => ord(s.sugestao) < ord(atual) && ord(s.piso) < ord(atual) && !s.semCanal && !s.acima;
+  const anteriores = janelas.map((avs, recuo) => naSemana(avs, recuo));
+  const seguidas = anteriores.findIndex((s) => !desce(s));
+  const abaixo = seguidas === -1 ? anteriores.length : seguidas;
+  const altos = acumuladosAltos(plano, avaliadas);
+  const notaAcumulado = altos.length ? ` No acumulado do ano, segue acima do limiar: ${altos.join('; ')}.` : '';
+  if (abaixo >= n) {
+    const sugestoes = anteriores.reduce((m, s) => maior(m, s.sugestao), menor);
+    const comPiso = anteriores.reduce((m, s) => maior(m, s.piso), sugestoes);
+    const destino = anteriores.reduce((m, s) => maior(m, s.nivel?.estagio ?? menor), comPiso);
+    // O destino ficou acima das sugestões: o detalhe diz por quê. Um critério de canal sem avaliação, ou a curva de um
+    // agravo de S no nível de um estágio abaixo do em vigor (a SE mais recente em que isso acontece).
+    const notaPiso = comPiso !== sugestoes && comPiso === destino ? ` O critério de canal de ${nomes.get(destino)} ficou sem avaliação numa dessas SE (SE sem canal na janela): a descida para nele.` : '';
+    const segura = destino !== sugestoes ? anteriores.find((s) => s.nivel?.estagio === destino)?.nivel : undefined;
+    const notaNivel = segura
+      ? ` Na SE ${ss(segura.semana)}, a curva de ${segura.agravo} está ${ROTULO_STATUS_SEMANA[segura.status].toLowerCase()}, no nível do critério de canal de ${nomes.get(destino)}: a descida para nele.`
+      : '';
+    return {
+      sugerido: destino,
+      criterios,
+      porEstagio,
+      desmobilizacao: {
+        sugerida: true,
+        detalhe: `Sugestão abaixo de ${nomes.get(atual)} nas últimas ${n} SE completas: pode desmobilizar para ${nomes.get(destino)}. ${plano.desmobilizacao.descricao}.${notaPiso}${notaNivel}${notaAcumulado}`,
+      },
+    };
+  }
+  // A contagem parou no início do acionamento: as SE de antes dele não contam.
+  const notaInicio = inicio !== null && seguidas === -1 && desdeInicio < n && desdeInicio < disponiveis ? ` Só contam as SE completas desde o acionamento em vigor (SE ${ss(inicio)}).` : '';
+  // A contagem parou numa SE com a sugestão abaixo: sem canal (o critério de canal não foi avaliado) ou com a curva ainda
+  // no nível do critério de canal do estágio em vigor ou de um acima.
+  const parada = seguidas === -1 ? null : anteriores[seguidas]!;
+  let notaParada = '';
+  if (parada && ord(parada.sugestao) < ord(atual)) {
+    if (parada.semCanal || ord(parada.piso) >= ord(atual)) notaParada = ' A SE sem canal (sem base que cubra a semana, sem população ou com o quartil indefinido) não conta como abaixo: a curva pode não ter descido.';
+    else if (parada.acima)
+      notaParada = ` A SE ${ss(parada.acima.semana)} não conta como abaixo: a curva de ${parada.acima.agravo} está ${ROTULO_STATUS_SEMANA[parada.acima.status].toLowerCase()}, no nível do critério de canal de ${nomes.get(parada.acima.estagio)}; descer pede a curva abaixo desse nível em cada SE.`;
+  }
+  return {
+    sugerido: atual,
+    criterios,
+    porEstagio,
+    desmobilizacao: {
+      sugerida: false,
+      detalhe: `Sugestão abaixo de ${nomes.get(atual)} há ${abaixo} de ${n} SE completas seguidas: manter ${nomes.get(atual)} até completar ${n}.${notaInicio}${notaParada}${notaAcumulado}`,
+    },
+  };
+}
+
+/** A curva de um agravo numa SE, no nível do critério de canal de um estágio. */
+interface PontoDaCurva {
+  semana: string;
+  agravo: string;
+  status: StatusSemana;
+  estagio: string;
+}
+
+/** Uma SE na contagem da descida. */
+interface SemanaDaDescida {
+  /** Estágio sugerido pelos critérios na SE (sem o acumulado do agravo de volta ao canal). */
+  sugestao: string;
+  /** Maior estágio com critério de canal sem avaliação na SE (num agravo vigiado); o menor estágio, se nenhum. */
+  piso: string;
+  /** Algum agravo vigiado (de S, ou com critério de canal sem avaliação nas SE contadas; com S vazio, com canal) está sem canal na SE. */
+  semCanal: boolean;
+  /** A curva da SE, num agravo de S, ainda no nível de um critério de canal do estágio em vigor ou de um acima (o primeiro achado). */
+  acima: PontoDaCurva | null;
+  /** A curva da SE, num agravo de S, no nível do critério de canal de um estágio abaixo do em vigor: o maior (piso de nível). */
+  nivel: PontoDaCurva | null;
+}
+
+/**
+ * Agravos que sustentam o estágio em vigor (S): os com canal cujo critério de canal (de algum estágio até o em vigor:
+ * `deCanal` já vem filtrado) foi atendido no retrato do acionamento (as SE completas dos indicadores que a vigilância
+ * viu ao decidir, com a janela do critério terminando na última delas) ou numa SE completa a partir do limite, com a
+ * janela do critério terminando nela. O limite é o menor entre o início do acionamento em vigor e a SE seguinte à
+ * última SE completa do retrato: as SE entre as duas estavam incompletas quando a vigilância decidiu (com as 2 semanas
+ * incompletas do padrão, a SE anterior à do início) e não estão no retrato. Sem retrato, o início; sem acionamento,
+ * qualquer SE completa dos indicadores.
+ */
+function agravosQueSustentam(deCanal: { c: CriterioPlano; agravos: string[] }[], completasDe: Map<string, IndicadoresAgravo['semanas']>, acionamento: AcionamentoEmVigor | null): Set<string> {
+  const inicio = acionamento?.semanaInicio ?? null;
+  const retrato = new Map(
+    (Array.isArray(acionamento?.indicadores) ? acionamento.indicadores : []).filter((i) => i && typeof i.grupo === 'string').map((i) => [i.grupo, (Array.isArray(i.semanas) ? i.semanas : []).filter((s) => s.completa)]),
+  );
+  // A última SE completa do retrato (a semana de referência do dia do acionamento); null sem retrato.
+  const ultimaDoRetrato = [...retrato.values()].reduce<string | null>((m, cs) => {
+    const u = cs[cs.length - 1]?.semana;
+    return typeof u === 'string' && /^\d{6}$/.test(u) && (m === null || u > m) ? u : m;
+  }, null);
+  // A janela que termina na SE conta: desde o início, ou depois da última SE completa do retrato (o que vier antes).
+  const conta = (semana: string) => inicio === null || semana >= inicio || (ultimaDoRetrato !== null && semana > ultimaDoRetrato);
+  const sustentam = new Set<string>();
+  for (const { c, agravos } of deCanal)
+    for (const agravo of agravos) {
+      if (sustentam.has(agravo)) continue;
+      const cs = completasDe.get(agravo) ?? [];
+      // As SE completas a partir do limite, da mais recente para trás (os indicadores vêm em ordem).
+      for (let recuo = 0; recuo < cs.length && conta(cs[cs.length - 1 - recuo]!.semana); recuo++)
+        if (avaliarCanalNas(c, cs, recuo).atendido === true) {
+          sustentam.add(agravo);
+          break;
+        }
+      const doRetrato = retrato.get(agravo);
+      if (!sustentam.has(agravo) && doRetrato && avaliarCanalNas(c, doRetrato, 0).atendido === true) sustentam.add(agravo);
+    }
+  return sustentam;
+}
+
+// ───────────── Conferência da definição ─────────────
+
+const ID_CRITERIO = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/;
+const CHAVE_ESTAGIO = /^[A-Z][A-Z0-9_]{1,29}$/;
+const GRUPO_AGRAVO = /^[a-z0-9-]{2,40}$/;
+const inteiroEntre = (v: number | undefined, min: number, max: number) => v === undefined || (Number.isInteger(v) && v >= min && v <= max);
+
+/**
+ * Conferência da definição do plano, a mesma na API (antes de gravar e de pôr em vigor) e na tela: estágios e critérios
+ * únicos, normalidade sem critério e com ordem 0, agravos do critério dentro dos do plano, semanas (ou k e n) nos
+ * critérios de canal, limiar nos numéricos (percentual até 100), ações de estágios que existem e os limites do formato.
+ * Devolve as mensagens; vazio = definição válida.
+ */
+export function validarPlano(d: PlanoContingencia): string[] {
+  const erros: string[] = [];
+  if (d.estagios.length < 2 || d.estagios.length > 10) erros.push('O plano tem de 2 a 10 estágios.');
+  const chaves = d.estagios.map((e) => e.chave);
+  if (new Set(chaves).size !== chaves.length) erros.push('Há estágios com a mesma chave.');
+  if (new Set(d.estagios.map((e) => e.ordem)).size !== d.estagios.length) erros.push('Há estágios com a mesma ordem.');
+  if (d.estagios.length && Math.min(...d.estagios.map((e) => e.ordem)) !== 0) erros.push('O primeiro estágio (normalidade) tem ordem 0.');
+  for (const e of d.estagios) {
+    if (!CHAVE_ESTAGIO.test(e.chave)) erros.push(`Estágio ${e.chave}: chave inválida.`);
+    if (e.nome.trim().length < 2 || e.nome.trim().length > 60) erros.push(`Estágio ${e.chave}: o nome tem de 2 a 60 caracteres.`);
+  }
+  if (!d.agravos.length) erros.push('O plano precisa de pelo menos um agravo.');
+  if (new Set(d.agravos).size !== d.agravos.length) erros.push('Há agravos repetidos no plano.');
+  for (const a of d.agravos) if (!GRUPO_AGRAVO.test(a)) erros.push(`Agravo ${a}: identificador inválido.`);
+  const ordem = new Map(d.estagios.map((e) => [e.chave, e.ordem]));
+  if (d.criterios.length > 200) erros.push('O plano tem no máximo 200 critérios.');
+  const ids = new Set<string>();
+  for (const c of d.criterios) {
+    const onde = `Critério ${c.id}`;
+    if (!ID_CRITERIO.test(c.id)) erros.push(`${onde}: identificador inválido.`);
+    if (ids.has(c.id)) erros.push(`${onde}: identificador repetido.`);
+    ids.add(c.id);
+    if (!ordem.has(c.estagio)) erros.push(`${onde}: estágio ${c.estagio} não existe no plano.`);
+    else if (ordem.get(c.estagio) === 0) erros.push(`${onde}: a normalidade não tem critério (é o estado padrão).`);
+    const fora = c.agravos.filter((a) => !d.agravos.includes(a));
+    if (fora.length) erros.push(`${onde}: agravo(s) fora do plano (${fora.join(', ')}).`);
+    const descricao = c.descricao.trim().length;
+    if (descricao < 5 || descricao > 500) erros.push(`${onde}: a descrição tem de 5 a 500 caracteres.`);
+    if ((c.fonte ?? '').trim().length > 300) erros.push(`${onde}: a fonte tem até 300 caracteres.`);
+    if (CANAL.includes(c.tipo)) {
+      if (!inteiroEntre(c.semanas, 1, 52) || !inteiroEntre(c.k, 1, 52) || !inteiroEntre(c.n, 1, 52)) erros.push(`${onde}: semanas, k e n são inteiros de 1 a 52.`);
+      if (c.modo === 'K_DE_N') {
+        const n = c.n ?? c.semanas;
+        if (!c.k || !n) erros.push(`${onde}: informe k e n (pelo menos k das últimas n semanas).`);
+        else if (c.k > n) erros.push(`${onde}: k não pode ser maior que n.`);
+      } else if (!c.semanas) erros.push(`${onde}: informe quantas semanas seguidas o critério pede.`);
+    } else if (c.tipo !== 'MANUAL') {
+      if (c.limiar === undefined || c.limiar === null || !Number.isFinite(c.limiar)) erros.push(`${onde}: informe o limiar.`);
+      else if (c.limiar < 0) erros.push(`${onde}: o limiar não pode ser negativo.`);
+      else if (PERCENTUAIS.includes(c.tipo) && c.limiar > 100) erros.push(`${onde}: o limiar é um percentual (até 100).`);
+      else if (c.limiar > 1_000_000) erros.push(`${onde}: limiar grande demais.`);
+    }
+  }
+  if (d.acoes.length > 500) erros.push('O plano tem no máximo 500 ações.');
+  for (const a of d.acoes) {
+    if (!ordem.has(a.estagio)) erros.push(`Ação "${a.descricao}": estágio ${a.estagio} não existe no plano.`);
+    const n = a.descricao.trim().length;
+    if (n < 3 || n > 500) erros.push(`Ação "${a.descricao || '(vazia)'}": a descrição tem de 3 a 500 caracteres.`);
+  }
+  if (!inteiroEntre(d.desmobilizacao.semanas, 1, 52) || !d.desmobilizacao.semanas) erros.push('Desmobilização: semanas inteiras de 1 a 52.');
+  const desc = d.desmobilizacao.descricao.trim().length;
+  if (desc < 3 || desc > 1000) erros.push('Desmobilização: a descrição tem de 3 a 1.000 caracteres.');
+  return erros;
+}
+
+/** Semanas incompletas (as `semanasIncompletas` mais recentes, contando a semana em curso) e a última completa. */
+export interface JanelaSemanasIncompletas {
+  /** Da mais antiga à mais recente (a última é a semana em curso). */
+  incompletas: string[];
+  ultimaCompleta: string;
+}
+
+/** A semana em curso nunca é completa: com `semanasIncompletas` menor que 1, vale 1. */
+export function semanasCompletas(semanaAtual: string, semanasIncompletas: number): JanelaSemanasIncompletas {
+  const n = Math.max(1, Math.trunc(semanasIncompletas));
+  return {
+    incompletas: Array.from({ length: n }, (_, i) => deslocarSemana(semanaAtual, i - (n - 1))),
+    ultimaCompleta: deslocarSemana(semanaAtual, -n),
+  };
+}

@@ -18,19 +18,77 @@ import type { AdminUnit } from './types';
 const empty = { name: '', type: 'UBS' as UnitType, cnes: '', ibgeCode: '', address: '', phone: '', email: '', openingHours: '' };
 type Form = typeof empty;
 
-/** Cadastro das unidades da rede (CNES, tipo, contato, horário). Desativar esconde a unidade das lotações e agendas. */
+/**
+ * O que a desativação faz na notificação negativa (a API, na mesma transação): o período de unidade notificante e as
+ * designações de responsável terminam hoje; o que só começaria depois de hoje é apagado. Reativar não reabre nada.
+ */
+export const AVISO_DESATIVAR_UNIDADE = 'Encerra hoje o período de unidade notificante e as designações de responsável pela notificação negativa (o que só começaria depois de hoje é apagado); reativar não os reabre.';
+
+/** Confirmação da desativação, com o efeito na notificação negativa. */
+export function ConfirmarDesativacao({ unit, onFechar, onFeito }: { unit: Pick<AdminUnit, 'id' | 'name'>; onFechar: () => void; onFeito: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  async function desativar() {
+    setBusy(true);
+    setErro(null);
+    try {
+      await api.patch(`/admin/units/${unit.id}`, { active: false });
+      toast.success('Unidade desativada');
+      onFeito();
+    } catch (err) {
+      setErro(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Dialog
+      open
+      size="sm"
+      onOpenChange={(o) => !o && onFechar()}
+      title={`Desativar ${unit.name}?`}
+      description="A unidade deixa de aparecer nas lotações e nas agendas."
+      footer={
+        <>
+          <Button variant="secondary" onClick={onFechar}>
+            Cancelar
+          </Button>
+          <Button variant="danger" loading={busy} onClick={desativar}>
+            Desativar
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3">
+        <Alert tone="warn">{AVISO_DESATIVAR_UNIDADE}</Alert>
+        {erro && <Alert tone="error">{erro}</Alert>}
+      </div>
+    </Dialog>
+  );
+}
+
+/**
+ * Cadastro das unidades da rede (CNES, tipo, contato, horário). Desativar (com confirmação) esconde a unidade das
+ * lotações e agendas e encerra hoje o período de unidade notificante e as designações de responsável pela notificação
+ * negativa (o que só começaria depois é apagado); reativar não os reabre: a vigilância abre um período novo.
+ */
 export function UnitsAdmin() {
   const toast = useToast();
   const [showInactive, setShowInactive] = useState(false);
   const { data, loading, error, reload } = useApi<AdminUnit[]>(`/admin/units?includeInactive=${showInactive}`, [showInactive]);
   const [editing, setEditing] = useState<{ id: string | null; form: Form } | null>(null);
+  const [desativando, setDesativando] = useState<AdminUnit | null>(null);
   const [busy, setBusy] = useState(false);
 
   function open(unit?: AdminUnit) {
     const ibge = unit?.ibgeCode ?? data?.[0]?.ibgeCode ?? '';
     setEditing(
       unit
-        ? { id: unit.id, form: { name: unit.name, type: unit.type, cnes: unit.cnes, ibgeCode: unit.ibgeCode, address: unit.address ?? '', phone: unit.phone ?? '', email: unit.email ?? '', openingHours: unit.openingHours ?? '' } }
+        ? {
+            id: unit.id,
+            form: { name: unit.name, type: unit.type, cnes: unit.cnes, ibgeCode: unit.ibgeCode, address: unit.address ?? '', phone: unit.phone ?? '', email: unit.email ?? '', openingHours: unit.openingHours ?? '' },
+          }
         : { id: null, form: { ...empty, ibgeCode: ibge } },
     );
   }
@@ -52,10 +110,15 @@ export function UnitsAdmin() {
     }
   }
 
+  /** Desativar pede confirmação (o efeito na notificação negativa); reativar é direto. */
   async function toggle(unit: AdminUnit) {
+    if (unit.active) {
+      setDesativando(unit);
+      return;
+    }
     try {
-      await api.patch(`/admin/units/${unit.id}`, { active: !unit.active });
-      toast.success(unit.active ? 'Unidade desativada' : 'Unidade reativada');
+      await api.patch(`/admin/units/${unit.id}`, { active: true });
+      toast.success('Unidade reativada. A notificação negativa não é reaberta: a vigilância abre um período novo se ela voltou a notificar.');
       await reload();
     } catch (err) {
       toast.error(errorMessage(err));
@@ -82,7 +145,11 @@ export function UnitsAdmin() {
         }
       />
       <CardBody className="overflow-x-auto p-0">
-        {error && <Alert tone="error" className="m-4">{error}</Alert>}
+        {error && (
+          <Alert tone="error" className="m-4">
+            {error}
+          </Alert>
+        )}
         {loading && !data ? (
           <Spinner className="py-10" />
         ) : !data?.length ? (
@@ -117,10 +184,11 @@ export function UnitsAdmin() {
                   <TD>{u._count.assignments}</TD>
                   <TD>{u.active ? <Badge tone="green">Ativa</Badge> : <Badge tone="slate">Desativada</Badge>}</TD>
                   <TD className="whitespace-nowrap text-right">
-                    <Button size="sm" variant="ghost" onClick={() => open(u)}>
+                    {/* Os botões se repetem em cada linha: o nome acessível diz de qual unidade são. */}
+                    <Button size="sm" variant="ghost" aria-label={`Editar ${u.name}`} onClick={() => open(u)}>
                       <Pencil className="h-4 w-4" /> Editar
                     </Button>
-                    <Button size="sm" variant="ghost" onClick={() => toggle(u)}>
+                    <Button size="sm" variant="ghost" aria-label={`${u.active ? 'Desativar' : 'Reativar'} ${u.name}`} onClick={() => toggle(u)}>
                       {u.active ? 'Desativar' : 'Reativar'}
                     </Button>
                   </TD>
@@ -130,6 +198,16 @@ export function UnitsAdmin() {
           </Table>
         )}
       </CardBody>
+      {desativando && (
+        <ConfirmarDesativacao
+          unit={desativando}
+          onFechar={() => setDesativando(null)}
+          onFeito={() => {
+            setDesativando(null);
+            void reload();
+          }}
+        />
+      )}
       <Dialog
         open={!!editing}
         onOpenChange={(o) => !o && setEditing(null)}

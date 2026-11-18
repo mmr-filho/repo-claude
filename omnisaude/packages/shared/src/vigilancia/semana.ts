@@ -53,3 +53,19 @@ export function intervaloDaSemana(ano: number, semana: number): { inicio: string
   const iso = (t: number) => new Date(t).toISOString().slice(0, 10);
   return { inicio: iso(ini), fim: iso(ini + 6 * DIA) };
 }
+
+/** Semana "AAAASS" deslocada de `n` semanas (negativo volta), atravessando a virada do ano epidemiológico. */
+export function deslocarSemana(codigo: string, n: number): string {
+  const ano = Number(codigo.slice(0, 4));
+  const semana = Number(codigo.slice(4));
+  if (!/^\d{6}$/.test(codigo) || semana < 1 || semana > semanasNoAno(ano)) throw new Error(`Semana ${codigo} inexistente`);
+  const dia = inicioAnoEpidemiologico(ano) + (semana - 1 + n) * 7 * DIA;
+  return semanaDaData(new Date(dia).toISOString().slice(0, 10)).codigo;
+}
+
+/** Semanas "AAAASS" de `de` até `ate`, inclusive, em ordem (vazio se `de` vier depois de `ate`). */
+export function semanasEntre(de: string, ate: string): string[] {
+  const semanas: string[] = [];
+  for (let s = de; s <= ate; s = deslocarSemana(s, 1)) semanas.push(s);
+  return semanas;
+}

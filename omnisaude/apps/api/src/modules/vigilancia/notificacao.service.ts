@@ -1,5 +1,6 @@
 import { HttpStatus, Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common';
-import { tenantSettings, type MasterClient, type TenantClient, type VigilanciaSettings } from '@omnisaude/database';
+import { ModuleRef } from '@nestjs/core';
+import { mesclarBlocosVigilancia, tenantSettings, type MasterClient, type MudancaVigilancia, type TenantClient, type VigilanciaSettings } from '@omnisaude/database';
 import { buildSurveillanceAlertTemplate, normalizeBrazilPhone } from '@omnisaude/messaging';
 import {
   agenteHepatite,
@@ -59,6 +60,7 @@ import { PRECISAO_LIGA_QUARTEIRAO } from '../territorio/localizador.service';
 import { MessagingService, type SystemContext } from '../integrations/messaging.service';
 import { CatalogoVigilanciaService, type CondicaoNoRetrato } from './catalogo.service';
 import { CAMPOS_EDITAVEIS, montarFicha, semanasDaFicha, validarFicha, type Ficha } from './ficha';
+import { NegativaService } from './negativa.service';
 
 const DIA = 86_400_000;
 const RESTRITO = 'Agravo de acesso restrito';
@@ -136,6 +138,8 @@ export class NotificacaoService implements OnModuleInit {
     private readonly jobs: JobsService,
     @Inject(MASTER_DB) private readonly master: MasterClient,
     private readonly tenants: TenantsService,
+    /** Serviços da consolidação (VIG-1c) pela referência do módulo: sem ciclo de injeção nem de importação. */
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   onModuleInit() {
@@ -1219,6 +1223,13 @@ export class NotificacaoService implements OnModuleInit {
       await this.audit.record(ctx, tx, { action: 'notificacao.confirmar', entityType: 'Notification', entityId: id, payload: { numero: n.number, agravo: n.conditionKey } });
     });
     await this.avisar(ctx, n, { ouvintes: false });
+    // Notificação negativa (RQ003): a semana da unidade passou a ter notificação e o atesto dela, se houver, cai. A falha
+    // não desfaz a confirmação: fica no registro de erros e o job 'vigilancia' reconcilia depois.
+    try {
+      if (semanas.SEM_NOT) await this.moduleRef.get(NegativaService, { strict: false }).reconciliar(ctx.db, { unitIds: [n.unitId], semanas: [semanas.SEM_NOT] });
+    } catch (err) {
+      this.logger.error(`Negativa da unidade na semana ${semanas.SEM_NOT} (notificação ${n.number}): ${(err as Error).message}`);
+    }
     return this.detalhe(ctx, id);
   }
 
@@ -1741,35 +1752,61 @@ export class NotificacaoService implements OnModuleInit {
     return c;
   }
 
-  configuracoes(ctx: RequestContext) {
-    return { ...ctx.tenant.settings.vigilancia, whatsappEnabled: ctx.tenant.settings.whatsappEnabled };
+  /**
+   * As configurações da vigilância lidas no banco mestre, sem o cache do catálogo (até 60 s em cada instância da API):
+   * a tela de parâmetros mostra o valor salvo logo depois de salvar, mesmo vindo de outra instância.
+   */
+  async configuracoes(ctx: RequestContext) {
+    const t = await this.master.tenant.findUnique({ where: { id: ctx.tenant.id }, select: { settings: true } });
+    const s = t ? tenantSettings(t.settings) : ctx.tenant.settings;
+    return { ...s.vigilancia, whatsappEnabled: s.whatsappEnabled };
   }
 
-  /** Plantão e escalonamento: gravados nas configurações da instituição (banco mestre), como a política de MFA. */
-  async salvarConfiguracoes(ctx: RequestContext, input: Partial<VigilanciaSettings>) {
+  /**
+   * Plantão e escalonamento, e os parâmetros da semana 27 (negativa, consolidação e os dias do evento inusitado do
+   * surto, campo a campo): gravados nas configurações da instituição (banco mestre), como a política de MFA. As regras
+   * de sugestão de surto não se editam por aqui. Lê, mescla e grava numa transação, com a linha da instituição travada
+   * (FOR UPDATE): dois salvamentos ao mesmo tempo entram em fila, e o segundo mescla sobre o que o primeiro gravou.
+   */
+  async salvarConfiguracoes(ctx: RequestContext, input: MudancaVigilancia) {
     const telefones = input.onCallPhones?.map((t) => normalizeBrazilPhone(t));
     if (telefones?.some((t) => !t)) throw new DomainError('TELEFONE_INVALIDO', 'Informe celulares com DDD', HttpStatus.BAD_REQUEST);
-    const t = await this.master.tenant.findUniqueOrThrow({ where: { id: ctx.tenant.id } });
-    const atual = tenantSettings(t.settings);
-    const vigilancia: VigilanciaSettings = {
-      ackMinutes: input.ackMinutes ?? atual.vigilancia.ackMinutes,
-      onCallPhones: telefones ? [...new Set(telefones as string[])] : atual.vigilancia.onCallPhones,
-      whatsappAlerts: input.whatsappAlerts ?? atual.vigilancia.whatsappAlerts,
-      relEnabled: input.relEnabled ?? atual.vigilancia.relEnabled,
-      prazosEncerramento: input.prazosEncerramento
-        ? Object.fromEntries(Object.entries(input.prazosEncerramento).filter(([grupo, dias]) => /^[a-z0-9-]{2,40}$/.test(grupo) && Number.isInteger(dias) && dias > 0 && dias <= 365))
-        : atual.vigilancia.prazosEncerramento,
-      modeloPolicial: input.modeloPolicial !== undefined ? input.modeloPolicial?.trim() || null : atual.vigilancia.modeloPolicial,
-    };
-    // Só a chave "vigilancia", de forma atômica: não desfaz uma mudança simultânea da política de MFA.
-    await this.master.$executeRaw`UPDATE tenants SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{vigilancia}', ${JSON.stringify(vigilancia)}::jsonb) WHERE id = ${ctx.tenant.id}::uuid`;
+    const { vigilancia, atual } = await this.master.$transaction(async (tx) => {
+      const [linha] = await tx.$queryRaw<{ settings: unknown }[]>`SELECT settings FROM tenants WHERE id = ${ctx.tenant.id}::uuid FOR UPDATE`;
+      if (!linha) throw notFound('Instituição');
+      const atual = tenantSettings(linha.settings);
+      const vigilancia: VigilanciaSettings = {
+        ...atual.vigilancia,
+        ...mesclarBlocosVigilancia(atual.vigilancia, input),
+        ackMinutes: input.ackMinutes ?? atual.vigilancia.ackMinutes,
+        onCallPhones: telefones ? [...new Set(telefones as string[])] : atual.vigilancia.onCallPhones,
+        whatsappAlerts: input.whatsappAlerts ?? atual.vigilancia.whatsappAlerts,
+        relEnabled: input.relEnabled ?? atual.vigilancia.relEnabled,
+        prazosEncerramento: input.prazosEncerramento
+          ? Object.fromEntries(Object.entries(input.prazosEncerramento).filter(([grupo, dias]) => /^[a-z0-9-]{2,40}$/.test(grupo) && Number.isInteger(dias) && dias > 0 && dias <= 365))
+          : atual.vigilancia.prazosEncerramento,
+        modeloPolicial: input.modeloPolicial !== undefined ? input.modeloPolicial?.trim() || null : atual.vigilancia.modeloPolicial,
+      };
+      // Só a chave "vigilancia", de forma atômica: não desfaz uma mudança simultânea da política de MFA.
+      await tx.$executeRaw`UPDATE tenants SET settings = jsonb_set(COALESCE(settings, '{}'::jsonb), '{vigilancia}', ${JSON.stringify(vigilancia)}::jsonb) WHERE id = ${ctx.tenant.id}::uuid`;
+      return { vigilancia, atual };
+    });
     this.tenants.connections.invalidate(ctx.tenant.slug);
     this.tenants.connections.invalidate(ctx.tenant.id);
     await this.audit.recordStandalone(ctx, {
       action: 'vigilancia.configuracoes',
       entityType: 'Tenant',
       entityId: ctx.tenant.id,
-      payload: { ackMinutes: vigilancia.ackMinutes, telefones: vigilancia.onCallPhones.length, whatsappAlerts: vigilancia.whatsappAlerts, relEnabled: vigilancia.relEnabled, prazos: vigilancia.prazosEncerramento },
+      payload: {
+        ackMinutes: vigilancia.ackMinutes,
+        telefones: vigilancia.onCallPhones.length,
+        whatsappAlerts: vigilancia.whatsappAlerts,
+        relEnabled: vigilancia.relEnabled,
+        prazos: vigilancia.prazosEncerramento,
+        negativa: vigilancia.negativa,
+        consolidacao: vigilancia.consolidacao,
+        diasInusitado: vigilancia.surto.diasInusitado,
+      },
     });
     return { ...vigilancia, whatsappEnabled: atual.whatsappEnabled };
   }
@@ -1785,11 +1822,12 @@ export class NotificacaoService implements OnModuleInit {
   }
 
   /**
-   * A cada 5 minutos: recupera o que o gatilho deixou de abrir, escala ao plantão e marca prazos vencidos.
+   * A cada 5 minutos: recupera o que o gatilho deixou de abrir, escala ao plantão e marca prazos vencidos; da semana 27,
+   * reconcilia a negativa (RQ003), expira as prévias de importação e vincula os registros oficiais (conciliação).
    * Tudo idempotente (execuções sobrepostas não duplicam rascunho, alerta nem evento).
    */
   async tarefa(sys: SystemContext, agora = new Date()) {
-    const resultado = { recuperadas: 0, escaladas: 0, vencidas: 0 };
+    const resultado = { recuperadas: 0, escaladas: 0, vencidas: 0, negativasCanceladas: 0, previasExpiradas: 0, vinculadosAutomaticamente: 0 };
     const desde = new Date(agora.getTime() - 2 * DIA);
     await this.catalogo.garantir(sys);
     const memo: Memo = { retratos: new Map() };
@@ -1905,6 +1943,51 @@ export class NotificacaoService implements OnModuleInit {
       await sys.db.notificationEvent.create({ data: { notificationId: n.id, kind: 'PRAZO_VENCIDO' } });
       await this.avisar(sys, n, { ouvintes: false });
       resultado.vencidas++;
+    }
+
+    // 4. Notificação negativa (RQ003, VIG-1c): atestos de semanas que passaram a ter notificação, surto ou registro oficial.
+    try {
+      resultado.negativasCanceladas = await this.moduleRef.get(NegativaService, { strict: false }).reconciliar(sys.db);
+    } catch (err) {
+      this.logger.error(`Reconciliação da notificação negativa: ${(err as Error).message}`);
+    }
+
+    // 5. Prévias de importação vencidas (VIG-1c): viram descartadas e perdem o payload. A classe vem por import dinâmico:
+    // a importação depende da conciliação, que depende deste serviço (o import estático fecharia o ciclo).
+    try {
+      const { ImportacaoService } = await import('./importacao.service.js');
+      resultado.previasExpiradas = await this.moduleRef.get(ImportacaoService, { strict: false }).expirarPrevias(sys.db, agora, sys.tenant.settings.vigilancia.consolidacao.expiraPreviaHoras);
+    } catch (err) {
+      this.logger.error(`Expiração das prévias de importação: ${(err as Error).message}`);
+    }
+
+    // 6. Vínculo automático da conciliação (VIG-1c, degraus 1 e 2) entre os registros oficiais e as notificações sem
+    // vínculo: a notificação confirmada, ou que ganhou o número oficial, depois da importação casa com o registro já
+    // importado sem esperar o próximo envio. Import dinâmico pelo mesmo motivo do passo 5. Só roda quando há registro e
+    // notificação sem vínculo. As duas travas são tentadas sem esperar, na ordem da importação (a da importação, depois
+    // a da conciliação): com uma aplicação em andamento, devolve 0 e tenta na próxima vez. Esperar pela da conciliação
+    // com a importação no meio da gravação (registros com trava de linha) fechava um ciclo, e o banco derrubava a
+    // importação (40P01).
+    try {
+      const [pendente] = await sys.db.$queryRaw<{ ok: boolean }[]>`
+        SELECT EXISTS (SELECT 1 FROM official_records r WHERE r.type = 'INDIVIDUAL' AND NOT r.excluded AND r.notification_id IS NULL)
+           AND EXISTS (SELECT 1 FROM notifications n WHERE n.status IN ('NOTIFICADA', 'ENCERRADA') AND NOT EXISTS (SELECT 1 FROM official_records x WHERE x.notification_id = n.id)) AS ok`;
+      if (pendente?.ok) {
+        const { ConciliacaoService } = await import('./conciliacao.service.js');
+        const conciliacao = this.moduleRef.get(ConciliacaoService, { strict: false });
+        resultado.vinculadosAutomaticamente = await sys.db.$transaction(
+          async (tx) => {
+            for (const chave of ['vigilancia:importacao', 'vigilancia:conciliacao']) {
+              const [trava] = await tx.$queryRaw<{ ok: boolean }[]>`SELECT pg_try_advisory_xact_lock(hashtext(${chave})) AS ok`;
+              if (!trava?.ok) return 0;
+            }
+            return conciliacao.conciliarAutomatico(tx, { timeZone: sys.tenant.timeZone });
+          },
+          { timeout: 120_000, maxWait: 10_000 },
+        );
+      }
+    } catch (err) {
+      this.logger.error(`Vínculo automático da conciliação: ${(err as Error).message}`);
     }
     return resultado;
   }

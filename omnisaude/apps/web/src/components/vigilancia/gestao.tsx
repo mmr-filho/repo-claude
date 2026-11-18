@@ -2,6 +2,7 @@
 
 import { PRAZO_ENCERRAMENTO_AGUDOS, PRAZOS_ENCERRAMENTO_REFERENCIA, MODELO_POLICIAL_PADRAO } from '@omnisaude/shared';
 import { CheckCheck, Plus } from 'lucide-react';
+import Link from 'next/link';
 import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,6 +15,7 @@ import { useToast } from '@/components/ui/toast';
 import { api, errorMessage } from '@/lib/api';
 import { fmtDate, todayIso } from '@/lib/format';
 import { useApi } from '@/lib/hooks';
+import { LINK_PARAMETROS_NEGATIVA } from '../consolidacao/negativa-regras';
 import type { CondicaoCatalogo, MapaCodigo, RotaSistema, VersaoCatalogo } from './types';
 
 const ESCOPO: Record<string, string> = { NACIONAL: 'Nacional', ESTADUAL: 'Estadual', MUNICIPAL: 'Municipal' };
@@ -428,6 +430,18 @@ export function PlantaoTab() {
               </div>
             </>
           )}
+        </CardBody>
+      </Card>
+      <Card id="vig-atalho-parametros">
+        <CardHeader title="Prazos e parâmetros da negativa e da consolidação" />
+        <CardBody className="flex flex-col gap-2 text-sm">
+          <p className="text-slate-600">
+            Lá se ajustam o prazo do atesto e a meta da notificação negativa, as semanas da unidade silenciosa, das só negativas e da regularidade do município, as semanas incompletas e a validade da prévia da
+            importação, e os dias sem caso do evento inusitado.
+          </p>
+          <Link href={LINK_PARAMETROS_NEGATIVA} className="font-medium text-brand-700 hover:underline">
+            Consolidação e surtos › Notificação negativa › Prazos e parâmetros
+          </Link>
         </CardBody>
       </Card>
       <EnvioEncerramento cfg={cfg.data ?? null} onSaved={() => cfg.reload()} />

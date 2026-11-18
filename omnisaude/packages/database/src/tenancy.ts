@@ -97,16 +97,26 @@ export class TenantConnectionManager {
   private readonly catalog = new Map<string, { info: TenantInfo; at: number }>();
   private readonly open = new Map<string, OpenTenant>();
   private readonly opening = new Map<string, Promise<OpenTenant>>();
+  /** Geração das invalidações: sobe a cada invalidate(); `invalidada` guarda a da última invalidação de cada chave. */
+  private geracao = 0;
+  private geracaoGeral = 0;
+  private readonly invalidada = new Map<string, number>();
 
   constructor(
     private readonly master: MasterClient,
     private readonly options: TenantConnectionOptions,
   ) {}
 
+  /**
+   * O tenant pelo slug ou pelo id, com o catálogo em cache por `catalogTtlMs` (60 s) nesta instância. A leitura que
+   * começou antes de uma invalidação da chave (o slug ou o id) e terminou depois devolve o que leu a quem pediu, mas não
+   * vai para o cache: senão a configuração de antes do salvamento ficaria em uso até o fim do prazo.
+   */
   async resolve(slugOrId: string): Promise<TenantInfo> {
     const ttl = this.options.catalogTtlMs ?? 60_000;
     const cached = this.catalog.get(slugOrId);
     if (cached && Date.now() - cached.at < ttl) return cached.info;
+    const inicio = this.geracao;
     const isUuid = /^[0-9a-f-]{36}$/i.test(slugOrId);
     const tenant = await this.master.tenant.findUnique({
       where: isUuid ? { id: slugOrId } : { slug: slugOrId },
@@ -129,15 +139,27 @@ export class TenantConnectionManager {
         credentialsRef: tenant.database.credentialsRef,
       },
     };
-    this.catalog.set(tenant.id, { info, at: Date.now() });
-    this.catalog.set(tenant.slug, { info, at: Date.now() });
+    const valeAinda = (chave: string) => this.geracaoGeral <= inicio && (this.invalidada.get(chave) ?? 0) <= inicio;
+    if (valeAinda(tenant.id) && valeAinda(tenant.slug)) {
+      this.catalog.set(tenant.id, { info, at: Date.now() });
+      this.catalog.set(tenant.slug, { info, at: Date.now() });
+    }
     return info;
   }
 
-  /** Esquece o cache do catálogo (ex.: tenant suspenso ou migrado de servidor). */
+  /**
+   * Esquece o cache do catálogo (ex.: tenant suspenso ou migrado de servidor, configuração salva). A leitura em
+   * andamento da chave (ou de qualquer uma, sem chave) não regrava o cache com o que leu antes.
+   */
   invalidate(slugOrId?: string): void {
-    if (slugOrId) this.catalog.delete(slugOrId);
-    else this.catalog.clear();
+    this.geracao++;
+    if (slugOrId) {
+      this.catalog.delete(slugOrId);
+      this.invalidada.set(slugOrId, this.geracao);
+    } else {
+      this.catalog.clear();
+      this.geracaoGeral = this.geracao;
+    }
   }
 
   /** Confere o status a cada uso (cache de catalogTtlMs): tenant suspenso perde o acesso mesmo com conexão aberta. */

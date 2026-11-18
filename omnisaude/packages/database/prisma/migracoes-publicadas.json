@@ -33,6 +33,7 @@
     "0027_endemias": "f487db628777f9b8daeb507689afd5285bf94e1fec8d28ccbe067688f2012cd3",
     "0028_endemias_ajustes": "45a6b9c4035e2164bc7d19ddc8aafc1daf15344bb612f615166cb4fc934a9a39",
     "0029_inicio_do_campo_e_cadeia_de_unificacao": "918f8482b799dddaafc1aa9b92499f4ee8beb1c79da9b3c6635d2be137c79860",
-    "0030_cadeia_de_unificacao_sem_limite": "72099b781234a73ac61a7ead20ca8ebf20b4cc138e84cf1cb917e67e3033376c"
+    "0030_cadeia_de_unificacao_sem_limite": "72099b781234a73ac61a7ead20ca8ebf20b4cc138e84cf1cb917e67e3033376c",
+    "0031_consolidacao_surto_negativa": "87905fc0124126877d0cade96df31f3a61b53c56b898f5990b56987c42c3b9c7"
   }
 }

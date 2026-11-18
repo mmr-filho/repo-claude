@@ -1,5 +1,5 @@
 import { inflateSync } from 'node:zlib';
-import { cnsFromBase, completeCpf } from '@omnisaude/shared';
+import { cnsFromBase, completeCpf, localDateString } from '@omnisaude/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TenantsService } from '../src/core/database';
 import { AiService } from '../src/modules/integrations/ai.service';
@@ -41,7 +41,8 @@ describe.runIf(enabled)('Vigilância: saída para os sistemas oficiais, encerram
   const ids: Record<string, string> = {};
   const auth = (tk: string) => ({ authorization: `Bearer ${tk}` });
   const address = { cep: '77405070', street: 'Rua da Saída', number: '24', district: 'Centro', city: 'Gurupi', uf: 'TO', ibgeCode: '1709500' };
-  const hoje = () => new Date().toISOString().slice(0, 10);
+  // A data de hoje no fuso da instituição (o da demonstração): entre 21h e 24h de Brasília, a data em UTC já é amanhã.
+  const hoje = () => localDateString(new Date(), 'America/Sao_Paulo');
 
   const novoPaciente = async (name: string, sex: 'M' | 'F', birthDate: string) => {
     seq++;

@@ -49,6 +49,16 @@ Uma posição nova só substitui a atual se for de precisão igual ou melhor: a 
 Só as quatro primeiras ligam o imóvel ao quarteirão (tolerância de 15 m da borda, para o ponto na calçada) e só
 elas vão para os geo campos 1 e 2 da ficha de notificação.
 
+- **Quarteirão do ponto** (`LocalizadorService`, em `apps/api/src/modules/territorio/localizador.service.ts`): o que
+  contém o ponto (a borda conta como dentro, com distância zero) ou, fora de todos, o mais próximo até 15 m. Entre os
+  que servem igualmente ao ponto (quarteirões sobrepostos, como a malha importada duas vezes com outra numeração; o
+  ponto na divisa; dois à mesma distância), vence o de menor área (`area_m2`) e depois o de menor id: a escolha é o
+  menor (distância, área, id), e não depende da ordem em que os candidatos chegam. A consulta de um ponto lê os
+  quarteirões ativos cuja caixa encosta na caixa do ponto ampliada em 15 m, na ordem da área e do id, até 200. O lote
+  (base consolidada, sugestões de surto e mapa de casos) usa os mesmos 200 candidatos de cada ponto, na mesma ordem,
+  com duas consultas para todos os pontos, também na malha sobreposta, e nunca volta à consulta de um ponto: o
+  quarteirão é o mesmo. A religação de todos os imóveis escolhe pela mesma regra, sem o limite de 200, e o raio do
+  bloqueio ordena os quarteirões pela distância, com o mesmo desempate.
 - Leitura do GPS com precisão pior que 50 m (rede, ambiente fechado) não vira a posição do imóvel, no cadastro do
   domicílio e na visita do ACS; o app só manda coordenada quando há leitura nova no aparelho.
 - Endereço corrigido sem leitura nova apaga a posição que tinha vindo do endereço antigo (base do IBGE, centro de
@@ -128,6 +138,11 @@ auditada.
   cor por agravo, contorno tracejado quando a posição pede confirmação em campo, quarteirões com mais casos; clicar
   num caso traça o raio e lista os quarteirões atingidos.
 - **Ficha da notificação**: cartão "Quarteirões no raio do bloqueio" (base da ordem de bloqueio da semana 26).
+- **Vigilância > Consolidação e surtos > Conciliação** (bairros sem correspondência, `docs/VIGILANCIA.md`): quem tem
+  `vigilancia.importar` e `territorio.editar` liga o nome escrito nos registros oficiais a um bairro do território,
+  como apelido (de 2 a 120 caracteres, sem os espaços das pontas). O nome com caractere de controle (o nulo, a
+  tabulação, a quebra de linha no meio) é recusado com 400 VALIDACAO "Nome do bairro com caractere inválido (de
+  controle)".
 
 ### Sigilo e acesso
 
@@ -152,6 +167,10 @@ auditada.
   shapefile em UTM 22S com .prj reprojetado; recusa sem .prj, SAD69 e metros sem sistema; editor (sobreposição,
   número repetido, contorno cruzado, versão); posição por mapa e GPS; geocodificação pelo CNEFE; mapa de casos
   recusado para médica e ACS; quarteirões do caso; configuração e resumo.
+- Localização em lote (`apps/api/test/territorio-quarteiroes-lote.test.ts`, `vigilancia-mapa-lote.test.ts` e
+  `vigilancia-diagrama-quarteiroes.test.ts`): para cada ponto, o lote dá o mesmo quarteirão que a consulta de um ponto
+  (dentro, na rua, na divisa, no empate, na malha importada duas vezes e com mais candidatos do que a consulta de um
+  ponto lê), com um número fixo de consultas.
 - No navegador (build de produção, mapa do OpenStreetMap): a gestora cadastra a localidade e dois bairros (um com
   apelido), importa 30 quarteirões e vê os 11 imóveis ligados, traça o raio de 150 m (8 quarteirões), desenha o
   quarteirão 31, importa uma amostra do CNEFE, localiza 2 imóveis pelo endereço (um por endereço, outro só pela rua,
@@ -164,5 +183,8 @@ auditada.
 - A malha real (bairros e quarteirões) é da instituição; sem ela, o território é desenhado no editor.
 - Imóveis sem posição não entram no quarteirão nem no raio; a fila de pendências mostra quantos são.
 - Distâncias com aproximação plana local (erro desprezível na escala de 150 m a 1 km).
+- Com mais de 200 quarteirões cuja caixa encosta na do ponto, a consulta de um ponto e o lote ficam com os 200
+  primeiros pela área e pelo id: um quarteirão grande que contém o ponto pode ficar de fora. A religação de todos os
+  imóveis não tem esse limite e pode divergir só nesse caso.
 - A base do CNEFE tem 2022 como referência: loteamentos novos não estão nela.
 - O mapa de casos traz até 5.000 notificações por consulta (aviso na tela para encurtar o período).

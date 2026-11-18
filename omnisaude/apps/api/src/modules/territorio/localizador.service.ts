@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { TenantPrisma, type TenantClient } from '@omnisaude/database';
-import { ampliarCaixa, caixasSeTocam, distanciaAteArea, ORDEM_PRECISAO, pontoNaArea, roleHasPermission, type Area, type Caixa, type PrecisaoGeo, type Posicao } from '@omnisaude/shared';
+import { ampliarCaixa, caixasSeTocam, distanciaAteArea, ORDEM_PRECISAO, roleHasPermission, type Area, type Caixa, type PrecisaoGeo, type Posicao } from '@omnisaude/shared';
 import type { RequestContext } from '../../core/context';
 
 /** Ponto sobre a rua ou com erro de GPS: até esta distância de um quarteirão, o imóvel é ligado ao mais próximo. */
@@ -27,23 +27,43 @@ export function posicaoExplicita(h: { geoPrecision: string | null; geoSource: st
 type Db = Pick<TenantClient, 'block' | 'household' | '$executeRaw'>;
 /** Para religar: a origem do imóvel (criado pelo ACE em campo) está na sincronização. */
 type DbVinculo = Db & Pick<TenantClient, 'fieldSyncOp'>;
+/** Para localizar em lote: o polígono dos candidatos vem numa consulta só (um parâmetro com a lista de ids). */
+type DbLote = Db & Pick<TenantClient, '$queryRaw'>;
 
-interface QuarteiraoGeo {
+/**
+ * Quantos quarteirões a consulta de um ponto lê, no máximo: os primeiros na ordem do desempate (`ordemDesempate`). O
+ * lote usa os mesmos, na mesma ordem.
+ */
+const CANDIDATOS_POR_PONTO = 200;
+
+/** Quarteirão candidato para um ponto: o polígono e a área, para o desempate. */
+interface Candidato {
   id: string;
   number: string;
+  geometry: Area;
+  areaM2: number;
+}
+
+interface QuarteiraoGeo extends Candidato {
   localityId: string;
   neighborhoodId: string | null;
-  geometry: Area;
   caixa: Caixa;
 }
 
 const caixaDoBloco = (b: { minLng: number; minLat: number; maxLng: number; maxLat: number }): Caixa => [b.minLng, b.minLat, b.maxLng, b.maxLat];
 
+/**
+ * Desempate entre quarteirões que servem igualmente ao ponto (sobrepostos, como a malha importada duas vezes com outra
+ * numeração; o ponto na divisa de dois; dois à mesma distância): a área menor e depois o id. É a ordem da consulta de um
+ * ponto (ORDER BY area_m2, id) e a do lote, em memória: o id do Postgres (uuid) ordena como o texto em minúsculas.
+ */
+const ordemDesempate = (a: { areaM2: number; id: string }, b: { areaM2: number; id: string }) => a.areaM2 - b.areaM2 || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
 /** Grade simples (células de ~550 m) para achar quarteirões candidatos sem PostGIS. */
-class Grade {
-  private readonly celulas = new Map<string, QuarteiraoGeo[]>();
+class Grade<T extends { id: string; caixa: Caixa } = QuarteiraoGeo> {
+  private readonly celulas = new Map<string, T[]>();
   constructor(
-    blocos: QuarteiraoGeo[],
+    blocos: T[],
     private readonly passo = 0.005,
   ) {
     for (const b of blocos) for (const k of this.chaves(b.caixa)) (this.celulas.get(k) ?? this.celulas.set(k, []).get(k)!).push(b);
@@ -53,9 +73,9 @@ class Grade {
     for (let i = Math.floor(x0 / this.passo); i <= Math.floor(x1 / this.passo); i++) for (let j = Math.floor(y0 / this.passo); j <= Math.floor(y1 / this.passo); j++) out.push(`${i}:${j}`);
     return out;
   }
-  candidatos(c: Caixa): QuarteiraoGeo[] {
+  candidatos(c: Caixa): T[] {
     const vistos = new Set<string>();
-    const out: QuarteiraoGeo[] = [];
+    const out: T[] = [];
     for (const k of this.chaves(c))
       for (const b of this.celulas.get(k) ?? [])
         if (!vistos.has(b.id) && caixasSeTocam(b.caixa, c)) {
@@ -66,23 +86,34 @@ class Grade {
   }
 }
 
-function escolher(p: Posicao, candidatos: QuarteiraoGeo[]): QuarteiraoGeo | null {
-  let melhor: { b: QuarteiraoGeo; d: number } | null = null;
+/**
+ * Quarteirão do ponto entre os candidatos: o que contém o ponto (a borda conta como dentro; distância zero) ou, fora de
+ * todos, o mais próximo até 15 m. Entre os que empatam, o primeiro de `ordemDesempate`. Não depende da ordem dos
+ * candidatos.
+ */
+function escolher<T extends Candidato>(p: Posicao, candidatos: readonly T[]): T | null {
+  let melhor: { b: T; d: number } | null = null;
   for (const b of candidatos) {
-    if (pontoNaArea(p, b.geometry)) return b;
+    // Já achado um que contém o ponto: só outro que vem antes no desempate pode trocá-lo.
+    if (melhor?.d === 0 && ordemDesempate(b, melhor.b) >= 0) continue;
     const d = distanciaAteArea(p, b.geometry);
-    if (d <= TOLERANCIA_QUARTEIRAO_M && (!melhor || d < melhor.d)) melhor = { b, d };
+    if (d > TOLERANCIA_QUARTEIRAO_M) continue;
+    if (!melhor || d < melhor.d || (d === melhor.d && ordemDesempate(b, melhor.b) < 0)) melhor = { b, d };
   }
   return melhor?.b ?? null;
 }
 
 @Injectable()
 export class LocalizadorService {
-  /** Quarteirões ativos cuja caixa encosta na caixa dada (filtro no banco pelas colunas indexadas). */
+  /**
+   * Quarteirões ativos cuja caixa encosta na caixa dada (filtro no banco pelas colunas indexadas), na ordem do desempate:
+   * com mais do que `take`, ficam os primeiros dela.
+   */
   private async blocosNaCaixa(db: Db, [x0, y0, x1, y1]: Caixa, take = 5000): Promise<QuarteiraoGeo[]> {
     const rows = await db.block.findMany({
       where: { active: true, minLng: { lte: x1 }, maxLng: { gte: x0 }, minLat: { lte: y1 }, maxLat: { gte: y0 } },
-      select: { id: true, number: true, localityId: true, neighborhoodId: true, geometry: true, minLng: true, minLat: true, maxLng: true, maxLat: true },
+      select: { id: true, number: true, localityId: true, neighborhoodId: true, geometry: true, minLng: true, minLat: true, maxLng: true, maxLat: true, areaM2: true },
+      orderBy: [{ areaM2: 'asc' }, { id: 'asc' }],
       take,
     });
     return rows.map((r) => ({ ...r, geometry: r.geometry as unknown as Area, caixa: caixaDoBloco(r) }));
@@ -92,8 +123,47 @@ export class LocalizadorService {
   async quarteiraoDoPonto(db: Db, lat: number, lng: number): Promise<{ id: string; number: string } | null> {
     const p: Posicao = [lng, lat];
     const caixa = ampliarCaixa([lng, lat, lng, lat], TOLERANCIA_QUARTEIRAO_M);
-    const b = escolher(p, await this.blocosNaCaixa(db, caixa, 200));
+    const b = escolher(p, await this.blocosNaCaixa(db, caixa, CANDIDATOS_POR_PONTO));
     return b ? { id: b.id, number: b.number } : null;
+  }
+
+  /**
+   * Quarteirão de muitos pontos de uma vez (base consolidada por território, sugestões de surto, mapa de casos): para
+   * cada ponto, o mesmo de `quarteiraoDoPonto`, com duas consultas para todos os pontos, também na malha com quarteirões
+   * sobrepostos. Lê as caixas e as áreas dos quarteirões ativos que encostam na caixa que envolve todos os pontos, acha
+   * numa grade em memória os candidatos de cada ponto (a mesma condição da consulta de um ponto: a caixa do quarteirão
+   * encosta na do ponto ampliada em 15 m), fica com os mesmos que a consulta de um ponto leria (os primeiros
+   * `CANDIDATOS_POR_PONTO` na ordem do desempate) e lê o polígono só deles. O ponto dentro de um quarteirão (a borda conta
+   * como dentro) fica nele; fora de todos, no mais próximo até 15 m; o empate segue `ordemDesempate`, como na consulta de
+   * um ponto. Devolve na ordem dos pontos.
+   */
+  async quarteiroesDosPontos(db: DbLote, pontos: readonly { lat: number; lng: number }[]): Promise<({ id: string; number: string } | null)[]> {
+    if (!pontos.length) return [];
+    // O mesmo imóvel em várias notificações: cada posição é resolvida uma vez.
+    const chave = (p: { lat: number; lng: number }) => `${p.lng}|${p.lat}`;
+    const unicos = new Map<string, { lat: number; lng: number; caixa: Caixa }>();
+    for (const p of pontos) if (!unicos.has(chave(p))) unicos.set(chave(p), { lat: p.lat, lng: p.lng, caixa: ampliarCaixa([p.lng, p.lat, p.lng, p.lat], TOLERANCIA_QUARTEIRAO_M) });
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const { caixa: c } of unicos.values()) [x0, y0, x1, y1] = [Math.min(x0, c[0]), Math.min(y0, c[1]), Math.max(x1, c[2]), Math.max(y1, c[3])];
+    const caixas = await db.block.findMany({
+      where: { active: true, minLng: { lte: x1 }, maxLng: { gte: x0 }, minLat: { lte: y1 }, maxLat: { gte: y0 } },
+      select: { id: true, minLng: true, minLat: true, maxLng: true, maxLat: true, areaM2: true },
+    });
+    const grade = new Grade(caixas.map((b) => ({ id: b.id, areaM2: b.areaM2, caixa: caixaDoBloco(b) })));
+    // Os candidatos de cada ponto que a consulta de um ponto leria: os primeiros na ordem do desempate.
+    const candidatos = new Map([...unicos].map(([k, u]) => [k, grade.candidatos(u.caixa).sort(ordemDesempate).slice(0, CANDIDATOS_POR_PONTO)]));
+    const ids = [...new Set([...candidatos.values()].flatMap((cs) => cs.map((b) => b.id)))];
+    const poligonos = ids.length ? await db.$queryRaw<Candidato[]>`SELECT id::text AS id, number, geometry, area_m2 AS "areaM2" FROM blocks WHERE id = ANY(${ids}::uuid[]) AND active` : [];
+    const porId = new Map(poligonos.map((b) => [b.id, b]));
+    const resolvidos = new Map<string, { id: string; number: string } | null>();
+    for (const [k, u] of unicos) {
+      const b = escolher(
+        [u.lng, u.lat],
+        candidatos.get(k)!.flatMap((c) => porId.get(c.id) ?? []),
+      );
+      resolvidos.set(k, b ? { id: b.id, number: b.number } : null);
+    }
+    return pontos.map((p) => resolvidos.get(chave(p)) ?? null);
   }
 
   /**
@@ -234,7 +304,10 @@ export class LocalizadorService {
    * (a ordem de bloqueio dos moradores é reavaliada).
    */
   async vincularTodos(db: DbVinculo, aoAlterar?: (ids: string[]) => void): Promise<{ analisados: number; comQuarteirao: number; semQuarteirao: number; alterados: number; foraDoQuarteirao: number }> {
-    const todos = await db.block.findMany({ where: { active: true }, select: { id: true, number: true, localityId: true, neighborhoodId: true, geometry: true, minLng: true, minLat: true, maxLng: true, maxLat: true } });
+    const todos = await db.block.findMany({
+      where: { active: true },
+      select: { id: true, number: true, localityId: true, neighborhoodId: true, geometry: true, minLng: true, minLat: true, maxLng: true, maxLat: true, areaM2: true },
+    });
     const grade = new Grade(todos.map((r) => ({ ...r, geometry: r.geometry as unknown as Area, caixa: caixaDoBloco(r) })));
     const doAce = await this.criadosPeloAce(db);
     const r = { analisados: 0, comQuarteirao: 0, semQuarteirao: 0, alterados: 0, foraDoQuarteirao: 0 };
