@@ -6,7 +6,7 @@ import { LeitorCsv, lerCsvOficial } from '../src/modules/vigilancia/importacao/c
 import { LeitorDbf, lerDbf, pareceDbf } from '../src/modules/vigilancia/importacao/dbf';
 import { detectarTipo } from '../src/modules/vigilancia/importacao/detectar';
 import { abrirEnvio, pedacos } from '../src/modules/vigilancia/importacao/entrada';
-import { AcumuladorCobertura, lerEnvio, type OpcoesLeitura, type RegistroDoEnvio } from '../src/modules/vigilancia/importacao/leitura';
+import { lerEnvio, type OpcoesLeitura, type RegistroDoEnvio } from '../src/modules/vigilancia/importacao/leitura';
 import { normalizarRegistro } from '../src/modules/vigilancia/importacao/normalizar';
 import { EscritorPayload, LeitorPayload } from '../src/modules/vigilancia/importacao/payload';
 import { Ritmo } from '../src/modules/vigilancia/importacao/ritmo';
@@ -28,7 +28,8 @@ async function lerTudo(nome: string, bytes: Uint8Array, opcoes: OpcoesLeitura = 
   try {
     const registros: RegistroDoEnvio[] = [];
     for await (const lote of l.registros(3)) registros.push(...lote);
-    return { arquivos: l.arquivos, avisos: l.avisos, lidos: l.lidos, recusados: l.recusados, motivosRecusa: l.motivosRecusa, duplicadosNoArquivo: l.duplicadosNoArquivo, duplicados: l.duplicados, registros };
+    // `leitura`: a cobertura de cada arquivo (calculada na leitura; vale depois de fechar o arquivo temporário).
+    return { arquivos: l.arquivos, avisos: l.avisos, lidos: l.lidos, recusados: l.recusados, motivosRecusa: l.motivosRecusa, duplicadosNoArquivo: l.duplicadosNoArquivo, duplicados: l.duplicados, registros, leitura: l };
   } finally {
     l.fechar();
   }
@@ -199,13 +200,12 @@ describe('leitura em pedaços (imp-memoria)', () => {
     try {
       const escritor = new EscritorPayload(`${pasta}/p.gz`);
       const lidos: RegistroDoEnvio[] = [];
-      const cobertura = new AcumuladorCobertura(null, '3550308');
       for await (const lote of l.registros(2)) {
         lidos.push(...lote);
-        lote.forEach((r) => cobertura.somar(r));
         await escritor.escrever(lote);
       }
-      await escritor.fechar(cobertura.resultado().cobertura);
+      const { cobertura } = l.cobertura(null, '3550308');
+      await escritor.fechar(cobertura);
       const gz = (await import('node:fs')).readFileSync(`${pasta}/p.gz`);
       const leitor = new LeitorPayload(
         (async function* () {
@@ -217,11 +217,14 @@ describe('leitura em pedaços (imp-memoria)', () => {
         expect(lote.length).toBeLessThanOrEqual(2);
         voltaram.push(...lote);
       }
-      // O arquivo de origem e o CNES dele (quarta rodada, N0) só existem na leitura: a cobertura já sai calculada no
-      // payload, e os registros voltam sem eles.
-      expect(lidos[0]).toMatchObject({ arquivo: 0, cnesDoArquivo: '9000011' });
-      expect(voltaram).toEqual(lidos.map(({ arquivo: _a, cnesDoArquivo: _c, ...r }) => r));
-      expect(leitor.cobertura).toEqual(cobertura.resultado().cobertura);
+      // A cobertura (uma entrada por arquivo, calculada na leitura, na ordem dos nomes) já sai pronta no payload, e os
+      // registros voltam iguais.
+      expect(cobertura.map((c) => [c.sistema, c.cnes ?? null])).toEqual([
+        ['ESUS_NOTIFICA', ['9000011']],
+        ['SINAN_NET', null],
+      ]);
+      expect(voltaram).toEqual(lidos);
+      expect(leitor.cobertura).toEqual(cobertura);
     } finally {
       l.fechar();
       (await import('node:fs')).rmSync(pasta, { recursive: true, force: true });
@@ -383,9 +386,7 @@ describe('dengue e chikungunya sempre no Sinan Online (imp-dengon-duplica)', () 
     expect(l.registros.filter((r) => r.sistema === 'SINAN_NET').map((r) => r.chave.split('|')[3])).toEqual(['A279', 'B19']);
     // Só o NINDINET: a dengue dele não cobre o Sinan Online (não marca o DENGON como ausente).
     const so = await lerTudo('NINDINET.DBF', escreverDbf(CAMPOS_NINDINET, [caso('0000001'), caso('0000009', { ID_AGRAVO: 'A279' })]));
-    const cob = new AcumuladorCobertura(null, '3550308');
-    so.registros.forEach((r) => cob.somar(r));
-    expect(cob.resultado().cobertura.map((c) => c.sistema)).toEqual(['SINAN_NET']);
+    expect(so.leitura.cobertura(null, '3550308').cobertura.map((c) => [c.sistema, c.agravos])).toEqual([['SINAN_NET', ['A279']]]);
   });
 });
 
@@ -418,9 +419,7 @@ describe('cobertura do e-SUS Notifica pela ficha e pelo CNES (imp-ausentes-esus)
         ['351200000002', '13/06/2025', '9000028', '3550308', 'Y'],
       ]),
     );
-    const cob = new AcumuladorCobertura(null, '3550308');
-    l.registros.forEach((r) => cob.somar(r));
-    const { cobertura, avisos } = cob.resultado();
+    const { cobertura, avisos } = l.leitura.cobertura(null, '3550308');
     expect(cobertura).toEqual([]);
     expect(avisos.join(' ')).toContain('nenhum registro foi marcado como ausente');
   });
@@ -433,9 +432,7 @@ describe('cobertura do e-SUS Notifica pela ficha e pelo CNES (imp-ausentes-esus)
         ['351200000012', '12/06/2025', '9000011', '3550308', 'Não'],
       ]),
     );
-    const cob = new AcumuladorCobertura({ de: '2025-06-01', ate: '2025-06-30' }, '3550308');
-    l.registros.forEach((r) => cob.somar(r));
-    const { cobertura, avisos } = cob.resultado();
+    const { cobertura, avisos } = l.leitura.cobertura({ de: '2025-06-01', ate: '2025-06-30' }, '3550308');
     expect(cobertura).toEqual([{ sistema: 'ESUS_NOTIFICA', tipo: 'INDIVIDUAL', agravos: [null], grupos: ['covid'], cnes: ['9000011'], de: '2025-06-01', ate: '2025-06-30', municipios: ['355030'], municipioNulo: false }]);
     expect(avisos.join(' ')).toContain('um CNES só');
     // Dois CNES: a cobertura não fica restrita.
@@ -446,8 +443,6 @@ describe('cobertura do e-SUS Notifica pela ficha e pelo CNES (imp-ausentes-esus)
         ['351200000013', '12/06/2025', '9000028', '3550308', 'Sim'],
       ]),
     );
-    const cob2 = new AcumuladorCobertura(null, '3550308');
-    dois.registros.forEach((r) => cob2.somar(r));
-    expect(cob2.resultado().cobertura[0]).not.toHaveProperty('cnes');
+    expect(dois.leitura.cobertura(null, '3550308').cobertura[0]).not.toHaveProperty('cnes');
   });
 });

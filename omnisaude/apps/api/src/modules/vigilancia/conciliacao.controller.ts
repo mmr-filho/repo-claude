@@ -1,7 +1,7 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
-import { zv } from '../../core/zod';
+import { textoSemControle, zv } from '../../core/zod';
 import { ConciliacaoService } from './conciliacao.service';
 
 /** Data de calendário que existe (ida e volta pelo Date.UTC: 2025-13-01 e 2025-02-30 são recusadas com 400). */
@@ -24,7 +24,7 @@ const candidatasSchema = z
       .optional(),
     de: dia.optional(),
     ate: dia.optional(),
-    busca: z.string().trim().max(60).optional(),
+    busca: textoSemControle(60, { mensagem: 'Busca com caractere inválido (de controle)' }).optional(),
     pagina: z.coerce.number().int().min(1).max(100_000).optional(),
   })
   .refine((p) => !p.de || !p.ate || p.de <= p.ate, { message: 'O início do período não pode ser depois do fim', path: ['ate'] });

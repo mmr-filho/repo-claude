@@ -8,6 +8,7 @@ import { TenantPrisma, type MasterClient } from '@omnisaude/database';
 import {
   localDateString,
   roleHasPermission,
+  SISTEMA_INFO,
   type AmostraAlteracao,
   type AmostraRegistro,
   type ArquivoDetectado,
@@ -34,10 +35,11 @@ import { AuditService } from '../../core/audit.service';
 import type { RequestContext } from '../../core/context';
 import { MASTER_DB, TenantsService } from '../../core/database';
 import { conflict, DomainError, notFound } from '../../core/errors';
+import { CargasDoProcesso, MSG_SERVIDOR_OCUPADO } from '../../core/raw-body';
 import { ConciliacaoService } from './conciliacao.service';
 import { gruposSigilosos, grupoDoCidFabrica, municipioDoTenant, municipiosPorNome } from './importacao/apoio';
 import { ErroArquivo } from './importacao/dbf';
-import { AcumuladorCobertura, chaveDoEnvio, lerEnvio, MAX_AMOSTRAS, type Cobertura, type LeituraEnvio, type RegistroDoEnvio } from './importacao/leitura';
+import { chaveDoEnvio, lerEnvio, MAX_AMOSTRAS, type Cobertura, type LeituraEnvio, type RegistroDoEnvio } from './importacao/leitura';
 import { aplicarParte, CAMPOS_IDENTIFICACAO, colunasDoEstado, diferencas, estadoDoBanco, estadoVazio, hashDoEstado, mesmasFontes, SELECT_ESTADO, type EstadoRegistro, type LinhaEstado } from './importacao/mescla';
 import { situacaoDoRegistro } from './importacao/normalizar';
 import { EscritorPayload, LeitorPayload } from './importacao/payload';
@@ -53,10 +55,12 @@ import { NegativaService } from './negativa.service';
  * com gzip e daí para o banco em fatias; a aplicação o lê em fatias e em lotes. Uma prévia ou aplicação por vez neste
  * processo: a outra recebe 409. O envio recebe 409 antes de o corpo ser lido quando o tenant tem outra importação lendo
  * ou aplicando (sinal de vida recente, em qualquer processo: IMPORTACAO_OCUPADA, a tela manda acompanhar no histórico)
- * ou quando o processo está ocupado com outros envios (IMPORTACAO_SERVIDOR_OCUPADO, com a mensagem da API): já tem
- * `LIMITE_CARGAS` arquivos na memória (corpo sendo lido ou leitura em segundo plano, de qualquer tenant), o tenant já
- * tem um (`LIMITE_CARGAS_TENANT`: o outro envio dele ainda chegando) ou a vez está com a importação de outro tenant. O
- * corpo que para de chegar por 30 s dá 408 (`rawBody`), e a carga é solta.
+ * ou quando o processo está ocupado com outros envios (IMPORTACAO_SERVIDOR_OCUPADO, com a mensagem da API): a vez está
+ * com a leitura ou a aplicação de outro tenant, o processo já tem `CargasDoProcesso.LIMITE` arquivos na memória (corpo
+ * sendo lido ou leitura em segundo plano, de qualquer tenant; o pacote da SIGTAP conta junto) ou o tenant já tem um
+ * (`CargasDoProcesso.LIMITE_TENANT`: o outro envio dele ainda chegando). A vez é conferida de novo ao ser tomada, depois
+ * do corpo: outro tenant pode tê-la tomado enquanto o arquivo chegava (aí o 409 vem depois de ler). O corpo que para de
+ * chegar por 30 s dá 408 (`rawBody`), e a carga é solta.
  *
  * Tempo (container de 1/4 de vCPU; a borda da Cloudflare corta com 524 a resposta que não começa em ~100 s): a leitura
  * e a aplicação rodam em segundo plano no próprio processo, com a vez do processo presa até acabarem. O pedido espera
@@ -69,20 +73,8 @@ import { NegativaService } from './negativa.service';
 
 type Db = TenantPrisma.TransactionClient;
 const HORA = 3_600_000;
-/**
- * Arquivos de importação na memória do processo, de qualquer tenant: o corpo sendo lido e o arquivo da leitura em
- * segundo plano (até 95 MB cada; com o Content-Length, o Buffer é alocado uma vez). No teto, o envio seguinte recebe
- * 409 antes de o corpo ser lido (o Node descarta o corpo não lido, sem juntar).
- */
-const LIMITE_CARGAS = 2;
-/** Cargas de um tenant ao mesmo tempo: dois envios lentos do mesmo município não seguram o processo inteiro. */
-const LIMITE_CARGAS_TENANT = 1;
 /** A importação do próprio tenant lendo ou aplicando (aparece no histórico dele). */
 const MSG_OCUPADA = 'Outra importação está sendo processada agora. Tente de novo em alguns minutos.';
-/** O processo ocupado com envios ou importações de outros tenants. */
-const MSG_SERVIDOR_OCUPADO = 'O servidor está recebendo ou processando outros envios agora. Tente de novo em instantes.';
-/** O outro envio do mesmo tenant, ainda chegando (ou com o arquivo na memória). */
-const MSG_ENVIO_DO_TENANT = 'Outro envio da sua instituição está sendo recebido agora. Tente de novo quando ele terminar.';
 const MSG_SUBSTITUIDA = 'A importação foi aplicada e depois substituída por uma aplicação do mesmo arquivo com outro período.';
 const ERRO_LEITURA_INTERROMPIDA: ErroImportacao = {
   codigo: 'LEITURA_INTERROMPIDA',
@@ -123,6 +115,19 @@ interface AnteriorDoArquivo {
   /** Registros com absent_import_id nela, contados antes de gravar os registros deste envio. */
   ausentes: number;
 }
+
+/**
+ * Outra importação APLICADA com a cobertura dos ausentes gravada no apply_result (`cobertura`): na substituição, o
+ * ausente da substituída que ela também cobre, e que não veio desde que ela foi aplicada, continua ausente (R5-2).
+ */
+interface AplicadaComCobertura {
+  id: string;
+  aplicadaEm: Date;
+  cobertura: Cobertura[];
+}
+
+/** Entradas da cobertura de outra aplicação por consulta (o OR de cada consulta não cresce sem limite). */
+const COBERTURAS_POR_CONSULTA = 100;
 
 interface Comparado {
   r: RegistroDoEnvio;
@@ -204,6 +209,90 @@ function dataExiste(s: string): boolean {
   return a >= 1900 && t.getUTCFullYear() === a && t.getUTCMonth() === mes - 1 && t.getUTCDate() === d;
 }
 
+/**
+ * Filtro dos registros do banco dentro de uma entrada da cobertura (sistema, tipo, período, agravos, municípios, ficha e
+ * CNES), ausentes ou não.
+ */
+function cobertoPor(c: Cobertura): TenantPrisma.OfficialRecordWhereInput {
+  const agravos = c.agravos.filter((a): a is string => !!a);
+  return {
+    system: c.sistema,
+    type: c.tipo,
+    notifiedOn: { gte: new Date(`${c.de}T00:00:00Z`), lte: new Date(`${c.ate}T00:00:00Z`) },
+    ...(c.grupos ? { groupKey: { in: c.grupos } } : {}),
+    ...(c.cnes ? { unitCnes: { in: c.cnes } } : {}),
+    AND: [
+      { OR: [...(agravos.length ? [{ agravo: { in: agravos } }] : []), ...(c.agravos.includes(null) ? [{ agravo: null }] : [])] },
+      { OR: [...c.municipios.map((m) => ({ municipalityIbge: { startsWith: m } })), ...(c.municipioNulo ? [{ municipalityIbge: null }] : [])] },
+    ],
+  };
+}
+
+/** A entrada da cobertura que não cobre nada (a ficha do e-SUS Notifica sem grupo, de envios antigos). */
+const vazia = (c: Cobertura) => !!c.grupos && !c.grupos.length;
+
+const cruzam = <T>(a: readonly T[], b: readonly T[]) => a.some((x) => b.includes(x));
+
+/**
+ * As duas entradas da cobertura podem cobrir o mesmo registro (a do município e a de uma unidade no mesmo período; dois
+ * arquivos com períodos que se cruzam). A prévia não conta o registro duas vezes: a entrada exclui o que as anteriores
+ * que se cruzam com ela já contaram.
+ */
+function podemSeCruzar(a: Cobertura, b: Cobertura): boolean {
+  return (
+    a.sistema === b.sistema &&
+    a.tipo === b.tipo &&
+    a.de <= b.ate &&
+    b.de <= a.ate &&
+    cruzam(a.agravos, b.agravos) &&
+    (!a.grupos || !b.grupos || cruzam(a.grupos, b.grupos)) &&
+    (!a.cnes || !b.cnes || cruzam(a.cnes, b.cnes)) &&
+    (cruzam(a.municipios, b.municipios) || (a.municipioNulo && b.municipioNulo))
+  );
+}
+
+/** Fora das entradas `antes` (o NOT de um OR; sem entradas, nada a excluir). */
+const foraDe = (antes: readonly Cobertura[]): TenantPrisma.OfficialRecordWhereInput => (antes.length ? { NOT: { OR: antes.map(cobertoPor) } } : {});
+
+const ehTexto = (v: unknown): v is string => typeof v === 'string';
+const ehSistema = (v: unknown): v is SistemaOficial => ehTexto(v) && Object.hasOwn(SISTEMA_INFO, v);
+const ehTipo = (v: unknown): v is TipoRegistroOficial => v === 'INDIVIDUAL' || v === 'NEGATIVA' || v === 'SURTO';
+const ehListaDeTextos = (v: unknown): v is string[] => Array.isArray(v) && v.every(ehTexto);
+const ehData = (v: unknown): v is string => ehTexto(v) && /^\d{4}-\d{2}-\d{2}$/.test(v);
+
+/**
+ * A cobertura que uma aplicação gravou no apply_result (`cobertura`), conferida entrada a entrada: a entrada fora do
+ * formato fica de fora (não confirma ausência), e a aplicação gravada sem a cobertura (de antes da regra, a demonstração)
+ * não tem nenhuma.
+ */
+function coberturaGravada(applyResult: unknown): Cobertura[] {
+  const lista = (applyResult as { cobertura?: unknown } | null)?.cobertura;
+  if (!Array.isArray(lista)) return [];
+  return lista.filter((c): c is Cobertura => {
+    const x = c as Record<string, unknown> | null;
+    return (
+      !!x &&
+      ehSistema(x.sistema) &&
+      ehTipo(x.tipo) &&
+      ehData(x.de) &&
+      ehData(x.ate) &&
+      Array.isArray(x.agravos) &&
+      x.agravos.every((a) => a === null || ehTexto(a)) &&
+      ehListaDeTextos(x.municipios) &&
+      typeof x.municipioNulo === 'boolean' &&
+      (x.grupos === undefined || ehListaDeTextos(x.grupos)) &&
+      (x.cnes === undefined || ehListaDeTextos(x.cnes))
+    );
+  });
+}
+
+/** O resultado da aplicação como a API mostra: sem a cobertura gravada (é do servidor, e um zip de muitas unidades a deixa longa). */
+function resultadoSemCobertura(applyResult: unknown): ResultadoAplicacao | null {
+  if (!applyResult || typeof applyResult !== 'object') return null;
+  const { cobertura: _cobertura, ...resultado } = applyResult as ResultadoAplicacao & { cobertura?: unknown };
+  return resultado;
+}
+
 /** Leitura ou aplicação rodando em segundo plano neste processo. */
 interface Trabalho {
   id: string;
@@ -214,16 +303,15 @@ interface Trabalho {
   fim: Promise<void>;
 }
 
-/** Estado deste processo (cada réplica da API e o worker dos jobs têm o seu). */
+/**
+ * Estado deste processo (cada réplica da API e o worker dos jobs têm o seu). Os arquivos na memória ficam em
+ * `CargasDoProcesso` (core/raw-body), que o upload da SIGTAP também usa.
+ */
 class Processo {
   /** Uma prévia ou aplicação por vez (o envio grande ocupa a memória e a CPU do container). */
   ocupado = false;
   /** O tenant da importação que está com a vez (null: a vez tomada sem tenant, como nos testes). */
   donoDaVez: string | null = null;
-  /** Arquivos de importação na memória (`LIMITE_CARGAS`). */
-  cargas = 0;
-  /** Arquivos de importação na memória por tenant (`LIMITE_CARGAS_TENANT`). */
-  readonly cargasPorTenant = new Map<string, number>();
   /** Trabalhos em segundo plano, pelo id da importação: o sinal de vida parado de um deles não é trabalho interrompido. */
   readonly trabalhos = new Map<string, Trabalho>();
 }
@@ -270,14 +358,19 @@ export class ImportacaoService {
   }
 
   /**
-   * Toma a vez do processo para o tenant; com outra prévia ou aplicação em andamento, 409: IMPORTACAO_OCUPADA quando é
-   * a importação do mesmo tenant (aparece no histórico dele), IMPORTACAO_SERVIDOR_OCUPADO quando é a de outro tenant.
+   * Confere a vez do processo para o tenant sem tomá-la; com outra prévia ou aplicação em andamento, 409:
+   * IMPORTACAO_OCUPADA quando é a importação do mesmo tenant (aparece no histórico dele), IMPORTACAO_SERVIDOR_OCUPADO
+   * quando é a de outro tenant (ou a vez sem tenant). O envio confere antes de reservar a carga e de ler o corpo.
    */
+  private conferirVez(p: Processo, tenantId: string | null): void {
+    if (!p.ocupado) return;
+    if (tenantId && p.donoDaVez === tenantId) throw new DomainError('IMPORTACAO_OCUPADA', MSG_OCUPADA, HttpStatus.CONFLICT);
+    throw new DomainError('IMPORTACAO_SERVIDOR_OCUPADO', MSG_SERVIDOR_OCUPADO, HttpStatus.CONFLICT);
+  }
+
+  /** Toma a vez do processo para o tenant (com a vez ocupada, os 409 de `conferirVez`). */
   private tomarVez(p: Processo, tenantId: string | null): void {
-    if (p.ocupado) {
-      if (tenantId && p.donoDaVez === tenantId) throw new DomainError('IMPORTACAO_OCUPADA', MSG_OCUPADA, HttpStatus.CONFLICT);
-      throw new DomainError('IMPORTACAO_SERVIDOR_OCUPADO', MSG_SERVIDOR_OCUPADO, HttpStatus.CONFLICT);
-    }
+    this.conferirVez(p, tenantId);
     p.ocupado = true;
     p.donoDaVez = tenantId;
   }
@@ -298,27 +391,6 @@ export class ImportacaoService {
     }
   }
 
-  /**
-   * Reserva uma carga na memória do processo para o tenant antes de ler o corpo; com o tenant ou o processo no teto, 409
-   * IMPORTACAO_SERVIDOR_OCUPADO. Devolve a liberação (pode ser chamada mais de uma vez).
-   */
-  private reservarCarga(p: Processo, tenantId: string): () => void {
-    const doTenant = p.cargasPorTenant.get(tenantId) ?? 0;
-    if (doTenant >= LIMITE_CARGAS_TENANT) throw new DomainError('IMPORTACAO_SERVIDOR_OCUPADO', MSG_ENVIO_DO_TENANT, HttpStatus.CONFLICT);
-    if (p.cargas >= LIMITE_CARGAS) throw new DomainError('IMPORTACAO_SERVIDOR_OCUPADO', MSG_SERVIDOR_OCUPADO, HttpStatus.CONFLICT);
-    p.cargas++;
-    p.cargasPorTenant.set(tenantId, doTenant + 1);
-    let solta = false;
-    return () => {
-      if (solta) return;
-      solta = true;
-      p.cargas--;
-      const n = (p.cargasPorTenant.get(tenantId) ?? 1) - 1;
-      if (n > 0) p.cargasPorTenant.set(tenantId, n);
-      else p.cargasPorTenant.delete(tenantId);
-    };
-  }
-
   /** Outra importação do tenant lendo ou aplicando agora (sinal de vida recente, em qualquer processo): 409. */
   private async conferirEmAndamento(db: Db): Promise<void> {
     const viva = await db.officialImport.findFirst({
@@ -333,9 +405,9 @@ export class ImportacaoService {
     await Promise.allSettled([...fins]);
   }
 
-  /** Arquivos de importação na memória deste processo agora (os testes esperam por aqui). */
+  /** Arquivos na memória deste processo agora (importação e SIGTAP; os testes esperam por aqui). */
   static get cargas(): number {
-    return ImportacaoService.processo.cargas;
+    return CargasDoProcesso.atual.total;
   }
 
   /**
@@ -344,9 +416,12 @@ export class ImportacaoService {
    */
   static comoOutroProcesso(): () => void {
     const antes = ImportacaoService.processo;
+    const cargasAntes = CargasDoProcesso.atual;
     ImportacaoService.processo = new Processo();
+    CargasDoProcesso.atual = new CargasDoProcesso();
     return () => {
       ImportacaoService.processo = antes;
+      CargasDoProcesso.atual = cargasAntes;
     };
   }
 
@@ -545,29 +620,22 @@ export class ImportacaoService {
     });
   }
 
-  /** Filtro dos registros do banco dentro de uma cobertura (sistema, tipo, período, agravos, municípios, ficha e CNES). */
+  /** Os registros presentes (não ausentes) dentro de uma entrada da cobertura. */
   private ondeCobertura(c: Cobertura): TenantPrisma.OfficialRecordWhereInput {
-    const agravos = c.agravos.filter((a): a is string => !!a);
-    return {
-      system: c.sistema,
-      type: c.tipo,
-      absentSince: null,
-      notifiedOn: { gte: new Date(`${c.de}T00:00:00Z`), lte: new Date(`${c.ate}T00:00:00Z`) },
-      ...(c.grupos ? { groupKey: { in: c.grupos } } : {}),
-      ...(c.cnes ? { unitCnes: { in: c.cnes } } : {}),
-      AND: [
-        { OR: [...(agravos.length ? [{ agravo: { in: agravos } }] : []), ...(c.agravos.includes(null) ? [{ agravo: null }] : [])] },
-        { OR: [...c.municipios.map((m) => ({ municipalityIbge: { startsWith: m } })), ...(c.municipioNulo ? [{ municipalityIbge: null }] : [])] },
-      ],
-    };
+    return { ...cobertoPor(c), absentSince: null };
   }
 
-  /** Prévia: quantos registros do banco dentro da cobertura não vieram no envio (em páginas), com a amostra. */
+  /**
+   * Prévia: quantos registros do banco dentro da cobertura não vieram no envio (em páginas), com a amostra. A cobertura
+   * é uma lista por arquivo: a entrada exclui o que as anteriores que se cruzam com ela já contaram (o registro dentro de
+   * duas entradas conta uma vez, como na aplicação).
+   */
   private async ausentesPrevistos(db: Db, cobertura: Cobertura[], leitura: LeituraEnvio, ritmo: Ritmo): Promise<{ total: number; amostra: AmostraRegistro[] }> {
     let total = 0;
     const amostra: AmostraRegistro[] = [];
-    for (const c of cobertura) {
-      if (c.grupos && !c.grupos.length) continue;
+    const entradas = cobertura.filter((c) => !vazia(c));
+    for (const [i, c] of entradas.entries()) {
+      const antes = foraDe(entradas.slice(0, i).filter((o) => podemSeCruzar(o, c)));
       let depois: string | null = null;
       for (;;) {
         const rows: {
@@ -584,7 +652,7 @@ export class ImportacaoService {
           patientName: string | null;
           sensitive: boolean;
         }[] = await db.officialRecord.findMany({
-          where: { ...this.ondeCobertura(c), ...(depois ? { id: { gt: depois } } : {}) },
+          where: { ...this.ondeCobertura(c), ...antes, ...(depois ? { id: { gt: depois } } : {}) },
           orderBy: { id: 'asc' },
           take: PAGINA,
           select: { id: true, system: true, type: true, naturalKey: true, number: true, notifiedOn: true, agravo: true, groupKey: true, unitCnes: true, situation: true, patientName: true, sensitive: true },
@@ -616,12 +684,13 @@ export class ImportacaoService {
 
   /**
    * Aplicação: marca os ausentes da cobertura (os registros que este envio não tocou), com a importação que marcou
-   * (absent_import_id: se ela for substituída, o registro volta). Nunca apaga.
+   * (absent_import_id: se ela for substituída, o registro volta, a menos que outra aplicação confirme a ausência). Nunca
+   * apaga. A entrada que se cruza com outra não marca de novo o que a outra marcou (só os presentes são marcados).
    */
   private async marcarAusentes(tx: Db, cobertura: Cobertura[], id: string, agora: Date): Promise<number> {
     let total = 0;
     for (const c of cobertura) {
-      if (c.grupos && !c.grupos.length) continue;
+      if (vazia(c)) continue;
       const { count } = await tx.officialRecord.updateMany({ where: { ...this.ondeCobertura(c), lastImportId: { not: id } }, data: { absentSince: agora, absentImportId: id } });
       total += count;
     }
@@ -629,21 +698,51 @@ export class ImportacaoService {
   }
 
   /**
+   * As outras importações APLICADA com a cobertura gravada (as que podem confirmar um ausente), da aplicada mais recente
+   * para a mais antiga. `exceto`: os ids que não contam (na aplicação, a própria); `shaExceto`: o SHA-256 que não conta
+   * (na prévia, o do próprio arquivo: as aplicações dele vão ser substituídas). A aplicação gravada sem a cobertura (de
+   * antes da regra, a demonstração) não confirma nada.
+   */
+  private async aplicadasComCobertura(db: Db, opts: { exceto: string[]; shaExceto?: string }): Promise<AplicadaComCobertura[]> {
+    const rows = await db.officialImport.findMany({
+      where: { status: 'APLICADA', appliedAt: { not: null }, id: { notIn: opts.exceto }, ...(opts.shaExceto ? { sha256: { not: opts.shaExceto } } : {}) },
+      orderBy: [{ appliedAt: 'desc' }, { id: 'desc' }],
+      select: { id: true, appliedAt: true, applyResult: true },
+    });
+    return rows.flatMap((r) => {
+      const cobertura = coberturaGravada(r.applyResult).filter((c) => !vazia(c));
+      return cobertura.length ? [{ id: r.id, aplicadaEm: r.appliedAt!, cobertura }] : [];
+    });
+  }
+
+  /**
+   * O ausente que a outra aplicação `k` confirma: ela foi aplicada depois da última vez que o registro veio (então não o
+   * trouxe) e a cobertura dela inclui o registro. `lote`: uma fatia das entradas da cobertura dela.
+   */
+  private confirmadoPor(k: AplicadaComCobertura, lote: readonly Cobertura[]): TenantPrisma.OfficialRecordWhereInput {
+    return { lastSeenAt: { lt: k.aplicadaEm }, OR: lote.map(cobertoPor) };
+  }
+
+  /**
    * Prévia: os registros que a importação `anterior` (do mesmo arquivo, que este envio vai substituir) deu como ausentes
    * e voltam ao aplicar, em termos líquidos: todos os dela, menos os que a cobertura deste envio marca de novo (dentro
-   * dela e fora do arquivo).
+   * dela e fora do arquivo) e menos os que outra importação APLICADA (de outro arquivo, aplicada depois da última vez que
+   * o registro veio) confirma, como a aplicação faz (`substituirAnteriores`).
    */
-  private async voltamDaSubstituicao(db: Db, anterior: string, cobertura: Cobertura[], leitura: LeituraEnvio, ritmo: Ritmo): Promise<number> {
+  private async voltamDaSubstituicao(db: Db, anterior: string, cobertura: Cobertura[], outras: AplicadaComCobertura[], leitura: LeituraEnvio, ritmo: Ritmo): Promise<number> {
     let voltam = await db.officialRecord.count({ where: { absentImportId: anterior } });
     if (!voltam) return 0;
-    for (const c of cobertura) {
-      if (c.grupos && !c.grupos.length) continue;
+    type Linha = { id: string; system: string; type: string; naturalKey: string };
+    const select = { id: true, system: true, type: true, naturalKey: true } as const;
+    const entradas = cobertura.filter((c) => !vazia(c));
+    for (const [i, c] of entradas.entries()) {
+      const antes = foraDe(entradas.slice(0, i).filter((o) => podemSeCruzar(o, c)));
       for (let depois: string | null = null; ; ) {
-        const rows: { id: string; system: string; type: string; naturalKey: string }[] = await db.officialRecord.findMany({
-          where: { ...this.ondeCobertura(c), absentSince: undefined, absentImportId: anterior, ...(depois ? { id: { gt: depois } } : {}) },
+        const rows: Linha[] = await db.officialRecord.findMany({
+          where: { ...cobertoPor(c), ...antes, absentImportId: anterior, ...(depois ? { id: { gt: depois } } : {}) },
           orderBy: { id: 'asc' },
           take: PAGINA,
-          select: { id: true, system: true, type: true, naturalKey: true },
+          select,
         });
         for (const a of rows) if (!leitura.tem(chaveDoEnvio(a.system, a.type, a.naturalKey))) voltam--;
         if (rows.length < PAGINA) break;
@@ -651,17 +750,44 @@ export class ImportacaoService {
         await ritmo.ceder();
       }
     }
-    return voltam;
+    // Os de fora da cobertura deste envio (e fora do arquivo) que outra aplicação confirma continuam ausentes.
+    const confirmados = new Set<string>();
+    const fora = foraDe(entradas);
+    for (const k of outras)
+      for (let i = 0; i < k.cobertura.length; i += COBERTURAS_POR_CONSULTA)
+        for (let depois: string | null = null; ; ) {
+          const rows: Linha[] = await db.officialRecord.findMany({
+            where: { absentImportId: anterior, ...fora, AND: [this.confirmadoPor(k, k.cobertura.slice(i, i + COBERTURAS_POR_CONSULTA))], ...(depois ? { id: { gt: depois } } : {}) },
+            orderBy: { id: 'asc' },
+            take: PAGINA,
+            select,
+          });
+          for (const a of rows)
+            if (!confirmados.has(a.id) && !leitura.tem(chaveDoEnvio(a.system, a.type, a.naturalKey))) {
+              confirmados.add(a.id);
+              voltam--;
+            }
+          if (rows.length < PAGINA) break;
+          depois = rows[rows.length - 1]!.id;
+          await ritmo.ceder();
+        }
+    return Math.max(0, voltam);
   }
 
   /**
    * Aplicação (na transação, com as travas, depois de gravar os registros do arquivo e antes de marcar os ausentes): as
-   * outras aplicações do mesmo arquivo (`anteriores`, APLICADA) passam a SUBSTITUIDA, com superseded_by = esta. Os
-   * registros que elas deram como ausentes e que a cobertura desta marca de novo (dentro dela e não tocados por este
-   * envio) continuam ausentes, agora por esta, com o absent_since de quando sumiram; os outros voltam (absent_since e
-   * absent_import_id nulos). Devolve, por substituída, quantos voltaram em termos líquidos (os dela que deixaram de
-   * estar ausentes, os que vieram no arquivo inclusive), e as unidades e semanas dos que voltaram agora (a negativa
-   * delas é reconciliada junto com a dos registros do arquivo).
+   * outras aplicações do mesmo arquivo (`anteriores`, APLICADA) passam a SUBSTITUIDA, com superseded_by = esta. Dos
+   * registros que elas deram como ausentes:
+   * - os que a cobertura desta marca de novo (dentro dela e não tocados por este envio) continuam ausentes, agora por
+   *   esta, com o absent_since de quando sumiram;
+   * - os de fora dela continuam ausentes quando outra importação APLICADA (qualquer arquivo, aplicada antes ou depois da
+   *   substituída, nunca ela nem esta) foi aplicada depois da última vez que o registro veio e tem cobertura que o inclui:
+   *   a exportação mais nova do período também não o traz. A marca passa para a mais recente delas (pelo applied_at),
+   *   com o absent_since mantido. A aplicação gravada sem a cobertura não confirma;
+   * - os outros voltam (absent_since e absent_import_id nulos).
+   * Devolve, por substituída, quantos voltaram em termos líquidos (os dela que deixaram de estar ausentes, os que vieram
+   * no arquivo inclusive), e as unidades e semanas dos que voltaram agora (a negativa delas é reconciliada junto com a
+   * dos registros do arquivo).
    */
   private async substituirAnteriores(tx: Db, anteriores: AnteriorDoArquivo[], cobertura: Cobertura[], id: string, agora: Date): Promise<{ substituidas: ImportacaoSubstituida[]; unidades: string[]; semanas: string[] }> {
     const unidades = new Set<string>();
@@ -669,14 +795,28 @@ export class ImportacaoService {
     if (!anteriores.length) return { substituidas: [], unidades: [], semanas: [] };
     const { count } = await tx.officialImport.updateMany({ where: { id: { in: anteriores.map((a) => a.id) }, status: 'APLICADA' }, data: { status: 'SUBSTITUIDA', supersededBy: id } });
     if (count !== anteriores.length) throw conflict('A importação mudou: abra de novo');
+    // As que podem confirmar (as substituídas já não são APLICADA; esta ainda é PREVIA), lidas só se alguma tem ausente.
+    let outras: AplicadaComCobertura[] | null = null;
     const substituidas: ImportacaoSubstituida[] = [];
     for (const a of anteriores) {
       let continuam = 0;
       for (const c of cobertura) {
-        if (c.grupos && !c.grupos.length) continue;
-        const r = await tx.officialRecord.updateMany({ where: { ...this.ondeCobertura(c), absentSince: undefined, absentImportId: a.id, lastImportId: { not: id } }, data: { absentImportId: id } });
+        if (vazia(c)) continue;
+        const r = await tx.officialRecord.updateMany({ where: { ...cobertoPor(c), absentImportId: a.id, lastImportId: { not: id } }, data: { absentImportId: id } });
         continuam += r.count;
       }
+      let confirmados = 0;
+      let restam = await tx.officialRecord.count({ where: { absentImportId: a.id } });
+      if (restam) outras ??= await this.aplicadasComCobertura(tx, { exceto: [id] });
+      for (const k of restam ? outras! : [])
+        for (let i = 0; restam && i < k.cobertura.length; i += COBERTURAS_POR_CONSULTA) {
+          const r = await tx.officialRecord.updateMany({
+            where: { absentImportId: a.id, AND: [this.confirmadoPor(k, k.cobertura.slice(i, i + COBERTURAS_POR_CONSULTA))] },
+            data: { absentImportId: k.id },
+          });
+          confirmados += r.count;
+          restam -= r.count;
+        }
       const voltas = await tx.$queryRaw<{ u: string | null; s: string | null }[]>`
         WITH v AS (
           UPDATE official_records SET absent_since = NULL, absent_import_id = NULL, updated_at = ${agora.toISOString()}::timestamptz AT TIME ZONE 'UTC'
@@ -687,7 +827,7 @@ export class ImportacaoService {
         unidades.add(v.u!);
         if (v.s) semanas.add(v.s);
       }
-      substituidas.push({ ...this.doMesmoArquivo(a), voltaram: Math.max(0, a.ausentes - continuam) });
+      substituidas.push({ ...this.doMesmoArquivo(a), voltaram: Math.max(0, a.ausentes - continuam - confirmados) });
     }
     return { substituidas, unidades: [...unidades], semanas: [...semanas] };
   }
@@ -741,11 +881,14 @@ export class ImportacaoService {
   }
 
   /**
-   * POST /vigilancia/importacoes (corpo cru, lido por `lerCorpo`). Antes de ler o corpo: 409 com o processo no teto de
-   * arquivos na memória ou com outra importação do tenant lendo ou aplicando (o Node descarta o corpo não lido). O mesmo
-   * arquivo já aplicado (sem período declarado, ou com o mesmo período declarado): `{ jaImportado }`, sem criar nada.
-   * Senão, cria a linha PROCESSANDO e lê o arquivo em segundo plano: a prévia pronta dentro da espera volta como sempre
-   * (201); a falha dentro da espera apaga a linha e volta como sempre (nada fica gravado); senão, 202 com o que já se sabe.
+   * POST /vigilancia/importacoes (corpo cru, lido por `lerCorpo`). Antes de ler o corpo (o Node descarta o corpo não
+   * lido): 409 IMPORTACAO_OCUPADA com outra importação do tenant lendo ou aplicando; 409 IMPORTACAO_SERVIDOR_OCUPADO com
+   * a vez com a leitura ou a aplicação de outro tenant, com o processo no teto de arquivos na memória ou com outro envio
+   * do tenant chegando. Depois do corpo, a vez é tomada: se outro tenant a tomou enquanto o arquivo chegava, o 409 vem
+   * aí. O mesmo arquivo já aplicado (sem período declarado, ou com o mesmo período declarado): `{ jaImportado }`, sem
+   * criar nada. Senão, cria a linha PROCESSANDO e lê o arquivo em segundo plano: a prévia pronta dentro da espera volta
+   * como sempre (201); a falha dentro da espera apaga a linha e volta como sempre (nada fica gravado); senão, 202 com o
+   * que já se sabe.
    */
   async enviar(ctx: RequestContext, lerCorpo: () => Promise<Buffer>, consulta: ConsultaEnvioImportacao): Promise<RespostaEnvioImportacao> {
     if (!!consulta.de !== !!consulta.ate) throw new DomainError('PERIODO_INVALIDO', 'Informe o início e o fim do período, ou nenhum dos dois', HttpStatus.BAD_REQUEST);
@@ -757,9 +900,11 @@ export class ImportacaoService {
     if (consulta.de && consulta.ate && consulta.de > consulta.ate) throw new DomainError('PERIODO_INVALIDO', 'O início do período vem depois do fim', HttpStatus.BAD_REQUEST);
     const p = ImportacaoService.processo;
     await this.conferirEmAndamento(ctx.db);
-    // A carga é reservada logo depois, sem espera no meio (sem corrida entre envios simultâneos), e solta quando o
-    // arquivo deixa a memória: no erro ou na resposta sem trabalho; com o trabalho em segundo plano, quando ele acaba.
-    const soltarCarga = this.reservarCarga(p, ctx.tenant.id);
+    // A vez com a leitura ou a aplicação de outro tenant: 409 sem ler o corpo nem reservar a carga. A carga é reservada
+    // logo depois, sem espera no meio (sem corrida entre envios simultâneos), e solta quando o arquivo deixa a memória:
+    // no erro ou na resposta sem trabalho; com o trabalho em segundo plano, quando ele acaba.
+    this.conferirVez(p, ctx.tenant.id);
+    const soltarCarga = CargasDoProcesso.atual.reservar(ctx.tenant.id);
     let comCarga = true;
     try {
       const arquivo = await lerCorpo();
@@ -769,6 +914,7 @@ export class ImportacaoService {
       const declarado = consulta.de && consulta.ate ? { de: consulta.de, ate: consulta.ate } : null;
       const aplicada = await this.jaAplicada(ctx.db, sha256, declarado);
       if (aplicada) return { jaImportado: { id: aplicada.id, aplicadoEm: (aplicada.appliedAt ?? new Date()).toISOString() } };
+      // A vez de novo: outro tenant pode tê-la tomado enquanto o corpo chegava.
       this.tomarVez(p, ctx.tenant.id);
       let comVez = true;
       try {
@@ -861,7 +1007,6 @@ export class ImportacaoService {
         });
 
       const declarado = consulta.de && consulta.ate ? { de: consulta.de, ate: consulta.ate } : null;
-      const acumulador = new AcumuladorCobertura(declarado, ibge);
       const porTipo: ContagensImportacao['porTipo'] = {};
       const porSistema = new Map<SistemaOficial, number>();
       const novos: AmostraRegistro[] = [];
@@ -875,7 +1020,6 @@ export class ImportacaoService {
         const existentes = await this.existentes(ctx.db, lote);
         nosDoisSistemas += existentes.nosDoisSistemas;
         for (const c of this.comparar(lote, existentes.mapa)) {
-          acumulador.somar(c.r);
           porTipo[c.r.tipo] = (porTipo[c.r.tipo] ?? 0) + 1;
           porSistema.set(c.r.sistema, (porSistema.get(c.r.sistema) ?? 0) + 1);
           if (declarado) {
@@ -898,19 +1042,23 @@ export class ImportacaoService {
         await escritor.escrever(lote);
         await ritmo.ceder();
       }
-      // A cobertura termina na data local do primeiro envio do arquivo (o mesmo SHA-256, em qualquer situação, esta
-      // inclusive): reenviado depois para declarar o período, o arquivo continua sem o que veio depois da exportação.
+      // A cobertura de cada arquivo (a lista que vai no payload e que a aplicação usa e grava). Termina na data local do
+      // primeiro envio do arquivo (o mesmo SHA-256, em qualquer situação, esta inclusive): reenviado depois para declarar
+      // o período, o arquivo continua sem o que veio depois da exportação.
       const primeiro = (await ctx.db.officialImport.aggregate({ where: { sha256 }, _min: { createdAt: true } }))._min.createdAt ?? new Date();
-      const { cobertura, avisos: avisosCobertura } = acumulador.resultado(localDateString(primeiro, ctx.tenant.timeZone));
+      const { cobertura, avisos: avisosCobertura } = leitura.cobertura(declarado, ibge, localDateString(primeiro, ctx.tenant.timeZone));
       const ausentes = await this.ausentesPrevistos(ctx.db, cobertura, leitura, ritmo);
-      // A aplicação do mesmo arquivo que vale hoje (com outro período): aplicar este envio a substitui.
+      // A aplicação do mesmo arquivo que vale hoje (com outro período): aplicar este envio a substitui. As outras APLICADA
+      // (de outros arquivos) que confirmam um ausente dela são lidas só quando há substituição.
       const substitui: string[] = [];
+      let outras: AplicadaComCobertura[] | null = null;
       for (const a of await ctx.db.officialImport.findMany({
         where: { sha256, status: 'APLICADA' },
         orderBy: { createdAt: 'asc' },
         select: { id: true, createdAt: true, periodFrom: true, periodTo: true, declaredPeriod: true },
       })) {
-        const voltam = await this.voltamDaSubstituicao(ctx.db, a.id, cobertura, leitura, ritmo);
+        outras ??= await this.aplicadasComCobertura(ctx.db, { exceto: [], shaExceto: sha256 });
+        const voltam = await this.voltamDaSubstituicao(ctx.db, a.id, cobertura, outras, leitura, ritmo);
         const quando = localDateString(a.createdAt, ctx.tenant.timeZone);
         const periodo = a.periodFrom && a.periodTo ? `período ${dataBr(dia(a.periodFrom)!)} a ${dataBr(dia(a.periodTo)!)}${a.declaredPeriod ? ', declarado' : ', lido das notificações'}` : 'sem período';
         substitui.push(
@@ -1161,7 +1309,7 @@ export class ImportacaoService {
       expirada: imp.status === 'DESCARTADA' && !imp.discardedBy,
       processamento: imp.workingStep && imp.workingSince && imp.workingAt ? { etapa: imp.workingStep as EtapaImportacao, desde: imp.workingSince.toISOString(), atualizadoEm: imp.workingAt.toISOString() } : null,
       erro: erro ? { codigo: erro.codigo, mensagem: erro.mensagem } : null,
-      resultadoAplicacao: (imp.applyResult as ResultadoAplicacao | null) ?? null,
+      resultadoAplicacao: resultadoSemCobertura(imp.applyResult),
       substituidaPor: imp.supersededBy ? (substitutas.get(imp.supersededBy) ?? null) : null,
     };
   }
@@ -1411,11 +1559,11 @@ export class ImportacaoService {
           const cobertura = leitor.cobertura!;
 
           // O mesmo arquivo aplicado antes com outro período: esta aplicação o substitui, e os ausentes que ele marcou
-          // fora da cobertura desta voltam.
+          // fora da cobertura desta voltam, menos os que outra importação APLICADA confirma.
           const { substituidas, unidades: unidadesQueVoltaram, semanas: semanasQueVoltaram } = await this.substituirAnteriores(tx, aplicadasAntes, cobertura, id, agora);
 
-          // Ausentes: só dentro da cobertura do envio (sistema, tipo, agravos, período, municípios, ficha e CNES), entre
-          // os registros que este envio não tocou. Nunca apaga.
+          // Ausentes: só dentro da cobertura de cada arquivo do envio (sistema, tipo, agravos, período, municípios, ficha e
+          // CNES), entre os registros que este envio não tocou. Nunca apaga.
           const ausentesMarcados = await this.marcarAusentes(tx, cobertura, id, agora);
 
           // Unidades pelo CNES.
@@ -1460,8 +1608,11 @@ export class ImportacaoService {
               ...semanasQueVoltaram,
             ]),
           ];
-          // O resultado fica gravado com a aplicação. A reconciliação da negativa roda depois da transação: até ela
-          // terminar, fica o aviso de que não rodou (verdade se o processo cair antes; o job reconcilia depois).
+          // O resultado fica gravado com a aplicação, junto com a cobertura dos ausentes que ela usou (a lista por
+          // arquivo, já com o fim no primeiro envio): a substituição de outra aplicação a consulta para saber se um
+          // ausente continua confirmado. A cobertura não vai para as respostas da API. A reconciliação da negativa roda
+          // depois da transação: até ela terminar, fica o aviso de que não rodou (verdade se o processo cair antes; o job
+          // reconcilia depois).
           const gravado: ResultadoAplicacao = {
             id,
             aplicadoEm: agora.toISOString(),
@@ -1484,7 +1635,7 @@ export class ImportacaoService {
               payload: null,
               preview: TenantPrisma.DbNull,
               counts: contagens as unknown as TenantPrisma.InputJsonValue,
-              applyResult: gravado as unknown as TenantPrisma.InputJsonValue,
+              applyResult: { ...gravado, cobertura } as unknown as TenantPrisma.InputJsonValue,
               error: TenantPrisma.DbNull,
             },
           });
@@ -1504,7 +1655,7 @@ export class ImportacaoService {
               substituidas: substituidas.map((s) => ({ id: s.id, voltaram: s.voltaram })),
             },
           });
-          return { gravado, unidades, semanas };
+          return { gravado, cobertura, unidades, semanas };
         },
         { timeout: 600_000, maxWait: 30_000 },
       )
@@ -1529,7 +1680,7 @@ export class ImportacaoService {
     try {
       await ctx.db.officialImport.updateMany({
         where: { id, workingStep: 'APLICANDO' },
-        data: { applyResult: final as unknown as TenantPrisma.InputJsonValue, workingStep: null, workingSince: null, workingAt: null },
+        data: { applyResult: { ...final, cobertura: resultado.cobertura } as unknown as TenantPrisma.InputJsonValue, workingStep: null, workingSince: null, workingAt: null },
       });
     } catch (e) {
       this.logger.error(`Resultado da importação ${id} não gravado: ${(e as Error).message}`);

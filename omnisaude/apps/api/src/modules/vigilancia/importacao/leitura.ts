@@ -48,13 +48,6 @@ export interface RegistroDoEnvio {
   tipo: TipoRegistroOficial;
   chave: string;
   partes: RegistroOficialNormalizado[];
-  /**
-   * Arquivo do envio de onde veio a primeira parte (a ordem de leitura, a partir de 0) e o CNES único dele (o arquivo do
-   * e-SUS com todos os registros com CNES, e um só; null nos outros). Só na leitura do envio (`LeituraEnvio.registros`):
-   * não vai para o payload. A cobertura usa para restringir os ausentes aos CNES dos arquivos.
-   */
-  arquivo?: number;
-  cnesDoArquivo?: string | null;
 }
 
 /** Máximo de linhas de cada lista de amostras da prévia. */
@@ -215,7 +208,14 @@ class Indice {
 
 // ───────────── cobertura ─────────────
 
-/** O que o envio cobre: os registros do banco dentro disso que não vieram ficam "ausentes" (nunca apagados). */
+/**
+ * O que um arquivo do envio cobre (VIG-1c): os registros do banco dentro disso que não vieram no envio ficam "ausentes"
+ * (nunca apagados). Cada arquivo cobre o sistema e o tipo dele, os agravos (no e-SUS Notifica, as fichas) e o período
+ * dos registros que vieram dele (ou o declarado), os municípios de notificação e, no e-SUS, o CNES dele quando o arquivo
+ * traz um CNES só; senão, o município inteiro. A cobertura do envio é a lista das coberturas dos arquivos: os mesmos
+ * arquivos dão os mesmos ausentes num zip ou em envios separados. As entradas iguais (o mesmo sistema, tipo, agravos,
+ * fichas, período e municípios) ficam numa só, com os CNES unidos: a consulta não cresce com o zip de muitas unidades.
+ */
 export interface Cobertura {
   sistema: SistemaOficial;
   tipo: TipoRegistroOficial;
@@ -224,41 +224,41 @@ export interface Cobertura {
   /** e-SUS Notifica: fichas (grupos) presentes; a ausência só vale dentro da mesma ficha. */
   grupos?: string[];
   /**
-   * e-SUS em que cada arquivo do sistema traz um CNES só (a exportação do autocadastro, uma por estabelecimento; ou o
-   * zip com as de algumas unidades): a ausência fica nos CNES desses arquivos (a união).
+   * e-SUS: o CNES do arquivo de um estabelecimento só (a exportação do autocadastro); na entrada que junta arquivos
+   * iguais, os CNES deles. A ausência fica nesses estabelecimentos. Sem o campo, o arquivo cobre o município inteiro.
    */
   cnes?: string[];
-  /** Período: o declarado ou o das notificações, com o fim na data do primeiro envio do arquivo (`resultado`). */
+  /** Período: o declarado ou o dos registros do arquivo, com o fim na data do primeiro envio do arquivo (`cobertura`). */
   de: string;
   ate: string;
   /** Municípios de notificação (6 dígitos): o do tenant e os que vieram no arquivo. */
   municipios: string[];
-  /** Algum registro veio sem município de notificação. */
+  /** Algum registro do arquivo veio sem município de notificação. */
   municipioNulo: boolean;
 }
 
-/** CNES de um arquivo na cobertura: os dos registros (até 2: basta saber se há um só) e se algum veio sem CNES. */
-interface CnesDoArquivo {
-  cnes: Set<string>;
-  nulo: boolean;
-}
-
-interface CoberturaAberta extends Omit<Cobertura, 'grupos' | 'cnes'> {
-  grupos: Set<string>;
-  /** e-SUS: o CNES de cada arquivo que entrou na cobertura, pelo índice do arquivo no envio (-1: registro sem o arquivo). */
-  cnesPorArquivo: Map<number, CnesDoArquivo>;
-}
-
 /**
- * Os CNES que restringem a cobertura de um sistema e tipo do e-SUS: a união dos CNES dos arquivos, quando todo arquivo
- * traz um CNES só e nenhum registro vem sem CNES; null (o município inteiro) nos demais casos. O mesmo critério vale para
- * a cobertura (os ausentes) e para o `cnes` de cada arquivo (official_imports.files, lido pela conciliação e pela base
- * consolidada).
+ * A cobertura de um arquivo, somada linha a linha na leitura (a mesma conta do `cnes` de official_imports.files). Entram
+ * as linhas do sistema do arquivo (a dengue de um NINDINET antigo, que é do Sinan Online, não cobre o Sinan Online nem o
+ * Sinan Net) e, no e-SUS Notifica, as da ficha identificada. A linha do registro que também veio em outro arquivo (o
+ * NINDINET e o DBF do agravo; a mesma chave em dois arquivos do mesmo tipo) entra na cobertura de cada um.
  */
-export function cnesRestritos(arquivos: readonly CnesDoArquivo[]): string[] | null {
-  if (!arquivos.length || arquivos.some((a) => a.nulo || a.cnes.size !== 1)) return null;
-  return [...new Set(arquivos.map((a) => [...a.cnes][0]!))].sort();
+interface CoberturaDoArquivo {
+  nome: string;
+  sistema: SistemaOficial;
+  tipo: TipoRegistroOficial;
+  agravos: Set<string | null>;
+  grupos: Set<string>;
+  de: string;
+  ate: string;
+  municipios: Set<string>;
+  municipioNulo: boolean;
+  /** e-SUS: o CNES das linhas, quando é um só e nenhuma vem sem CNES; null nos outros casos (o município inteiro). */
+  cnes: string | null;
 }
+
+/** Sistemas em que o arquivo de um CNES só restringe os ausentes (e a cobertura) ao estabelecimento. */
+const SISTEMAS_POR_CNES: readonly SistemaOficial[] = ['ESUS_NOTIFICA', 'ESUS_SINAN'];
 
 const dataBr = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 
@@ -271,111 +271,82 @@ const ROTULO_SISTEMA_CURTO: Record<SistemaOficial, string> = {
   SINASC_SIM: 'Sinasc/SIM',
 };
 
+/** Arquivos de um estabelecimento só citados um a um no aviso da prévia (o resto vira "e mais N"). */
+const MAX_ARQUIVOS_NO_AVISO = 5;
+
+/** Agravos em ordem: o nulo primeiro, depois os códigos. */
+const emOrdem = (agravos: Iterable<string | null>) => [...agravos].sort((a, b) => (a === b ? 0 : a === null ? -1 : b === null ? 1 : a.localeCompare(b)));
+
 /**
- * Cobertura por sistema e tipo, somada registro a registro: período declarado (ou o das notificações), agravos,
- * municípios e, no e-SUS, o CNES de cada arquivo (a cobertura fica nos CNES dos arquivos quando cada um traz um só).
+ * A lista de cobertura do envio, uma entrada por arquivo (as iguais juntas), com os avisos. `declarado`: o período do
+ * envio, que vale para todos os arquivos. `limite` (AAAA-MM-DD): a data local do primeiro envio do arquivo (o mesmo
+ * SHA-256, em qualquer situação). A exportação não traz o que veio depois dela: o fim de cada entrada não passa dessa
+ * data, mesmo com o arquivo reenviado depois para declarar o período; a entrada que começaria depois dela não cobre
+ * nada (nenhum ausente).
  */
-export class AcumuladorCobertura {
-  private readonly grupos = new Map<string, CoberturaAberta>();
-  private semFicha = 0;
-
-  constructor(
-    private readonly declarado: { de: string; ate: string } | null,
-    private readonly municipioTenant: string,
-  ) {}
-
-  somar(r: RegistroDoEnvio) {
-    // Só cobre o sistema o registro que veio de um arquivo dele: a dengue de um NINDINET antigo não cobre o Sinan Online.
-    if (!r.partes.some((p) => SISTEMA_DO_ARQUIVO[p.tipoArquivo] === r.sistema)) return;
-    const grupo = r.partes.find((p) => p.grupo)?.grupo ?? null;
-    // e-SUS Notifica sem a ficha identificada (CSV sem as colunas da síndrome gripal): não marca ausência em ficha nenhuma.
-    if (r.sistema === 'ESUS_NOTIFICA' && !grupo) {
-      this.semFicha++;
-      return;
+function coberturaDosArquivos(
+  arquivos: readonly CoberturaDoArquivo[],
+  semFicha: number,
+  declarado: { de: string; ate: string } | null,
+  municipioTenant: string,
+  limite?: string | null,
+): { cobertura: Cobertura[]; avisos: string[] } {
+  const avisos: string[] = [];
+  const cobertura: Cobertura[] = [];
+  const porChave = new Map<string, Cobertura>();
+  const valendo: CoberturaDoArquivo[] = [];
+  const tenant = municipioTenant.slice(0, 6);
+  let depoisDoEnvio = false;
+  for (const a of arquivos) {
+    const out: Cobertura = {
+      sistema: a.sistema,
+      tipo: a.tipo,
+      agravos: emOrdem(a.agravos),
+      de: declarado?.de ?? a.de,
+      ate: declarado?.ate ?? a.ate,
+      municipios: [tenant, ...[...a.municipios].filter((m) => m !== tenant).sort()],
+      municipioNulo: a.municipioNulo,
+    };
+    if (limite && out.ate > limite) out.ate = limite;
+    if (out.de > out.ate) {
+      depoisDoEnvio = true;
+      continue;
     }
-    const ultima = r.partes[r.partes.length - 1]!;
-    const k = `${r.sistema}|${r.tipo}`;
-    let c = this.grupos.get(k);
-    if (!c) {
-      c = {
-        sistema: r.sistema,
-        tipo: r.tipo,
-        agravos: [],
-        grupos: new Set(),
-        cnesPorArquivo: new Map(),
-        de: ultima.notificadoEm,
-        ate: ultima.notificadoEm,
-        municipios: [this.municipioTenant.slice(0, 6)],
-        municipioNulo: false,
-      };
-      this.grupos.set(k, c);
-    }
-    const agravo = r.partes.find((p) => p.agravo)?.agravo ?? null;
-    if (!c.agravos.includes(agravo)) c.agravos.push(plana(agravo));
-    if (grupo && !c.grupos.has(grupo)) c.grupos.add(plana(grupo));
-    if (ultima.notificadoEm < c.de) c.de = ultima.notificadoEm;
-    if (ultima.notificadoEm > c.ate) c.ate = ultima.notificadoEm;
-    const municipio = r.partes.find((p) => p.municipioNotificacao)?.municipioNotificacao?.slice(0, 6) ?? null;
-    if (!municipio) c.municipioNulo = true;
-    else if (!c.municipios.includes(municipio)) c.municipios.push(municipio);
-    if (SISTEMAS_POR_CNES.includes(r.sistema)) {
-      // O CNES do arquivo de onde o registro veio (o da leitura, igual para todos os registros do arquivo). O registro
-      // montado sem o arquivo conta pelo próprio CNES, como se o envio fosse um arquivo só.
-      const arquivo = r.arquivo ?? -1;
-      let a = c.cnesPorArquivo.get(arquivo);
-      if (!a) c.cnesPorArquivo.set(arquivo, (a = { cnes: new Set(), nulo: false }));
-      const cnes = r.arquivo !== undefined ? (r.cnesDoArquivo ?? null) : (r.partes.find((p) => p.cnes)?.cnes ?? null);
-      if (!cnes) a.nulo = true;
-      else if (a.cnes.size < 2 && !a.cnes.has(cnes)) a.cnes.add(plana(cnes));
-    }
-  }
-
-  /**
-   * A cobertura de cada sistema e tipo, com os avisos. `limite` (AAAA-MM-DD): a data local do primeiro envio do arquivo
-   * (o mesmo SHA-256, em qualquer situação). A exportação não traz o que veio depois dela: o fim da cobertura não passa
-   * dessa data, mesmo com o arquivo reenviado depois para declarar o período; a cobertura que começaria depois dela não
-   * cobre nada (nenhum ausente).
-   */
-  resultado(limite?: string | null): { cobertura: Cobertura[]; avisos: string[] } {
-    const avisos: string[] = [];
-    const cobertura: Cobertura[] = [];
-    let depoisDoEnvio = false;
-    for (const { grupos, cnesPorArquivo, ...c } of this.grupos.values()) {
-      const out: Cobertura = { ...c };
-      if (this.declarado) Object.assign(out, this.declarado);
-      if (limite && out.ate > limite) out.ate = limite;
-      if (out.de > out.ate) {
-        depoisDoEnvio = true;
-        continue;
-      }
-      if (c.sistema === 'ESUS_NOTIFICA') out.grupos = [...grupos].sort();
-      const cnes = SISTEMAS_POR_CNES.includes(c.sistema) ? cnesRestritos([...cnesPorArquivo.values()]) : null;
-      if (cnes) {
-        out.cnes = cnes;
-        avisos.push(
-          cnes.length === 1
-            ? `${ROTULO_SISTEMA_CURTO[c.sistema]}: o envio traz um CNES só (${cnes[0]}): os ausentes valem só para esse estabelecimento.`
-            : `${ROTULO_SISTEMA_CURTO[c.sistema]}: o envio traz só os estabelecimentos ${cnes.join(', ')}: os ausentes valem só para eles.`,
-        );
-      }
+    if (a.sistema === 'ESUS_NOTIFICA') out.grupos = [...a.grupos].sort();
+    if (a.cnes) out.cnes = [a.cnes];
+    valendo.push(a);
+    const k = JSON.stringify([out.sistema, out.tipo, out.agravos, out.grupos ?? null, out.de, out.ate, out.municipios, out.municipioNulo, !!out.cnes]);
+    const igual = porChave.get(k);
+    if (!igual) {
+      porChave.set(k, out);
       cobertura.push(out);
-    }
-    if (depoisDoEnvio && limite && this.declarado) avisos.push(`O período declarado começa depois do primeiro envio deste arquivo (${dataBr(limite)}): nada do período fica marcado como ausente.`);
-    if (this.semFicha)
-      avisos.push(
-        cobertura.some((c) => c.sistema === 'ESUS_NOTIFICA')
-          ? `e-SUS Notifica: ${this.semFicha} registro(s) sem a ficha identificada ficaram fora da marcação de ausentes.`
-          : 'e-SUS Notifica sem as colunas da síndrome gripal: nenhum registro foi marcado como ausente.',
-      );
-    return { cobertura, avisos };
+    } else if (a.cnes && !igual.cnes!.includes(a.cnes)) igual.cnes = [...igual.cnes!, a.cnes].sort();
   }
-}
-
-/** Cobertura de uma lista de registros (o mesmo que somar um a um). */
-export function coberturaDoEnvio(registros: RegistroDoEnvio[], declarado: { de: string; ate: string } | null, municipioTenant: string): Cobertura[] {
-  const a = new AcumuladorCobertura(declarado, municipioTenant);
-  for (const r of registros) a.somar(r);
-  return a.resultado().cobertura;
+  for (const sistema of SISTEMAS_POR_CNES) {
+    const doSistema = valendo.filter((a) => a.sistema === sistema);
+    const restritos = doSistema.filter((a) => a.cnes);
+    if (!restritos.length) continue;
+    const rotulo = ROTULO_SISTEMA_CURTO[sistema];
+    const cnes = [...new Set(restritos.map((a) => a.cnes!))];
+    if (restritos.length === doSistema.length && cnes.length === 1) {
+      avisos.push(`${rotulo}: o envio traz um CNES só (${cnes[0]}): os ausentes valem só para esse estabelecimento.`);
+      continue;
+    }
+    const lista = restritos.slice(0, MAX_ARQUIVOS_NO_AVISO).map((a) => `${a.nome}, CNES ${a.cnes}`);
+    if (restritos.length > MAX_ARQUIVOS_NO_AVISO) lista.push(`e mais ${(restritos.length - MAX_ARQUIVOS_NO_AVISO).toLocaleString('pt-BR')}`);
+    avisos.push(
+      `${rotulo}: ${restritos.length.toLocaleString('pt-BR')} arquivo(s) de um estabelecimento só (${lista.join('; ')}): os ausentes de cada um valem só para o estabelecimento dele.` +
+        (restritos.length < doSistema.length ? ` Os outros arquivos do ${rotulo} valem para o município inteiro.` : ''),
+    );
+  }
+  if (depoisDoEnvio && limite && declarado) avisos.push(`O período declarado começa depois do primeiro envio deste arquivo (${dataBr(limite)}): nada do período fica marcado como ausente.`);
+  if (semFicha)
+    avisos.push(
+      cobertura.some((c) => c.sistema === 'ESUS_NOTIFICA')
+        ? `e-SUS Notifica: ${semFicha} registro(s) sem a ficha identificada ficaram fora da marcação de ausentes.`
+        : 'e-SUS Notifica sem as colunas da síndrome gripal: nenhum registro foi marcado como ausente.',
+    );
+  return { cobertura, avisos };
 }
 
 // ───────────── leitura ─────────────
@@ -400,6 +371,8 @@ interface EstadoArquivo {
   idx: number;
   nome: string;
   tipo: TipoArquivoOficial;
+  /** Sistema do arquivo (null: fora da importação). */
+  sistema: SistemaOficial | null;
   registros: number;
   agravos: Set<string>;
   grupos: Set<string>;
@@ -407,8 +380,12 @@ interface EstadoArquivo {
   cnes: Set<string>;
   /** Algum registro da cobertura sem CNES. */
   cnesNulo: boolean;
-  /** Registros que entram na cobertura (o e-SUS Notifica sem a ficha identificada, não). */
+  /**
+   * Registros que entram na cobertura dos ausentes: os do sistema do arquivo e, no e-SUS Notifica, os da ficha
+   * identificada. Os agravos, as fichas, o período e os municípios deles são os da cobertura do arquivo.
+   */
   cobertos: number;
+  cobertura: { agravos: Set<string | null>; grupos: Set<string>; de: string | null; ate: string | null; municipios: Set<string>; municipioNulo: boolean };
   de: string | null;
   ate: string | null;
   identificado: boolean;
@@ -432,9 +409,6 @@ const ignorado = (nome: string, tamanho: number, tipo: TipoArquivoOficial, aviso
   ignorado: true,
   avisos: [aviso],
 });
-
-/** Sistemas em que o arquivo de um CNES só restringe os ausentes (e a cobertura) ao estabelecimento. */
-const SISTEMAS_POR_CNES: readonly SistemaOficial[] = ['ESUS_NOTIFICA', 'ESUS_SINAN'];
 
 /** Arquivo do envio como fica gravado (official_imports.files): o `ArquivoDetectado` e os grupos do catálogo presentes. */
 export type ArquivoLido = ArquivoDetectado & { grupos?: string[] };
@@ -460,10 +434,10 @@ export class LeituraEnvio {
   private readonly repetidasEntreArquivos = new Map<TipoArquivoOficial, { n: number; arquivo: string }>();
   /** Arquivos ignorados (os primeiros `MAX_IGNORADOS` ficam na lista). */
   private ignorados = 0;
-  /** CNES único de cada arquivo lido, pelo índice (null: não é do e-SUS, traz mais de um ou registro sem CNES). */
-  private readonly cnesDosArquivos: (string | null)[] = [];
-  /** Arquivos do e-SUS com registros na cobertura, por sistema e tipo: o `cnes` deles sai em `fecharArquivos`. */
-  private readonly arquivosPorCnes = new Map<string, { arquivo: ArquivoLido; cnes: CnesDoArquivo }[]>();
+  /** A cobertura de cada arquivo lido com registros na cobertura, na ordem de leitura. */
+  private readonly coberturasDosArquivos: CoberturaDoArquivo[] = [];
+  /** e-SUS Notifica: registros sem a ficha identificada, no envio inteiro. */
+  private semFicha = 0;
 
   constructor(
     private readonly limite: number,
@@ -483,6 +457,15 @@ export class LeituraEnvio {
   /** Apaga o arquivo temporário (sempre, no fim da prévia). */
   fechar() {
     this.spool.fechar();
+  }
+
+  /**
+   * A cobertura dos ausentes do envio: uma entrada por arquivo (as iguais juntas), com os avisos. A mesma lista vale na
+   * prévia, no payload, na aplicação, na substituição e no apply_result. `declarado`: o período declarado no envio;
+   * `municipioTenant`: o IBGE do município do tenant; `limite`: a data local do primeiro envio do arquivo.
+   */
+  cobertura(declarado: { de: string; ate: string } | null, municipioTenant: string, limite?: string | null): { cobertura: Cobertura[]; avisos: string[] } {
+    return coberturaDosArquivos(this.coberturasDosArquivos, this.semFicha, declarado, municipioTenant, limite);
   }
 
   /**
@@ -513,8 +496,7 @@ export class LeituraEnvio {
         for (let p = ix.primeira[r]!; p >= 0; p = ix.prox[p]!) doRegistro.push(decodificarParte(partes.get(p)!, this.tabela));
         if (doRegistro.length > 1) doRegistro.sort((a, b) => ORDEM_PARTE[a.tipoArquivo] - ORDEM_PARTE[b.tipoArquivo]);
         const p0 = doRegistro[0]!;
-        const arquivo = ix.arq[ix.primeira[r]!]!;
-        lote.push({ sistema: p0.sistema, tipo: p0.tipo, chave: p0.chave, partes: doRegistro, arquivo, cnesDoArquivo: this.cnesDosArquivos[arquivo] ?? null });
+        lote.push({ sistema: p0.sistema, tipo: p0.tipo, chave: p0.chave, partes: doRegistro });
       }
       ini = fim;
       yield lote;
@@ -563,16 +545,8 @@ export class LeituraEnvio {
     this.avisos.push(aviso);
   }
 
-  /**
-   * Fecha a leitura dos arquivos: o CNES de cada arquivo do e-SUS (pelo critério da cobertura: o CNES único do arquivo
-   * só fica quando todo arquivo do mesmo sistema e tipo traz um CNES só; senão, null em todos), os ignorados além do
-   * teto e as chaves repetidas em arquivos do mesmo tipo.
-   */
+  /** Fecha a leitura dos arquivos: os ignorados além do teto e as chaves repetidas em arquivos do mesmo tipo. */
   fecharArquivos() {
-    for (const lista of this.arquivosPorCnes.values()) {
-      const restritos = cnesRestritos(lista.map((x) => x.cnes));
-      for (const x of lista) x.arquivo.cnes = restritos ? [...x.cnes.cnes][0]! : null;
-    }
     for (const [tipo, { n, arquivo }] of this.repetidasEntreArquivos)
       this.avisos.push(
         `${n.toLocaleString('pt-BR')} registro(s) repetido(s) em mais de um arquivo do mesmo tipo (${ROTULO_TIPO_ARQUIVO[tipo]}): ficou a versão do último arquivo lido (${arquivo}). Confira se o zip não traz a mesma exportação duas vezes.`,
@@ -715,12 +689,14 @@ export class LeituraEnvio {
       idx,
       nome,
       tipo,
+      sistema: SISTEMA_DO_ARQUIVO[tipo],
       registros: 0,
       agravos: new Set(),
       grupos: new Set(),
       cnes: new Set(),
       cnesNulo: false,
       cobertos: 0,
+      cobertura: { agravos: new Set(), grupos: new Set(), de: null, ate: null, municipios: new Set(), municipioNulo: false },
       de: null,
       ate: null,
       identificado: false,
@@ -732,11 +708,11 @@ export class LeituraEnvio {
   private fecharArquivo(a: EstadoArquivo, tipo: TipoArquivoOficial, leitor: Leitor, e: EntradaEnvio) {
     const sistema = SISTEMA_DO_ARQUIVO[tipo];
     const tipoRegistro = TIPO_REGISTRO_DO_ARQUIVO[tipo];
-    // e-SUS: todos os registros da cobertura com CNES, e um só. O `cnes` do arquivo sai em `fecharArquivos`, com os
-    // outros arquivos do mesmo sistema e tipo.
+    // e-SUS: o arquivo com todos os registros da cobertura com CNES, e um só, é de um estabelecimento só. O `cnes` dele
+    // (official_imports.files, que a conciliação e a base consolidada leem) e a cobertura dos ausentes ficam nesse CNES,
+    // mesmo com outros arquivos no envio (o do município cobre o município inteiro, e só ele).
     const porCnes = !!sistema && SISTEMAS_POR_CNES.includes(sistema) && a.cobertos > 0;
     const unico = porCnes && a.cnes.size === 1 && !a.cnesNulo ? [...a.cnes][0]! : null;
-    this.cnesDosArquivos[a.idx] = unico;
     const detectado: ArquivoLido = {
       nome: e.nome,
       tipo,
@@ -759,12 +735,20 @@ export class LeituraEnvio {
       grupos: [...a.grupos].sort(),
     };
     this.arquivos.push(detectado);
-    if (porCnes) {
-      const k = `${sistema}|${tipoRegistro}`;
-      const lista = this.arquivosPorCnes.get(k) ?? [];
-      lista.push({ arquivo: detectado, cnes: { cnes: unico ? new Set([unico]) : new Set(), nulo: !unico } });
-      this.arquivosPorCnes.set(k, lista);
-    }
+    const c = a.cobertura;
+    if (sistema && tipoRegistro && a.cobertos > 0 && c.de && c.ate)
+      this.coberturasDosArquivos.push({
+        nome: e.nome,
+        sistema,
+        tipo: tipoRegistro,
+        agravos: c.agravos,
+        grupos: c.grupos,
+        de: c.de,
+        ate: c.ate,
+        municipios: c.municipios,
+        municipioNulo: c.municipioNulo,
+        cnes: unico,
+      });
   }
 
   private gravarParte(reg: RegistroOficialNormalizado): [number, number] {
@@ -849,12 +833,24 @@ export class LeituraEnvio {
       const parte = ix.novaParte(pos, len, a.idx, pre, n);
       if (registro !== undefined) ix.encadear(registro, parte);
       else ix.novoRegistro(chave, parte);
+      // A primeira vez da chave no envio (o aviso conta registros, não linhas).
+      if (reg.sistema === 'ESUS_NOTIFICA' && !reg.grupo) this.semFicha++;
     }
     if (reg.agravo && !a.agravos.has(reg.agravo)) a.agravos.add(plana(reg.agravo));
     if (reg.grupo && !a.grupos.has(reg.grupo)) a.grupos.add(plana(reg.grupo));
-    // CNES do arquivo (a ficha do e-SUS Notifica sem a síndrome gripal fica fora, como na cobertura).
-    if (reg.sistema !== 'ESUS_NOTIFICA' || reg.grupo) {
+    // Cobertura dos ausentes do arquivo e o CNES dele: as linhas do sistema do arquivo (a dengue de um NINDINET antigo é
+    // do Sinan Online e não cobre o Sinan Net) e, no e-SUS Notifica, as da ficha identificada (sem a síndrome gripal, a
+    // linha não marca ausência em ficha nenhuma).
+    if (reg.sistema === a.sistema && (reg.sistema !== 'ESUS_NOTIFICA' || reg.grupo)) {
       a.cobertos++;
+      const c = a.cobertura;
+      if (!c.agravos.has(reg.agravo)) c.agravos.add(reg.agravo ? plana(reg.agravo) : null);
+      if (reg.grupo && !c.grupos.has(reg.grupo)) c.grupos.add(plana(reg.grupo));
+      if (!c.de || reg.notificadoEm < c.de) c.de = reg.notificadoEm;
+      if (!c.ate || reg.notificadoEm > c.ate) c.ate = reg.notificadoEm;
+      const municipio = reg.municipioNotificacao?.slice(0, 6) ?? null;
+      if (!municipio) c.municipioNulo = true;
+      else if (!c.municipios.has(municipio)) c.municipios.add(plana(municipio));
       if (!reg.cnes) a.cnesNulo = true;
       else if (a.cnes.size < 2 && !a.cnes.has(reg.cnes)) a.cnes.add(plana(reg.cnes));
     }

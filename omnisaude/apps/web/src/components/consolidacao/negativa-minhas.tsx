@@ -15,17 +15,19 @@ import { useDataHora } from './fuso';
 import { dataBr, resumoMinhas, rotuloAtestar, rotuloEspelhoPdf, rotuloSemana, textoCancelamento, textoDaSemanaDoResponsavel, TOM_SITUACAO, TOM_STATUS_ATESTO } from './negativa-regras';
 
 /**
- * Baixa o espelho em PDF do atesto. O botão se repete (um por semana ou por atesto): o nome acessível diz a SE e, no
- * histórico (`comUnidade`), também a unidade.
+ * Baixa o espelho em PDF do atesto. O botão se repete (um por semana ou por atesto): o nome acessível diz a SE; no
+ * histórico e na tela com mais de uma unidade (`comUnidade`), também a unidade; e, no atesto que não é o vigente, a
+ * situação e quando foi atestado.
  */
-function BotaoPdf({ atesto, rotulo = 'PDF', comUnidade = false }: { atesto: Pick<AtestoNegativa, 'id' | 'cnes' | 'semana' | 'unidade'>; rotulo?: string; comUnidade?: boolean }) {
+function BotaoPdf({ atesto, rotulo = 'PDF', comUnidade = false }: { atesto: Pick<AtestoNegativa, 'id' | 'cnes' | 'semana' | 'unidade' | 'status' | 'atestadoEm'>; rotulo?: string; comUnidade?: boolean }) {
   const toast = useToast();
+  const { fuso } = useDataHora();
   const [busy, setBusy] = useState(false);
   return (
     <Button
       size="sm"
       variant="secondary"
-      aria-label={rotuloEspelhoPdf(atesto.semana, comUnidade ? atesto.unidade : undefined)}
+      aria-label={rotuloEspelhoPdf(atesto, fuso, comUnidade)}
       loading={busy}
       onClick={async () => {
         setBusy(true);
@@ -44,8 +46,11 @@ function BotaoPdf({ atesto, rotulo = 'PDF', comUnidade = false }: { atesto: Pick
   );
 }
 
-/** Uma semana fechada da unidade: situação, prazo, atesto e, quando pode, o texto e o botão de atestar. */
-function SemanaDaUnidade({ unidade, s, onAtestado }: { unidade: UnidadeRef; s: SemanaParaAtestar; onAtestado: () => void }) {
+/**
+ * Uma semana fechada da unidade: situação, prazo, atesto e, quando pode, o texto e o botão de atestar. Com mais de uma
+ * unidade na tela (`comUnidade`), os nomes acessíveis de Atestar e do PDF dizem também a unidade.
+ */
+function SemanaDaUnidade({ unidade, s, comUnidade, onAtestado }: { unidade: UnidadeRef; s: SemanaParaAtestar; comUnidade: boolean; onAtestado: () => void }) {
   const toast = useToast();
   const { fuso } = useDataHora();
   const [confirmo, setConfirmo] = useState(false);
@@ -67,7 +72,7 @@ function SemanaDaUnidade({ unidade, s, onAtestado }: { unidade: UnidadeRef; s: S
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={TOM_SITUACAO[s.situacao]}>{ROTULO_SITUACAO_UNIDADE_SEMANA[s.situacao]}</Badge>
           {s.atesto && <Badge tone={TOM_STATUS_ATESTO[s.atesto.status]}>{ROTULO_STATUS_ATESTO[s.atesto.status]}</Badge>}
-          {s.atesto && <BotaoPdf atesto={s.atesto} />}
+          {s.atesto && <BotaoPdf atesto={s.atesto} comUnidade={comUnidade} />}
         </div>
       </div>
       {s.atesto && textoCancelamento(s.atesto) && <p className="text-xs text-amber-800">{textoCancelamento(s.atesto)}</p>}
@@ -85,7 +90,7 @@ function SemanaDaUnidade({ unidade, s, onAtestado }: { unidade: UnidadeRef; s: S
           <div className="flex flex-wrap items-center gap-2">
             <Button
               size="sm"
-              aria-label={rotuloAtestar(s.semana)}
+              aria-label={rotuloAtestar(s.semana, comUnidade ? unidade.nome : undefined)}
               disabled={!confirmo}
               loading={busy}
               onClick={async () => {
@@ -123,6 +128,8 @@ export function NegativaMinhas() {
   const r = useApi<RespostaMinhasNegativas>('/vigilancia/negativas/minhas');
   const { dataHora } = useDataHora();
   const resumo = r.data ? resumoMinhas(r.data) : null;
+  // Com mais de uma unidade, os botões que se repetem em cada uma dizem a unidade no nome acessível.
+  const variasUnidades = (r.data?.unidades.length ?? 0) > 1;
   return (
     <div className="space-y-4">
       <Alert tone="info">
@@ -156,7 +163,7 @@ export function NegativaMinhas() {
                 <CardHeader title={u.unidade.nome} description={`CNES ${u.unidade.cnes}`} actions={<Badge tone={u.tipo === 'TITULAR' ? 'blue' : 'slate'}>{ROTULO_TIPO_RESPONSAVEL[u.tipo]}</Badge>} />
                 <ul className="divide-y divide-slate-100">
                   {u.semanas.map((s) => (
-                    <SemanaDaUnidade key={s.semana} unidade={u.unidade} s={s} onAtestado={() => void r.reload()} />
+                    <SemanaDaUnidade key={s.semana} unidade={u.unidade} s={s} comUnidade={variasUnidades} onAtestado={() => void r.reload()} />
                   ))}
                 </ul>
               </Card>

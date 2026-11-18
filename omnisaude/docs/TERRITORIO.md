@@ -138,6 +138,11 @@ auditada.
   cor por agravo, contorno tracejado quando a posição pede confirmação em campo, quarteirões com mais casos; clicar
   num caso traça o raio e lista os quarteirões atingidos.
 - **Ficha da notificação**: cartão "Quarteirões no raio do bloqueio" (base da ordem de bloqueio da semana 26).
+- **Vigilância > Consolidação e surtos > Conciliação** (bairros sem correspondência, `docs/VIGILANCIA.md`): quem tem
+  `vigilancia.importar` e `territorio.editar` liga o nome escrito nos registros oficiais a um bairro do território,
+  como apelido (de 2 a 120 caracteres, sem os espaços das pontas). O nome com caractere de controle (o nulo, a
+  tabulação, a quebra de linha no meio) é recusado com 400 VALIDACAO "Nome do bairro com caractere inválido (de
+  controle)".
 
 ### Sigilo e acesso
 

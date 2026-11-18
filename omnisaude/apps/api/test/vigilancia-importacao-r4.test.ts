@@ -12,7 +12,9 @@ import { pgAvailable, startTestApp, type TestApp } from './harness';
 
 /**
  * Importação (VIG-1c), quarta rodada, com o banco:
- * - N0: o zip com os CSV do e-SUS Notifica de algumas unidades (um CNES por arquivo) só marca ausentes nessas unidades;
+ * - N0: o zip com os CSV do e-SUS Notifica de algumas unidades (um CNES por arquivo) só marca ausentes nessas unidades
+ *   (na quinta rodada, R5-1, cada arquivo cobre o que traz: o da unidade fica restrito a ela mesmo com outro arquivo do
+ *   município no zip);
  * - aviso-periodo-lido: o envio aplicado mais recente do mesmo arquivo substitui os anteriores (SUBSTITUIDA): os
  *   ausentes que a substituída marcou fora da cobertura nova voltam, a cobertura dela some da base consolidada e da
  *   conciliação, e a cobertura dos ausentes termina na data do primeiro envio do arquivo;
@@ -126,14 +128,17 @@ describe.runIf(enabled)('importação, quarta rodada: CNES por arquivo, substitu
     expect(Object.fromEntries(duas.arquivos.map((a) => [a.nome, a.cnes]))).toEqual({ 'ubs-x.csv': X, 'ubs-y.csv': Y });
     expect(duas.contagens?.ausentesPrevistos).toBe(0);
     expect(duas.previa!.ausentes).toEqual([]);
-    expect(duas.avisos).toContain(`e-SUS Notifica: o envio traz só os estabelecimentos ${X}, ${Y}: os ausentes valem só para eles.`);
+    // Quinta rodada (R5-1): o aviso fala por arquivo.
+    expect(duas.avisos).toContain(`e-SUS Notifica: 2 arquivo(s) de um estabelecimento só (ubs-x.csv, CNES ${X}; ubs-y.csv, CNES ${Y}): os ausentes de cada um valem só para o estabelecimento dele.`);
     expect((await aplicar(duas.id)).ausentesMarcados).toBe(0);
     expect(await ausentes()).toEqual([]);
     // O mesmo critério gravado em official_imports.files (a conciliação e a base consolidada leem daí).
     const files = (await db.officialImport.findUniqueOrThrow({ where: { id: duas.id }, select: { files: true } })).files as { nome: string; cnes: string | null }[];
     expect(Object.fromEntries(files.map((f) => [f.nome, f.cnes]))).toEqual({ 'ubs-x.csv': X, 'ubs-y.csv': Y });
 
-    // Com um arquivo de mais de um CNES no zip, a cobertura vale para o município inteiro (e nenhum arquivo fica com CNES).
+    // Com um arquivo de mais de um CNES no zip (o do distrito), esse arquivo cobre o município inteiro, e o da unidade
+    // continua restrito ao CNES dela (quinta rodada, R5-1: a cobertura é a de cada arquivo; na quarta, nenhum ficava com
+    // CNES).
     const misto = await previa(
       zipSync({
         'ubs-x.csv': csv([['352400000901', X]]),
@@ -144,7 +149,7 @@ describe.runIf(enabled)('importação, quarta rodada: CNES por arquivo, substitu
       }),
       'misto.zip',
     );
-    expect(Object.fromEntries(misto.arquivos.map((a) => [a.nome, a.cnes]))).toEqual({ 'ubs-x.csv': null, 'distrito.csv': null });
+    expect(Object.fromEntries(misto.arquivos.map((a) => [a.nome, a.cnes]))).toEqual({ 'ubs-x.csv': X, 'distrito.csv': null });
     expect(misto.previa!.ausentes.map((a) => `${a.numero}@${a.cnes}`)).toEqual([`352400000903@${Z}`]);
     await t.http().post(`/api/vigilancia/importacoes/${misto.id}/descartar`).set(auth(vig)).expect(200);
   });

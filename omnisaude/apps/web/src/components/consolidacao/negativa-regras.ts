@@ -1,6 +1,7 @@
 import {
   arredondar,
   ROTULO_SITUACAO_UNIDADE_SEMANA,
+  ROTULO_STATUS_ATESTO,
   UNIT_TYPE_LABELS,
   type AtestoNegativa,
   type CelulaGrade,
@@ -84,9 +85,24 @@ export function textoDaSemanaDoResponsavel(s: Pick<SemanaParaAtestar, 'atesto' |
   return `Prazo: ${fmtDateTimeTz(s.prazo, tz)}.`;
 }
 
-/** Subtítulo do detalhe da célula da grade: CNES, período da semana e o prazo do atesto no fuso da instituição. */
-export function descricaoDaCelula(linha: Pick<LinhaGradeNegativa, 'unidade'>, coluna: Pick<ColunaGrade, 'semana' | 'inicio' | 'fim' | 'prazo'>, tz: string): string {
-  return `CNES ${linha.unidade.cnes} · de ${rotuloColuna(coluna).periodo} · prazo do atesto: ${fmtDateTimeTz(coluna.prazo, tz)}`;
+/**
+ * Subtítulo do detalhe da célula da grade, no fuso da instituição: CNES, período da semana, o prazo da semana (o da
+ * coluna, pela regra de agora) e, com atesto, o prazo do atesto (o gravado com ele, que decidiu o "fora do prazo").
+ */
+export function descricaoDaCelula(
+  linha: Pick<LinhaGradeNegativa, 'unidade'>,
+  coluna: Pick<ColunaGrade, 'semana' | 'inicio' | 'fim' | 'prazo'>,
+  tz: string,
+  atesto?: Pick<NonNullable<FontesCelula['atesto']>, 'prazo'> | null,
+): string {
+  const semana = `CNES ${linha.unidade.cnes} · de ${rotuloColuna(coluna).periodo} · prazo da semana: ${fmtDateTimeTz(coluna.prazo, tz)}`;
+  return atesto ? `${semana} · prazo do atesto: ${fmtDateTimeTz(atesto.prazo, tz)}` : semana;
+}
+
+/** Por que o prazo do atesto difere do prazo da semana (a regra mudou depois do atesto); null quando são o mesmo. */
+export function notaPrazoDoAtesto(coluna: Pick<ColunaGrade, 'prazo'>, atesto: Pick<NonNullable<FontesCelula['atesto']>, 'prazo'> | null | undefined): string | null {
+  if (!atesto || Date.parse(atesto.prazo) === Date.parse(coluna.prazo)) return null;
+  return 'O prazo do atesto é o que valia quando ele foi feito; a regra do prazo mudou depois.';
 }
 
 /** Cabeçalho da coluna: "SE 44/2026" e o período "dd/mm a dd/mm". */
@@ -229,16 +245,33 @@ export const semTitular = (u: UnidadeNotificante) => !!periodoAberto(u) && !resp
 export const semResponsavel = (u: UnidadeNotificante) => !!periodoAberto(u) && !responsaveisValidos(u).length;
 /** O titular ativo cuja designação não vale: designar outro titular encerra a dele hoje (a API faz na mesma transação). */
 export const titularQueNaoVale = (u: Pick<UnidadeNotificante, 'responsaveis'>): ResponsavelNegativa | null => responsaveisAtivos(u).find((r) => r.tipo === 'TITULAR' && !designacaoValida(r)) ?? null;
-/** Nome acessível do botão "Revogar" de cada responsável (o leitor de tela diz de quem é a designação). */
-export const rotuloRevogar = (r: Pick<ResponsavelNegativa, 'nome'>) => `Revogar a designação de ${r.nome}`;
+/**
+ * Nome acessível do botão "Revogar" de cada responsável: de quem é a designação e de qual unidade (a mesma pessoa pode
+ * ser responsável em mais de uma).
+ */
+export const rotuloRevogar = (r: Pick<ResponsavelNegativa, 'nome'>, u: Pick<UnidadeNotificante, 'unidade'>) => `Revogar a designação de ${r.nome} como responsável da ${u.unidade.nome}`;
 /** Nomes acessíveis dos botões que se repetem em cada linha das unidades notificantes (dizem de qual unidade são). */
 export const rotuloDesignar = (u: Pick<UnidadeNotificante, 'unidade'>) => `Designar responsável da ${u.unidade.nome}`;
 export const rotuloEncerrarPeriodo = (u: Pick<UnidadeNotificante, 'unidade'>) => `Encerrar o período da ${u.unidade.nome}`;
 export const rotuloTornarNotificante = (u: Pick<UnidadeNotificante, 'unidade'>) => `Tornar ${u.unidade.nome} notificante`;
-/** Nomes acessíveis dos botões da tela do responsável, um por semana ou por atesto (dizem de qual SE são). */
-export const rotuloAtestar = (semana: string) => `Atestar a SE ${rotuloSemana(semana)}`;
-/** No histórico, que junta as unidades, o nome leva também a unidade. */
-export const rotuloEspelhoPdf = (semana: string, unidade?: string) => `Espelho em PDF da SE ${rotuloSemana(semana)}${unidade ? `, ${unidade}` : ''}`;
+/**
+ * Nome acessível do botão Atestar da tela do responsável, um por semana: a SE e, quando a tela tem mais de uma unidade,
+ * a unidade.
+ */
+export const rotuloAtestar = (semana: string, unidade?: string) => `Atestar a SE ${rotuloSemana(semana)}${unidade ? `, ${unidade}` : ''}`;
+/**
+ * Nome acessível do botão do espelho em PDF, um por semana ou por atesto: a SE; com `comUnidade` (o histórico, que
+ * junta as unidades, e a tela com mais de uma unidade), a unidade; e, no atesto que não é o vigente (anulado ou
+ * cancelado), a situação e quando foi atestado, como na tabela do histórico (o anulado e o refeito da mesma SE e
+ * unidade ficam distintos). Com mais de uma unidade, o atesto da semana e o do histórico têm o mesmo nome quando são o
+ * mesmo atesto: é o mesmo espelho.
+ */
+export function rotuloEspelhoPdf(a: Pick<AtestoNegativa, 'semana' | 'unidade' | 'status' | 'atestadoEm'>, tz: string, comUnidade = false): string {
+  const partes = [`Espelho em PDF da SE ${rotuloSemana(a.semana)}`];
+  if (comUnidade) partes.push(a.unidade);
+  if (a.status !== 'ATESTADA') partes.push(`${ROTULO_STATUS_ATESTO[a.status].toLowerCase()}, atestada em ${fmtDateTimeTz(a.atestadoEm, tz)}`);
+  return partes.join(', ');
+}
 
 /**
  * O período que o encerramento alcança: o aberto; na unidade inativa, também o que ainda termina depois de hoje (dado

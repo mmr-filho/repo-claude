@@ -44,9 +44,10 @@ export interface ArquivoDetectado {
   grupos?: string[];
   /**
    * CNES único dos registros do arquivo, quando há exatamente um (o arquivo de um estabelecimento só, como a exportação
-   * do autocadastro do e-SUS), pelo mesmo critério que restringe os ausentes ao estabelecimento: arquivo do e-SUS
-   * Notifica ou do e-SUS Sinan com todos os registros com CNES, e um CNES só. Nos demais casos (e no arquivo ignorado),
-   * null. Os envios anteriores não têm o campo: vale como null.
+   * do autocadastro do e-SUS), pelo mesmo critério que restringe os ausentes do arquivo ao estabelecimento: arquivo do
+   * e-SUS Notifica ou do e-SUS Sinan com todos os registros da cobertura com CNES, e um CNES só, arquivo por arquivo (o
+   * CSV do município no mesmo zip não tira o CNES do arquivo da unidade). Nos demais casos (e no arquivo ignorado), null:
+   * o arquivo cobre o município inteiro. Os envios anteriores não têm o campo: vale como null.
    */
   cnes: string | null;
   /** Menor e maior data de notificação do arquivo. */
@@ -67,7 +68,10 @@ export interface ContagensImportacao {
   recusados: number;
   /** Mesma chave mais de uma vez no envio (fica a versão com mais campos preenchidos). */
   duplicadosNoArquivo: number;
-  /** Registros do mesmo sistema, tipo, agravos e período que estão no banco e não vieram. */
+  /**
+   * Registros do banco que não vieram, dentro do que algum arquivo do envio cobre (sistema, tipo, agravos ou ficha e
+   * período dele e, no e-SUS, o CNES do arquivo de um estabelecimento só); cada registro conta uma vez.
+   */
   ausentesPrevistos: number;
   /** Recusados por motivo (texto curto → quantidade). */
   motivosRecusa: Record<string, number>;
@@ -210,8 +214,9 @@ export interface ImportacaoDoMesmoArquivo {
 /** Importação do mesmo arquivo que a aplicação substituiu (passou a SUBSTITUIDA). */
 export interface ImportacaoSubstituida extends ImportacaoDoMesmoArquivo {
   /**
-   * Registros que ela tinha dado como ausentes e voltaram, em termos líquidos: os que a cobertura da aplicação nova não
-   * marca de novo (os que estão dentro dela e não vieram continuam ausentes, agora por ela).
+   * Registros que ela tinha dado como ausentes e voltaram, em termos líquidos. Continuam ausentes (e não contam aqui):
+   * os que estão dentro da cobertura da aplicação nova e não vieram (agora por ela) e os de fora que outra importação
+   * APLICADA confirma (aplicada depois da última vez que o registro veio, com a cobertura que o inclui: agora por ela).
    */
   voltaram: number;
 }
@@ -242,12 +247,14 @@ export interface ErroImportacao {
 
 /**
  * POST /vigilancia/importacoes: o corpo é o arquivo cru (zip, dbf ou csv; até 95 MB). Estes são os parâmetros da
- * consulta. Para trocar a codificação, a tela envia o mesmo arquivo de novo com `codificacao`. Antes de o corpo ser
- * lido: 409 IMPORTACAO_OCUPADA quando o município tem outra importação lendo ou aplicando (aparece no histórico); 409
- * IMPORTACAO_SERVIDOR_OCUPADO quando o servidor está ocupado com outros envios (dois arquivos de importação na memória,
- * de qualquer município, a vez de leitura ou aplicação com outro município, ou outro envio do mesmo município ainda
- * chegando), com a mensagem da API para a tela; 413 quando o Content-Length passa do limite. Durante o envio: 408 se o
- * corpo para de chegar por 30 s, 400 se chega incompleto.
+ * consulta (o nome sem caractere de controle, senão 400). Para trocar a codificação, a tela envia o mesmo arquivo de
+ * novo com `codificacao`. Antes de o corpo ser lido: 413 quando o Content-Length passa do limite; 409
+ * IMPORTACAO_OCUPADA quando o município tem outra importação lendo ou aplicando (aparece no histórico); 409
+ * IMPORTACAO_SERVIDOR_OCUPADO quando o servidor está ocupado com outros envios (a vez de leitura ou aplicação com outro
+ * município, dois arquivos na memória do processo, de qualquer município, contando o pacote da SIGTAP, ou outro envio
+ * do mesmo município ainda chegando), com a mensagem da API para a tela. A vez é conferida de novo depois do corpo: se
+ * outro município a tomou enquanto o arquivo chegava, o 409 IMPORTACAO_SERVIDOR_OCUPADO vem aí. Durante o envio: 408 se
+ * o corpo para de chegar por 30 s, 400 se chega incompleto.
  */
 export interface ConsultaEnvioImportacao {
   nome: string;
@@ -311,8 +318,8 @@ export interface DetalheImportacao extends ResumoImportacao {
  * que vale, qualquer que seja o período dela) e para o reenvio com o mesmo período declarado da aplicação que vale.
  * Com outro período declarado, o envio gera uma prévia nova: é como se corrige o período depois de aplicado (os
  * registros não duplicam). Aplicada, ela substitui a anterior (SUBSTITUIDA): a cobertura passa a ser a dela, e os
- * registros que a anterior deu como ausentes fora dessa cobertura voltam. Para voltar ao período lido das
- * notificações, declare esse período.
+ * registros que a anterior deu como ausentes fora dessa cobertura voltam, menos os que outra importação aplicada
+ * também dá como ausentes. Para voltar ao período lido das notificações, declare esse período.
  */
 export interface ArquivoJaImportado {
   jaImportado: { id: string; aplicadoEm: string };
@@ -337,7 +344,11 @@ export interface EnvioEmProcessamento {
  */
 export type RespostaEnvioImportacao = DetalheImportacao | ArquivoJaImportado | EnvioEmProcessamento;
 
-/** Resposta de POST /vigilancia/importacoes/:id/aplicar quando a aplicação termina dentro da espera (200). */
+/**
+ * Resposta de POST /vigilancia/importacoes/:id/aplicar quando a aplicação termina dentro da espera (200). O apply_result
+ * gravado guarda também a cobertura dos ausentes que a aplicação usou (`cobertura`, a lista por arquivo, para a
+ * substituição de outra aplicação conferir se um ausente continua confirmado); ela não vem nas respostas da API.
+ */
 export interface ResultadoAplicacao {
   id: string;
   aplicadoEm: string;

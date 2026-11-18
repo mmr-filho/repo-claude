@@ -432,7 +432,7 @@ export function NegativaUnidades() {
                                   {r.motivoInvalido}
                                 </span>
                               )}
-                              <Button size="sm" variant="link" className="h-auto" aria-label={rotuloRevogar(r)} onClick={() => setAcao({ tipo: 'revogar', u, r })}>
+                              <Button size="sm" variant="link" className="h-auto" aria-label={rotuloRevogar(r, u)} onClick={() => setAcao({ tipo: 'revogar', u, r })}>
                                 Revogar
                               </Button>
                             </li>

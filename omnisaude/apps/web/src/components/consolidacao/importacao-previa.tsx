@@ -288,7 +288,10 @@ function Amostras({ d }: { d: DetalheImportacao }) {
             )}
           </TabPanel>
           <TabPanel value="ausentes">
-            <p className="mb-2 text-xs text-slate-500">Registros do mesmo sistema, tipo, agravos e período que estão no banco e não vieram. Ao aplicar, ficam marcados como ausentes (não são apagados).</p>
+            <p className="mb-2 text-xs text-slate-500">
+              Registros que estão no banco e não vieram, dentro do que cada arquivo do envio cobre: o sistema, o tipo, os agravos e o período dele e, no e-SUS, o estabelecimento do arquivo de um CNES só. Ao aplicar,
+              ficam marcados como ausentes (não são apagados).
+            </p>
             <TabelaAmostras itens={p.ausentes} />
           </TabPanel>
         </Tabs>

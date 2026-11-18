@@ -1,9 +1,11 @@
+import { HttpStatus } from '@nestjs/common';
 import type { Request } from 'express';
 import { DomainError } from './errors';
 
 /**
  * Lê o corpo cru (application/zip, octet-stream ou text/csv), que não passa pelos parsers JSON/texto do main.ts.
- * Usado pelo pacote da SIGTAP (faturamento) e pelas exportações oficiais da vigilância (VIG-1c).
+ * Usado pelo pacote da SIGTAP (faturamento) e pelas exportações oficiais da vigilância (VIG-1c), os dois com a carga do
+ * processo reservada antes (`CargasDoProcesso`).
  *
  * - Com Content-Length: acima do limite, 413 antes de ler qualquer byte; senão, o Buffer é alocado uma vez no tamanho
  *   declarado e os pedaços são copiados nele (sem a lista de pedaços mais a cópia do Buffer.concat, que dobrava a
@@ -19,6 +21,51 @@ export class LeituraDoCorpo {
   static ociosoMs = 30_000;
   /** Depois do erro, o prazo para a resposta sair antes de a conexão ser derrubada. */
   static fecharMs = 5_000;
+}
+
+/** O processo ocupado com envios ou importações de outros tenants (a carga e a vez da importação). */
+export const MSG_SERVIDOR_OCUPADO = 'O servidor está recebendo ou processando outros envios agora. Tente de novo em instantes.';
+/** O outro envio do mesmo tenant, ainda chegando (ou com o arquivo na memória). */
+export const MSG_ENVIO_DO_TENANT = 'Outro envio da sua instituição está sendo recebido agora. Tente de novo quando ele terminar.';
+
+/**
+ * Arquivos grandes de corpo cru na memória do processo (container de 1 GiB, todos os municípios): o da importação da
+ * vigilância (o corpo sendo lido e, depois, a leitura em segundo plano) e o pacote da SIGTAP (o corpo e a carga das
+ * tabelas). Com o Content-Length, o Buffer do corpo é alocado de uma vez: quem lê reserva a carga antes de ler, e no teto
+ * o envio recebe 409 IMPORTACAO_SERVIDOR_OCUPADO sem que o corpo seja lido (o Node descarta o resto, sem juntar). O teto
+ * é de `LIMITE` cargas no processo, de qualquer tenant, e `LIMITE_TENANT` por tenant (dois envios lentos do mesmo
+ * município não seguram o processo inteiro). O contador é um só para os dois envios.
+ */
+export class CargasDoProcesso {
+  static readonly LIMITE = 2;
+  static readonly LIMITE_TENANT = 1;
+  /** As cargas deste processo (os testes trocam, para fazer o papel de outro processo: `ImportacaoService.comoOutroProcesso`). */
+  static atual = new CargasDoProcesso();
+  /** Arquivos na memória, de qualquer tenant. */
+  total = 0;
+  /** Arquivos na memória por tenant. */
+  readonly porTenant = new Map<string, number>();
+
+  /**
+   * Reserva uma carga para o tenant antes de ler o corpo; com o tenant ou o processo no teto, 409
+   * IMPORTACAO_SERVIDOR_OCUPADO. Devolve a liberação (pode ser chamada mais de uma vez).
+   */
+  reservar(tenantId: string): () => void {
+    const doTenant = this.porTenant.get(tenantId) ?? 0;
+    if (doTenant >= CargasDoProcesso.LIMITE_TENANT) throw new DomainError('IMPORTACAO_SERVIDOR_OCUPADO', MSG_ENVIO_DO_TENANT, HttpStatus.CONFLICT);
+    if (this.total >= CargasDoProcesso.LIMITE) throw new DomainError('IMPORTACAO_SERVIDOR_OCUPADO', MSG_SERVIDOR_OCUPADO, HttpStatus.CONFLICT);
+    this.total++;
+    this.porTenant.set(tenantId, doTenant + 1);
+    let solta = false;
+    return () => {
+      if (solta) return;
+      solta = true;
+      this.total--;
+      const n = (this.porTenant.get(tenantId) ?? 1) - 1;
+      if (n > 0) this.porTenant.set(tenantId, n);
+      else this.porTenant.delete(tenantId);
+    };
+  }
 }
 
 /** O Content-Length do pedido; null sem ele (envio em pedaços) ou fora do formato. */

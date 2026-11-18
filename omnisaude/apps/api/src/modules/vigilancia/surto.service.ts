@@ -200,6 +200,47 @@ const avisoMesmoCaso = ([a, b]: [number, number], aberto: boolean) =>
   `Os casos ${a} e ${b} são o mesmo caso (notificação e registro conciliados): ${aberto ? 'retire uma das linhas' : 'digite só uma das linhas no Sinan Net'}.`;
 
 /**
+ * Pares do mesmo caso como quem lê os vê (R5-8, que revê a decisão 6): o par em que uma das linhas é sob sigilo para ele
+ * (`restritas`, os NU_CASO das linhas mascaradas) não é revelado, nem pela marca das linhas nem pelos NU_CASO no aviso;
+ * ele só conta (o caso entra uma vez em `casosNaPlanilha` e na regra dos 10%).
+ */
+type ParesDoLeitor = { visiveis: [number, number][]; ocultos: number };
+
+function paresDoLeitor(pares: [number, number][], restritas: ReadonlySet<number>): ParesDoLeitor {
+  const visiveis = pares.filter(([a, b]) => !restritas.has(a) && !restritas.has(b));
+  return { visiveis, ocultos: pares.length - visiveis.length };
+}
+
+/** Casos que estão em duas linhas da planilha (todos os pares, revelados ou não): contam uma vez. */
+const emDuasLinhas = (p: ParesDoLeitor) => p.visiveis.length + p.ocultos;
+
+/** Avisos dos pares (detalhe, lista e espelho): o par revelado com os NU_CASO; os ocultos num aviso só, sem eles. */
+function avisosMesmoCaso(p: ParesDoLeitor, aberto: boolean): string[] {
+  const avisos = p.visiveis.map((par) => avisoMesmoCaso(par, aberto));
+  if (p.ocultos === 1) avisos.push(`Há um caso em duas linhas da planilha (notificação e registro conciliados): quem abre as duas origens vê quais. ${aberto ? 'Retire uma delas.' : 'Digite só uma delas no Sinan Net.'}`);
+  else if (p.ocultos > 1)
+    avisos.push(
+      `Há ${p.ocultos} casos com duas linhas cada na planilha (notificação e registro conciliados): quem abre as duas origens vê quais. ${aberto ? 'Retire uma das linhas de cada um.' : 'Digite só uma das linhas de cada um no Sinan Net.'}`,
+    );
+  return avisos;
+}
+
+/** A linha tem origem sob sigilo para quem lê (as listas de `origensRestritas`): sai mascarada, e o par dela não é revelado. */
+const linhaRestrita = (c: { notificationId: string | null; officialRecordId: string | null }, r: { notificacoes: ReadonlySet<string>; registros: ReadonlySet<string> }) =>
+  (!!c.notificationId && r.notificacoes.has(c.notificationId)) || (!!c.officialRecordId && r.registros.has(c.officialRecordId));
+
+/** Origem da linha lida com o que basta para conferir o sigilo (a da notificação ou a do registro oficial). */
+type OrigemDaLinha = {
+  notification: { sensitive: boolean; notifierId: string; unitId: string } | null;
+  officialRecord: { sensitive: boolean; unitId: string | null; unitCnes: string | null } | null;
+};
+/** Campos da origem para `origemSobSigilo` (select do Prisma). */
+const SELECT_ORIGEM_DA_LINHA = {
+  notification: { select: { sensitive: true, notifierId: true, unitId: true } },
+  officialRecord: { select: { sensitive: true, unitId: true, unitCnes: true } },
+} as const;
+
+/**
  * Notificação de surto e sugestões (VIG-1c, §4.3; frente F4). O núcleo só vê e cria surtos das unidades em que está
  * lotado (a do contexto ativo, como o escopo das notificações). Prazo imediato (24 h do conhecimento) para a SMS; com
  * ESP, também SES e MS. `validarSurto` em cada etapa. Ao criar ou incluir caso, reconcilia a negativa da unidade e
@@ -375,38 +416,39 @@ export class SurtoService {
 
   /**
    * Avisos do surto. O caso que está em duas linhas (a notificação e o registro oficial conciliado com ela: `pares`)
-   * conta uma vez nos casos individuais e no total da regra dos 10%, e cada par tem o seu aviso.
+   * conta uma vez nos casos individuais e no total da regra dos 10%. O par tem o seu aviso com os NU_CASO; o que quem lê
+   * não pode ver (uma das linhas sob sigilo para ele), o aviso genérico (R5-8).
    */
   private avisos(
     o: Pick<Outbreak, 'category' | 'casesCount' | 'status' | 'officialNumber'>,
     casos: { notificationId: string | null; officialRecordId: string | null }[],
     grupoDaLista: boolean,
-    pares: [number, number][],
+    pares: ParesDoLeitor,
   ): string[] {
     const avisos: string[] = [];
-    const individuais = casos.filter((c) => c.notificationId || c.officialRecordId).length - pares.length;
-    const total = Math.max(o.casesCount, casos.length - pares.length);
+    const individuais = casos.filter((c) => c.notificationId || c.officialRecordId).length - emDuasLinhas(pares);
+    const total = Math.max(o.casesCount, casos.length - emDuasLinhas(pares));
     if (o.category === 'DA_LISTA' && individuais * 10 < total)
       avisos.push(`Surto de doença da lista em registro agregado: o manual do Sinan (5.3.1) pede acordo entre os gestores e notificação individual de ao menos 10% dos casos (${individuais} de ${total}).`);
     const sem = grupoDaLista ? casos.filter((c) => !c.notificationId && !c.officialRecordId).length : 0;
     if (sem && o.category !== 'DA_LISTA') avisos.push(`${sem} caso(s) da planilha sem notificação individual: o surto não substitui a notificação individual dos agravos da lista.`);
-    for (const par of pares) avisos.push(avisoMesmoCaso(par, o.status === 'ABERTO'));
+    avisos.push(...avisosMesmoCaso(pares, o.status === 'ABERTO'));
     if (o.status === 'ENCERRADO' && !o.officialNumber) avisos.push('Sem o número do Sinan: digite a notificação de surto no Sinan Net e informe o número.');
     return avisos;
   }
 
+  /** Resumo do surto (lista e cabeçalho do detalhe), com os pares do mesmo caso como quem lê os vê (`paresDoLeitor`). */
   private resumo(
     o: Outbreak & {
       unit: { id: string; name: string; cnes: string };
-      cases: (LinhaDoPar & { officialRecordId: string | null })[];
+      cases: { notificationId: string | null; officialRecordId: string | null }[];
       events: Pick<OutbreakEvent, 'kind' | 'payload'>[];
     },
     grupos: Map<string, InfoGrupo>,
     agora: Date,
+    pares: ParesDoLeitor,
   ): SurtoResumo {
     const grupoDaLista = !!o.groupKey && grupos.has(o.groupKey);
-    // O caso em duas linhas (notificação e registro conciliados) conta uma vez (SURTO-5 e N6).
-    const pares = paresMesmoCaso(o.cases);
     return {
       id: o.id,
       numero: o.number,
@@ -421,7 +463,8 @@ export class SurtoService {
       conhecidoEm: o.knownAt.toISOString(),
       primeirosSintomasEm: dataIso(o.firstSymptomsOn)!,
       casos: o.casesCount,
-      casosNaPlanilha: o.cases.length - pares.length,
+      // O caso em duas linhas (notificação e registro conciliados) conta uma vez (SURTO-5 e N6), revelado ou não (R5-8).
+      casosNaPlanilha: o.cases.length - emDuasLinhas(pares),
       localInicial: o.initialPlace,
       esp: o.esp,
       prazos: o.status === 'DESCARTADO' ? [] : this.prazos(o, o.events, agora),
@@ -434,15 +477,9 @@ export class SurtoService {
   /**
    * Espelho para a digitação no Sinan Net. A planilha sai com todas as linhas, inclusive as duas do mesmo caso
    * (notificação e registro conciliados): elas vêm marcadas na planilha do detalhe (`mesmoCasoQue`) e com o aviso aqui,
-   * para a vigilância decidir qual retirar.
+   * para a vigilância decidir qual retirar. Para quem não abre uma das duas, o aviso é o genérico, sem os NU_CASO (R5-8).
    */
-  private montarEspelho(
-    o: Outbreak & { unit: { name: string; cnes: string; ibgeCode: string } },
-    grupos: Map<string, InfoGrupo>,
-    planilha: CasoSurto[],
-    bairroNome: string | null,
-    pares: [number, number][],
-  ): EspelhoSurto {
+  private montarEspelho(o: Outbreak & { unit: { name: string; cnes: string; ibgeCode: string } }, grupos: Map<string, InfoGrupo>, planilha: CasoSurto[], bairroNome: string | null, pares: ParesDoLeitor): EspelhoSurto {
     const avisos: string[] = [];
     const sindrome = o.syndrome ? (SINDROMES_SURTO[o.syndrome] ?? null) : null;
     const codigo = o.cid ?? cidGuardado(sindrome?.codigo) ?? (o.groupKey ? (cidGuardado(grupos.get(o.groupKey)?.sinanCode) ?? codigoDoGrupo(o.groupKey)) : null);
@@ -489,7 +526,7 @@ export class SurtoService {
     // Planilha de acompanhamento: valores como vão para o Sinan (códigos). A linha sob sigilo sai só com o NU_CASO.
     const restritas = planilha.filter((p) => p.restrito).length;
     if (restritas) avisos.push(`${restritas} caso(s) da planilha sob sigilo: os dados vêm vazios para quem não abre a notificação ou o registro. Quem pode abri-los completa a planilha no Sinan.`);
-    for (const par of pares) avisos.push(avisoMesmoCaso(par, o.status === 'ABERTO'));
+    avisos.push(...avisosMesmoCaso(pares, o.status === 'ABERTO'));
     const linhas = planilha.map((p) =>
       p.restrito
         ? { NU_CASO: String(p.numero), NM_CASO: null, CS_SEXO: null, NU_IDADE_N: null, ID_MN_RESI: null, NM_BAIRRO: null, DT_SIN_PRI: null, ID_HOSP: null, OBITO: null, CLASSI_FIN: null, CRITERIO: null, DIAG_FINAL: null }
@@ -516,7 +553,8 @@ export class SurtoService {
   /**
    * Linha da planilha. `restrito`: a notificação ou o registro de origem é sigiloso e quem lê não pode abri-lo; a linha
    * sai só com o NU_CASO e a origem (os ids), sem iniciais, sexo, idade, residência, datas, desfecho, CID ou número.
-   * `mesmoCasoQue`: o NU_CASO da outra linha do mesmo caso (notificação e registro conciliados), ou nulo.
+   * `mesmoCasoQue`: o NU_CASO da outra linha do mesmo caso (notificação e registro conciliados), ou nulo; nulo também
+   * nas duas linhas do par em que uma delas é restrita para quem lê (R5-8).
    */
   private casoDto(c: OutbreakCase, numeros: Map<string, string>, bairros: Map<string, string>, grupoDaLista: boolean, restrito: boolean, mesmoCasoQue: number | null): CasoSurto {
     const base = {
@@ -571,8 +609,21 @@ export class SurtoService {
   }
 
   /** CNES da unidade da sessão (o núcleo alcança o registro oficial pela unidade ou pelo CNES dela). */
-  private async cnesDaSessao(ctx: RequestContext): Promise<string | null> {
-    return (await ctx.db.unit.findUnique({ where: { id: ctx.session.unitId }, select: { cnes: true } }))?.cnes ?? null;
+  private async cnesDaSessao(ctx: RequestContext, db: Pick<TenantPrisma.TransactionClient, 'unit'> = ctx.db): Promise<string | null> {
+    return (await db.unit.findUnique({ where: { id: ctx.session.unitId }, select: { cnes: true } }))?.cnes ?? null;
+  }
+
+  /**
+   * A origem da linha (notificação ou registro oficial) é sigilosa e quem lê não a abre: a regra de `origensRestritas`
+   * para uma linha lida com a origem (`SELECT_ORIGEM_DA_LINHA`). `cnes` é o da sessão, preciso só com registro sigiloso.
+   */
+  private origemSobSigilo(ctx: RequestContext, l: OrigemDaLinha, cnes: string | null): boolean {
+    return (!!l.notification?.sensitive && !this.notificacoes.podeAbrirSigilosa(ctx, l.notification)) || (!!l.officialRecord?.sensitive && !this.abreRegistroSigiloso(ctx, l.officialRecord, cnes));
+  }
+
+  /** CNES da sessão, só quando alguma das linhas tem registro oficial sigiloso e quem lê não é a vigilância municipal. */
+  private async cnesParaOSigilo(ctx: RequestContext, linhas: OrigemDaLinha[], db: Pick<TenantPrisma.TransactionClient, 'unit'> = ctx.db) {
+    return linhas.some((l) => l.officialRecord?.sensitive) && !this.vigilanciaMunicipal(ctx) ? this.cnesDaSessao(ctx, db) : null;
   }
 
   /**
@@ -662,8 +713,6 @@ export class SurtoService {
     const agora = this.agora();
     const grupos = await this.grupos(ctx.db, o.groupKey ? [o.groupKey] : []);
     const grupoDaLista = !!o.groupKey && grupos.has(o.groupKey);
-    const pares = paresMesmoCaso(o.cases);
-    const outraLinha = new Map(pares.flatMap(([a, b]) => [[a, b] as const, [b, a] as const]));
     const bairrosIds = [...o.cases.map((c) => c.neighborhoodId), o.neighborhoodId].filter((x): x is string => !!x);
     const usuariosIds = [o.notifierId, o.discardedBy, ...o.events.map((e) => e.byUser)].filter((x): x is string => !!x);
     const [restritas, bairros, usuarios] = await Promise.all([
@@ -673,7 +722,10 @@ export class SurtoService {
     ]);
     const nomesBairros = new Map(bairros.map((b) => [b.id, b.name]));
     const nomes = new Map(usuarios.map((u) => [u.id, u.socialName ?? u.name]));
-    const restrito = (c: OutbreakCase) => (!!c.notificationId && restritas.notificacoes.has(c.notificationId)) || (!!c.officialRecordId && restritas.registros.has(c.officialRecordId));
+    const restrito = (c: OutbreakCase) => linhaRestrita(c, restritas);
+    // O par com uma das linhas sob sigilo para quem lê não é revelado (R5-8): sem a marca nas linhas e com o aviso genérico.
+    const pares = paresDoLeitor(paresMesmoCaso(o.cases), new Set(o.cases.filter(restrito).map((c) => c.caseNumber)));
+    const outraLinha = new Map(pares.visiveis.flatMap(([a, b]) => [[a, b] as const, [b, a] as const]));
     const planilha = o.cases.map((c) => this.casoDto(c, restritas.numerosNotificacao, nomesBairros, grupoDaLista, restrito(c), outraLinha.get(c.caseNumber) ?? null));
     const sigilosos: CasoSigiloso[] = o.cases
       .filter((c) => (!!c.notificationId && restritas.notificacoesAbertas.has(c.notificationId)) || (!!c.officialRecordId && restritas.registrosAbertos.has(c.officialRecordId)))
@@ -687,7 +739,7 @@ export class SurtoService {
     }));
     const aberto = o.status === 'ABERTO';
     const detalhe: DetalheSurto = {
-      ...this.resumo(o, grupos, agora),
+      ...this.resumo(o, grupos, agora, pares),
       venceEm: o.dueAt.toISOString(),
       notificador: nomes.get(o.notifierId) ?? null,
       agente: o.agentText,
@@ -747,16 +799,20 @@ export class SurtoService {
     };
     // Outros surtos abertos em que o caso já está (sur-4, N11 e SURTO-5): pela própria origem ou pelo outro lado do par
     // conciliado (official_records.notification_id), que é o mesmo caso. A mensagem cita a origem que entra e o número
-    // do surto, nunca o outro lado (que pode ser sigiloso).
+    // do surto, nunca o outro lado (que pode ser sigiloso); e só diz que é pelo outro lado quando quem inclui o abre
+    // (R5-8): o outro lado sigiloso que ele não abre não é revelado, e o surto dele entra no aviso como o da própria origem.
     const emOutrosSurtos = async (filtros: TenantPrisma.OutbreakCaseWhereInput[], propria: (c: { notificationId: string | null; officialRecordId: string | null }) => boolean, quem: string, peloPar: string) => {
       const linhas = await ctx.db.outbreakCase.findMany({
         where: { OR: filtros, outbreak: { status: 'ABERTO' }, ...(surto.id ? { outbreakId: { not: surto.id } } : {}) },
-        select: { notificationId: true, officialRecordId: true, outbreak: { select: { number: true } } },
+        select: { notificationId: true, officialRecordId: true, ...SELECT_ORIGEM_DA_LINHA, outbreak: { select: { number: true } } },
       });
-      const proprios = new Set(linhas.filter(propria).map((x) => x.outbreak.number));
-      const doPar = new Set(linhas.filter((x) => !propria(x) && !proprios.has(x.outbreak.number)).map((x) => x.outbreak.number));
-      for (const numero of [...proprios].sort()) avisos.push(`${quem} também está no surto ${numero}.`);
-      for (const numero of [...doPar].sort()) avisos.push(`${quem} também está no surto ${numero}, ${peloPar}.`);
+      const doOutroLado = linhas.filter((x) => !propria(x));
+      const cnes = await this.cnesParaOSigilo(ctx, doOutroLado);
+      const oculto = (x: OrigemDaLinha) => this.origemSobSigilo(ctx, x, cnes);
+      const semDizer = new Set([...linhas.filter(propria), ...doOutroLado.filter(oculto)].map((x) => x.outbreak.number));
+      const peloOutroLado = new Set(doOutroLado.filter((x) => !oculto(x) && !semDizer.has(x.outbreak.number)).map((x) => x.outbreak.number));
+      for (const numero of [...semDizer].sort()) avisos.push(`${quem} também está no surto ${numero}.`);
+      for (const numero of [...peloOutroLado].sort()) avisos.push(`${quem} também está no surto ${numero}, ${peloPar}.`);
     };
     if ('notificationId' in corpo) {
       const n = await this.notificacoes.acessar(ctx, corpo.notificationId, { leitura: true });
@@ -876,7 +932,17 @@ export class SurtoService {
       rows.map((o) => o.groupKey).filter((g): g is string => !!g),
     );
     const agora = this.agora();
-    return rows.map((o) => this.resumo(o, grupos, agora));
+    // O par com uma das linhas sob sigilo para quem lê não é revelado (R5-8): só as linhas dos pares passam pela conferência.
+    const pares = rows.map((o) => paresMesmoCaso(o.cases));
+    const linhasDosPares = rows.flatMap((o, i) => {
+      const numeros = new Set(pares[i]!.flat());
+      return o.cases.filter((c) => numeros.has(c.caseNumber));
+    });
+    const restritas = linhasDosPares.length ? await this.origensRestritas(ctx, linhasDosPares, []) : null;
+    return rows.map((o, i) => {
+      const mascaradas = new Set(restritas ? o.cases.filter((c) => linhaRestrita(c, restritas)).map((c) => c.caseNumber) : []);
+      return this.resumo(o, grupos, agora, paresDoLeitor(pares[i]!, mascaradas));
+    });
   }
 
   /** POST /vigilancia/surtos (de uma sugestão, com a assinatura e os casos, ou manual). */
@@ -1088,18 +1154,20 @@ export class SurtoService {
   /**
    * O registro oficial conciliado com uma notificação (official_records.notification_id) é o mesmo caso dela (SURTO-5):
    * o registro cuja notificação já está na planilha não entra, nem a notificação cujo registro já está nela. Conferido
-   * sob a trava surto-caso, junto da repetição; a mensagem cita a linha, e não o outro lado (que pode ser sigiloso).
+   * sob a trava surto-caso, junto da repetição; a mensagem cita a linha, e não o outro lado (que pode ser sigiloso). A
+   * linha sob sigilo para quem inclui não é citada (R5-8): o NU_CASO dela ligaria a linha mascarada ao caso que ele vê.
    */
-  private async conferirPar(tx: TenantPrisma.TransactionClient, outbreakId: string, origem: OrigemCaso) {
+  private async conferirPar(ctx: RequestContext, tx: TenantPrisma.TransactionClient, outbreakId: string, origem: OrigemCaso) {
     const linha = await tx.outbreakCase.findFirst({
       where: { outbreakId, ...(origem.tipo === 'registro' ? { notification: { officialRecords: { some: { id: origem.id } } } } : { officialRecord: { notificationId: origem.id } }) },
-      select: { caseNumber: true },
+      select: { caseNumber: true, ...SELECT_ORIGEM_DA_LINHA },
     });
     if (!linha) return;
+    const qual = this.origemSobSigilo(ctx, linha, await this.cnesParaOSigilo(ctx, [linha], tx)) ? '' : ` (caso ${linha.caseNumber})`;
     throw conflict(
       origem.tipo === 'registro'
-        ? `O registro ${origem.numero} é o mesmo caso da notificação conciliada com ele, que já está na planilha deste surto (caso ${linha.caseNumber})`
-        : `A notificação ${origem.numero} é o mesmo caso do registro oficial conciliado com ela, que já está na planilha deste surto (caso ${linha.caseNumber})`,
+        ? `O registro ${origem.numero} é o mesmo caso da notificação conciliada com ele, que já está na planilha deste surto${qual}`
+        : `A notificação ${origem.numero} é o mesmo caso do registro oficial conciliado com ela, que já está na planilha deste surto${qual}`,
     );
   }
 
@@ -1120,7 +1188,7 @@ export class SurtoService {
         if (p.origem) {
           const ja = await tx.outbreakCase.count({ where: { outbreakId: o.id, ...(p.origem.tipo === 'registro' ? { officialRecordId: p.origem.id } : { notificationId: p.origem.id }) } });
           if (ja) throw repetido(p.origem);
-          await this.conferirPar(tx, o.id, p.origem);
+          await this.conferirPar(ctx, tx, o.id, p.origem);
         }
         const numero = await this.proximoNumeroCaso(tx, o.id);
         const c = await tx.outbreakCase.create({ data: { ...p.dados, outbreakId: o.id, caseNumber: numero, createdBy: ctx.session.userId }, select: { id: true } });

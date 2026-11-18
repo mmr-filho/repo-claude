@@ -126,7 +126,8 @@ export class ContingenciaService {
       ? { chave: aberto.stage, nome: this.nomeDoEstagio(definicaoDe(aberto.plan.definition), aberto.stage), desde: dia(aberto.startedOn), acionamentoId: aberto.id }
       : { chave: normalidade.chave, nome: normalidade.nome, desde: null, acionamentoId: null };
     const respostas = plano ? await this.respostasDaSemana(ctx.db, plano.id, territorio, ultimaCompleta) : [];
-    // A desmobilização conta as SE desde o início do acionamento em vigor; o acumulado já visto nele não faz subir de novo.
+    // A desmobilização conta as SE desde o início do acionamento em vigor e olha os agravos que sustentam o estágio (o
+    // critério de canal atendido desde o início ou no retrato); o acumulado já visto no retrato não faz subir de novo.
     const emVigor: AcionamentoEmVigor | null = aberto ? { semanaInicio: aberto.startedWeek, indicadores: retratoDe(aberto.indicators) } : null;
     const avaliacao = definicao
       ? avaliarPlano(

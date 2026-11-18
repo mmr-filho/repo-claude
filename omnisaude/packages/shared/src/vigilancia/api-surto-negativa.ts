@@ -120,7 +120,9 @@ export interface CasoSurto {
   semNotificacaoIndividual: boolean;
   /**
    * NU_CASO da outra linha que é o mesmo caso: a notificação de uma e o registro oficial conciliado com ela na outra
-   * (vínculo feito depois de as duas estarem na planilha). As duas ficam, marcadas, até a vigilância retirar uma.
+   * (vínculo feito depois de as duas estarem na planilha). As duas ficam, marcadas, até a vigilância retirar uma. Nulo
+   * nas duas linhas quando uma delas é restrita para quem lê (`restrito`): o par não é revelado, e o aviso do surto é o
+   * genérico, sem os NU_CASO.
    */
   mesmoCasoQue: number | null;
   /**
@@ -475,7 +477,11 @@ export interface FontesCelula {
   notificacoes: number;
   surtos: number;
   registrosOficiais: number;
-  atesto: { id: string; atrasado: boolean } | null;
+  /**
+   * Atesto vigente. `prazo` é o prazo gravado com ele (o que decidiu o `atrasado`); o prazo da coluna (ColunaGrade.prazo)
+   * é o da semana pela regra de agora, e os dois diferem quando a regra mudou depois do atesto.
+   */
+  atesto: { id: string; atrasado: boolean; prazo: string } | null;
   /** Negativa digitada no Sinan (NNEGANET). Sem atesto, ela sozinha deixa a célula como negativa (no prazo). */
   negativaSinan: boolean;
 }

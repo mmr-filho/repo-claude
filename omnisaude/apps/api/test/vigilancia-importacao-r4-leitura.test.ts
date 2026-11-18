@@ -7,12 +7,13 @@ import { zipSync } from 'fflate';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { DomainError } from '../src/core/errors';
 import { LeituraDoCorpo, rawBody } from '../src/core/raw-body';
-import { AcumuladorCobertura, coberturaDoEnvio, lerEnvio, type OpcoesLeitura, type RegistroDoEnvio } from '../src/modules/vigilancia/importacao/leitura';
+import { lerEnvio, type OpcoesLeitura, type RegistroDoEnvio } from '../src/modules/vigilancia/importacao/leitura';
 import { escreverDbf, type CampoEscrita } from './helpers/dbf-escrita';
 
 /*
- * Importação (VIG-1c), quarta rodada, sem banco: o CNES de cada arquivo do e-SUS (o zip com os CSV de algumas unidades
- * restringe os ausentes à união dos CNES; N0), o fim da cobertura na data do primeiro envio do arquivo
+ * Importação (VIG-1c), quarta rodada, sem banco: o CNES de cada arquivo do e-SUS (N0; na quinta rodada, R5-1, a
+ * cobertura passou a ser a de cada arquivo: o arquivo de um CNES só fica restrito a ele mesmo com o CSV do município no
+ * zip, e as entradas iguais se juntam com os CNES unidos), o fim da cobertura na data do primeiro envio do arquivo
  * (aviso-periodo-lido), a SEM_PRI da linha de caso do NSURTNET (imp-planilha-surto) e a leitura do corpo cru: o prazo
  * de ociosidade, o 413 antes do corpo e o corpo incompleto (N1). Dados sintéticos.
  */
@@ -47,36 +48,27 @@ const csvOutraFicha = (linhas: [string, string][]) =>
     `${['Número da Notificação', 'Data da Notificação', 'Município da Notificação', 'CNES Notificação', 'Vacina aplicada'].join(';')}\r\n${linhas.map(([n, cnes]) => [n, '10/06/2024', '3550308', cnes, 'X'].join(';')).join('\r\n')}\r\n`,
   );
 
-describe('N0: o CNES de cada arquivo do e-SUS restringe a cobertura (a união) quando todo arquivo traz um só', () => {
-  it('zip com o CSV da unidade X e o da Y: cada arquivo com o seu CNES, a cobertura nos dois e o aviso com a lista', async () => {
-    const { l, registros } = await lerTudo('duas-ubs.zip', zipSync({ 'ubs-x.csv': csvSg([['352400000901', X]]), 'ubs-y.csv': csvSg([['352400000902', Y]]) }));
+describe('N0 e R5-1: o CNES e a cobertura de cada arquivo do e-SUS', () => {
+  it('zip com o CSV da unidade X e o da Y: cada arquivo com o seu CNES; as duas entradas iguais (o mesmo período) ficam numa só, com os dois CNES; o aviso fala por arquivo', async () => {
+    const { l } = await lerTudo('duas-ubs.zip', zipSync({ 'ubs-x.csv': csvSg([['352400000901', X]]), 'ubs-y.csv': csvSg([['352400000902', Y]]) }));
     expect(Object.fromEntries(l.arquivos.map((a) => [a.nome, a.cnes]))).toEqual({ 'ubs-x.csv': X, 'ubs-y.csv': Y });
-    // O registro sabe de que arquivo veio (só na leitura; não vai para o payload).
-    expect(registros.map((r) => [r.partes[0]!.numero, r.cnesDoArquivo]).sort()).toEqual([
-      ['352400000901', X],
-      ['352400000902', Y],
-    ]);
-    expect(new Set(registros.map((r) => r.arquivo))).toEqual(new Set([0, 1]));
-    const acumulador = new AcumuladorCobertura(null, OPCOES.municipio);
-    for (const r of registros) acumulador.somar(r);
-    const { cobertura, avisos } = acumulador.resultado();
-    expect(cobertura).toEqual([expect.objectContaining({ sistema: 'ESUS_NOTIFICA', tipo: 'INDIVIDUAL', grupos: ['covid'], cnes: [X, Y] })]);
-    expect(avisos).toContain(`e-SUS Notifica: o envio traz só os estabelecimentos ${X}, ${Y}: os ausentes valem só para eles.`);
-    // A função de uma lista de registros chega ao mesmo resultado (o caso do achado).
-    expect(coberturaDoEnvio(registros, null, OPCOES.municipio)[0]!.cnes).toEqual([X, Y]);
+    // A cobertura sai da leitura, arquivo por arquivo (os registros não levam o arquivo de origem).
+    const { cobertura, avisos } = l.cobertura(null, OPCOES.municipio);
+    expect(cobertura).toEqual([expect.objectContaining({ sistema: 'ESUS_NOTIFICA', tipo: 'INDIVIDUAL', grupos: ['covid'], cnes: [X, Y], de: '2024-06-10', ate: '2024-06-10' })]);
+    expect(avisos).toContain(`e-SUS Notifica: 2 arquivo(s) de um estabelecimento só (ubs-x.csv, CNES ${X}; ubs-y.csv, CNES ${Y}): os ausentes de cada um valem só para o estabelecimento dele.`);
   });
 
   it('dois arquivos do mesmo estabelecimento: um CNES só, com o aviso de sempre', async () => {
-    const { l, registros } = await lerTudo('x-duas-semanas.zip', zipSync({ 'semana-1.csv': csvSg([['352400000911', X]]), 'semana-2.csv': csvSg([['352400000912', X]]) }));
+    const { l } = await lerTudo('x-duas-semanas.zip', zipSync({ 'semana-1.csv': csvSg([['352400000911', X]]), 'semana-2.csv': csvSg([['352400000912', X]]) }));
     expect(l.arquivos.map((a) => a.cnes)).toEqual([X, X]);
-    const acumulador = new AcumuladorCobertura(null, OPCOES.municipio);
-    for (const r of registros) acumulador.somar(r);
-    const { cobertura, avisos } = acumulador.resultado();
-    expect(cobertura[0]!.cnes).toEqual([X]);
+    const { cobertura, avisos } = l.cobertura(null, OPCOES.municipio);
+    expect(cobertura.map((c) => c.cnes)).toEqual([[X]]);
     expect(avisos).toContain(`e-SUS Notifica: o envio traz um CNES só (${X}): os ausentes valem só para esse estabelecimento.`);
   });
 
-  it('um arquivo com mais de um CNES, ou com registro sem CNES, no mesmo envio: a cobertura vale para o município inteiro, e nenhum arquivo fica com CNES', async () => {
+  it('um arquivo com mais de um CNES, ou com registro sem CNES, no mesmo envio: esse arquivo cobre o município inteiro, e o arquivo de um CNES só continua restrito ao CNES dele', async () => {
+    // Na quarta rodada, os dois arquivos ficavam sem CNES (o envio inteiro valia para o município): o arquivo da unidade
+    // cobria as SE do município no período dele (r4vimp-3).
     for (const outro of [
       csvSg([
         ['352400000922', Y],
@@ -84,32 +76,34 @@ describe('N0: o CNES de cada arquivo do e-SUS restringe a cobertura (a união) q
       ]),
       csvSg([['352400000924', null]]),
     ]) {
-      const { l, registros } = await lerTudo('misto.zip', zipSync({ 'ubs-x.csv': csvSg([['352400000921', X]]), 'municipio.csv': outro }));
-      expect(Object.fromEntries(l.arquivos.map((a) => [a.nome, a.cnes]))).toEqual({ 'ubs-x.csv': null, 'municipio.csv': null });
-      const cobertura = coberturaDoEnvio(registros, null, OPCOES.municipio);
-      expect(cobertura).toHaveLength(1);
+      const { l } = await lerTudo('misto.zip', zipSync({ 'ubs-x.csv': csvSg([['352400000921', X]]), 'municipio.csv': outro }));
+      expect(Object.fromEntries(l.arquivos.map((a) => [a.nome, a.cnes]))).toEqual({ 'ubs-x.csv': X, 'municipio.csv': null });
+      const { cobertura, avisos } = l.cobertura(null, OPCOES.municipio);
+      // Na ordem dos nomes: o do município (sem CNES) e o da unidade (só o CNES dela).
+      expect(cobertura).toHaveLength(2);
       expect(cobertura[0]).not.toHaveProperty('cnes');
+      expect(cobertura[1]).toMatchObject({ cnes: [X] });
+      expect(avisos).toContain(
+        `e-SUS Notifica: 1 arquivo(s) de um estabelecimento só (ubs-x.csv, CNES ${X}): os ausentes de cada um valem só para o estabelecimento dele. Os outros arquivos do e-SUS Notifica valem para o município inteiro.`,
+      );
     }
   });
 
   it('o CSV de outra ficha (fora da cobertura) não tira a restrição do CSV da síndrome gripal', async () => {
-    const { l, registros } = await lerTudo('com-esavi.zip', zipSync({ 'ubs-x.csv': csvSg([['352400000931', X]]), 'esavi.csv': csvOutraFicha([['352400000932', Y]]) }));
+    const { l } = await lerTudo('com-esavi.zip', zipSync({ 'ubs-x.csv': csvSg([['352400000931', X]]), 'esavi.csv': csvOutraFicha([['352400000932', Y]]) }));
     expect(Object.fromEntries(l.arquivos.map((a) => [a.nome, a.cnes]))).toEqual({ 'ubs-x.csv': X, 'esavi.csv': null });
-    expect(coberturaDoEnvio(registros, null, OPCOES.municipio)).toEqual([expect.objectContaining({ grupos: ['covid'], cnes: [X] })]);
+    expect(l.cobertura(null, OPCOES.municipio).cobertura).toEqual([expect.objectContaining({ grupos: ['covid'], cnes: [X] })]);
   });
 });
 
 describe('aviso-periodo-lido: a cobertura termina na data do primeiro envio do arquivo', () => {
   it('o fim declarado depois do primeiro envio fica na data dele; o período que começa depois não cobre nada, com aviso', async () => {
-    const { registros } = await lerTudo('x.csv', csvSg([['352400000941', X]]));
-    const ano = new AcumuladorCobertura({ de: '2024-01-01', ate: '2024-12-31' }, OPCOES.municipio);
-    for (const r of registros) ano.somar(r);
-    expect(ano.resultado('2024-11-07').cobertura[0]).toMatchObject({ de: '2024-01-01', ate: '2024-11-07' });
+    const { l } = await lerTudo('x.csv', csvSg([['352400000941', X]]));
+    const ano = { de: '2024-01-01', ate: '2024-12-31' };
+    expect(l.cobertura(ano, OPCOES.municipio, '2024-11-07').cobertura[0]).toMatchObject({ de: '2024-01-01', ate: '2024-11-07' });
     // Sem o limite (envio sem data), o período declarado inteiro.
-    expect(ano.resultado().cobertura[0]).toMatchObject({ de: '2024-01-01', ate: '2024-12-31' });
-    const depois = new AcumuladorCobertura({ de: '2025-01-01', ate: '2025-12-31' }, OPCOES.municipio);
-    for (const r of registros) depois.somar(r);
-    const r = depois.resultado('2024-11-07');
+    expect(l.cobertura(ano, OPCOES.municipio).cobertura[0]).toMatchObject({ de: '2024-01-01', ate: '2024-12-31' });
+    const r = l.cobertura({ de: '2025-01-01', ate: '2025-12-31' }, OPCOES.municipio, '2024-11-07');
     expect(r.cobertura).toEqual([]);
     expect(r.avisos).toContain('O período declarado começa depois do primeiro envio deste arquivo (07/11/2024): nada do período fica marcado como ausente.');
   });

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
 import { DomainError } from '../../core/errors';
 import { conferirTamanhoDeclarado, rawBody } from '../../core/raw-body';
-import { zv } from '../../core/zod';
+import { textoSemControle, zv } from '../../core/zod';
 import { ConciliacaoService } from './conciliacao.service';
 import { ImportacaoService } from './importacao.service';
 
@@ -25,7 +25,7 @@ const periodoEmOrdem = (p: { de?: string; ate?: string }) => !p.de || !p.ate || 
 const sistema = z.enum(['SINAN_NET', 'SINAN_ONLINE', 'ESUS_SINAN', 'ESUS_NOTIFICA', 'SIVEP_GRIPE', 'SINASC_SIM']);
 const envioSchema = z
   .object({
-    nome: z.string().trim().min(1).max(255),
+    nome: textoSemControle(255, { min: 1, mensagem: 'Nome do arquivo com caractere inválido (de controle)' }),
     de: dia.optional(),
     ate: dia.optional(),
     codificacao: z.enum(['CP850', 'CP437', 'CP860', 'CP1252', 'UTF8']).optional(),
@@ -42,7 +42,7 @@ const filtroSchema = z
       .optional(),
     de: dia.optional(),
     ate: dia.optional(),
-    busca: z.string().trim().max(60).optional(),
+    busca: textoSemControle(60, { mensagem: 'Busca com caractere inválido (de controle)' }).optional(),
     metodo: z.enum(['NUMERO_OFICIAL', 'IDENTIDADE', 'MANUAL']).optional(),
     pagina: z.coerce.number().int().min(1).max(100_000).optional(),
   })
@@ -55,7 +55,7 @@ const vincularSchema = z.object({
 });
 const desvincularSchema = z.object({ recordId: z.string().uuid(), motivo: z.string().trim().min(10).max(1000) });
 const rejeitarSchema = z.object({ recordId: z.string().uuid(), notificationId: z.string().uuid(), motivo: z.string().trim().min(10).max(1000) });
-const apelidoSchema = z.object({ nome: z.string().trim().min(2).max(120), neighborhoodId: z.string().uuid() });
+const apelidoSchema = z.object({ nome: textoSemControle(120, { min: 2, mensagem: 'Nome do bairro com caractere inválido (de controle)' }), neighborhoodId: z.string().uuid() });
 
 /**
  * Importação das exportações oficiais e conciliação (VIG-1c, §4.1; frente F2). Permissão `vigilancia.importar` em todas
@@ -69,12 +69,14 @@ export class ImportacaoController {
   ) {}
 
   /**
-   * Envio do arquivo cru (zip, DBF ou CSV; até 95 MB) com `?nome=&de=&ate=&codificacao=`. Antes de ler o corpo: 413
-   * com o Content-Length acima do teto; 409 IMPORTACAO_OCUPADA com outra importação do tenant lendo ou aplicando; 409
-   * IMPORTACAO_SERVIDOR_OCUPADO com o processo cheio ou outro envio do tenant ainda chegando. O corpo parado por 30 s dá
-   * 408 (e solta a carga). A leitura roda em segundo plano: pronta dentro da espera, 201 com a prévia; senão, 202 com
-   * `{ id, status: 'PROCESSANDO', ... }` e a tela acompanha pelo detalhe. O mesmo arquivo já aplicado (sem período, ou
-   * com o mesmo período declarado) responde 200 com `{ jaImportado }` sem criar nada.
+   * Envio do arquivo cru (zip, DBF ou CSV; até 95 MB) com `?nome=&de=&ate=&codificacao=`. Antes de ler o corpo: 400 com
+   * o nome com caractere de controle; 413 com o Content-Length acima do teto; 409 IMPORTACAO_OCUPADA com outra
+   * importação do tenant lendo ou aplicando; 409 IMPORTACAO_SERVIDOR_OCUPADO com a vez com a leitura ou a aplicação de
+   * outro tenant, com o processo cheio (o pacote da SIGTAP conta junto) ou com outro envio do tenant ainda chegando; a
+   * vez é conferida de novo depois do corpo. O corpo parado por 30 s dá 408 (e solta a carga). A leitura roda em segundo
+   * plano: pronta dentro da espera, 201 com a prévia; senão, 202 com `{ id, status: 'PROCESSANDO', ... }` e a tela
+   * acompanha pelo detalhe. O mesmo arquivo já aplicado (sem período, ou com o mesmo período declarado) responde 200 com
+   * `{ jaImportado }` sem criar nada.
    */
   @Post('importacoes')
   @RequirePermission('vigilancia.importar')

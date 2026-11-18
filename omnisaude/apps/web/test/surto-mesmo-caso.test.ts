@@ -6,7 +6,8 @@ import { describe, expect, it, vi } from 'vitest';
 /*
  * Planilha do surto com o mesmo caso em duas linhas (SURTO-5 e N6, quarta rodada da semana 27): a notificação de uma
  * linha e o registro oficial conciliado com ela na outra (vínculo feito depois). As duas linhas ficam, marcadas com o
- * NU_CASO da outra, até a vigilância retirar uma; o título conta o caso uma vez (`casosNaPlanilha`). A planilha é
+ * NU_CASO da outra, até a vigilância retirar uma; o título conta o caso uma vez (`casosNaPlanilha`). O par em que uma
+ * das linhas é sob sigilo para quem lê não é marcado (R5-8, quinta rodada, que revê a decisão 6). A planilha é
  * renderizada no servidor, com a API e a sessão simuladas.
  */
 
@@ -49,7 +50,8 @@ describe('planilha do surto com o mesmo caso em duas linhas', () => {
         [
           linha(1, { notificationId: 'n1', notificacaoNumero: '2026/000101', mesmoCasoQue: 2 }),
           linha(2, { officialRecordId: 'r1', mesmoCasoQue: 1 }),
-          // A linha sob sigilo também vem marcada (só o número do caso, como a origem).
+          // Par com a linha sob sigilo para quem lê (R5-8): a API não manda a marca, e a tela também não a mostra,
+          // nem na linha mascarada nem na outra. Antes (decisão 6), as duas vinham marcadas.
           linha(3, { officialRecordId: 'r2', restrito: true, mesmoCasoQue: 4 }),
           linha(4, { notificationId: 'n2', notificacaoNumero: '2026/000102', mesmoCasoQue: 3 }),
           linha(5, { iniciais: 'MNL' }),
@@ -59,7 +61,7 @@ describe('planilha do surto com o mesmo caso em duas linhas', () => {
     );
     // Antes: "Planilha de casos (5 de 30 informados)", sem marca nenhuma.
     expect(h).toContain('Planilha de casos (3 de 30 informados)');
-    expect([...h.matchAll(/Mesmo caso do caso (\d+)/g)].map((m) => Number(m[1]))).toEqual([2, 1, 4, 3]);
+    expect([...h.matchAll(/Mesmo caso do caso (\d+)/g)].map((m) => Number(m[1]))).toEqual([2, 1]);
   });
 
   it('sem o par, nenhuma marca', () => {

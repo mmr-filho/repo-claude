@@ -443,22 +443,33 @@ function Retirar({ d, c, onFechar, onFeito }: { d: DetalheSurto; c: CasoSurto; o
   );
 }
 
-/** Marca da linha que é o mesmo caso de outra (a notificação e o registro oficial conciliado com ela). */
-function MarcaMesmoCaso({ c }: { c: CasoSurto }) {
-  if (c.mesmoCasoQue == null) return null;
+/**
+ * Marcas do mesmo caso em duas linhas (a notificação e o registro oficial conciliado com ela), por NU_CASO, para a
+ * planilha e o espelho. O par em que uma das linhas é sob sigilo para quem lê não é revelado (R5-8): a API não manda
+ * `mesmoCasoQue` nele, e a tela também não o marca.
+ */
+export function marcasMesmoCaso(planilha: Pick<CasoSurto, 'numero' | 'mesmoCasoQue' | 'restrito'>[]): Map<number, number> {
+  const sobSigilo = new Set(planilha.filter((c) => c.restrito).map((c) => c.numero));
+  return new Map(planilha.filter((c) => c.mesmoCasoQue != null && !sobSigilo.has(c.numero) && !sobSigilo.has(c.mesmoCasoQue)).map((c) => [c.numero, c.mesmoCasoQue!]));
+}
+
+/** Marca da linha que é o mesmo caso de outra (`outra`, o NU_CASO dela, de `marcasMesmoCaso`). */
+function MarcaMesmoCaso({ outra }: { outra: number | undefined }) {
+  if (outra == null) return null;
   return (
     <Badge tone="amber" className="mt-0.5" title="A notificação e o registro oficial conciliado com ela: o mesmo caso em duas linhas.">
-      Mesmo caso do caso {c.mesmoCasoQue}
+      Mesmo caso do caso {outra}
     </Badge>
   );
 }
 
 /**
  * Planilha de acompanhamento do surto: uma linha por caso (notificação, registro oficial ou linha manual). A linha de
- * origem sigilosa que quem lê não pode abrir vem só com o número do caso.
+ * origem sigilosa que quem lê não pode abrir vem só com o número do caso, sem a marca do mesmo caso (R5-8).
  */
 export function SurtoPlanilha({ d, onMudou }: { d: DetalheSurto; onMudou: () => void }) {
   const editavel = d.permissoes.editar;
+  const marcas = useMemo(() => marcasMesmoCaso(d.planilha), [d.planilha]);
   const [acao, setAcao] = useState<{ tipo: 'notificacao' | 'registro' | 'manual' } | { tipo: 'retirar'; c: CasoSurto } | null>(null);
   const feito = () => {
     setAcao(null);
@@ -524,7 +535,6 @@ export function SurtoPlanilha({ d, onMudou }: { d: DetalheSurto; onMudou: () => 
                         Sem notificação individual
                       </Badge>
                     )}
-                    <MarcaMesmoCaso c={c} />
                   </TD>
                   {editavel && (
                     <TD className="text-right">
@@ -557,7 +567,7 @@ export function SurtoPlanilha({ d, onMudou }: { d: DetalheSurto; onMudou: () => 
                         Sem notificação individual
                       </Badge>
                     )}
-                    <MarcaMesmoCaso c={c} />
+                    <MarcaMesmoCaso outra={marcas.get(c.numero)} />
                   </TD>
                   {editavel && (
                     <TD className="text-right">

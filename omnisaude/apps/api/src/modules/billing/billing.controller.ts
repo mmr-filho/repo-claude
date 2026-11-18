@@ -3,7 +3,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { Ctx, RequirePermission, type RequestContext } from '../../core/context';
 import { DomainError } from '../../core/errors';
-import { rawBody } from '../../core/raw-body';
+import { CargasDoProcesso, conferirTamanhoDeclarado, rawBody } from '../../core/raw-body';
 import { zv } from '../../core/zod';
 import { BillingService } from './billing.service';
 
@@ -38,26 +38,39 @@ const exportSchema = z.object({
   destinationType: z.enum(['M', 'E']).optional(),
 });
 const syncSchema = z.object({ competencia });
+/** Teto do pacote da SIGTAP enviado (zip cru). */
+const LIMITE_SIGTAP_BYTES = 60 * 1024 * 1024;
 
 @Controller('billing')
 export class BillingController {
   constructor(private readonly billing: BillingService) {}
 
-  /** Contingência: upload do pacote da Tabela Unificada (zip cru ou JSON { fileBase64 }). */
+  /**
+   * Contingência: upload do pacote da Tabela Unificada (zip cru ou JSON { fileBase64 }). O pacote fica na memória até a
+   * carga das tabelas acabar: antes de ler o corpo, 413 com o Content-Length acima do teto e a reserva de uma carga do
+   * processo (o mesmo teto da importação da vigilância: no teto, 409 IMPORTACAO_SERVIDOR_OCUPADO sem ler o corpo).
+   */
   @Post('sigtap/import')
   @RequirePermission('sigtap.sincronizar')
   async importSigtap(@Ctx() ctx: RequestContext, @Req() req: Request) {
     const type = req.headers['content-type'] ?? '';
-    let zip: Buffer;
-    if (type.includes('application/json')) {
-      const body = z.object({ fileBase64: z.string().min(10) }).safeParse(req.body);
-      if (!body.success) throw new DomainError('VALIDACAO', 'Envie { fileBase64 } com o zip da SIGTAP', 400);
-      zip = Buffer.from(body.data.fileBase64, 'base64');
-    } else {
-      zip = await rawBody(req);
+    const json = type.includes('application/json');
+    if (!json) conferirTamanhoDeclarado(req, LIMITE_SIGTAP_BYTES);
+    const soltarCarga = CargasDoProcesso.atual.reservar(ctx.tenant.id);
+    try {
+      let zip: Buffer;
+      if (json) {
+        const body = z.object({ fileBase64: z.string().min(10) }).safeParse(req.body);
+        if (!body.success) throw new DomainError('VALIDACAO', 'Envie { fileBase64 } com o zip da SIGTAP', 400);
+        zip = Buffer.from(body.data.fileBase64, 'base64');
+      } else {
+        zip = await rawBody(req, LIMITE_SIGTAP_BYTES);
+      }
+      if (zip.length < 22) throw new DomainError('VALIDACAO', 'Arquivo zip vazio', 400);
+      return await this.billing.importSigtap(ctx, zip);
+    } finally {
+      soltarCarga();
     }
-    if (zip.length < 22) throw new DomainError('VALIDACAO', 'Arquivo zip vazio', 400);
-    return this.billing.importSigtap(ctx, zip);
   }
 
   @Post('sigtap/sync')

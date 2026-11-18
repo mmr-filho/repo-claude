@@ -16,7 +16,7 @@ import { useDataHora } from './fuso';
 import { ComunicarSurto, DescartarSurto, EncerrarSurto, NumeroSinanSurto } from './surto-acoes';
 import { SurtoFicha } from './surto-ficha';
 import { PrazosSurto } from './surto-lista';
-import { SurtoPlanilha } from './surto-planilha';
+import { marcasMesmoCaso, SurtoPlanilha } from './surto-planilha';
 import { comunicacoesDoSurto, dataBr, ROTULO_CANAL_COMUNICACAO, textoEvento, TOM_STATUS_SURTO } from './surto-regras';
 
 type Acao = 'encerrar' | 'descartar' | 'numero' | 'comunicar';
@@ -118,8 +118,9 @@ function LinhaDoTempo({ d }: { d: DetalheSurto }) {
 function Espelho({ d }: { d: DetalheSurto }) {
   const e = d.espelho;
   const colunas = e.planilha.length ? Object.keys(e.planilha[0]!) : [];
-  // As duas linhas do mesmo caso (notificação e registro conciliados) saem no espelho, marcadas, até a vigilância retirar uma.
-  const mesmoCaso = new Map(d.planilha.filter((c) => c.mesmoCasoQue != null).map((c) => [String(c.numero), c.mesmoCasoQue!]));
+  // As duas linhas do mesmo caso (notificação e registro conciliados) saem no espelho, marcadas, até a vigilância retirar
+  // uma; as do par com uma linha sob sigilo para quem lê, sem a marca (R5-8).
+  const mesmoCaso = new Map([...marcasMesmoCaso(d.planilha)].map(([a, b]) => [String(a), b]));
   return (
     <div className="space-y-4">
       {e.avisos.length > 0 && (
@@ -277,8 +278,9 @@ export function SurtoDetalhe({ id, opcoes, onVoltar, onMudou }: { id: string; op
                 <Dado rotulo="Notificado em">{dataBr(d.notificadoEm)}</Dado>
                 <Dado rotulo="A vigilância soube em">{dataHora(d.conhecidoEm)}</Dado>
                 <Dado rotulo="Primeiros sintomas do 1º caso">{dataBr(d.primeirosSintomasEm)}</Dado>
+                {/* Na planilha, o caso em duas linhas (notificação e registro conciliados) conta uma vez, como na lista (R5-9). */}
                 <Dado rotulo="Casos (informados / na planilha)">
-                  {d.casos} / {d.planilha.length}
+                  {d.casos} / {d.casosNaPlanilha}
                 </Dado>
                 <Dado rotulo="Local inicial">
                   {d.localInicial} - {LOCAL_INICIAL_SURTO[d.localInicial] ?? '?'}
@@ -332,7 +334,7 @@ export function SurtoDetalhe({ id, opcoes, onVoltar, onMudou }: { id: string; op
             onValueChange={setSecao}
             tabs={[
               { value: 'ficha', label: 'Ficha' },
-              { value: 'planilha', label: `Planilha de casos (${d.planilha.length})` },
+              { value: 'planilha', label: `Planilha de casos (${d.casosNaPlanilha})` },
               { value: 'comunicacoes', label: 'Comunicações' },
               { value: 'tempo', label: 'Linha do tempo' },
               { value: 'espelho', label: 'Espelho do Sinan' },

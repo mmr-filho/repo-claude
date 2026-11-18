@@ -53,7 +53,8 @@ function linha(id: string, nome: string, cnes: string, s: SituacaoUnidadeSemana[
       (situacao, i): CelulaGrade => ({
         semana: SEMANAS[i]!,
         situacao,
-        fontes: situacao === 'POSITIVA' ? { ...vazio, notificacoes: 2 } : situacao.startsWith('NEGATIVA') ? { ...vazio, atesto: { id: `a-${id}-${i}`, atrasado: situacao === 'NEGATIVA_ATRASADA' } } : vazio,
+        fontes:
+          situacao === 'POSITIVA' ? { ...vazio, notificacoes: 2 } : situacao.startsWith('NEGATIVA') ? { ...vazio, atesto: { id: `a-${id}-${i}`, atrasado: situacao === 'NEGATIVA_ATRASADA', prazo: PRAZOS[i]! } } : vazio,
       }),
     ),
   };
@@ -104,7 +105,7 @@ describe('células da grade', () => {
 
   it('escreve o cabeçalho da coluna, as fontes e o rótulo acessível', () => {
     expect(rotuloColuna(colunas[4]!)).toEqual({ titulo: 'SE 44/2026', periodo: '01/11 a 07/11' });
-    expect(textoFontes({ notificacoes: 1, surtos: 2, registrosOficiais: 1, atesto: { id: 'a', atrasado: true }, negativaSinan: true })).toBe(
+    expect(textoFontes({ notificacoes: 1, surtos: 2, registrosOficiais: 1, atesto: { id: 'a', atrasado: true, prazo: PRAZOS[3]! }, negativaSinan: true })).toBe(
       '1 notificação, 2 surtos, 1 registro oficial, atesto fora do prazo, negativa digitada no Sinan',
     );
     expect(textoFontes({ ...vazio, notificacoes: 3, registrosOficiais: 2 })).toBe('3 notificações, 2 registros oficiais');
@@ -265,8 +266,9 @@ describe('designação que não vale (NEGATIVA-4) e reativada sem período (sur-
     expect(avisoTitularSubstituido(lista[2]!, 'TITULAR')).toBeNull();
   });
 
-  it('o botão Revogar diz de quem é a designação (TELAS-7)', () => {
-    expect(rotuloRevogar(substitutoValido)).toBe('Revogar a designação de Carla Menezes');
+  it('o botão Revogar diz de quem é a designação (TELAS-7) e de qual unidade (R5-10: a mesma pessoa pode ser responsável em duas)', () => {
+    expect(rotuloRevogar(substitutoValido, lista[1]!)).toBe('Revogar a designação de Carla Menezes como responsável da Unidade 2');
+    expect(rotuloRevogar(substitutoValido, lista[2]!)).toBe('Revogar a designação de Carla Menezes como responsável da Unidade 3');
   });
 });
 

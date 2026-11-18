@@ -387,8 +387,13 @@ const ss = (semana: string) => `${semana.slice(4)}/${semana.slice(0, 4)}`;
 
 /** Critério de canal sobre as semanas completas, sem as `recuo` mais recentes (para olhar semanas passadas). */
 function avaliarCanal(c: CriterioPlano, ind: IndicadoresAgravo, recuo: number): Resultado {
-  const aceitos = STATUS_DO_CRITERIO[c.tipo]!;
   const completas = ind.semanas.filter((s) => s.completa);
+  return avaliarCanalNas(c, completas, recuo);
+}
+
+/** O mesmo, sobre as SE completas já separadas (da mais antiga à mais recente). */
+function avaliarCanalNas(c: CriterioPlano, completas: IndicadoresAgravo['semanas'], recuo: number): Resultado {
+  const aceitos = STATUS_DO_CRITERIO[c.tipo]!;
   const ate = completas.slice(0, Math.max(0, completas.length - recuo));
   const kDeN = c.modo === 'K_DE_N';
   const n = Math.max(1, Math.trunc((kDeN ? (c.n ?? c.semanas) : c.semanas) ?? 1));
@@ -566,15 +571,22 @@ function acumuladosAltos(plano: PlanoContingencia, criterios: AvaliacaoCriterio[
  * canal sobe pelos critérios de canal, que pedem N SE.
  *
  * Descer só depois de N SE completas seguidas abaixo do estágio em vigor, contadas desde o início do acionamento em
- * vigor. Uma SE conta como abaixo quando a sugestão dela está abaixo do estágio em vigor e a curva da própria SE, em
- * cada agravo com canal dos critérios de canal do estágio em vigor ou de um acima, está fora dos status que esses
- * critérios aceitam (no modelo do MS: no alerta, não acima do LS; na mobilização, até o centro ou abaixo do LI). Uma SE
- * de queda no meio da alta quebra as janelas de N SE dos critérios, mas não é redução sustentada. A SE sem canal de um
- * agravo com canal (de um critério de canal de qualquer estágio) nunca conta como abaixo, e o destino da descida não fica
- * abaixo do estágio de um critério de canal que ficou sem avaliação (SE sem canal na janela). O agravo sem canal em
- * nenhuma SE completa dos indicadores não tem como ser conferido e não trava a contagem. O acumulado do ano quase nunca
- * volta a cair no mesmo ano: o do agravo cuja curva voltou ao canal deixa de segurar o estágio, como manda o Plano 2025
- * (item 7.2.3), e o detalhe o cita. Com a curva fora do canal, ele segura.
+ * vigor, pela curva dos agravos que sustentam o estágio (S, `agravosQueSustentam`): os com canal cujo critério de canal
+ * de algum estágio até o em vigor foi atendido numa SE completa desde o início do acionamento, ou no retrato dele. Uma
+ * SE conta como abaixo quando a sugestão dela está abaixo do estágio em vigor e a curva da própria SE, em cada agravo de
+ * S, está fora dos status que os critérios de canal do estágio em vigor ou de um acima aceitam (no modelo do MS: no
+ * alerta, não acima do LS; na mobilização, até o centro ou abaixo do LI). Uma SE de queda no meio da alta quebra as
+ * janelas de N SE dos critérios, mas não é redução sustentada; e o caso esporádico de um agravo fora de S (o canal de
+ * um agravo raro tem centro e LS zero) não trava a descida. O destino é o maior entre as sugestões das N SE, os
+ * estágios dos critérios de canal que ficaram sem avaliação nelas (SE sem canal na janela) e o piso de nível: o maior
+ * estágio abaixo do em vigor cujo critério de canal aceita o status da SE num agravo de S (da epidemia com a curva acima
+ * do LS, o alerta; do alerta com a curva entre o centro e o LS, a mobilização). A SE sem canal nunca conta como abaixo
+ * num agravo de S ou num agravo cujo critério de canal ficou sem avaliação nas SE contadas (sem o dado, ele pode estar
+ * sustentando o estágio); com S vazio, em todo agravo com canal, para não descer por falta de dado. Com S vazio e o dado
+ * presente, valem só as sugestões. O agravo sem canal em nenhuma SE completa dos indicadores não tem como ser conferido
+ * e não trava a contagem. O acumulado do ano quase nunca volta a cair no mesmo ano: o do agravo cuja curva voltou ao
+ * canal deixa de segurar o estágio, como manda o Plano 2025 (item 7.2.3), e o detalhe o cita. Com a curva fora do
+ * canal, ele segura.
  * Nas semanas passadas, só os critérios de canal são refeitos; as respostas manuais da semana valem como estão.
  */
 export function avaliarPlano(plano: PlanoContingencia, indicadores: IndicadoresAgravo[], respostas: RespostaCriterio[], estagioAtual: string | null, acionamento: AcionamentoEmVigor | null = null): AvaliacaoPlano {
@@ -615,59 +627,77 @@ export function avaliarPlano(plano: PlanoContingencia, indicadores: IndicadoresA
 
   // Manter ou descer: o acumulado do agravo cuja curva voltou ao canal endêmico não segura o estágio.
   const solto = (a: AvaliacaoCriterio) => acumulado(a) && noCanal.has(a.agravo ?? '');
-  // Agravos com canal em alguma SE completa (o que nunca teve canal nos indicadores não tem como ser conferido) e, em
-  // cada critério de canal do plano, os agravos dele que têm canal.
-  const completasDe = new Map(indicadores.map((i) => [i.grupo, completas(i)]));
-  const comCanal = new Set([...completasDe].filter(([, cs]) => cs.some((s) => s.status !== 'SEM_CANAL')).map(([g]) => g));
-  const deCanal = plano.criterios.filter((c) => CANAL.includes(c.tipo)).map((c) => ({ c, agravos: (c.agravos.length ? c.agravos : plano.agravos).filter((g) => comCanal.has(g)) }));
-  const menor = [...plano.estagios].sort((a, b) => a.ordem - b.ordem)[0]!.chave;
-  const maior = (x: string, y: string) => (ord(y) > ord(x) ? y : x);
-  /** A SE do recuo (a r-ésima completa, de trás para a frente) na descida. */
-  const naSemana = (recuo: number): SemanaDaDescida => {
-    const avs = recuo === 0 ? avaliadas : avaliarCriterios(plano, porGrupo, resp, recuo);
-    // Critério de canal sem avaliação (SE sem canal na janela) num agravo com canal: o destino não fica abaixo dele.
-    const piso = avs.filter((a) => a.atendido === null && CANAL.includes(tipo.get(a.id)!) && comCanal.has(a.agravo ?? '')).reduce((m, a) => maior(m, a.estagio), menor);
-    let semCanal = false;
-    let acima: SemanaDaDescida['acima'] = null;
-    for (const { c, agravos } of deCanal)
-      for (const agravo of agravos) {
-        const cs = completasDe.get(agravo)!;
-        const se = cs[cs.length - 1 - recuo];
-        if (!se) continue;
-        // SE sem canal num agravo com canal, qualquer que seja o estágio do critério: a curva pode não ter descido.
-        if (se.status === 'SEM_CANAL') semCanal = true;
-        // A curva da própria SE ainda no nível de um critério de canal do estágio em vigor ou de um acima.
-        else if (!acima && ord(c.estagio) >= ord(atual) && STATUS_DO_CRITERIO[c.tipo]!.includes(se.status)) acima = { semana: se.semana, agravo, status: se.status, estagio: c.estagio };
-      }
-    return { sugestao: estagioSugerido(plano, sem(avs, solto)), piso, semCanal, acima };
-  };
-  const desce = (s: SemanaDaDescida) => ord(s.sugestao) < ord(atual) && ord(s.piso) < ord(atual) && !s.semCanal && !s.acima;
-  const agora = naSemana(0);
-  if (ord(agora.sugestao) >= ord(atual)) return { sugerido: atual, criterios, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
+  if (ord(estagioSugerido(plano, sem(avaliadas, solto))) >= ord(atual)) return { sugerido: atual, criterios, porEstagio, desmobilizacao: { sugerida: false, detalhe: '' } };
 
   const disponiveis = Math.max(0, ...indicadores.map((i) => completas(i).length));
   const inicio = acionamento?.semanaInicio ?? null;
   // SE completas desde o início do acionamento (sem indicadores não há como contar: vale a semana de referência).
   const desdeInicio = inicio === null || disponiveis === 0 ? Infinity : Math.max(0, ...indicadores.map((i) => completas(i).filter((s) => s.semana >= inicio).length));
   const limite = Math.min(n, Math.max(1, disponiveis), desdeInicio);
-  const anteriores: SemanaDaDescida[] = [];
-  for (let recuo = 0; recuo < limite; recuo++) anteriores.push(recuo === 0 ? agora : naSemana(recuo));
+  // Os critérios em cada SE contada, da semana de referência (recuo 0) para trás.
+  const janelas = Array.from({ length: limite }, (_, recuo) => (recuo === 0 ? avaliadas : avaliarCriterios(plano, porGrupo, resp, recuo)));
+  // Agravos com canal em alguma SE completa (o que nunca teve canal nos indicadores não tem como ser conferido) e, em
+  // cada critério de canal do plano, os agravos dele que têm canal.
+  const completasDe = new Map(indicadores.map((i) => [i.grupo, completas(i)]));
+  const comCanal = new Set([...completasDe].filter(([, cs]) => cs.some((s) => s.status !== 'SEM_CANAL')).map(([g]) => g));
+  const deCanal = plano.criterios.filter((c) => CANAL.includes(c.tipo)).map((c) => ({ c, agravos: (c.agravos.length ? c.agravos : plano.agravos).filter((g) => comCanal.has(g)) }));
+  // S: a curva e o piso de nível só olham os agravos que sustentam o estágio (critérios de canal até o em vigor).
+  const ateOEmVigor = deCanal.filter(({ c }) => ord(c.estagio) <= ord(atual));
+  const sustentam = agravosQueSustentam(ateOEmVigor, completasDe, acionamento);
+  // A SE sem canal vale para os agravos de S e para o que teve critério de canal sem avaliação nas SE contadas (sem o
+  // dado, ele pode estar sustentando o estágio); com S vazio, para todo agravo com canal (não descer por falta de dado).
+  const semAvaliacao = (a: AvaliacaoCriterio) => a.atendido === null && CANAL.includes(tipo.get(a.id)!) && comCanal.has(a.agravo ?? '');
+  const vigiados = sustentam.size ? new Set([...sustentam, ...janelas.flatMap((avs) => avs.filter(semAvaliacao).map((a) => a.agravo!))]) : comCanal;
+  const menor = [...plano.estagios].sort((a, b) => a.ordem - b.ordem)[0]!.chave;
+  const maior = (x: string, y: string) => (ord(y) > ord(x) ? y : x);
+  /** A SE do recuo (a r-ésima completa, de trás para a frente) na descida, com os critérios avaliados nela. */
+  const naSemana = (avs: AvaliacaoCriterio[], recuo: number): SemanaDaDescida => {
+    // Critério de canal sem avaliação (SE sem canal na janela) num agravo vigiado: o destino não fica abaixo dele.
+    const piso = avs.filter((a) => semAvaliacao(a) && vigiados.has(a.agravo!)).reduce((m, a) => maior(m, a.estagio), menor);
+    let semCanal = false;
+    let acima: PontoDaCurva | null = null;
+    let nivel: PontoDaCurva | null = null;
+    for (const { c, agravos } of deCanal)
+      for (const agravo of agravos) {
+        const cs = completasDe.get(agravo)!;
+        const se = cs[cs.length - 1 - recuo];
+        if (!se) continue;
+        // SE sem canal num agravo vigiado, qualquer que seja o estágio do critério: a curva pode não ter descido.
+        if (se.status === 'SEM_CANAL') semCanal ||= vigiados.has(agravo);
+        else if (sustentam.has(agravo) && STATUS_DO_CRITERIO[c.tipo]!.includes(se.status)) {
+          const ponto = { semana: se.semana, agravo, status: se.status, estagio: c.estagio };
+          // A curva da própria SE ainda no nível de um critério de canal do estágio em vigor ou de um acima: não conta.
+          if (ord(c.estagio) >= ord(atual)) acima ??= ponto;
+          // No nível do critério de canal de um estágio abaixo: o destino não fica abaixo dele (piso de nível).
+          else if (!nivel || ord(c.estagio) > ord(nivel.estagio)) nivel = ponto;
+        }
+      }
+    return { sugestao: estagioSugerido(plano, sem(avs, solto)), piso, semCanal, acima, nivel };
+  };
+  const desce = (s: SemanaDaDescida) => ord(s.sugestao) < ord(atual) && ord(s.piso) < ord(atual) && !s.semCanal && !s.acima;
+  const anteriores = janelas.map((avs, recuo) => naSemana(avs, recuo));
   const seguidas = anteriores.findIndex((s) => !desce(s));
   const abaixo = seguidas === -1 ? anteriores.length : seguidas;
   const altos = acumuladosAltos(plano, avaliadas);
   const notaAcumulado = altos.length ? ` No acumulado do ano, segue acima do limiar: ${altos.join('; ')}.` : '';
   if (abaixo >= n) {
     const sugestoes = anteriores.reduce((m, s) => maior(m, s.sugestao), menor);
-    const destino = anteriores.reduce((m, s) => maior(m, s.piso), sugestoes);
-    // O destino subiu por um critério de canal sem avaliação: o detalhe diz por quê.
-    const notaPiso = destino !== sugestoes ? ` O critério de canal de ${nomes.get(destino)} ficou sem avaliação numa dessas SE (SE sem canal na janela): a descida para nele.` : '';
+    const comPiso = anteriores.reduce((m, s) => maior(m, s.piso), sugestoes);
+    const destino = anteriores.reduce((m, s) => maior(m, s.nivel?.estagio ?? menor), comPiso);
+    // O destino ficou acima das sugestões: o detalhe diz por quê. Um critério de canal sem avaliação, ou a curva de um
+    // agravo de S no nível de um estágio abaixo do em vigor (a SE mais recente em que isso acontece).
+    const notaPiso = comPiso !== sugestoes && comPiso === destino ? ` O critério de canal de ${nomes.get(destino)} ficou sem avaliação numa dessas SE (SE sem canal na janela): a descida para nele.` : '';
+    const segura = destino !== sugestoes ? anteriores.find((s) => s.nivel?.estagio === destino)?.nivel : undefined;
+    const notaNivel = segura
+      ? ` Na SE ${ss(segura.semana)}, a curva de ${segura.agravo} está ${ROTULO_STATUS_SEMANA[segura.status].toLowerCase()}, no nível do critério de canal de ${nomes.get(destino)}: a descida para nele.`
+      : '';
     return {
       sugerido: destino,
       criterios,
       porEstagio,
       desmobilizacao: {
         sugerida: true,
-        detalhe: `Sugestão abaixo de ${nomes.get(atual)} nas últimas ${n} SE completas: pode desmobilizar para ${nomes.get(destino)}. ${plano.desmobilizacao.descricao}.${notaPiso}${notaAcumulado}`,
+        detalhe: `Sugestão abaixo de ${nomes.get(atual)} nas últimas ${n} SE completas: pode desmobilizar para ${nomes.get(destino)}. ${plano.desmobilizacao.descricao}.${notaPiso}${notaNivel}${notaAcumulado}`,
       },
     };
   }
@@ -693,16 +723,54 @@ export function avaliarPlano(plano: PlanoContingencia, indicadores: IndicadoresA
   };
 }
 
+/** A curva de um agravo numa SE, no nível do critério de canal de um estágio. */
+interface PontoDaCurva {
+  semana: string;
+  agravo: string;
+  status: StatusSemana;
+  estagio: string;
+}
+
 /** Uma SE na contagem da descida. */
 interface SemanaDaDescida {
   /** Estágio sugerido pelos critérios na SE (sem o acumulado do agravo de volta ao canal). */
   sugestao: string;
-  /** Maior estágio com critério de canal sem avaliação na SE (num agravo com canal); o menor estágio, se nenhum. */
+  /** Maior estágio com critério de canal sem avaliação na SE (num agravo vigiado); o menor estágio, se nenhum. */
   piso: string;
-  /** Algum agravo com canal de um critério de canal está sem canal na SE. */
+  /** Algum agravo vigiado (de S, ou com critério de canal sem avaliação nas SE contadas; com S vazio, com canal) está sem canal na SE. */
   semCanal: boolean;
-  /** A curva da SE ainda no nível de um critério de canal do estágio em vigor ou de um acima (o primeiro achado). */
-  acima: { semana: string; agravo: string; status: StatusSemana; estagio: string } | null;
+  /** A curva da SE, num agravo de S, ainda no nível de um critério de canal do estágio em vigor ou de um acima (o primeiro achado). */
+  acima: PontoDaCurva | null;
+  /** A curva da SE, num agravo de S, no nível do critério de canal de um estágio abaixo do em vigor: o maior (piso de nível). */
+  nivel: PontoDaCurva | null;
+}
+
+/**
+ * Agravos que sustentam o estágio em vigor (S): os com canal cujo critério de canal (de algum estágio até o em vigor:
+ * `deCanal` já vem filtrado) foi atendido numa SE completa desde o início do acionamento em vigor, com a janela do
+ * critério terminando nela (sem acionamento, em qualquer SE completa dos indicadores), ou no retrato do acionamento (as
+ * SE completas dos indicadores que a vigilância viu ao decidir).
+ */
+function agravosQueSustentam(deCanal: { c: CriterioPlano; agravos: string[] }[], completasDe: Map<string, IndicadoresAgravo['semanas']>, acionamento: AcionamentoEmVigor | null): Set<string> {
+  const inicio = acionamento?.semanaInicio ?? null;
+  const retrato = new Map(
+    (Array.isArray(acionamento?.indicadores) ? acionamento.indicadores : []).filter((i) => i && typeof i.grupo === 'string').map((i) => [i.grupo, (Array.isArray(i.semanas) ? i.semanas : []).filter((s) => s.completa)]),
+  );
+  const sustentam = new Set<string>();
+  for (const { c, agravos } of deCanal)
+    for (const agravo of agravos) {
+      if (sustentam.has(agravo)) continue;
+      const cs = completasDe.get(agravo) ?? [];
+      // As SE completas desde o início, da mais recente para trás (os indicadores vêm em ordem).
+      for (let recuo = 0; recuo < cs.length && (inicio === null || cs[cs.length - 1 - recuo]!.semana >= inicio); recuo++)
+        if (avaliarCanalNas(c, cs, recuo).atendido === true) {
+          sustentam.add(agravo);
+          break;
+        }
+      const doRetrato = retrato.get(agravo);
+      if (!sustentam.has(agravo) && doRetrato && avaliarCanalNas(c, doRetrato, 0).atendido === true) sustentam.add(agravo);
+    }
+  return sustentam;
 }
 
 // ───────────── Conferência da definição ─────────────

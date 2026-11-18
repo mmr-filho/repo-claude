@@ -23,6 +23,7 @@ import {
   DESCRICAO_SITUACAO,
   filtrarLinhas,
   LEGENDA_GRADE,
+  notaPrazoDoAtesto,
   percentuaisDaGrade,
   podeAtestarEmNome,
   rotuloColuna,
@@ -42,8 +43,11 @@ interface CelulaAberta {
   coluna: ColunaGrade;
 }
 
-/** Detalhe da célula: as fontes e, para a vigilância, anular o atesto ou atestar em nome da unidade. */
-function CelulaDialog({ aberta, podeConfigurar, onFechar, onMudou }: { aberta: CelulaAberta; podeConfigurar: boolean; onFechar: () => void; onMudou: () => void }) {
+/**
+ * Detalhe da célula: o prazo da semana e, com atesto, o prazo gravado com ele; as fontes e, para a vigilância, anular o
+ * atesto ou atestar em nome da unidade.
+ */
+export function CelulaDialog({ aberta, podeConfigurar, onFechar, onMudou }: { aberta: CelulaAberta; podeConfigurar: boolean; onFechar: () => void; onMudou: () => void }) {
   const toast = useToast();
   const { fuso } = useDataHora();
   const { linha, celula, coluna } = aberta;
@@ -100,7 +104,7 @@ function CelulaDialog({ aberta, podeConfigurar, onFechar, onMudou }: { aberta: C
   }
 
   return (
-    <Dialog open onOpenChange={(o) => !o && onFechar()} title={`${linha.unidade.nome} · ${titulo}`} description={descricaoDaCelula(linha, coluna, fuso)}>
+    <Dialog open onOpenChange={(o) => !o && onFechar()} title={`${linha.unidade.nome} · ${titulo}`} description={descricaoDaCelula(linha, coluna, fuso, atesto)}>
       <div className="space-y-3 text-sm">
         <p className="flex flex-wrap items-center gap-2">
           <span className={cn('rounded px-2 py-0.5 text-xs', CELULA[celula.situacao].classe)}>{CELULA[celula.situacao].texto}</span>
@@ -109,6 +113,7 @@ function CelulaDialog({ aberta, podeConfigurar, onFechar, onMudou }: { aberta: C
         <p>
           <span className="font-medium">Fontes da semana:</span> {textoFontes(celula.fontes)}.
         </p>
+        {notaPrazoDoAtesto(coluna, atesto) && <p className="text-xs text-slate-600">{notaPrazoDoAtesto(coluna, atesto)}</p>}
         {/* O espelho é de quem atestou, dos responsáveis da unidade e da vigilância (a API confere). */}
         {atesto && podeConfigurar && (
           <div className="flex flex-wrap items-center gap-2">

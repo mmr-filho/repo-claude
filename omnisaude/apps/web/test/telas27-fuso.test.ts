@@ -70,7 +70,10 @@ describe('notificação negativa no fuso da instituição', () => {
 
   it('o detalhe da célula da grade traz o prazo no fuso da instituição', () => {
     const coluna = { semana: '202646', inicio: '2026-11-08', fim: '2026-11-14', prazo: PRAZO_MANAUS };
-    expect(descricaoDaCelula({ unidade: { id: 'u1', nome: 'UBS Centro', cnes: '1234567' } }, coluna, MANAUS)).toBe('CNES 1234567 · de 08/11 a 14/11 · prazo do atesto: 16/11/2026, 14:00');
+    const linha = { unidade: { id: 'u1', nome: 'UBS Centro', cnes: '1234567' } };
+    expect(descricaoDaCelula(linha, coluna, MANAUS)).toBe('CNES 1234567 · de 08/11 a 14/11 · prazo da semana: 16/11/2026, 14:00');
+    // O prazo gravado com o atesto (a regra de antes: 12:00 em Manaus) também sai no fuso da instituição.
+    expect(descricaoDaCelula(linha, coluna, MANAUS, { prazo: '2026-11-16T16:00:00.000Z' })).toBe('CNES 1234567 · de 08/11 a 14/11 · prazo da semana: 16/11/2026, 14:00 · prazo do atesto: 16/11/2026, 12:00');
   });
 });
 

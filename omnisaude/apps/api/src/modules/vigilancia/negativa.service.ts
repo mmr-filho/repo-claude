@@ -195,8 +195,8 @@ interface FatosSemana {
   registros: (Ref & { sistema: string })[];
   /** Negativas digitadas no Sinan (NNEGANET). */
   negativasSinan: Ref[];
-  /** Atesto vigente (ATESTADA). */
-  atesto: { id: string; late: boolean; officialRecordId: string | null } | null;
+  /** Atesto vigente (ATESTADA), com o prazo gravado com ele (o que decidiu o `late`). */
+  atesto: { id: string; late: boolean; deadlineAt: Date; officialRecordId: string | null } | null;
 }
 
 const vazio = (): FatosSemana => ({ notificacoes: [], rascunhos: [], surtos: [], registros: [], negativasSinan: [], atesto: null });
@@ -285,7 +285,10 @@ export class NegativaService {
         select: { id: true, number: true, type: true, system: true, unitId: true, unitCnes: true, epiWeekNotified: true },
         orderBy: { notifiedOn: 'asc' },
       }),
-      db.negativeReport.findMany({ where: { unitId: { in: ids }, epiWeek: { in: ordenadas }, status: 'ATESTADA' }, select: { id: true, unitId: true, epiWeek: true, late: true, officialRecordId: true } }),
+      db.negativeReport.findMany({
+        where: { unitId: { in: ids }, epiWeek: { in: ordenadas }, status: 'ATESTADA' },
+        select: { id: true, unitId: true, epiWeek: true, late: true, deadlineAt: true, officialRecordId: true },
+      }),
       timeZone
         ? db.notification.findMany({
             where: { unitId: { in: ids }, status: 'RASCUNHO', knownAt: { gte: inicioDoDia(inicio, timeZone), lt: inicioDoDia(diaSeguinte(fim), timeZone) } },
@@ -305,7 +308,7 @@ export class NegativaService {
       if (r.type === 'NEGATIVA') f.negativasSinan.push({ id: r.id, numero: r.number });
       else f.registros.push({ id: r.id, numero: r.number, sistema: r.system });
     }
-    for (const a of atestos) de(a.unitId, a.epiWeek).atesto = { id: a.id, late: a.late, officialRecordId: a.officialRecordId };
+    for (const a of atestos) de(a.unitId, a.epiWeek).atesto = { id: a.id, late: a.late, deadlineAt: a.deadlineAt, officialRecordId: a.officialRecordId };
     if (timeZone)
       for (const r of rascunhos) {
         const s = semanaEpidemiologica(r.knownAt, timeZone).codigo;
@@ -692,10 +695,11 @@ export class NegativaService {
 
   /**
    * GET /vigilancia/negativas/grade?semanas=12&ate=AAAASS: unidades notificantes × semanas com a situação e as fontes de
-   * cada célula, a análise (silenciosas, só negativas, % por semana, regularidade municipal) e as diferenças com as
-   * negativas digitadas no Sinan. A análise roda numa janela maior que a exibida (o maior entre as semanas pedidas e os
-   * parâmetros da análise, mais as semanas ainda abertas no fim); a resposta traz só as semanas pedidas. A
-   * regularidade usa os fatos do município inteiro, não só as linhas da grade.
+   * cada célula (o atesto com o prazo gravado com ele; o prazo da coluna é o da semana pela regra de agora), a análise
+   * (silenciosas, só negativas, % por semana, regularidade municipal) e as diferenças com as negativas digitadas no
+   * Sinan. A análise roda numa janela maior que a exibida (o maior entre as semanas pedidas e os parâmetros da análise,
+   * mais as semanas ainda abertas no fim); a resposta traz só as semanas pedidas. A regularidade usa os fatos do
+   * município inteiro, não só as linhas da grade.
    */
   async grade(ctx: RequestContext, consulta: ConsultaGradeNegativa): Promise<RespostaGradeNegativa> {
     const agora = this.agora();
@@ -752,7 +756,8 @@ export class NegativaService {
             notificacoes: f.notificacoes.length,
             surtos: f.surtos.length,
             registrosOficiais: f.registros.length,
-            atesto: f.atesto ? { id: f.atesto.id, atrasado: f.atesto.late } : null,
+            // O prazo do atesto é o gravado com ele (o que decidiu o "fora do prazo"); o da coluna é o da regra de agora.
+            atesto: f.atesto ? { id: f.atesto.id, atrasado: f.atesto.late, prazo: f.atesto.deadlineAt.toISOString() } : null,
             negativaSinan,
           },
         };
@@ -1078,6 +1083,10 @@ export class NegativaService {
    * travaria a vaga de titular), e a unidade precisa ser notificante; um titular ativo por unidade (substitutos,
    * quantos forem precisos). O titular cuja designação não vale (sem lotação ativa na unidade em papel que atesta, ou
    * com o acesso desativado) não trava a vaga: a designação dele termina hoje na mesma transação, com auditoria.
+   * As auditorias saem no fim, depois da gravação da designação nova (como em encerrarUnidadeNotificante): a gravação
+   * pede as linhas da unidade e do usuário (chaves estrangeiras), e a trava da cadeia da trilha presa antes delas
+   * fecharia um ciclo com o cadastro que troca o CNES da unidade (ou o CPF ou o CNS do usuário), que prende a linha e
+   * só depois audita.
    */
   async designarResponsavel(ctx: RequestContext, unitId: string, corpo: CorpoDesignarResponsavel): Promise<UnidadeNotificante> {
     const unidade = await ctx.db.unit.findUnique({ where: { id: unitId }, select: { id: true, cnes: true } });
@@ -1106,6 +1115,8 @@ export class NegativaService {
         const jaE = ativos.find((a) => a.userId === usuario.id);
         if (jaE) throw conflict(`${usuario.name} já é ${jaE.kind === 'TITULAR' ? 'titular' : 'substituto(a)'} desta unidade`);
         const titular = ativos.find((a) => a.kind === 'TITULAR');
+        // A trilha sai no fim, na ordem dos fatos (o titular encerrado e depois a designação nova).
+        const trilha: { action: string; entityType: string; entityId: string; payload: unknown }[] = [];
         if (corpo.tipo === 'TITULAR' && titular) {
           const lotacoesDoTitular = await tx.userAssignment.findMany({ where: { userId: titular.userId, unitId, active: true }, select: { role: true } });
           const invalida = this.motivoDesignacaoInvalida(titular.user.active, lotacoesDoTitular);
@@ -1115,7 +1126,7 @@ export class NegativaService {
           const ate = hoje < dataIso(titular.since)! ? dataIso(titular.since)! : hoje;
           const { count } = await tx.notifyingUnitResponsible.updateMany({ where: { id: titular.id, until: null }, data: { until: comoData(ate), revokedBy: ctx.session.userId, revokedAt: agora } });
           if (count !== 1) throw conflict('A designação mudou desde a leitura; abra de novo');
-          await this.audit.record(ctx, tx, {
+          trilha.push({
             action: 'vigilancia.negativa_revogar',
             entityType: 'NotifyingUnitResponsible',
             entityId: titular.id,
@@ -1126,12 +1137,13 @@ export class NegativaService {
           data: { unitId, userId: usuario.id, kind: corpo.tipo, since: comoData(corpo.desde), designatedBy: ctx.session.userId, designatedAt: agora },
           select: { id: true },
         });
-        await this.audit.record(ctx, tx, {
+        trilha.push({
           action: 'vigilancia.negativa_designar',
           entityType: 'NotifyingUnitResponsible',
           entityId: r.id,
           payload: { unidade: unidade.cnes, usuario: usuario.id, tipo: corpo.tipo, desde: corpo.desde },
         });
+        for (const e of trilha) await this.audit.record(ctx, tx, e);
       });
     } catch (err) {
       if ((err as { code?: string }).code === 'P2002') throw conflict('O usuário já é responsável desta unidade');

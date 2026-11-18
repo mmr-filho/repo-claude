@@ -23,7 +23,7 @@ import { Zip, ZipDeflate } from 'fflate';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AcumuladorCobertura, lerEnvio } from '${IMPORTACAO}/leitura';
+import { lerEnvio } from '${IMPORTACAO}/leitura';
 import { aplicarParte, estadoVazio, hashDoEstado } from '${IMPORTACAO}/mescla';
 import { EscritorPayload, LeitorPayload } from '${IMPORTACAO}/payload';
 
@@ -132,17 +132,13 @@ async function main() {
       // Prévia: comparação em lotes (sem banco: tudo novo), cobertura e payload.
       fase = 'previa';
       const escritor = new EscritorPayload(join(pasta, 'payload.gz'));
-      const cobertura = new AcumuladorCobertura(null, '3550308');
       let registros = 0;
       for await (const lote of leitura.registros(500)) {
-        for (const r of lote) {
-          cobertura.somar(r);
-          hashDoEstado(r.sistema, r.tipo, r.partes.reduce(aplicarParte, estadoVazio()));
-        }
+        for (const r of lote) hashDoEstado(r.sistema, r.tipo, r.partes.reduce(aplicarParte, estadoVazio()));
         registros += lote.length;
         await escritor.escrever(lote);
       }
-      out.payloadMB = +((await escritor.fechar(cobertura.resultado().cobertura)) / 1048576).toFixed(1);
+      out.payloadMB = +((await escritor.fechar(leitura.cobertura(null, '3550308').cobertura)) / 1048576).toFixed(1);
       out.registros = registros;
       leitura.fechar();
       // Aplicação: o payload relido em fatias de 4 MB e em lotes, com a mescla de cada registro.

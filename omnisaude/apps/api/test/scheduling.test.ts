@@ -9,10 +9,11 @@ import { startMocks } from './mocks';
 const enabled = await pgAvailable();
 const APP_SECRET = 'segredo-do-app-whatsapp';
 
-/** Próximo dia útil (seg-sex) a pelo menos `minDays` de hoje. */
+/** Próximo dia útil (seg-sex) a pelo menos `minDays` de hoje, pelo dia da semana da data local (a que vai na consulta). */
 function nextWeekday(minDays: number) {
   const d = new Date(Date.now() + minDays * 86_400_000);
-  while ([0, 6].includes(d.getUTCDay())) d.setUTCDate(d.getUTCDate() + 1);
+  // Entre 21h e 24h de Brasília, o dia em UTC já é o seguinte: o dia da semana é o da data local.
+  while ([0, 6].includes(new Date(`${localDateString(d)}T12:00:00Z`).getUTCDay())) d.setUTCDate(d.getUTCDate() + 1);
   return localDateString(d);
 }
 
