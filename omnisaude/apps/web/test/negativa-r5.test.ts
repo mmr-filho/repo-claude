@@ -231,9 +231,12 @@ describe('R5-10: "Revogar" das unidades notificantes diz a unidade (r4vneg-3)', 
     const lista: ListaUnidadesNotificantes = [unidade('11', 'UBS Centro', responsavel('r1')), unidade('12', 'UPA 24h', responsavel('r2'))];
     simulado.respostas.set('/vigilancia/unidades-notificantes', lista);
     const h = html(NegativaUnidades, {});
-    // "da unidade <nome>" desde a R6-6 (antes saía "da UPA 24h", e "da Posto de Saúde" com outro nome).
-    expect(rotulos('Revogar')).toEqual(['Revogar a designação de Bruno Almeida Enfermeiro como responsável da unidade UBS Centro', 'Revogar a designação de Bruno Almeida Enfermeiro como responsável da unidade UPA 24h']);
-    expect(h).toContain('aria-label="Revogar a designação de Bruno Almeida Enfermeiro como responsável da unidade UPA 24h"');
+    // "da unidade <nome>" desde a R6-6 (antes saía "da UPA 24h", e "da Posto de Saúde" com outro nome); o tipo, desde o r6vout-1.
+    expect(rotulos('Revogar')).toEqual([
+      'Revogar a designação de Bruno Almeida Enfermeiro (titular) como responsável da unidade UBS Centro',
+      'Revogar a designação de Bruno Almeida Enfermeiro (titular) como responsável da unidade UPA 24h',
+    ]);
+    expect(h).toContain('aria-label="Revogar a designação de Bruno Almeida Enfermeiro (titular) como responsável da unidade UPA 24h"');
   });
 });
 

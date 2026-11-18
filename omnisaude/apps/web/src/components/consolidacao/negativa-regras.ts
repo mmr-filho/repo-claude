@@ -2,6 +2,7 @@ import {
   arredondar,
   ROTULO_SITUACAO_UNIDADE_SEMANA,
   ROTULO_STATUS_ATESTO,
+  ROTULO_TIPO_RESPONSAVEL,
   UNIT_TYPE_LABELS,
   type AtestoNegativa,
   type CelulaGrade,
@@ -265,11 +266,49 @@ export const semResponsavel = (u: UnidadeNotificante) => !!periodoAberto(u) && !
 /** O titular ativo cuja designação não vale: designar outro titular encerra a dele hoje (a API faz na mesma transação). */
 export const titularQueNaoVale = (u: Pick<UnidadeNotificante, 'responsaveis'>): ResponsavelNegativa | null => responsaveisAtivos(u).find((r) => r.tipo === 'TITULAR' && !designacaoValida(r)) ?? null;
 /**
- * Nome acessível do botão "Revogar" de cada responsável: de quem é a designação e de qual unidade (a mesma pessoa pode
- * ser responsável em mais de uma). `unidade` é o nome com que a tela chama a unidade (`nomeDaUnidadeNaTela`: com o
- * CNES quando outra unidade da lista tem o mesmo nome).
+ * Nome acessível do botão "Revogar" de cada responsável: de quem é a designação, o tipo dela (titular ou substituto) e
+ * de qual unidade (a mesma pessoa pode ser responsável em mais de uma). `unidade` é o nome com que a tela chama a
+ * unidade (`nomeDaUnidadeNaTela`: com o CNES quando outra unidade da lista tem o mesmo nome). Na linha, vale o de
+ * `rotulosRevogar`, que distingue também as pessoas de mesmo nome e mesmo tipo.
  */
-export const rotuloRevogar = (r: Pick<ResponsavelNegativa, 'nome'>, unidade: string) => `Revogar a designação de ${r.nome} como responsável da unidade ${unidade}`;
+export const rotuloRevogar = (r: Pick<ResponsavelNegativa, 'nome' | 'tipo'>, unidade: string) =>
+  `Revogar a designação de ${r.nome} (${ROTULO_TIPO_RESPONSAVEL[r.tipo].toLowerCase()}) como responsável da unidade ${unidade}`;
+
+/**
+ * Nomes acessíveis dos botões "Revogar" de uma linha das unidades notificantes (`ativos`: as designações ativas da
+ * unidade), sem repetição. O nome da pessoa não é único (só o usuário é): duas pessoas de mesmo nome na mesma unidade
+ * ficam distintas pelo tipo (`rotuloRevogar`). Se ainda coincidirem (dois substitutos de mesmo nome), cada uma diz o
+ * início da designação, "…, desde dd/mm/aaaa", e, no mesmo início, a sua ordem pela hora da designação (e pelo id, no
+ * mesmo instante): "… (1 de 2)", "… (2 de 2)". Maiúsculas, acentos e espaços repetidos não distinguem os nomes (o
+ * leitor de tela lê igual).
+ */
+export function rotulosRevogar(ativos: Pick<ResponsavelNegativa, 'id' | 'nome' | 'tipo' | 'desde' | 'designadoEm'>[], unidade: string): (r: Pick<ResponsavelNegativa, 'id' | 'nome' | 'tipo'>) => string {
+  const agrupar = <T>(xs: T[], chave: (x: T) => string) => {
+    const grupos = new Map<string, T[]>();
+    for (const x of xs) {
+      const k = chave(x);
+      grupos.set(k, [...(grupos.get(k) ?? []), x]);
+    }
+    return [...grupos.values()];
+  };
+  const rotulos = new Map<string, string>();
+  for (const iguais of agrupar(ativos, (r) => chaveDoNome(rotuloRevogar(r, unidade)))) {
+    if (iguais.length === 1) continue;
+    for (const mesmoInicio of agrupar(iguais, (r) => r.desde)) {
+      const ordem = [...mesmoInicio].sort((x, y) => Date.parse(x.designadoEm) - Date.parse(y.designadoEm) || x.id.localeCompare(y.id));
+      ordem.forEach((r, k) => rotulos.set(r.id, `${rotuloRevogar(r, unidade)}, desde ${dataBr(r.desde)}${ordem.length > 1 ? ` (${k + 1} de ${ordem.length})` : ''}`));
+    }
+  }
+  return (r) => rotulos.get(r.id) ?? rotuloRevogar(r, unidade);
+}
+
+/**
+ * Resumo "Designações anteriores (N)" de cada linha das unidades notificantes e o nome acessível dele (o leitor de tela
+ * o anuncia como botão de expandir): o texto visível, inteiro e no começo (WCAG 2.5.3), e de qual unidade é, pelo nome
+ * com que a tela a chama (`nomeDaUnidadeNaTela`).
+ */
+export const textoDesignacoesAnteriores = (n: number) => `Designações anteriores (${n})`;
+export const rotuloDesignacoesAnteriores = (n: number, unidade: string) => `${textoDesignacoesAnteriores(n)} da unidade ${unidade}`;
 /** Nomes acessíveis dos outros botões que se repetem em cada linha das unidades notificantes (dizem de qual unidade são). */
 export const rotuloDesignar = (unidade: string) => `Designar responsável da unidade ${unidade}`;
 export const rotuloEncerrarPeriodo = (unidade: string) => `Encerrar o período da unidade ${unidade}`;
@@ -279,6 +318,13 @@ export const rotuloTornarNotificante = (unidade: string) => `Tornar ${unidade} n
  * a unidade (o nome com que a tela a chama: `nomesDaTelaDoResponsavel`).
  */
 export const rotuloAtestar = (semana: string, unidade?: string) => `Atestar a SE ${rotuloSemana(semana)}${unidade ? `, ${unidade}` : ''}`;
+/** Texto da caixa de confirmação do atesto, uma por semana a atestar (a tela põe o ponto final). */
+export const TEXTO_DECLARACAO_LIDA = 'Li a declaração e confirmo que não houve caso na semana';
+/**
+ * Nome acessível da caixa de confirmação do atesto: o texto visível (WCAG 2.5.3) e, entre parênteses, a SE e, quando a
+ * tela tem mais de uma unidade, a unidade, como no Atestar da mesma semana.
+ */
+export const rotuloConfirmarDeclaracao = (semana: string, unidade?: string) => `${TEXTO_DECLARACAO_LIDA} (SE ${rotuloSemana(semana)}${unidade ? `, ${unidade}` : ''})`;
 
 const FUSO_BRASILIA = 'America/Sao_Paulo';
 
@@ -307,18 +353,20 @@ export function rotuloEspelhoPdf(a: Pick<AtestoNegativa, 'semana' | 'status' | '
   return partes.join(', ');
 }
 
-/** Nomes acessíveis dos botões que se repetem na tela do responsável. */
+/** Nomes acessíveis dos controles que se repetem na tela do responsável. */
 export interface NomesDaTelaDoResponsavel {
   /** O Atestar da semana da unidade. */
   atestar: (unidade: Pick<UnidadeRef, 'nome' | 'cnes'>, semana: string) => string;
+  /** A caixa "Li a declaração…" da semana da unidade (diz a SE e a unidade como o Atestar). */
+  confirmar: (unidade: Pick<UnidadeRef, 'nome' | 'cnes'>, semana: string) => string;
   /** O PDF do atesto, na semana da unidade ou no histórico. */
   pdf: (a: AtestoNegativa, lugar: 'semana' | 'historico') => string;
 }
 
 /**
- * Nomes acessíveis da tela do responsável, sem repetição para botões que fazem coisas diferentes:
- * - Atestar e o PDF dizem a SE; com mais de uma unidade na tela, também a unidade; o PDF do histórico, que junta as
- *   unidades, sempre a unidade;
+ * Nomes acessíveis da tela do responsável, sem repetição para controles que fazem coisas diferentes:
+ * - Atestar, a caixa "Li a declaração…" e o PDF dizem a SE; com mais de uma unidade na tela, também a unidade; o PDF
+ *   do histórico, que junta as unidades, sempre a unidade;
  * - a unidade pelo nome e, quando outra unidade da tela (das semanas ou do histórico) tem o mesmo nome, também o CNES;
  * - o PDF do atesto que não é o vigente diz a situação e quando foi atestado, com os segundos (`rotuloEspelhoPdf`);
  * - se ainda assim dois atestos diferentes ficarem com o mesmo nome (não vigentes da mesma SE, unidade e situação,
@@ -342,6 +390,7 @@ export function nomesDaTelaDoResponsavel(r: Pick<RespostaMinhasNegativas, 'unida
   for (const atestos of porNome.values()) atestos.sort((x, y) => Date.parse(x.atestadoEm) - Date.parse(y.atestadoEm) || x.id.localeCompare(y.id));
   return {
     atestar: (u, semana) => rotuloAtestar(semana, variasUnidades ? nome(u) : undefined),
+    confirmar: (u, semana) => rotuloConfirmarDeclaracao(semana, variasUnidades ? nome(u) : undefined),
     pdf: (a, lugar) => {
       const n = nomeDoPdf(a, lugar);
       const atestos = porNome.get(n) ?? [];

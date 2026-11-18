@@ -435,10 +435,14 @@ instituição, editáveis em *Notificação negativa > Prazos e parâmetros*.
   quebra de linha dentro das aspas), do campo do DBF e do nome do arquivo dentro do zip. Cada sequência deles vira um
   espaço, e o arquivo ganha um aviso: no CSV e no DBF, "N campo(s) com caractere de controle foram limpos (cada
   sequência deles virou um espaço)."; no nome, também no arquivo que fica fora da importação, "O nome do arquivo dentro
-  do zip tinha caractere de controle: foi limpo (cada sequência deles virou um espaço).". Por causa desses caracteres, o
-  envio não cai mais com 400 VALIDACAO na prévia ou no aplicar, nem com ERRO_INTERNO depois do 202. O texto com algum
-  nulo perdido no começo continua lido como CSV; só fica fora, com "Formato não reconhecido (nem DBF nem CSV)", o
-  arquivo com nulo em mais de 1% dos primeiros 4 KB (e em mais de 8 bytes), como o texto em UTF-16 e a planilha.
+  do zip tinha caractere de controle: foi limpo (cada sequência deles virou um espaço).". A pasta, o `__MACOSX` e o
+  arquivo oculto (nome começado por ponto), que saem do zip sem aviso, são reconhecidos pelo nome como está no zip,
+  antes da limpeza: o nome que só começa por ponto depois de limpo e aparado (um caractere de controle antes de ".csv"
+  vira ".csv") é lido como os outros, com o aviso, e o que fica vazio (só tinha caractere de controle) aparece fora da
+  importação como "(sem nome)", com o motivo e o aviso. Por causa desses caracteres, o envio não cai mais com 400
+  VALIDACAO na prévia ou no aplicar, nem com ERRO_INTERNO depois do 202. O texto com algum nulo perdido no começo
+  continua lido como CSV; só fica fora, com "Formato não reconhecido (nem DBF nem CSV)", o arquivo com nulo em mais de
+  1% dos primeiros 4 KB (e em mais de 8 bytes), como o texto em UTF-16 e a planilha.
 - **Prévia**: lê, normaliza (município de 7 dígitos comparado pelos 6 primeiros, ano epidemiológico pelo SEM_NOT e
   SEM_PRI, nunca pelo NU_ANO), junta por chave dentro do envio (NINDINET + DBF do agravo viram um registro só) e
   compara com o banco: lidos, novos, alterados, iguais, recusados com o motivo, duplicados no arquivo e ausentes
@@ -628,9 +632,13 @@ depois o de menor id. Da ficha da notificação sem quarteirão, a base lê só 
 Fora disso, a semana fica fora do canal (nula, diferente de zero). O ano coberto só em parte aparece como "coberto em
 parte", com as SE cobertas. O ano de referência sem o DENGON (ou o CHIKON) fica coberto só nas SE com caso do agravo
 ("Coberto só nas SE … (SE com caso do agravo)"): por elas, ele entra na lista dos anos de referência do canal, e nas SE
-sem caso fica fora do canal, que nelas não muda. Nos anos de antes do Sinan Online, a dengue vem no NINDINET e no DBF
-do agravo do Sinan Net, que não a cobrem: a série histórica desses anos fica com as SE sem caso descobertas
-(*Pontos de atenção*).
+sem caso o valor dele fica nulo. Na receita sem janela (a padrão, MS 2025, e a da NT 1/2023 e a do VigiEPI 2025 como
+vêm), o ano entra no canal só nas SE com caso, e o canal não muda nas SE sem caso. Na receita com janela de 5 semanas,
+agrupada (Diretrizes 2009) ou suavizada (a opção da NT 1/2023), o valor da SE com caso também entra nas SE vizinhas do
+canal, até 2 antes e 2 depois (na virada do ano, pela borda da receita): a janela pula as SE nulas do ano e fica só
+com esse valor, sem os zeros que a base não conhece, e o canal muda também nessas SE sem caso (*Pontos de atenção*).
+Nos anos de antes do Sinan Online, a dengue vem no NINDINET e no DBF do agravo do Sinan Net, que não a cobrem: a série
+histórica desses anos fica com as SE sem caso descobertas (*Pontos de atenção*).
 
 ### Diagrama de controle e receitas
 
@@ -972,11 +980,17 @@ do agravo do Sinan Net, que não a cobrem: a série histórica desses anos fica 
   cartões, configuração das unidades notificantes e dos responsáveis, e *Prazos e parâmetros*; o detalhe da célula
   mostra o prazo da semana e o prazo do atesto).
 - Os horários das telas da semana saem no fuso da instituição. O seletor de agravo esconde os sigilosos de quem não
-  pode vê-los. Cada lista de abas tem nome próprio para o leitor de tela, e os botões que se repetem em cada linha
+  pode vê-los. Cada lista de abas tem nome próprio para o leitor de tela, e os controles que se repetem em cada linha
   dizem o objeto:
   - "Vincular o registro N" e "Desvincular o registro N";
-  - "Revogar a designação de <pessoa> como responsável da unidade <unidade>", "Designar responsável da unidade
-    <unidade>", "Encerrar o período da unidade <unidade>" e "Tornar <unidade> notificante" (unidades notificantes);
+  - "Revogar a designação de <pessoa> (<tipo>) como responsável da unidade <unidade>", com o tipo "titular" ou
+    "substituto", "Designar responsável da unidade <unidade>", "Encerrar o período da unidade <unidade>" e "Tornar
+    <unidade> notificante" (unidades notificantes). Duas pessoas de mesmo nome na mesma unidade (o nome não é único,
+    só o usuário é) ficam distintas pelo tipo; se ainda coincidirem (dois substitutos de mesmo nome), cada "Revogar"
+    diz também o início da designação, "…, desde dd/mm/aaaa", e, no mesmo início, a sua ordem pela hora da
+    designação: "… (1 de 2)", "… (2 de 2)";
+  - o resumo "Designações anteriores (N)" de cada linha das unidades notificantes, que o leitor de tela anuncia como
+    botão de expandir: "Designações anteriores (N) da unidade <unidade>";
   - "Editar <nome>", "Desativar <nome>" e "Reativar <nome>" (cadastro de unidades, só com o nome: duas unidades de
     mesmo nome repetem esses botões).
 
@@ -995,7 +1009,10 @@ do agravo do Sinan Net, que não a cobrem: a série histórica desses anos fica 
   hh:mm:ss" (ou "…, cancelada, …"). Assim ficam distintos o anulado e o refeito da mesma SE e unidade, e também dois
   anulados do mesmo minuto. Se dois atestos diferentes ainda ficarem com o mesmo nome (não vigentes da mesma SE,
   unidade e situação, atestados no mesmo segundo), cada um leva a sua ordem pela hora do atesto: "… (1 de 2)", "… (2
-  de 2)". Com mais de uma unidade, o mesmo atesto na semana e no histórico tem o mesmo nome (é o mesmo espelho).
+  de 2)". Com mais de uma unidade, o mesmo atesto na semana e no histórico tem o mesmo nome (é o mesmo espelho). A
+  caixa "Li a declaração e confirmo que não houve caso na semana." de cada semana a atestar se chama "Li a declaração
+  e confirmo que não houve caso na semana (SE SS/AAAA)" com uma unidade só e "… (SE SS/AAAA, <unidade>)" com mais de
+  uma. No resumo das designações anteriores e nessa caixa, o texto visível vai inteiro no nome acessível (WCAG 2.5.3).
 - *Desativar* no cadastro de unidades pede confirmação: "Encerra hoje o período de unidade notificante e as
   designações de responsável pela notificação negativa (o que só começaria depois de hoje é apagado); reativar não os
   reabre.". Reativar é direto, com o aviso de que a negativa não se reabre.
@@ -1088,7 +1105,8 @@ núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80;
   substituição do mesmo arquivo com a ausência confirmada por outra aplicação, a vez de outro município e a carga da
   SIGTAP antes do corpo, busca com caractere de controle; a prévia igual à aplicação com registros sem CNES, sem
   município, sem agravo e sem ficha, também em 150 arranjos sorteados no serviço e 40 pela API; a cobertura da base
-  consolidada e da conciliação lida do `apply_result`; o caractere de controle limpo na leitura), conciliação
+  consolidada e da conciliação lida do `apply_result`; o caractere de controle limpo na leitura, também no nome da
+  entrada do zip que só fica oculto ou vazio depois de limpo), conciliação
   (`vigilancia-conciliacao-travas`, `-cobertura`, `-regras`, `-r4`, `-pool`, `-divergencias` e `-bairros`), base
   consolidada (`vigilancia-consolidado-cobertura`), contingência (`vigilancia-contingencia-r3`, `-r4`, `-r5` e `-r6`,
   na API e em `packages/shared/test`: a descida pelos agravos que sustentam o estágio, o piso de nível e a SE que
@@ -1096,9 +1114,10 @@ núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80;
   `territorio-quarteiroes-lote`), surto (`vigilancia-surto-r3`, `-r4` e `-r5`: o par sem revelar a linha sigilosa),
   negativa (`vigilancia-negativa-r3`, `-r4` e `-r5`: o prazo gravado na grade e a designação sem impasse com o
   cadastro) e o filtro global de erros (`filtro-erros-r5`: impasse e serialização em 409, o caractere nulo em 400, com
-  os erros reais do Prisma 7), além dos testes das telas em `apps/web/test` (`surto-r5`, `negativa-r5` e
-  `negativa-r6`: a contagem do detalhe do surto, as marcas do par e os nomes acessíveis da negativa, também com
-  unidades de mesmo nome e com atestos do mesmo minuto ou do mesmo segundo).
+  os erros reais do Prisma 7), além dos testes das telas em `apps/web/test` (`surto-r5`, `negativa-r5`, `negativa-r6`
+  e `negativa-r6b`: a contagem do detalhe do surto, as marcas do par e os nomes acessíveis da negativa, também com
+  unidades de mesmo nome, com atestos do mesmo minuto ou do mesmo segundo, com pessoas de mesmo nome na mesma unidade
+  e nos controles que se repetem por linha).
 - Demonstração: `packages/database/test/seed-consolidacao.test.ts` refaz a sugestão do plano só com as funções
   compartilhadas em seis datas de 2026 (mobilização; alerta com 2024 excluído) e
   `apps/api/test/demo-consolidacao.test.ts` semeia a demonstração num dia fixo e confere pela API a sugestão de
@@ -1155,9 +1174,19 @@ núcleo hospitalar 100.000.015-03; enfermeiro (UBS Centro e UPA) 100.000.002-80;
 - **Série histórica de antes do Sinan Online**: na base consolidada e na conciliação, o arquivo cobre só pelas linhas
   do sistema dele, e a dengue e a chikungunya (A90 e A92.0) são sempre do Sinan Online. O NINDINET e o DBF do agravo
   do Sinan Net, também os de antes do Sinan Online, não cobrem a dengue: sem o DENGON (ou o CHIKON) do ano, o ano
-  fica coberto só nas SE com caso do agravo, que o põem na lista dos anos de referência, e as SE sem caso ficam fora do
-  canal (nulas, e não zero). A aplicação gravada antes desta regra (sem o tipo do arquivo na cobertura) ainda é lida
-  pelo `files[]`, e nela o NINDINET com linhas de dengue cobre a dengue no período dele.
+  fica coberto só nas SE com caso do agravo, que o põem na lista dos anos de referência, e as SE sem caso ficam nulas,
+  e não zero (na receita com janela, o valor da SE com caso também entra nas SE vizinhas do canal: item seguinte). A
+  aplicação gravada antes desta regra (sem o tipo do arquivo na cobertura) ainda é lida pelo `files[]`, e nela o
+  NINDINET com linhas de dengue cobre a dengue no período dele.
+- **Ano coberto só nas SE com caso, na receita com janela**: na janela de 5 semanas, agrupada (Diretrizes 2009) ou
+  suavizada (a opção da NT 1/2023), o valor da SE com caso do ano coberto só nelas entra também nas SE vizinhas do
+  canal, até 2 antes e 2 depois, que são SE sem caso desse ano: a janela pula as SE nulas e fica só com esse valor, sem
+  os zeros que a base não conhece. Com a receita das Diretrizes 2009 e os outros nove anos com 6 casos em cada SE de
+  18 a 30, um caso de dengue na SE 24 de 2022 vindo do NINDINET, sem o DENGON do ano, muda o canal de 2025 também nas
+  SE 22, 23, 25 e 26 (o centro passa de 6 para 5,891 e o limite superior, de 6 para 7,336). Só na receita sem janela
+  (a padrão, MS 2025, e a da NT 1/2023 e a do VigiEPI 2025 como vêm) o canal não muda nas SE sem caso. O efeito é
+  local (até 2 SE de cada caso) e vem da regra decidida (o ano coberto só nas SE com caso do agravo) junto com a
+  janela.
 - **Zip com muitos arquivos de unidade** (até 1.000) com períodos diferentes vira até 1.000 entradas de cobertura:
   uma consulta por entrada na prévia e na marcação dos ausentes, e a prévia exclui de cada entrada o que as anteriores
   que se cruzam com ela já contaram. Na substituição do mesmo arquivo com ausentes, as outras aplicações são lidas com

@@ -12,7 +12,9 @@ import { CAMPOS_NINDINET, escreverDbf, type CampoEscrita, type ValorEscrita } fr
  * Importação (VIG-1c), sexta rodada, sem banco:
  * - R6-3: o NUL e os demais caracteres de controle dentro do arquivo (célula do CSV, campo do DBF, nome da entrada do
  *   zip) saem na leitura, trocados por um espaço, com um aviso por arquivo; a tabulação e a quebra de linha da célula
- *   do CSV ficam; o texto com algum nulo perdido continua lido como CSV, e o binário continua fora;
+ *   do CSV ficam; o texto com algum nulo perdido continua lido como CSV, e o binário continua fora; a pasta, o
+ *   __MACOSX e o arquivo oculto saem pelo nome cru da entrada do zip, e o nome que só fica oculto ou vazio depois de
+ *   limpo não some do envio (r6vimp-1);
  * - R6-2: cada entrada da cobertura dos ausentes leva o tipo do arquivo de onde veio (a base consolidada e a conciliação
  *   leem por ele o que o arquivo cobre), e só as linhas do sistema do arquivo contam nela; a cobertura gravada é
  *   conferida entrada a entrada.
@@ -104,6 +106,43 @@ describe('R6-3: caracteres de controle', () => {
       ['ok.csv', false, false],
       ['ubs x.csv', false, true],
     ]);
+  });
+
+  it('zip: o arquivo oculto, a pasta e o __MACOSX saem pelo nome cru; o nome que só fica oculto ou vazio depois de limpo não some do envio (r6vimp-1)', async () => {
+    // "\u0001.csv" vira ".csv" e "\u0007\u0000.municipio.csv" vira ".municipio.csv" depois de limpos e aparados: são
+    // arquivos de verdade, lidos com o aviso do nome. O nome só com caractere de controle fica vazio: vai para fora da
+    // importação como "(sem nome)", com o motivo e o aviso. O oculto, a pasta e o __MACOSX de verdade continuam de fora
+    // sem aviso, como antes.
+    const zip = zipSync({
+      '\u0001.csv': csvSg([['352200990001', 'Ana', 'Centro']]),
+      'outro.csv': csvSg([['352200990002', 'Bia', 'Centro']]),
+      '\u0007\u0000.municipio.csv': csvSg([['352200990003', 'Caio', 'Centro']]),
+      '\u0001\u0002': enc('nada'),
+      '.oculto.csv': csvSg([['352200990004', 'Duda', 'Centro']]),
+      '__MACOSX/._outro.csv': enc('nada'),
+      pasta: {},
+    });
+    expect(abrirEnvio('envio.zip', zip).map((e) => [e.nome, e.nomeLimpo ?? false, e.ignorado ?? null])).toEqual([
+      ['.csv', true, null],
+      ['.municipio.csv', true, null],
+      ['outro.csv', false, null],
+      ['(sem nome)', true, 'não é .dbf nem .csv'],
+    ]);
+    const { l, registros } = await ler('envio.zip', zip);
+    expect(registros.map((r) => r.chave).sort()).toEqual(['352200990001', '352200990002', '352200990003']);
+    expect(l.arquivos.map((a) => [a.nome, a.ignorado, a.avisos])).toEqual([
+      ['.csv', false, [AVISO_NOME]],
+      ['.municipio.csv', false, [AVISO_NOME]],
+      ['outro.csv', false, []],
+      ['(sem nome)', true, ['Fora da importação: não é .dbf nem .csv', AVISO_NOME]],
+    ]);
+  });
+
+  it('zip só com a entrada de nome só com caractere de controle: ela aparece na lista e nos avisos, que o erro sem registros cita (r6vimp-1)', async () => {
+    const { l, registros } = await ler('envio.zip', zipSync({ '\u0001': enc('nada') }));
+    expect(registros).toEqual([]);
+    expect(l.arquivos.map((a) => [a.nome, a.ignorado, a.avisos])).toEqual([['(sem nome)', true, ['Fora da importação: não é .dbf nem .csv', AVISO_NOME]]]);
+    expect(l.avisos).toEqual(['(sem nome): fora da importação (não é .dbf nem .csv).']);
   });
 
   it('o CSV com NUL perdido no começo continua lido como CSV, com o aviso; o binário (nulo em mais de 1% do começo) e o UTF-16 continuam fora', async () => {

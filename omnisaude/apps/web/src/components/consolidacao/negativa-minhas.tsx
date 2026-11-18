@@ -12,7 +12,18 @@ import { useToast } from '@/components/ui/toast';
 import { api, errorMessage, saveBlob } from '@/lib/api';
 import { useApi } from '@/lib/hooks';
 import { useDataHora } from './fuso';
-import { dataBr, nomesDaTelaDoResponsavel, resumoMinhas, rotuloSemana, textoCancelamento, textoDaSemanaDoResponsavel, TOM_SITUACAO, TOM_STATUS_ATESTO, type NomesDaTelaDoResponsavel } from './negativa-regras';
+import {
+  dataBr,
+  nomesDaTelaDoResponsavel,
+  resumoMinhas,
+  rotuloSemana,
+  TEXTO_DECLARACAO_LIDA,
+  textoCancelamento,
+  textoDaSemanaDoResponsavel,
+  TOM_SITUACAO,
+  TOM_STATUS_ATESTO,
+  type NomesDaTelaDoResponsavel,
+} from './negativa-regras';
 
 /**
  * Baixa o espelho em PDF do atesto. O botão se repete (um por semana ou por atesto): o nome acessível (`nome`, de
@@ -47,7 +58,8 @@ function BotaoPdf({ atesto, nome, rotulo = 'PDF' }: { atesto: Pick<AtestoNegativ
 
 /**
  * Uma semana fechada da unidade: situação, prazo, atesto e, quando pode, o texto e o botão de atestar. Os nomes
- * acessíveis de Atestar e do PDF vêm de `nomes` (com mais de uma unidade na tela, dizem também a unidade).
+ * acessíveis de Atestar, da caixa "Li a declaração…" e do PDF vêm de `nomes` (dizem a SE; com mais de uma unidade na
+ * tela, também a unidade).
  */
 function SemanaDaUnidade({ unidade, s, nomes, onAtestado }: { unidade: UnidadeRef; s: SemanaParaAtestar; nomes: NomesDaTelaDoResponsavel; onAtestado: () => void }) {
   const toast = useToast();
@@ -83,8 +95,8 @@ function SemanaDaUnidade({ unidade, s, nomes, onAtestado }: { unidade: UnidadeRe
             {s.texto}
           </p>
           <label className="flex items-start gap-2 text-sm text-slate-700">
-            <input type="checkbox" className="mt-0.5" checked={confirmo} onChange={(e) => setConfirmo(e.target.checked)} aria-describedby={`${id}-texto`} />
-            Li a declaração e confirmo que não houve caso na semana.
+            <input type="checkbox" className="mt-0.5" checked={confirmo} onChange={(e) => setConfirmo(e.target.checked)} aria-label={nomes.confirmar(unidade, s.semana)} aria-describedby={`${id}-texto`} />
+            {TEXTO_DECLARACAO_LIDA}.
           </label>
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -127,9 +139,9 @@ export function NegativaMinhas() {
   const r = useApi<RespostaMinhasNegativas>('/vigilancia/negativas/minhas');
   const { dataHora, fuso } = useDataHora();
   const resumo = r.data ? resumoMinhas(r.data) : null;
-  // Os nomes acessíveis dos botões que se repetem (Atestar e o PDF), sem repetição na tela: com mais de uma unidade,
-  // dizem a unidade (com o CNES quando duas têm o mesmo nome); o PDF do atesto que não é o vigente diz a hora com os
-  // segundos.
+  // Os nomes acessíveis dos controles que se repetem (Atestar, a caixa "Li a declaração…" e o PDF), sem repetição na
+  // tela: com mais de uma unidade, dizem a unidade (com o CNES quando duas têm o mesmo nome); o PDF do atesto que não é
+  // o vigente diz a hora com os segundos.
   const nomes = useMemo(() => (r.data ? nomesDaTelaDoResponsavel(r.data, fuso) : null), [r.data, fuso]);
   return (
     <div className="space-y-4">

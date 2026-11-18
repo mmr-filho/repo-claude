@@ -40,12 +40,14 @@ import {
   periodoParaEncerrar,
   responsaveisAtivos,
   resumoUnidades,
+  rotuloDesignacoesAnteriores,
   rotuloDesignar,
   rotuloEncerrarPeriodo,
-  rotuloRevogar,
+  rotulosRevogar,
   rotuloTipoUnidade,
   rotuloTornarNotificante,
   situacaoDaUnidade,
+  textoDesignacoesAnteriores,
   titularQueNaoVale,
   type FiltroUnidades,
 } from './negativa-regras';
@@ -395,6 +397,8 @@ export function NegativaUnidades() {
                 const sit = situacaoDaUnidade(u);
                 const nome = nomeDaUnidade(u.unidade);
                 const ativos = responsaveisAtivos(u);
+                // Cada "Revogar" diz a pessoa, o tipo e a unidade (e, entre pessoas de mesmo nome e tipo, o início).
+                const revogar = rotulosRevogar(ativos, nome);
                 const antigos = u.responsaveis.filter((r) => r.ate !== null);
                 const aberto = periodoAberto(u);
                 // Na unidade inativa, também o período que ainda termina depois de hoje (o aviso pede o encerramento).
@@ -437,7 +441,7 @@ export function NegativaUnidades() {
                                   {r.motivoInvalido}
                                 </span>
                               )}
-                              <Button size="sm" variant="link" className="h-auto" aria-label={rotuloRevogar(r, nome)} onClick={() => setAcao({ tipo: 'revogar', u, r })}>
+                              <Button size="sm" variant="link" className="h-auto" aria-label={revogar(r)} onClick={() => setAcao({ tipo: 'revogar', u, r })}>
                                 Revogar
                               </Button>
                             </li>
@@ -446,7 +450,9 @@ export function NegativaUnidades() {
                       )}
                       {antigos.length > 0 && (
                         <details className="mt-1 text-xs text-slate-600">
-                          <summary className="cursor-pointer">Designações anteriores ({antigos.length})</summary>
+                          <summary className="cursor-pointer" aria-label={rotuloDesignacoesAnteriores(antigos.length, nome)}>
+                            {textoDesignacoesAnteriores(antigos.length)}
+                          </summary>
                           <ul className="mt-1 space-y-0.5">
                             {antigos.map((r) => (
                               <li key={r.id}>

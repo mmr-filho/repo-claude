@@ -11,7 +11,9 @@ import type { Ritmo } from './ritmo';
  * pedaços, descompactado em fluxo, contando os bytes reais. Um arquivo que descompacta mais do que o zip declara (zip
  * bomb) para no primeiro pedaço a mais. O arquivo enviado sem zip é uma entrada só. O nome da entrada do zip com
  * caractere de controle (o NUL, que o banco recusa) é limpo: cada sequência deles vira um espaço, e o arquivo ganha
- * um aviso (R6-3).
+ * um aviso (R6-3). A pasta, o __MACOSX e o arquivo oculto saem pelo nome cru, antes da limpeza: o nome que só fica
+ * oculto ou vazio depois de limpo e aparado ("\u0001.csv" vira ".csv") é de um arquivo de verdade e não some do envio
+ * (r6vimp-1).
  */
 
 export interface EntradaEnvio {
@@ -45,8 +47,14 @@ export const eZip = (b: Uint8Array) => b.length >= 4 && b[0] === 0x50 && b[1] ==
 
 const zipInvalido = (motivo: string) => new ErroArquivo(`Não foi possível abrir o zip (${motivo}). Gere o zip de novo e envie.`, true);
 
+/** Nome da entrada do zip que fica vazio depois de limpo e aparado (só tinha caractere de controle e espaço). */
+const NOME_VAZIO_LIMPO = '(sem nome)';
+
 interface EntradaCentral {
+  /** O nome limpo (`NOME_VAZIO_LIMPO`, se ficar vazio). */
   nome: string;
+  /** O nome como está no zip, antes da limpeza: o que decide a pasta, o __MACOSX e o arquivo oculto. */
+  cru: string;
   nomeLimpo: boolean;
   flags: number;
   metodo: number;
@@ -99,7 +107,7 @@ function entradasCentrais(b: Uint8Array): EntradaCentral[] {
     const bytesNome = b.subarray(q + 46, q + 46 + n);
     const lido = flags & 0x800 ? new TextDecoder('utf-8').decode(bytesNome) : decodificar(bytesNome, 'CP437');
     const limpo = limparCampo(lido);
-    const nome = limpo === null ? lido : limpo.trim();
+    const nome = limpo === null ? lido : limpo.trim() || NOME_VAZIO_LIMPO;
     let compactado = u32(b, q + 20);
     let tamanho = u32(b, q + 24);
     let local = u32(b, q + 42);
@@ -118,7 +126,7 @@ function entradasCentrais(b: Uint8Array): EntradaCentral[] {
         x += 4 + t;
       }
     }
-    out.push({ nome, nomeLimpo: limpo !== null, flags, metodo: u16(b, q + 10), crc: u32(b, q + 16), compactado, tamanho, local });
+    out.push({ nome, cru: lido, nomeLimpo: limpo !== null, flags, metodo: u16(b, q + 10), crc: u32(b, q + 16), compactado, tamanho, local });
     q += 46 + n + m + c;
   }
   return out;
@@ -138,8 +146,12 @@ export function abrirEnvio(nome: string, bytes: Uint8Array): EntradaEnvio[] {
   const ignorados: EntradaEnvio[] = [];
   let total = 0;
   for (const e of entradasCentrais(bytes)) {
+    // A pasta, o __MACOSX e o arquivo oculto saem sem aviso pelo nome cru. O nome limpo que fica oculto ou vazio
+    // ("\u0001.csv" vira ".csv"; "\u0001" vira `NOME_VAZIO_LIMPO`) segue como qualquer outro: lido, ou fora da
+    // importação com o motivo, e com o aviso do nome limpo.
+    const baseCru = e.cru.split('/').pop() ?? '';
+    if (!baseCru || e.cru.endsWith('/') || e.cru.startsWith('__MACOSX/') || baseCru.startsWith('.')) continue;
     const base = e.nome.split('/').pop() ?? '';
-    if (!base || e.nome.endsWith('/') || e.nome.startsWith('__MACOSX/') || base.startsWith('.')) continue;
     const fora = (motivo: string) => ignorados.push({ nome: e.nome, tamanho: e.tamanho, metodo: e.metodo, dados: new Uint8Array(0), crc: null, ignorado: motivo, ...(e.nomeLimpo ? { nomeLimpo: true } : {}) });
     if (!/\.(dbf|csv)$/i.test(base)) {
       fora(/\.dbc$/i.test(base) ? 'DBC do DATASUS (compactado) não é lido: use a exportação DBF do Sinan' : 'não é .dbf nem .csv');

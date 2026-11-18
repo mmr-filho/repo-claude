@@ -268,10 +268,11 @@ describe('designação que não vale (NEGATIVA-4) e reativada sem período (sur-
   });
 
   it('o botão Revogar diz de quem é a designação (TELAS-7) e de qual unidade (R5-10: a mesma pessoa pode ser responsável em duas)', () => {
-    // A unidade pelo nome com que a tela a chama (nomes diferentes: sem o CNES) e "da unidade <nome>" (R6-6).
+    // A unidade pelo nome com que a tela a chama (nomes diferentes: sem o CNES), "da unidade <nome>" (R6-6) e o tipo
+    // da designação (r6vout-1).
     const nome = nomeDaUnidadeNaTela(lista.map((u) => u.unidade));
-    expect(rotuloRevogar(substitutoValido, nome(lista[1]!.unidade))).toBe('Revogar a designação de Carla Menezes como responsável da unidade Unidade 2');
-    expect(rotuloRevogar(substitutoValido, nome(lista[2]!.unidade))).toBe('Revogar a designação de Carla Menezes como responsável da unidade Unidade 3');
+    expect(rotuloRevogar(substitutoValido, nome(lista[1]!.unidade))).toBe('Revogar a designação de Carla Menezes (substituto) como responsável da unidade Unidade 2');
+    expect(rotuloRevogar(substitutoValido, nome(lista[2]!.unidade))).toBe('Revogar a designação de Carla Menezes (substituto) como responsável da unidade Unidade 3');
   });
 });
 

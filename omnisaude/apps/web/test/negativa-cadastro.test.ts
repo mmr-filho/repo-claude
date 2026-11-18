@@ -141,14 +141,14 @@ describe('unidades notificantes e responsáveis', () => {
     },
   ];
 
-  it('cada "Revogar" diz de quem é a designação e de qual unidade (TELAS-7, R5-10; "da unidade <nome>", R6-6)', () => {
+  it('cada "Revogar" diz de quem é a designação, o tipo e de qual unidade (TELAS-7, R5-10; "da unidade <nome>", R6-6; o tipo, r6vout-1)', () => {
     simulado.respostas.set('/vigilancia/unidades-notificantes', lista);
     const h = html(NegativaUnidades, {});
     expect(botao('Revogar').map((b) => b.rotulo)).toEqual([
-      'Revogar a designação de Íris Campos Gestora como responsável da unidade UPA 24h Norte',
-      'Revogar a designação de Bruno Almeida Enfermeiro como responsável da unidade UPA 24h Norte',
+      'Revogar a designação de Íris Campos Gestora (titular) como responsável da unidade UPA 24h Norte',
+      'Revogar a designação de Bruno Almeida Enfermeiro (substituto) como responsável da unidade UPA 24h Norte',
     ]);
-    expect(h).toContain('aria-label="Revogar a designação de Íris Campos Gestora como responsável da unidade UPA 24h Norte"');
+    expect(h).toContain('aria-label="Revogar a designação de Íris Campos Gestora (titular) como responsável da unidade UPA 24h Norte"');
   });
 
   it('a designação que não vale aparece marcada e a unidade conta como sem titular (NEGATIVA-4); a reativada conta como sem configuração (sur-7)', () => {

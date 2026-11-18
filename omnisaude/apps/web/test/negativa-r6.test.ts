@@ -256,10 +256,10 @@ describe('R6-6: unidades notificantes com unidades de mesmo nome (r5vout-1)', ()
     simulado.respostas.set('/vigilancia/unidades-notificantes', lista);
     const h = html(NegativaUnidades, {});
     expect(rotulos('Revogar')).toEqual([
-      'Revogar a designação de Bruno Almeida Enfermeiro como responsável da unidade Posto de Saúde (CNES 9100001)',
-      'Revogar a designação de Bruno Almeida Enfermeiro como responsável da unidade Posto de Saúde (CNES 9100002)',
+      'Revogar a designação de Bruno Almeida Enfermeiro (titular) como responsável da unidade Posto de Saúde (CNES 9100001)',
+      'Revogar a designação de Bruno Almeida Enfermeiro (titular) como responsável da unidade Posto de Saúde (CNES 9100002)',
     ]);
-    expect(h).toContain('aria-label="Revogar a designação de Bruno Almeida Enfermeiro como responsável da unidade Posto de Saúde (CNES 9100002)"');
+    expect(h).toContain('aria-label="Revogar a designação de Bruno Almeida Enfermeiro (titular) como responsável da unidade Posto de Saúde (CNES 9100002)"');
   });
 
   it('Designar, Encerrar período e Tornar notificante: o CNES só nas de mesmo nome; "da unidade <nome>"', () => {

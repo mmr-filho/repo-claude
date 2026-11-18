@@ -18,7 +18,8 @@ import { pgAvailable, startTestApp, type TestApp } from './harness';
  *   Sinan Online) não cobre a dengue nem estica o período; a aplicação gravada sem essa lista (a demonstração, dado de
  *   antes da regra) usa o files[]; sem esse NINDINET, a leitura dá o mesmo que o files[];
  * - R6-3: o caractere de controle dentro do arquivo (célula do CSV, campo do DBF, nome da entrada do zip) é limpo na
- *   leitura, com aviso, e o envio não cai.
+ *   leitura, com aviso, e o envio não cai; a entrada do zip cujo nome só fica oculto ou vazio depois de limpo entra ou
+ *   fica fora com o motivo, e não some (r6vimp-1).
  * Dados sintéticos.
  */
 
@@ -592,6 +593,23 @@ describe.runIf(enabled)('importação, sexta rodada: prévia × aplicação com 
         ['leia me.txt', true],
         ['ubs y.csv', true],
       ]);
+    });
+
+    it('nome que só fica oculto ou vazio depois de limpo (r6vimp-1): "\\u0001.csv" entra com o aviso; o zip só com "\\u0001" é recusado citando o arquivo', async () => {
+      const AVISO_NOME = 'O nome do arquivo dentro do zip tinha caractere de controle: foi limpo (cada sequência deles virou um espaço).';
+      const { previa: p, resultado: r } = await enviarEAplicar(zipSync({ '\u0001.csv': csvComBairro('35220600', 2, {}), 'outro.csv': csvComBairro('35220610', 2, {}) }), 'nome-oculto.zip');
+      expect(p.arquivos.map((a) => [a.nome, a.ignorado, a.registros, a.avisos.includes(AVISO_NOME)])).toEqual([
+        ['.csv', false, 2, true],
+        ['outro.csv', false, 2, false],
+      ]);
+      expect(r.aplicadoEm).toBeTruthy();
+      const gravados = await db.officialRecord.findMany({ where: { number: { startsWith: '352206' } }, select: { number: true } });
+      expect(gravados.map((g) => g.number).sort()).toEqual(['352206000000', '352206000001', '352206100000', '352206100001']);
+      // Sozinha no zip, a entrada de nome só com caractere de controle fica fora, e o erro sem registros a cita.
+      const so = (await enviar(zipSync({ '\u0001': enc('nada') }), 'so-controle.zip').expect(422)).body as { code: string; message: string; details: { arquivos: { nome: string }[] } };
+      expect(so.code).toBe('SEM_REGISTROS');
+      expect(so.message).toBe('Nenhum arquivo com notificações reconhecidas. (sem nome): fora da importação (não é .dbf nem .csv).');
+      expect(so.details.arquivos.map((a) => a.nome)).toEqual(['(sem nome)']);
     });
   });
 });
