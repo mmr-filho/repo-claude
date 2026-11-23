@@ -25,6 +25,14 @@ const municipio = ler('dados/municipios.json').municipios
   .find((m) => m.pendencias.some((p) => catalogo.get(p.id).classe === 'Essencial') && m.pendencias.some((p) => p.id === '11.5' || p.id === '11.6'));
 assert.ok(municipio, 'nenhum município com essencial pendente nos dados');
 const essencial = municipio.pendencias.find((p) => catalogo.get(p.id).classe === 'Essencial').id;
+// com resultado oficial mais novo que as respostas (Radar antes da base aberta): uma prefeitura reprovada em
+// essencial no ciclo atual sem essencial pendente nas respostas
+const meta = ler('dados/municipios.json').meta;
+const atual = String(meta.ciclo_atual);
+const reprovada = meta.ciclo_atual > meta.ciclo_respostas
+  ? ler('dados/municipios.json').municipios.map((m) => ler(`dados/m/${m.ibge}.json`))
+    .find((m) => (m.ciclos[atual] || {}).e < 1 && !(m.pendencias || []).some((p) => catalogo.get(p.id).classe === 'Essencial'))
+  : null;
 const relatorio = municipio.pendencias.find((p) => p.id === '11.5' || p.id === '11.6').id;
 const sel = (k, id) => `#tr-${k}-${id.replace('.', '-')}`;
 
@@ -68,7 +76,22 @@ try {
   assert.match(await texto('.tr-alerta'), /essencia/i);
   assert.match(await texto('.tr-site'), /404/);
   assert.match(await texto('.tr-verif'), /RREO do 4º bimestre de 2026/);
+  assert.match(await texto('.tr-veredito'), new RegExp(`em ${atual}`));
   passo(`panorama de ${municipio.nome}: essenciais, 404 do portal e Siconfi`);
+
+  if (reprovada) {
+    await pg.goto(`${base}#/m/${reprovada.ibge}`);
+    await pg.waitForSelector('.tr-veredito');
+    assert.match(await texto('.tr-alerta'), new RegExp(`Item essencial reprovado em ${atual}`));
+    assert.ok(await pg.locator('.tr-alerta a[href*="radardatransparencia"]').count());
+    assert.match(await texto('.tr-veredito'), new RegExp(`respostas critério a critério de ${atual} ainda não foram publicadas`));
+    await pg.click('nav >> text=Plano de ação');
+    await pg.waitForSelector('.tr-aviso');
+    assert.match(await texto('.tr-aviso'), new RegExp(`Resultado oficial de ${atual}`));
+    passo(`resultado de ${atual} sem respostas publicadas: ${reprovada.nome} reprovada em essencial, aviso e link do Radar`);
+    await pg.goto(`${base}#/m/${municipio.ibge}`);
+    await pg.waitForSelector('.tr-veredito');
+  }
 
   // plano: dica do Siconfi e acompanhamento
   await pg.click('nav >> text=Plano de ação');

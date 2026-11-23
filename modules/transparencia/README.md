@@ -33,6 +33,7 @@ python3 -m http.server 8080      # abra http://localhost:8080/
 | `dados/m/<ibge>.json` | Por prefeitura: resultados oficiais 2023–2025 (prefeitura e câmara), estimativa nas regras de 2026, pontos por dimensão e cada pendência (itens que falham, ganho, observação do tribunal, link da página avaliada e do print) |
 | `dados/siconfi.json` | Entregas de RREO e RGF de cada prefeitura ao Tesouro (Siconfi), inclusive as versões simplificadas. Opcional |
 | `dados/sonda.json` | Última verificação automática da capa de cada portal. Opcional |
+| `dados/radar/lista-<ano>-TO.csv` | Lista do Radar usada para o resultado oficial de um ciclo cuja base aberta ainda não saiu (veja abaixo) |
 
 ### Atualizar
 
@@ -51,6 +52,24 @@ python3 build_dados.py \
   --cartilha cartilha.txt --cartilha-url https://cdn.atricon.org.br/2026/08/Cartilha-PNTP-2026.pdf \
   --entes entes.json --saida dados
 ```
+
+### Resultado oficial antes da base aberta
+
+O resultado de um ciclo sai no Radar da Transparência antes da base aberta com as respostas critério a critério. Em 2026, o resultado saiu em 10/11 e a base aberta de 2025 só saiu em fevereiro. Nesse intervalo, o resultado entra pela lista do Radar.
+
+1. No navegador, abra o Radar, Painel 6 "Avaliações das entidades", com filtro UF = TO, e clique em "Baixar CSV".
+2. Rode:
+
+   ```bash
+   python3 tools/radar_ciclo.py --ano 2026 --csv lista-2026.csv
+   ```
+
+A ferramenta:
+- grava o índice, o nível e o percentual de essenciais do ciclo (prefeitura e câmara) e passa esse ciclo a ser o atual;
+- antes de gravar, confere os ciclos anteriores da lista com a base aberta e para se houver divergência;
+- só preenche o endereço do portal quando ele estiver faltando, porque a coluna "site" do Radar às vezes aponta uma página interna.
+
+O plano continua nas respostas do ciclo anterior. A tela avisa e conta como pendente o essencial reprovado no novo ciclo, que só o Radar detalha. Depois de cada `build_dados.py`, rode `radar_ciclo.py` de novo, até a base aberta do ciclo sair.
 
 Verificações (só biblioteca padrão do Python; rodar do servidor do site):
 
@@ -131,6 +150,8 @@ O teste escolhe nos dados uma prefeitura com essencial pendente e simula o Sicon
   ```
 
 ## Limites
+
+- Com o resultado de 2026 vindo da lista do Radar, o plano ainda parte das respostas de 2025. Em 44 prefeituras reprovadas em essencial em 2026, o painel não sabe qual critério foi: ele avisa e aponta o Radar.
 
 - O resultado oficial é o do Radar da Transparência Pública. O módulo ajuda a preparar a autoavaliação; não a substitui.
 - Mostra o que o tribunal validou em 2025. Não confere se o portal mudou depois disso.

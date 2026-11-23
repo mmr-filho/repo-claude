@@ -144,6 +144,28 @@
     return CAT;
   }
 
+  // O resultado oficial de um ciclo pode sair (Radar) antes da base aberta com as respostas critério a critério:
+  // nesse caso o plano continua nas respostas de ciclo_respostas, e a tela avisa a diferença.
+  const semRespostas = () => IDX.meta.ciclo_atual > IDX.meta.ciclo_respostas;
+  const RADAR = 'https://radardatransparencia.atricon.org.br/';
+  const rotuloEstimativa = () => (semRespostas() ? `Estimativa pelas respostas de ${IDX.meta.ciclo_respostas}` : `Estimativa nas regras de ${CATMETA.ano}`);
+
+  /** Aviso sobre os essenciais quando o resultado oficial é mais novo que as respostas do plano (ou null). */
+  function avisoEssenciais(m) {
+    const ano = String(IDX.meta.ciclo_atual), r = IDX.meta.ciclo_respostas;
+    const o = m.ciclos[ano];
+    if (!semRespostas() || !o || o.e == null) return null;
+    const { essPend } = deriva(m);
+    if (o.e < 1 && !essPend.length) {
+      return `No resultado oficial de ${ano}, a prefeitura atendeu ${pct(o.e)} dos itens essenciais` +
+        (o.n === 'Elevado' ? ` e por isso ficou sem selo, apesar do índice de ${pct(o.i)}` : '') +
+        `. Em ${r} todos estavam atendidos, e a base aberta com o detalhe de ${ano} ainda não saiu: os critérios essenciais reprovados aparecem na página da prefeitura no Radar da Transparência. Corrija-os primeiro.`;
+    }
+    if (o.e < 1) return `Em ${ano}, ${pct(o.e)} dos itens essenciais foram atendidos. Os reprovados em ${ano} podem não ser os mesmos de ${r}: confira na página da prefeitura no Radar da Transparência.`;
+    if (essPend.length) return `No resultado oficial de ${ano} a prefeitura atendeu todos os itens essenciais: os itens abaixo, pendentes na avaliação de ${r}, provavelmente já foram corrigidos. Confira no portal e marque como concluídos.`;
+    return null;
+  }
+
   /** Ações do município: cada critério da matriz-alvo que não atende (ou que não foi avaliado no ciclo das respostas). */
   function deriva(m) {
     if (m._d) return m._d;
@@ -151,13 +173,18 @@
       const c = CAT.get(p.id);
       return { ...p, c, novo: p.itens.every((x) => x[1] == null), essencial: c.classe === 'Essencial', setor: SETOR[c.dim] || 'A definir' };
     });
-    m._d = { acoes, base: m.estimativa, essPend: acoes.filter((a) => a.essencial), incerto: soma(acoes.filter((a) => a.novo)) };
+    const essPend = acoes.filter((a) => a.essencial);
+    const oficial = m.ciclos[String(IDX.meta.ciclo_atual)] || {};
+    // reprovado em essencial no resultado oficial, sem essencial pendente nas respostas: conta como um essencial
+    // pendente que o plano não sabe qual é (o Radar mostra)
+    const essOculto = semRespostas() && oficial.e != null && oficial.e < 1 && !essPend.length;
+    m._d = { acoes, base: m.estimativa, essPend, essOculto, incerto: soma(acoes.filter((a) => a.novo)) };
     return m._d;
   }
 
   /** Plano por etapas para uma meta: essenciais, o menor caminho até a meta, critérios novos a conferir, o resto. */
   function monta(m, meta) {
-    const { acoes, base } = deriva(m);
+    const { acoes, base, essOculto } = deriva(m);
     const alvo = SELOS[meta];
     const ess = acoes.filter((a) => a.essencial).sort(porGanho);
     let x = base + soma(ess) / 100;
@@ -167,7 +194,8 @@
     tenta(acoes.filter((a) => !a.essencial && a.novo).sort(porGanho)); // só se ainda faltar
     const usados = new Set([...ess, ...caminho].map((a) => a.id));
     return {
-      alcanca: x >= alvo - 1e-9,
+      alcanca: x >= alvo - 1e-9 && !essOculto,
+      essOculto,
       projetado: Math.min(x, 1),
       usados,
       caminho: ess.length + caminho.length,
@@ -188,10 +216,12 @@
   const etapasVisiveis = (plano) => plano.etapas.filter((e) => e.acoes.length).map((e, i) => ({ ...e, titulo: `Etapa ${i + 1} · ${e.titulo}` }));
 
   function fraseMeta(plano, meta) {
-    if (!plano.caminho) return plano.alcanca ? `A estimativa já está no nível da meta (${meta}).` : '';
-    return plano.alcanca
+    const antes = plano.essOculto ? `Primeiro, corrigir o item essencial reprovado em ${IDX.meta.ciclo_atual} (o Radar da Transparência mostra qual): sem ele não há selo. ` : '';
+    const chega = plano.projetado >= SELOS[meta] - 1e-9;
+    if (!plano.caminho) return antes + (chega ? `${antes ? 'Fora isso, a' : 'A'} estimativa já está no nível da meta (${meta}).` : '');
+    return antes + (chega
       ? `Para o ${meta}: ${plural(plano.caminho, 'ação leva', 'ações levam')} a estimativa a ${pct(plano.projetado)}.`
-      : `Mesmo com ${plural(plano.caminho, 'ação', 'ações')} de essenciais e de maior ganho, a estimativa fica em ${pct(plano.projetado)}: o ${meta} depende também das demais pendências.`;
+      : `Mesmo com ${plural(plano.caminho, 'ação', 'ações')} de essenciais e de maior ganho, a estimativa fica em ${pct(plano.projetado)}: o ${meta} depende também das demais pendências.`);
   }
 
   /** Índice e nível estimados se as ações do conjunto forem concluídas. */
@@ -199,7 +229,7 @@
     const d = deriva(m);
     let x = d.base;
     for (const a of d.acoes) if (feitas.has(a.id)) x += a.ganho / 100;
-    const falta = d.essPend.filter((a) => !feitas.has(a.id)).length;
+    const falta = d.essPend.filter((a) => !feitas.has(a.id)).length + (d.essOculto ? 1 : 0);
     x = Math.min(x, 1);
     return { x, falta, nivel: classifica(x, falta === 0) };
   }
@@ -214,6 +244,12 @@
     else if (o.n === 'Ouro' || o.n === 'Prata') frases.push(`A prefeitura tem o Selo ${o.n} (índice ${pct(o.i)} em ${ano}). Para o Diamante faltaram ${pts((0.95 - o.i) * 100)}.`);
     else if (o.n === 'Elevado') frases.push(`O índice é alto (${pct(o.i)} em ${ano}), mas a prefeitura ficou sem selo porque há item essencial não atendido.`);
     else frases.push(`A prefeitura ficou no nível ${o.n} (índice ${pct(o.i)} em ${ano}), sem selo. O primeiro selo, Prata, exige 75% e todos os itens essenciais.`);
+    if (semRespostas()) {
+      const r = IDX.meta.ciclo_respostas;
+      if (o.e != null && o.e < 1) frases.push(`Em ${ano}, ${pct(o.e)} dos itens essenciais foram atendidos.`);
+      if (base != null) frases.push(`Pelas respostas validadas de ${r} nas regras de ${CATMETA.ano}, o módulo estimava ${pct(base)}; o oficial ficou em ${pct(o.i)}. As respostas critério a critério de ${ano} ainda não foram publicadas, por isso o plano de ação parte das de ${r}.`);
+      return frases.join(' ');
+    }
     if (essPend.length) frases.push(`Pelas regras de ${CATMETA.ano}, ${plural(essPend.length, 'critério essencial está pendente', 'critérios essenciais estão pendentes')}: é a primeira providência.`);
     if (base != null) {
       frases.push(`Nas regras de ${CATMETA.ano}, a estimativa é de ${pct(base)}` + (incerto > 0.05 ? `, contando como pendentes ${pts(incerto)} de critérios novos ainda não avaliados.` : '.'));
@@ -524,16 +560,19 @@
       h('div', { class: 'kpis' },
         kpi(pct(o.i), `Índice oficial ${ano}`, tomNivel(o.n)),
         kpi(pct(o.e), `Itens essenciais atendidos (${ano})`, o.e === 1 ? 't-ok' : 't-perigo'),
-        kpi(pct(d.base), `Estimativa nas regras de ${CATMETA.ano}`, 't-fraco'),
+        kpi(pct(d.base), rotuloEstimativa(), 't-fraco'),
         kpi(`${feitas.size}/${d.acoes.length}`, 'Ações do plano concluídas', d.acoes.length && feitas.size === d.acoes.length ? 't-ok' : 't-alerta')),
       h('div', { class: 'tr-espaco' }),
       h('div', { class: 'est-placar' },
         barra(o.i, `Índice oficial ${ano}`, true),
-        barra(d.base, `Estimativa ${CATMETA.ano}`),
+        barra(d.base, rotuloEstimativa()),
         feitas.size ? barra(projeta(m, feitas).x, 'Com o que já foi concluído') : null),
-      d.essPend.length ? h('div', { class: 'alerta-fatal tr-alerta' },
-        h('p', { class: 'kicker' }, plural(d.essPend.length, 'item essencial pendente', 'itens essenciais pendentes')),
-        h('ul', { class: 'lista-seca' }, d.essPend.map((a) => h('li', {}, `${a.id} ${a.c.texto}`, feitas.has(a.id) ? ' (marcado como concluído)' : ''))),
+      d.essPend.length || (avisoEssenciais(m) && o.e < 1) ? h('div', { class: 'alerta-fatal tr-alerta' },
+        h('p', { class: 'kicker' }, d.essPend.length
+          ? plural(d.essPend.length, `item essencial pendente${semRespostas() ? ' em ' + IDX.meta.ciclo_respostas : ''}`, `itens essenciais pendentes${semRespostas() ? ' em ' + IDX.meta.ciclo_respostas : ''}`)
+          : `Item essencial reprovado em ${ano}`),
+        avisoEssenciais(m) ? h('p', {}, avisoEssenciais(m), ' ', link(RADAR, 'Radar da Transparência ↗')) : null,
+        d.essPend.length ? h('ul', { class: 'lista-seca' }, d.essPend.map((a) => h('li', {}, `${a.id} ${a.c.texto}`, feitas.has(a.id) ? ' (marcado como concluído)' : ''))) : null,
         h('p', { class: 'aviso' }, 'Sem eles não há selo. A Lei de Responsabilidade Fiscal (arts. 48, 48-A e 51) também impede o município de receber transferências voluntárias e contratar operações de crédito enquanto não divulgar essas informações.')) : null,
       alteradas.length || novos.length ? h('div', { class: 'painel tr-aviso' },
         h('p', { class: 'kicker' }, `O que muda em ${CATMETA.ano} para esta prefeitura`),
@@ -554,7 +593,9 @@
       secao('Histórico', null, serie(m), tabelaCiclos(m.ciclos)),
       secao('Próximos passos', 'Calendário provável, com base no ciclo 2026. As correções feitas agora contam para o próximo ciclo.',
         h('ol', { class: 'tr-passos' },
-          h('li', {}, h('strong', {}, 'Novembro de 2026: '), 'a Atricon divulga o resultado do ciclo 2026, cuja autoavaliação já foi feita (abril e maio).'),
+          IDX.meta.radar && IDX.meta.radar.ano === 2026
+            ? h('li', {}, h('strong', {}, '10 de novembro de 2026: '), 'a Atricon divulgou o resultado do ciclo 2026 no Radar da Transparência. A base aberta com as respostas critério a critério sai depois (a de 2025 saiu em fevereiro); o plano será refeito com ela.')
+            : h('li', {}, h('strong', {}, 'Novembro de 2026: '), 'a Atricon divulga o resultado do ciclo 2026, cuja autoavaliação já foi feita (abril e maio).'),
           h('li', {}, h('strong', {}, 'Agora até março de 2027: '), 'corrigir o portal seguindo o plano de ação, começando pelos essenciais.'),
           h('li', {}, h('strong', {}, 'Por volta de março de 2027: '), 'sai a matriz do novo ciclo; conferir se algum critério mudou.'),
           h('li', {}, h('strong', {}, 'Abril e maio de 2027: '), 'o controle interno faz a autoavaliação no sistema Avalia, com link de evidência para cada item.'),
@@ -612,13 +653,13 @@
       const atrasadas = Object.entries(ac.estado.acoes).filter(([id, v]) => ids.has(id) && atrasada(v)).length;
       resumo.replaceChildren(
         h('div', { class: 'tr-sim-linha' },
-          h('span', {}, `Estimativa ${CATMETA.ano} `, h('strong', {}, pct(d.base))),
+          h('span', {}, `${rotuloEstimativa()} `, h('strong', {}, pct(d.base))),
           h('span', { class: 'tr-seta', 'aria-hidden': 'true' }, '→'),
           h('span', {}, 'com o que já foi concluído ', chipNivel(p.nivel), ' ', h('strong', {}, pct(p.x)))),
         h('p', { class: 'aviso' },
-          `${feitas.size} de ${d.acoes.length} ações concluídas · ${andamento} em andamento` + (atrasadas ? ` · ${plural(atrasadas, 'atrasada', 'atrasadas')}` : '') + ` · essenciais pendentes: ${p.falta}`,
+          `${feitas.size} de ${d.acoes.length} ações concluídas · ${andamento} em andamento` + (atrasadas ? ` · ${plural(atrasadas, 'atrasada', 'atrasadas')}` : '') + ` · essenciais pendentes: ${p.falta}` + (d.essOculto ? ` (inclui o reprovado em ${IDX.meta.ciclo_atual}, que o Radar mostra)` : ''),
           p.falta ? '' : p.x >= alvo - 1e-9 ? ` · meta (${meta}) alcançada na estimativa` : ` · faltam ${pts((alvo - p.x) * 100)} para o ${meta}`),
-        p.x < alvo - 1e-9 || p.falta ? h('p', { class: 'aviso' }, `Concluindo também o caminho até a meta: `, chipNivel(q.nivel), ' ', pct(q.x), '.') : null);
+        p.x < alvo - 1e-9 || p.falta ? h('p', { class: 'aviso' }, `Concluindo também o caminho até a meta: `, chipNivel(q.nivel), ' ', pct(q.x), '.') : '');
     }
 
     function desenhaCorpo() {
@@ -682,6 +723,10 @@
     return h('div', {},
       cabecalho('Plano de ação · ' + m.nome, 'Plano de ação até o selo',
         `Montado a partir da avaliação validada de ${IDX.meta.ciclo_respostas} e das regras da matriz ${CATMETA.ano}. Para cada ação: o que falta, a observação do tribunal, o que a Cartilha exige e o acompanhamento (situação, responsável, prazo e evidência).`),
+      semRespostas() ? h('div', { class: 'painel tr-aviso' },
+        h('p', { class: 'kicker' }, `Resultado oficial de ${IDX.meta.ciclo_atual}: ${pct((m.ciclos[String(IDX.meta.ciclo_atual)] || {}).i)} (${(m.ciclos[String(IDX.meta.ciclo_atual)] || {}).n || 'sem avaliação'})`),
+        h('p', {}, `As respostas critério a critério de ${IDX.meta.ciclo_atual} ainda não foram publicadas: este plano usa as de ${IDX.meta.ciclo_respostas}. Confira cada ação no portal antes de começar; o que já estiver resolvido, marque como concluído.`),
+        avisoEssenciais(m) ? h('p', {}, avisoEssenciais(m), ' ', link(RADAR, 'Radar da Transparência ↗')) : null) : null,
       h('div', { class: 'barra-mesa' }, h('div', { class: 'tr-rotulado' }, h('span', { class: 'kicker' }, 'Meta'), metas), h('div', { class: 'tr-rotulado' }, h('span', { class: 'kicker' }, 'Agrupar'), grupos)),
       h('div', { class: 'tr-sim painel' }, resumo,
         h('div', { class: 'form-acoes' },
@@ -763,6 +808,7 @@
         `Programa Nacional de Transparência Pública (Atricon). Resultado oficial do ciclo ${ano} e plano para o ${meta} nas regras de ${CATMETA.ano}.`),
       secao('Situação', null,
         h('p', {}, veredito(m)),
+        avisoEssenciais(m) ? h('p', { class: 'tr-site', 'data-tom': (m.ciclos[ano] || {}).e < 1 ? 'erro' : 'alerta' }, avisoEssenciais(m)) : null,
         tabelaCiclos(m.ciclos)),
       d.essPend.length ? secao('Itens essenciais pendentes', 'Impedem o selo e, pela LRF (arts. 48, 48-A e 51), transferências voluntárias e operações de crédito.',
         h('ul', { class: 'lista-seca' }, d.essPend.map((a) => h('li', {}, `${a.id} ${a.c.texto} (falta: ${rotuloFalta(a.itens)})`)))) : null,
@@ -784,7 +830,7 @@
                 h('td', { class: 'nw' }, SITUACOES[v.s || 'pendente']),
                 h('td', { class: 'tr-num' }, '+' + NF1.format(a.ganho)));
             }))))))),
-      h('p', { class: 'aviso' }, `Fontes: base aberta do PNTP (Atricon), avaliação validada de ${IDX.meta.ciclo_respostas}; Cartilha e matriz PNTP ${CATMETA.ano}; Siconfi (Tesouro Nacional); verificação automática do portal. A estimativa reproduz a fórmula oficial, mas o resultado depende da validação do TCE-TO e da revisão da Atricon.`));
+      h('p', { class: 'aviso' }, `Fontes: ${semRespostas() ? `resultado oficial de ${ano} no Radar da Transparência (Atricon); ` : ''}base aberta do PNTP (Atricon), avaliação validada de ${IDX.meta.ciclo_respostas}; Cartilha e matriz PNTP ${CATMETA.ano}; Siconfi (Tesouro Nacional); verificação automática do portal. A estimativa reproduz a fórmula oficial, mas o resultado depende da validação do TCE-TO e da revisão da Atricon.`));
   }
 
   function telaMetodologia() {
@@ -808,6 +854,7 @@
       secao('De onde vem cada ação', null,
         h('ul', { class: 'lista-seca' },
           h('li', {}, `A situação de cada critério vem das respostas validadas pelo TCE-TO em ${r} (base aberta da Atricon), incluindo a observação do avaliador e o link da página conferida.`),
+          semRespostas() ? h('li', {}, `O resultado oficial de ${IDX.meta.ciclo_atual} (índice, nível e percentual de essenciais) vem da lista exportada do Radar da Transparência; ela repete os ciclos anteriores, que conferem com a base aberta. As respostas critério a critério de ${IDX.meta.ciclo_atual} ainda não foram publicadas, por isso o plano parte das de ${r}.`) : null,
           h('li', {}, `Os critérios de ${r} foram ligados aos de ${a} pelo texto, porque a numeração mudou (por exemplo, a lista de estagiários era o 6.3 e passou a 6.4). Critérios sem correspondente aparecem como novos, "a conferir".`),
           h('li', {}, `A estimativa usa os pesos de ${a} e conta como pendente o que não foi avaliado antes: é conservadora. Aplicada às respostas de ${r} com os pesos de ${r}, a mesma fórmula reproduz o índice oficial com erro médio de 0,01 ponto.`),
           h('li', {}, 'O plano põe primeiro os essenciais, depois os critérios de maior ganho até a meta, depois os novos a conferir e, por fim, o restante.'),

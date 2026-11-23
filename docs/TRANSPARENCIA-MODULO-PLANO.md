@@ -6,6 +6,40 @@ Atualizado em 24/10/2026, depois de liberada parte da rede. A primeira versão d
 
 O protótipo, com dados reais, está em [`modules/transparencia/`](../modules/transparencia/README.md).
 
+## Atualização de 23/11/2026: resultado oficial do ciclo 2026
+
+O resultado de 2026 saiu em 10/11/2026 no Radar da Transparência. A **base aberta** com as respostas critério a critério ainda não foi publicada: a de 2025 saiu em fevereiro de 2026.
+
+**Por onde se confirmou.** A biblioteca de arquivos do site do PNTP foi consultada pela API pública do WordPress em 23/11. A página de dados abertos passou a exigir a verificação do Cloudflare.
+
+**Como entrou no módulo.** A lista do painel "Avaliações das entidades" do Radar, com filtro Tocantins e baixada pelo usuário, entrou no módulo com `tools/radar_ciclo.py`. A lista repete os ciclos de 2023 a 2025, e os **831 resultados repetidos conferem com a base aberta, sem divergência**.
+
+**O que mudou para as prefeituras do Tocantins:**
+
+| Nível | 2025 | 2026 |
+|---|---:|---:|
+| Diamante | 78 | 45 |
+| Ouro | 36 | 29 |
+| Prata | 9 | 9 |
+| **Com selo** | **123** | **83** |
+| Elevado (índice alto, essencial reprovado) | 3 | **41** |
+| Intermediário | 9 | 12 |
+| Básico | 1 | 3 |
+| Inicial | 3 | 0 |
+
+**A queda veio dos essenciais.**
+- 55 prefeituras não atenderam todos os itens essenciais em 2026.
+- **44 delas tinham todos os essenciais em 2025.** Para essas, o plano (feito com as respostas de 2025) não sabe qual essencial foi reprovado.
+- O painel agora avisa e aponta o Radar, onde aparece o critério reprovado; o plano conta esse item como pendente.
+- Em 5 prefeituras ocorre o contrário: tinham essencial pendente em 2025 e atenderam todos em 2026.
+
+**Estimativa do módulo × resultado oficial.** A estimativa usava as respostas validadas de 2025 com os pesos de 2026.
+- Erro médio de −0,4 ponto e erro absoluto mediano de 3,8 pontos.
+- 40 prefeituras ficaram mais de 2 pontos acima da estimativa e 52 abaixo.
+- Serve para orientar, mas o detalhe de 2026 é necessário para refazer o plano.
+
+**Próximo passo.** A conferência semanal agendada procura a base aberta de 2026 pela API do site. Quando ela sair, `build_dados.py` refaz o plano com as respostas de 2026. Até lá, depois de cada `build_dados.py`, é preciso rodar `tools/radar_ciclo.py` de novo.
+
 ## 0. Em resumo
 
 1. **Para cada prefeitura dá para montar o plano de ação com dado oficial.** A Atricon publica, em dados abertos, as respostas critério a critério validadas pelo TCE-TO, com a **observação do avaliador**, o **link da página conferida** e o **print**. Juntando isso com a **matriz e a Cartilha 2026**, cada pendência vira uma ação: o que falta, por que o tribunal recusou, o que a Cartilha exige, quanto o índice sobe e qual setor cuida.
@@ -166,7 +200,7 @@ Cada ação tem situação (pendente, em andamento, concluída), responsável, p
 
 | Quando | O que |
 |---|---|
-| **Nov/2026** | Resultado do ciclo 2026 sai; ingerir e comparar com 2025 |
+| **Nov/2026** | Resultado do ciclo 2026 saiu (10/11) e entrou no painel em 23/11 (lista do Radar); comparado com 2025 e com a estimativa |
 | Nov/2026 a jan/2027 | Integração ao site (rota e endpoint do acompanhamento); atualizar com a base do ciclo 2026 quando publicada |
 | Fev a abr/2027 | Prefeituras executam o plano; verificações semanais (sonda) e mensais (Siconfi); a matriz do ciclo 2027 deve sair ~março |
 | Abr a mai/2027 | Autoavaliação 2027 (em 2026 foi de 20/04 a 29/05): o acompanhamento serve de lista de evidências |
