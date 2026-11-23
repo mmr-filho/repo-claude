@@ -1,0 +1,14 @@
+# o que não vai como arquivo estático no Workers (wrangler.jsonc, "assets")
+src
+etl
+test
+corpus
+node_modules
+package.json
+tsconfig.json
+wrangler.jsonc
+README.md
+.assetsignore
+.gitignore
+dados/perfil
+dados/pareceres

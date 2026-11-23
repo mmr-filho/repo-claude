@@ -1,0 +1,12 @@
+{
+  // Módulo Transferências Federais no Cloudflare Workers. Deploy: npx wrangler deploy (nesta pasta).
+  // Segredos: npx wrangler secret put TF_SEGREDO_SESSAO; npx wrangler secret put ANTHROPIC_API_KEY
+  "name": "mm-transferencias",
+  "main": "src/worker.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // index.html, transferencias.js e dados/ (dados/perfil e dados/pareceres ficam fora: veja .assetsignore)
+  "assets": { "directory": ".", "binding": "ASSETS", "run_worker_first": true },
+  "kv_namespaces": [{ "binding": "PARECERES", "id": "<id do namespace KV>" }],
+  "vars": { "TF_MODELO": "claude-opus-5-5" }
+}

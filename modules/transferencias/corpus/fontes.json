@@ -1,0 +1,15 @@
+{
+  "observacao": "Normas do corpus do RAG. 'urn' é a identificação LexML; o texto vem do serviço público normas.leg.br (Senado Federal), na versão consolidada quando existe. 'artigos' limita a norma aos artigos listados. Portarias e manuais que não estão no normas.leg.br entram como arquivo de texto em corpus/locais/ (veja o README).",
+  "normas": [
+    {"sigla": "cf88", "rotulo": "Constituição Federal", "urn": "urn:lex:br:federal:constituicao:1988-10-05;1988", "artigos": ["160", "166-A", "198", "212", "212-A"]},
+    {"sigla": "l14113", "rotulo": "Lei nº 14.113/2020 (FUNDEB)", "urn": "urn:lex:br:federal:lei:2020-12-25;14113"},
+    {"sigla": "d10656", "rotulo": "Decreto nº 10.656/2021 (regulamenta o FUNDEB)", "urn": "urn:lex:br:federal:decreto:2021-03-22;10656"},
+    {"sigla": "l11947", "rotulo": "Lei nº 11.947/2009 (PNAE e PDDE)", "urn": "urn:lex:br:federal:lei:2009-06-16;11947"},
+    {"sigla": "l10880", "rotulo": "Lei nº 10.880/2004 (PNATE)", "urn": "urn:lex:br:federal:lei:2004-06-09;10880"},
+    {"sigla": "lc141", "rotulo": "Lei Complementar nº 141/2012 (saúde)", "urn": "urn:lex:br:federal:lei.complementar:2012-01-13;141"},
+    {"sigla": "l8142", "rotulo": "Lei nº 8.142/1990 (transferências do SUS)", "urn": "urn:lex:br:federal:lei:1990-12-28;8142"},
+    {"sigla": "l8742", "rotulo": "Lei nº 8.742/1993 (LOAS)", "urn": "urn:lex:br:federal:lei:1993-12-07;8742"},
+    {"sigla": "l14601", "rotulo": "Lei nº 14.601/2023 (Programa Bolsa Família)", "urn": "urn:lex:br:federal:lei:2023-06-19;14601"},
+    {"sigla": "lc101", "rotulo": "Lei Complementar nº 101/2000 (LRF)", "urn": "urn:lex:br:federal:lei.complementar:2000-05-04;101", "artigos": ["8", "25", "50"]}
+  ]
+}
